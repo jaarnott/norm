@@ -14,7 +14,8 @@ import type { NotebookFile } from '../../types';
  * whatever the model wrote.
  */
 export default function NotebookCard({ files }: { files: NotebookFile[] }) {
-  const [open, setOpen] = useState(true);
+  // Collapsed by default: the notes are Norm's working, not the answer.
+  const [open, setOpen] = useState(false);
   if (!files || files.length === 0) return null;
   const when = files
     .map(f => f.updated_at)
@@ -22,24 +23,25 @@ export default function NotebookCard({ files }: { files: NotebookFile[] }) {
     .sort()
     .slice(-1)[0];
   return (
-    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, margin: '0.5rem 0', background: '#fafafa' }}>
+    <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)', margin: '0.5rem 0', background: 'var(--bg)' }}>
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '6px 10px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.8rem', color: '#555' }}
+        aria-expanded={open}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '8px 12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', textAlign: 'left' }}
       >
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <FileText size={14} />
-        <span style={{ fontWeight: 600 }}>Working notes</span>
-        <span style={{ marginLeft: 'auto', color: '#888' }}>
+        {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+        <FileText size={14} aria-hidden style={{ color: 'var(--icon)' }} />
+        <span style={{ fontWeight: 600, color: 'var(--text)' }}>Working notes</span>
+        <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 'var(--fs-xs)' }}>
           {files.length === 1 ? files[0].path.replace(/^\/memories\//, '') : `${files.length} files`}
           {when ? ` · ${new Date(when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
         </span>
       </button>
       {open && files.map(f => (
-        <div key={f.path} style={{ padding: '4px 14px 10px', borderTop: '1px solid #eee', fontSize: '0.85rem' }}>
-          {files.length > 1 && <div style={{ color: '#888', fontSize: '0.75rem', margin: '4px 0' }}>{f.path}</div>}
-          <div className="notebook-markdown">
+        <div key={f.path} style={{ padding: '8px 14px 12px', borderTop: '1px solid var(--line-soft)', fontSize: 'var(--fs-sm)', lineHeight: 1.55, color: 'var(--text)' }}>
+          {files.length > 1 && <div style={{ color: 'var(--muted)', fontSize: 'var(--fs-xs)', margin: '4px 0' }}>{f.path}</div>}
+          <div className="markdown-message">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{f.content}</ReactMarkdown>
           </div>
         </div>

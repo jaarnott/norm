@@ -1,7 +1,10 @@
 'use client';
 
 import { type CSSProperties, type ReactNode } from 'react';
+import { Check, TriangleAlert } from 'lucide-react';
 import { formatMoney } from '../../lib/format';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
 
 /**
  * The dojo's replica view, rendered as an actual INVOICE (paper sheet,
@@ -68,27 +71,18 @@ function niceDate(v: unknown): string {
 }
 
 const scrollBox: CSSProperties = { overflowX: 'auto', WebkitOverflowScrolling: 'touch' };
-const diffMark: CSSProperties = { background: '#fdeaea', color: '#a02b2b', borderRadius: 3, padding: '0 3px' };
-const loadedNote: CSSProperties = { fontSize: '0.6rem', color: '#8a8a8a', marginTop: 1, fontWeight: 400 };
-
-const sheetTh: CSSProperties = {
-  padding: '0.45rem 0.55rem',
-  fontSize: '0.6rem',
-  letterSpacing: '0.06em',
-  textTransform: 'uppercase',
-  color: '#9a938a',
-  textAlign: 'left',
-  borderBottom: '2px solid #2c2c2c',
-  whiteSpace: 'nowrap',
+// A small line under a value: codes, links, provenance.
+const meta: CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 2 };
+const diffMark: CSSProperties = { background: 'var(--error-bg)', color: 'var(--error)', borderRadius: 3, padding: '0 3px' };
+const loadedNote: CSSProperties = { ...meta, fontWeight: 400 };
+// The line table is an .n-table; cells hold several lines, so they align top.
+const cellTop: CSSProperties = { verticalAlign: 'top' };
+// The pane's header strip — the same height and look as InvoicePdfPane's, so
+// the two panes line up side by side.
+const paneHeader: CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minHeight: 46, boxSizing: 'border-box',
+  padding: '6px 12px 6px 16px', borderBottom: '1px solid var(--line)',
 };
-const sheetTd: CSSProperties = {
-  padding: '0.55rem 0.55rem',
-  fontSize: '0.78rem',
-  color: '#2c2c2c',
-  verticalAlign: 'top',
-  borderBottom: '1px solid #efece7',
-};
-const num: CSSProperties = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
 
 /** A value with optional diff annotation: red mark + Loaded's value below. */
 function DiffValue({ value, loadedValue, differs, render = (v) => (v == null ? '—' : String(v)) }: {
@@ -135,35 +129,42 @@ function InvoiceSheet({ compare, mode, replicaDoc }: {
   const flagged = (l: CompareLineRow, f: string) => diff && l.diff_fields.includes(f);
 
   return (
-    <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 6px rgba(30,25,15,0.10)', padding: 'clamp(14px, 3vw, 28px)', margin: '10px' }}>
+    <div style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)', padding: 'clamp(14px, 3vw, 28px)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <div style={{ fontSize: '1.05rem', fontWeight: 700, color: '#1e1c18' }}>
+          <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 600, color: 'var(--text)', lineHeight: 1.3 }}>
             <DiffValue value={hv('supplier_name')} {...hd('supplier_name')} />
           </div>
-          <div style={{ fontSize: '0.66rem', color: '#9a938a', marginTop: 2 }}>
+          <div style={meta}>
             {hv('linked_supplier_id') ? 'linked supplier record' : 'no supplier record linked'}
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: '0.68rem', letterSpacing: '0.18em', color: '#b78a2f', fontWeight: 700 }}>TAX INVOICE</div>
-          <div style={{ fontSize: '0.62rem', color: '#9a938a', marginTop: 2 }}>
+          <div className="n-eyebrow">Tax invoice</div>
+          <div style={meta}>
             {diff ? 'extracted, differences vs Loaded marked' : side === 'replica' ? 'as extracted by Norm' : 'as held in Loaded'}
           </div>
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: '1.6rem', flexWrap: 'wrap', margin: '14px 0 4px' }}>
+      <div style={{ display: 'flex', gap: '8px 24px', flexWrap: 'wrap', margin: '16px 0 4px' }}>
         {(
           [
             ['Invoice no.', 'reference_number', (v: unknown) => (v == null ? '—' : String(v))],
             ['Date', 'issued_at', niceDate],
-            ['Order no.', 'purchase_order_number', (v: unknown) => `${v == null ? '—' : String(v)}${hv('linked_purchase_order_id') ? ' ✓' : ''}`],
+            ['Order no.', 'purchase_order_number', (v: unknown) => (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {v == null ? '—' : String(v)}
+                {hv('linked_purchase_order_id') ? (
+                  <Icon icon={Check} size="dense" label="linked purchase order" style={{ color: 'var(--ok)' }} />
+                ) : null}
+              </span>
+            )],
           ] as const
         ).map(([label, field, render]) => (
           <div key={label}>
-            <div style={{ fontSize: '0.58rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#9a938a' }}>{label}</div>
-            <div style={{ fontSize: '0.78rem', color: '#2c2c2c', marginTop: 1 }}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{label}</div>
+            <div style={{ fontSize: 'var(--fs-base)', color: 'var(--text)', marginTop: 2 }}>
               <DiffValue value={hv(field)} {...hd(field)} render={render} />
             </div>
           </div>
@@ -171,14 +172,14 @@ function InvoiceSheet({ compare, mode, replicaDoc }: {
       </div>
 
       <div style={scrollBox}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 10, minWidth: 480 }}>
+        <table className="n-table" style={{ marginTop: 16, minWidth: 480 }}>
           <thead>
             <tr>
-              <th style={sheetTh}>Item</th>
-              <th style={sheetTh}>Unit</th>
-              <th style={{ ...sheetTh, ...num }}>Qty</th>
-              <th style={{ ...sheetTh, ...num }}>Unit price</th>
-              <th style={{ ...sheetTh, ...num }}>Amount</th>
+              <th>Item</th>
+              <th>Unit</th>
+              <th className="num">Qty</th>
+              <th className="num">Unit price</th>
+              <th className="num">Amount</th>
             </tr>
           </thead>
           <tbody>
@@ -188,15 +189,15 @@ function InvoiceSheet({ compare, mode, replicaDoc }: {
               const oneSided = diff && (!r.replica || !r.loaded);
               const amount = l.total_cost ?? (l.quantity_received != null && l.unit_cost != null ? l.quantity_received * l.unit_cost : null);
               return (
-                <tr key={i} style={oneSided ? { background: '#fdf6e7' } : undefined}>
-                  <td style={sheetTd}>
-                    <div style={{ fontWeight: 600 }}>{l.description || l.item_name || '—'}</div>
-                    <div style={{ fontSize: '0.62rem', color: '#9a938a', marginTop: 1 }}>
+                <tr key={i} style={oneSided ? { background: 'var(--warn-bg)' } : undefined}>
+                  <td style={cellTop}>
+                    <div style={{ fontWeight: 500, color: 'var(--text)' }}>{l.description || l.item_name || '—'}</div>
+                    <div style={meta}>
                       {l.code ? `${l.code} · ` : ''}
                       {flagged(r, 'linked_item_id') ? (
                         <>
                           <span style={diffMark}>{l.linked_item_id ? l.item_name || 'stock item' : 'no stock item'}</span>
-                          <span style={{ color: '#8a8a8a' }}>
+                          <span>
                             {' '}· Loaded: {other.linked_item_id ? other.item_name || 'stock item' : 'no stock item linked'}
                           </span>
                         </>
@@ -215,33 +216,35 @@ function InvoiceSheet({ compare, mode, replicaDoc }: {
                       </div>
                     )}
                     {oneSided && (
-                      <div style={{ fontSize: '0.6rem', color: '#8a6d3b', marginTop: 1 }}>
+                      <div style={{ ...meta, color: 'var(--warn)' }}>
                         {r.replica ? 'only in the extraction — Loaded has no such line' : 'only in Loaded — not on the extracted copy'}
                       </div>
                     )}
                   </td>
-                  <td style={{ ...sheetTd, whiteSpace: 'nowrap' }}>
+                  <td style={{ ...cellTop, whiteSpace: 'nowrap' }}>
                     <DiffValue value={l.unit} loadedValue={other.unit} differs={flagged(r, 'linked_unit_id')} />
                   </td>
-                  <td style={{ ...sheetTd, ...num }}>
+                  <td className="num" style={cellTop}>
                     <DiffValue value={l.quantity_received} loadedValue={other.quantity_received} differs={flagged(r, 'quantity_received')} />
                   </td>
-                  <td style={{ ...sheetTd, ...num }}>
+                  <td className="num" style={cellTop}>
                     <DiffValue value={l.unit_cost} loadedValue={other.unit_cost} differs={flagged(r, 'unit_cost')} render={money} />
                   </td>
-                  <td style={{ ...sheetTd, ...num, fontWeight: 600 }}>{money(amount)}</td>
+                  <td className="num" style={{ ...cellTop, fontWeight: 500 }}>{money(amount)}</td>
                 </tr>
               );
             })}
             {lines.length === 0 && (
-              <tr><td colSpan={5} style={{ ...sheetTd, color: '#9a938a' }}>no lines</td></tr>
+              <tr><td colSpan={5} style={{ color: 'var(--muted)' }}>No lines</td></tr>
             )}
           </tbody>
         </table>
       </div>
 
+      {/* Totals: the right padding matches a table cell's, so the figures
+          line up under the Amount column. */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-        <div style={{ minWidth: 190 }}>
+        <div style={{ minWidth: 200, paddingRight: 12, fontVariantNumeric: 'tabular-nums' }}>
           {(
             [
               ['Subtotal', 'subtotal', false],
@@ -249,9 +252,9 @@ function InvoiceSheet({ compare, mode, replicaDoc }: {
               ['Total', 'total', true],
             ] as const
           ).map(([label, field, strong]) => (
-            <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 24, padding: strong ? '7px 0 0' : '2px 0', borderTop: strong ? '2px solid #2c2c2c' : 'none', marginTop: strong ? 6 : 0 }}>
-              <span style={{ fontSize: strong ? '0.82rem' : '0.72rem', color: strong ? '#1e1c18' : '#6b655c', fontWeight: strong ? 700 : 400 }}>{label}</span>
-              <span style={{ fontSize: strong ? '0.92rem' : '0.74rem', color: '#1e1c18', fontWeight: strong ? 700 : 500, fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>
+            <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 24, padding: strong ? '8px 0 0' : '2px 0', borderTop: strong ? '1px solid var(--line-strong)' : 'none', marginTop: strong ? 6 : 0 }}>
+              <span style={{ fontSize: strong ? 'var(--fs-base)' : 'var(--fs-sm)', color: strong ? 'var(--text)' : 'var(--text-soft)', fontWeight: strong ? 600 : 400 }}>{label}</span>
+              <span style={{ fontSize: strong ? 'var(--fs-base)' : 'var(--fs-sm)', color: 'var(--text)', fontWeight: strong ? 700 : 400, textAlign: 'right' }}>
                 <DiffValue value={hv(field)} {...hd(field)} render={money} />
               </span>
             </div>
@@ -283,37 +286,44 @@ export default function ReplicaCompareView({
   // resolution (and the diff against it) is no longer shown here — the tab
   // slider went with it. InvoiceSheet keeps its mode prop because the render
   // paths are shared; this view simply never leaves 'extracted'.
+  // The pane is a card: header strip, any warnings as a band, then the
+  // invoice as a white sheet on a tinted desk (as InvoicePdfPane shows the
+  // copy's pages), and the resolution log as a footer.
   return (
-    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#f2f0ec', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0.5rem 0.7rem', background: '#faf9f7', borderBottom: '1px solid #eee', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#555' }}>Invoice — as extracted by Norm</span>
+    <div className="n-card" style={{ overflow: 'hidden' }}>
+      <div style={paneHeader}>
+        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>Invoice — as extracted by Norm</span>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           {onAnalyse && (
-            <button type="button" onClick={onAnalyse} disabled={!!analysing}
-              title="the sensei studies this invoice with full context and drafts a spec update (1–2 min) — the proposal appears above this view"
-              style={{ fontSize: '0.64rem', padding: '2px 9px', border: '1px solid #b78a2f', borderRadius: 4, background: '#fff', color: '#8a6d3b', cursor: analysing ? 'default' : 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+            <Button size="sm" onClick={onAnalyse} disabled={!!analysing}
+              title="the sensei studies this invoice with full context and drafts a spec update (1–2 min) — the proposal appears above this view">
               {analysing ? 'Sensei analysing…' : 'Ask the sensei'}
-            </button>
+            </Button>
           )}
         </span>
       </div>
 
       {(warnings ?? []).length > 0 && (
-        <div style={{ margin: '0.5rem 0.7rem 0', padding: '6px 10px', background: '#fdf6e7', border: '1px solid #e6cf9a', borderRadius: 6, fontSize: '0.7rem', color: '#8a6d3b' }}>
+        <div style={{ display: 'grid', gap: 4, padding: '8px 16px', background: 'var(--warn-bg)', color: 'var(--warn)', fontSize: 'var(--fs-sm)', borderBottom: '1px solid var(--line)' }}>
           {warnings!.map((w, i) => (
-            <div key={i}>⚠ {w}</div>
+            <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <Icon icon={TriangleAlert} size="dense" style={{ marginTop: 2 }} />
+              <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{w}</span>
+            </div>
           ))}
         </div>
       )}
 
-      <InvoiceSheet compare={compare} mode="extracted" replicaDoc={replicaDoc} />
+      <div style={{ background: 'var(--surface-alt)', padding: 'clamp(8px, 2vw, 12px)' }}>
+        <InvoiceSheet compare={compare} mode="extracted" replicaDoc={replicaDoc} />
+      </div>
 
       {Array.isArray(resolutionLog) && resolutionLog.length > 0 && (
-        <details style={{ padding: '0.3rem 0.7rem 0.6rem' }}>
-          <summary style={{ fontSize: '0.7rem', color: '#666', cursor: 'pointer' }}>Resolution log</summary>
-          <ul style={{ margin: '6px 0 0 0', paddingLeft: 18, fontSize: '0.66rem', color: '#555' }}>
+        <details style={{ padding: '10px 16px', borderTop: '1px solid var(--line)' }}>
+          <summary style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)', cursor: 'pointer' }}>Resolution log</summary>
+          <ul style={{ margin: '8px 0 0', padding: 0, listStyle: 'none', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--text-soft)', overflowWrap: 'anywhere' }}>
             {resolutionLog.map((e, i) => (
-              <li key={i}>{e}</li>
+              <li key={i} style={{ padding: '1px 0' }}>{e}</li>
             ))}
           </ul>
         </details>

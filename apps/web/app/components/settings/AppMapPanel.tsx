@@ -10,8 +10,12 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { CircleCheck, TriangleAlert } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { TeamApp } from '../../hooks/useTeam';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 
 interface MapApp extends TeamApp { member_name?: string }
 interface Findings {
@@ -26,15 +30,31 @@ interface Findings {
 
 // Sep 2026: an App claims TOOLS — consolidators and built-ins. An endpoint
 // (or a missing row) in a claim is a problem, shown in red.
-const TYPE_STYLE: Record<string, { color: string; bg: string }> = {
-  consolidator: { color: '#2e7d4f', bg: '#eef6f0' },
-  'built-in': { color: '#2e5a7d', bg: '#e8f0f6' },
-  endpoint: { color: '#b04a4a', bg: '#fbecec' },
-  missing: { color: '#b04a4a', bg: '#fbecec' },
+const TYPE_STYLE: Record<string, { tone: BadgeTone; label: string }> = {
+  consolidator: { tone: 'ok', label: 'Consolidator' },
+  'built-in': { tone: 'info', label: 'Built-in' },
+  endpoint: { tone: 'error', label: 'Endpoint' },
+  missing: { tone: 'error', label: 'Missing' },
 };
 
-const cell: React.CSSProperties = { padding: '6px 8px', verticalAlign: 'top', borderTop: '1px solid #eee', fontSize: '0.7rem' };
-const ul: React.CSSProperties = { margin: 0, paddingLeft: 14 };
+// The ownership findings box: dormant (not armed), all owned, or problems.
+const CALLOUT = {
+  warn: { color: 'var(--warn)', background: 'var(--warn-bg)', icon: TriangleAlert },
+  ok: { color: 'var(--ok)', background: 'var(--ok-bg)', icon: CircleCheck },
+  error: { color: 'var(--error)', background: 'var(--error-bg)', icon: TriangleAlert },
+} as const;
+
+const root: React.CSSProperties = { width: '100%', lineHeight: 1.45 };
+const cell: React.CSSProperties = { verticalAlign: 'top' };
+const ul: React.CSSProperties = { margin: 0, paddingLeft: 18 };
+const mono: React.CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' };
+const meta: React.CSSProperties = { fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
+const flag: React.CSSProperties = { fontSize: 'var(--fs-xs)' };
+const filterLabel: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 8, margin: 0 };
+const inlineCode: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', background: 'var(--surface-alt)',
+  padding: '1px 4px', borderRadius: 'var(--radius-sm)', color: 'var(--text-soft)',
+};
 
 export default function AppMapPanel() {
   const [data, setData] = useState<{ apps: MapApp[]; findings: Findings } | null>(null);
@@ -55,8 +75,19 @@ export default function AppMapPanel() {
     (!member || a.member === member || (a.bound_to_all && member !== '')) &&
     (!connection || a.required_connections.some((c) => c.connector === connection))), [data, member, connection]);
 
-  if (error) return <div style={{ color: '#b04a4a', fontSize: '0.8rem' }}>{error}</div>;
-  if (!data) return <div style={{ color: '#8a8a8a', fontSize: '0.8rem' }}>Loading the App Map…</div>;
+  const header = (
+    <>
+      <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>App map</h3>
+      <p style={{ margin: '2px 0 16px', maxWidth: 760, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+        Every App, the team member it belongs to, and everything it owns — derived live from the catalog.
+        Each tool, component and skill belongs to exactly one App (Norm Core is the one App shared by every
+        member). Edit through <code style={inlineCode}>scripts/sync_marketplace_catalog.py</code>.
+      </p>
+    </>
+  );
+
+  if (error) return <div style={root}>{header}<PageState kind="error" title={error} /></div>;
+  if (!data) return <div style={root}>{header}<PageState kind="loading" title="Loading the App Map…" /></div>;
 
   const f = data.findings;
   const problems = [
@@ -71,58 +102,61 @@ export default function AppMapPanel() {
   const connections = Array.from(new Set(data.apps.flatMap((a) => a.required_connections.map((c) => c.connector))));
   const names: Record<string, string> = {};
   for (const a of data.apps) for (const c of a.required_connections) names[c.connector] = c.display_name;
+  // The member filter shows names, not slugs (the value stays the slug).
+  const memberNames: Record<string, string> = {};
+  for (const a of data.apps) if (a.member && a.member_name) memberNames[a.member] = a.member_name;
 
   const list = (items: React.ReactNode[]) => items.length
     ? <ul style={ul}>{items.map((x, i) => <li key={i}>{x}</li>)}</ul>
-    : <span style={{ color: '#bbb' }}>—</span>;
+    : <span style={{ color: 'var(--muted)' }}>—</span>;
+
+  const callout = CALLOUT[!f.armed ? 'warn' : problems.length ? 'error' : 'ok'];
 
   return (
-    <div style={{ width: '100%' }}>
-      <h3 style={{ margin: '0 0 0.3rem', fontSize: '0.9rem' }}>App Map</h3>
-      <p style={{ fontSize: '0.72rem', color: '#8a8a8a', margin: '0 0 0.8rem' }}>
-        Every App, the team member it belongs to, and everything it owns — derived live from the catalog.
-        Each tool, component and skill belongs to exactly one App (Norm Core is the one App shared by every
-        member). Edit through <code>scripts/sync_marketplace_catalog.py</code>.
-      </p>
+    <div style={root}>
+      {header}
 
       <div style={{
-        border: `1px solid ${problems.length ? '#e8b4b4' : '#bcd9c6'}`, background: problems.length ? '#fbecec' : '#eef6f0',
-        borderRadius: 8, padding: '0.6rem 0.8rem', marginBottom: '0.8rem', fontSize: '0.74rem',
+        display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px', marginBottom: 16,
+        borderRadius: 'var(--radius)', background: callout.background, color: callout.color, fontSize: 'var(--fs-base)',
       }}>
-        {!f.armed ? (
-          <span style={{ color: '#8a5a1f' }}>Tool ownership isn&apos;t armed yet — no App declares its tools, so the ownership checks are dormant.</span>
-        ) : problems.length === 0 ? (
-          <span style={{ color: '#2e7d4f', fontWeight: 600 }}>✓ Everything is owned by exactly one App.</span>
-        ) : (
-          <>
-            <div style={{ fontWeight: 700, color: '#b04a4a', marginBottom: 4 }}>Unassigned or conflicting ({problems.length})</div>
-            <ul style={ul}>{problems.map((p) => <li key={p}>{p}</li>)}</ul>
-          </>
-        )}
+        <Icon icon={callout.icon} size={16} style={{ marginTop: 2 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {!f.armed ? (
+            <span>Tool ownership isn&apos;t armed yet — no App declares its tools, so the ownership checks are dormant.</span>
+          ) : problems.length === 0 ? (
+            <span style={{ fontWeight: 600 }}>Everything is owned by exactly one App.</span>
+          ) : (
+            <>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Unassigned or conflicting ({problems.length})</div>
+              <ul style={{ ...ul, color: 'var(--text)' }}>{problems.map((p) => <li key={p}>{p}</li>)}</ul>
+            </>
+          )}
+        </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 10, marginBottom: '0.6rem', fontSize: '0.72rem', alignItems: 'center' }}>
-        <label>Member{' '}
-          <select value={member} onChange={(e) => setMember(e.target.value)} style={{ fontSize: '0.72rem' }}>
-            <option value="">all</option>
-            {members.map((m) => <option key={m} value={m}>{m}</option>)}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+        <label className="n-label" style={filterLabel}>Member
+          <select className="n-select" value={member} onChange={(e) => setMember(e.target.value)}>
+            <option value="">All</option>
+            {members.map((m) => <option key={m} value={m}>{memberNames[m] ?? m}</option>)}
           </select>
         </label>
-        <label>Needs{' '}
-          <select value={connection} onChange={(e) => setConnection(e.target.value)} style={{ fontSize: '0.72rem' }}>
-            <option value="">anything</option>
+        <label className="n-label" style={filterLabel}>Needs
+          <select className="n-select" value={connection} onChange={(e) => setConnection(e.target.value)}>
+            <option value="">Anything</option>
             {connections.map((c) => <option key={c} value={c}>{names[c] ?? c}</option>)}
           </select>
         </label>
-        <span style={{ color: '#8a8a8a' }}>{apps.length} Apps</span>
+        <span style={meta}>{apps.length} Apps</span>
       </div>
 
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%', background: '#fff', border: '1px solid #e2ddd7' }}>
+      <div className="n-card" style={{ overflowX: 'auto' }}>
+        <table className="n-table" style={{ minWidth: 1100 }}>
           <thead>
-            <tr style={{ background: '#faf8f5', textAlign: 'left', fontSize: '0.68rem', color: '#6b6b6b' }}>
+            <tr>
               {['App', 'Member', 'Tools', 'Menu pages', 'Chat components', 'Skills', 'Needs'].map((h) => (
-                <th key={h} style={{ padding: '6px 8px' }}>{h}</th>
+                <th key={h}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -134,41 +168,44 @@ export default function AppMapPanel() {
               return (
                 <tr key={a.slug}>
                   <td style={cell}>
-                    <strong>{a.name}</strong>{!a.switchable && ' ✦'}
-                    <div style={{ color: '#aaa', fontFamily: 'monospace', fontSize: '0.62rem' }}>{a.slug}</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                      <strong style={{ fontWeight: 600 }}>{a.name}</strong>
+                      {!a.switchable && <Badge title="Always on while its member is hired">Always on</Badge>}
+                    </div>
+                    <div style={{ ...mono, fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{a.slug}</div>
                   </td>
-                  <td style={cell}>{a.member_name ?? a.member ?? <span style={{ color: '#b04a4a' }}>none</span>}</td>
+                  <td style={cell}>{a.member_name ?? a.member ?? <Badge tone="error">None</Badge>}</td>
                   <td style={cell}>{list(a.tools.map((t) => {
-                    const st = TYPE_STYLE[t.type] ?? TYPE_STYLE.endpoint;
+                    const st = TYPE_STYLE[t.type];
                     return (
                       <span key={t.key}>
-                        <span style={{ fontFamily: 'monospace' }}>{t.key}</span>{' '}
-                        <span style={{ fontSize: '0.58rem', fontWeight: 700, color: st.color, background: st.bg, borderRadius: 6, padding: '0 5px' }}>{t.type}</span>
-                        {t.writes && <span style={{ fontSize: '0.58rem', color: '#8a5a1f' }}> · writes</span>}
-                        {!t.exists && <span style={{ fontSize: '0.58rem', color: '#b04a4a' }}> · MISSING</span>}
-                        {t.engine_only && <span style={{ fontSize: '0.58rem', color: '#b04a4a' }}> · engine-only</span>}
+                        <span style={mono}>{t.key}</span>{' '}
+                        <Badge tone={st?.tone ?? 'error'}>{st?.label ?? t.type}</Badge>
+                        {t.writes && <span style={{ ...flag, color: 'var(--warn)' }}> · writes</span>}
+                        {!t.exists && <span style={{ ...flag, fontWeight: 600, color: 'var(--error)' }}> · missing</span>}
+                        {t.engine_only && <span style={{ ...flag, color: 'var(--error)' }}> · engine-only</span>}
                       </span>
                     );
                   }))}</td>
                   <td style={cell}>{list([
-                    ...pages.map((c) => <span key={c.key}>{c.shared ? `${c.label} (every member)` : c.label} <span style={{ color: '#aaa' }}>({c.key})</span></span>),
+                    ...pages.map((c) => <span key={c.key}>{c.shared ? `${c.label} (every member)` : c.label} <span style={meta}>({c.key})</span></span>),
                     ...(a.app_platform && !appComps.some((c) => c.app_page)
-                      ? [<span key="screen">{a.name} <span style={{ color: '#aaa' }}>(App-platform screen)</span></span>] : []),
-                    ...appComps.filter((c) => c.app_page).map((c) => <span key={c.key}>{c.label} <span style={{ color: '#aaa' }}>(App-platform, {c.key})</span></span>),
+                      ? [<span key="screen">{a.name} <span style={meta}>(App-platform screen)</span></span>] : []),
+                    ...appComps.filter((c) => c.app_page).map((c) => <span key={c.key}>{c.label} <span style={meta}>(App-platform, {c.key})</span></span>),
                   ])}</td>
                   <td style={cell}>{list([
-                    ...chat.map((c) => <span key={c.key} style={{ fontFamily: 'monospace' }}>{c.key}</span>),
+                    ...chat.map((c) => <span key={c.key} style={mono}>{c.key}</span>),
                     ...appComps.map((c) => (
                       <span key={`open-${c.key}`}>
-                        <span style={{ fontFamily: 'monospace' }}>{c.key}</span>{' '}
-                        <span style={{ color: '#8a8a8a' }}>opens at: {(c.inputs ?? []).map((i) => i.name).join(', ') || 'start only'}</span>
+                        <span style={mono}>{c.key}</span>{' '}
+                        <span style={meta}>opens at: {(c.inputs ?? []).map((i) => i.name).join(', ') || 'start only'}</span>
                       </span>
                     )),
                   ])}</td>
-                  <td style={cell}>{list(a.skills.map((s) => <span key={s.slug}>{s.label}{s.enabled === false && <span style={{ color: '#aaa' }}> (disabled)</span>}</span>))}</td>
+                  <td style={cell}>{list(a.skills.map((s) => <span key={s.slug}>{s.label}{s.enabled === false && <> <Badge tone="warn">Disabled</Badge></>}</span>))}</td>
                   <td style={cell}>{a.required_connections.length
-                    ? list(a.required_connections.map((c) => <span key={c.connector}>{c.display_name}</span>))
-                    : <span style={{ color: '#8a8a8a' }}>runs on Norm</span>}</td>
+                    ? list(a.required_connections.map((c) => <span key={c.connector} style={{ whiteSpace: 'nowrap' }}>{c.display_name}</span>))
+                    : <span style={meta}>runs on Norm</span>}</td>
                 </tr>
               );
             })}

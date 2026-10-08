@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import Chart from '../Chart';
+import IconButton from '../../ui/IconButton';
 import type { SavedReportChart } from '../../../types';
 
 interface ChartFullScreenModalProps {
@@ -24,40 +25,42 @@ export default function ChartFullScreenModal({ chart, onClose }: ChartFullScreen
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, zIndex: 9999,
-        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        backgroundColor: 'rgba(26, 26, 26, 0.35)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={chart.title}
         onClick={e => e.stopPropagation()}
         style={{
           width: '92vw', height: '85vh',
-          backgroundColor: '#fff', borderRadius: 12,
+          backgroundColor: 'var(--bg)', borderRadius: 'var(--radius-lg)',
+          boxShadow: '0 12px 40px rgba(26, 26, 26, 0.18)',
           overflow: 'hidden', position: 'relative',
-          display: 'flex', flexDirection: 'column',
+          display: 'flex', flexDirection: 'column', color: 'var(--text)', lineHeight: 1.45,
         }}
       >
         {/* Header */}
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '0.75rem 1rem', borderBottom: '1px solid #f0ebe5',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          padding: '12px 12px 12px 24px', borderBottom: '1px solid var(--line)',
         }}>
-          <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#333' }}>{chart.title}</span>
-          <button onClick={onClose} style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 32, height: 32, border: 'none', borderRadius: 6,
-            backgroundColor: '#f5f5f5', cursor: 'pointer',
-          }}>
-            <X size={16} strokeWidth={2} />
-          </button>
+          <h2 style={{
+            margin: 0, minWidth: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3,
+            color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>{chart.title}</h2>
+          <IconButton icon={X} label="Close" onClick={onClose} />
         </div>
 
-        {/* Chart */}
-        <div style={{ flex: 1, padding: '1rem', overflow: 'auto' }}>
+        {/* Chart — the modal is the frame, so the chart drops its own border */}
+        <div style={{ flex: 1, padding: 12, overflow: 'auto' }}>
           <Chart
             data={{ rows: chart.data, ...chart.chart_spec }}
             props={{ ...chart.chart_spec } as Record<string, unknown>}
             hideAddToReport
+            hideBorder
             height={600}
           />
         </div>

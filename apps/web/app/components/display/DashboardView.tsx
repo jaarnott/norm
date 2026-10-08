@@ -5,13 +5,19 @@ import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { SavedReport } from '../../types';
 import { apiFetch } from '../../lib/api';
 import Chart from './Chart';
-import { RefreshCw, Share2, Check, Settings, Maximize2 } from 'lucide-react';
+import { RefreshCw, Share2, Check, Settings, Maximize2, LayoutGrid } from 'lucide-react';
 import ChartFullScreenModal from './dashboard/ChartFullScreenModal';
 import ChartConfigPanel from './dashboard/ChartConfigPanel';
 import DrillDownPanel from './dashboard/DrillDownPanel';
 import DashboardPicker from './dashboard/DashboardPicker';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
+import VenueSelect from '../ui/VenueSelect';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import Icon from '../ui/Icon';
 
 // Lazy imports for embeddable components (avoids circular deps with DisplayBlockRenderer)
 import dynamic from 'next/dynamic';
@@ -37,6 +43,13 @@ function getEmbeddableComponent(key: string): React.ComponentType<DisplayBlockPr
 }
 
 const ROW_HEIGHT = 40;
+// Space between tiles: white cards on the cream page need a visible gutter.
+const TILE_GAP = 12;
+
+/** "Refreshes every 5 min" — the auto-refresh interval, in words. */
+function autoRefreshLabel(seconds: number): string {
+  return seconds < 60 ? `Refreshes every ${seconds} sec` : `Refreshes every ${Math.round(seconds / 60)} min`;
+}
 
 export default function DashboardView({ data, props }: DisplayBlockProps) {
   const agentSlug = (data?.agent_slug as string) || (props?.agent_slug as string) || '';
@@ -175,7 +188,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   }, [dashboard?.id, dashboard?.refresh_interval_seconds, handleRefresh]);
 
   if (loading) {
-    return <div style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>Loading dashboard...</div>;
+    return <PageState kind="loading" title="Loading dashboard…" />;
   }
 
   const reloadDashboard = () => {
@@ -198,6 +211,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       <DashboardPicker
         agentSlug={agentSlug}
         onDashboardSelected={reloadDashboard}
+        asPage={persistVenue}
       />
     );
   }
@@ -208,94 +222,102 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   // Calculate grid height
   const maxRow = layout.reduce((max, item) => Math.max(max, (item.row || 1) + (item.rowSpan || 8)), 1);
 
+  // Phones and tablets stack the tiles full width, in the order the desktop
+  // grid reads (top to bottom, left to right). Tablets used to keep each
+  // tile's desktop row but pin it to column 1, so tiles sharing a row (the
+  // KPI strip, side-by-side charts) were drawn on top of each other.
+  const stacked = isMobile || isTablet;
+  const tiles = stacked
+    ? [...layout].sort((a, b) => ((a.row || 1) - (b.row || 1)) || ((a.col || 1) - (b.col || 1)))
+    : layout;
+
+  const meta = [
+    dashboard.description,
+    dashboard.refresh_interval_seconds ? autoRefreshLabel(dashboard.refresh_interval_seconds) : null,
+  ].filter(Boolean).join(' · ') || undefined;
+
+  // '' (all venues) is this view's own value; the picker spells it 'all'.
+  const venuePicker = venues.length > 0 ? (
+    <VenueSelect
+      venues={venues}
+      value={selectedVenue || 'all'}
+      allowAll
+      onChange={id => {
+        const venueId = id === 'all' ? '' : id;
+        setSelectedVenue(venueId);
+        if (venueId && persistVenue) setActiveVenue(venueId);
+      }}
+    />
+  ) : null;
+
+  const actions = (
+    <>
+      {venuePicker}
+      <Button
+        onClick={() => handleRefresh()}
+        disabled={refreshing}
+        title={lastRefreshed ? `Last refreshed: ${lastRefreshed.toLocaleTimeString()}` : 'Refresh'}
+      >
+        <Icon icon={RefreshCw} size="inline" style={refreshing ? { animation: 'n-spin 1s linear infinite' } : undefined} />
+        {refreshing ? 'Refreshing…' : 'Refresh'}
+      </Button>
+      <Button
+        icon={dashboard.is_published ? Check : Share2}
+        onClick={async () => {
+          const next = !dashboard.is_published;
+          const res = await apiFetch(`/api/reports/${dashboard.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ is_published: next }),
+          });
+          if (res.ok) {
+            const updated = await res.json();
+            setDashboard(updated);
+          }
+        }}
+        title={dashboard.is_published ? 'Published to organisation — click to unpublish' : 'Publish to organisation'}
+        style={dashboard.is_published ? { color: 'var(--ok)' } : undefined}
+      >
+        {dashboard.is_published ? 'Published' : 'Share'}
+      </Button>
+      {agentSlug && (
+        <Button variant="quiet" icon={LayoutGrid} onClick={() => setShowPicker(true)}>Change dashboard</Button>
+      )}
+    </>
+  );
+
   return (
-    <div style={{ padding: '0.5rem' }}>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>{dashboard.title}</h2>
-            {agentSlug && (
-              <button
-                onClick={() => setShowPicker(true)}
-                style={{ border: 'none', background: 'none', color: '#bbb', fontSize: '0.65rem', cursor: 'pointer', fontFamily: 'inherit', padding: '2px 6px' }}
-                onMouseEnter={e => (e.currentTarget.style.color = '#888')}
-                onMouseLeave={e => (e.currentTarget.style.color = '#bbb')}
-              >Change</button>
-            )}
+    // A page sits in FunctionalPage's frame; in a conversation (or the
+    // template editor) the view keeps a little breathing room of its own.
+    <div style={persistVenue ? undefined : { padding: 8 }}>
+      {persistVenue ? (
+        <PageHeader title={dashboard.title} meta={meta} actions={actions} titleOnPhone />
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <h2 style={{ margin: 0, fontSize: 'var(--fs-md)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{dashboard.title}</h2>
+            {meta && <p style={{ margin: '2px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{meta}</p>}
           </div>
-          {dashboard.description && <p style={{ margin: '0.15rem 0 0', fontSize: '0.75rem', color: '#999' }}>{dashboard.description}</p>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>{actions}</div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          {venues.length > 0 && (
-            <select
-              value={selectedVenue}
-              onChange={e => { setSelectedVenue(e.target.value); if (e.target.value && persistVenue) setActiveVenue(e.target.value); }}
-              style={{ padding: '4px 8px', fontSize: '0.75rem', border: '1px solid #e2ddd7', borderRadius: 6, fontFamily: 'inherit' }}
-            >
-              <option value="">All Venues</option>
-              {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-            </select>
-          )}
-          <button
-            onClick={() => handleRefresh()}
-            disabled={refreshing}
-            title={lastRefreshed ? `Last refreshed: ${lastRefreshed.toLocaleTimeString()}` : 'Refresh'}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px',
-              fontSize: '0.72rem', fontWeight: 500, border: '1px solid #e2ddd7', borderRadius: 6,
-              backgroundColor: '#fff', cursor: refreshing ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-              color: '#888',
-            }}
-          >
-            <RefreshCw size={14} strokeWidth={1.75} style={{ animation: refreshing ? 'spin 1s linear infinite' : 'none' }} />
-            {refreshing ? 'Refreshing...' : 'Refresh'}
-          </button>
-          <button
-            onClick={async () => {
-              const next = !dashboard.is_published;
-              const res = await apiFetch(`/api/reports/${dashboard.id}`, {
-                method: 'PATCH',
-                body: JSON.stringify({ is_published: next }),
-              });
-              if (res.ok) {
-                const updated = await res.json();
-                setDashboard(updated);
-              }
-            }}
-            title={dashboard.is_published ? 'Published to organisation — click to unpublish' : 'Publish to organisation'}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px',
-              fontSize: '0.72rem', fontWeight: 500, border: '1px solid #e2ddd7', borderRadius: 6,
-              backgroundColor: dashboard.is_published ? '#f0faf2' : '#fff',
-              cursor: 'pointer', fontFamily: 'inherit',
-              color: dashboard.is_published ? '#4f8a5e' : '#888',
-            }}
-          >
-            {dashboard.is_published ? <Check size={14} strokeWidth={2} /> : <Share2 size={14} strokeWidth={1.75} />}
-            {dashboard.is_published ? 'Published' : 'Share'}
-          </button>
-          {dashboard.refresh_interval_seconds && (
-            <span style={{ fontSize: '0.62rem', color: '#bbb' }}>
-              Auto: {dashboard.refresh_interval_seconds < 60 ? `${dashboard.refresh_interval_seconds}s` : `${Math.round(dashboard.refresh_interval_seconds / 60)}m`}
-            </span>
-          )}
-        </div>
-      </div>
+      )}
+
+      {layout.length === 0 && (
+        <PageState kind="empty" title="This dashboard has no charts yet." detail="Ask Norm to add one, or change to another dashboard." />
+      )}
 
       {/* Grid */}
-      <div style={isMobile ? {
+      <div style={stacked ? {
         display: 'flex',
         flexDirection: 'column',
-        gap: 8,
+        gap: TILE_GAP,
       } : {
         display: 'grid',
-        gridTemplateColumns: isTablet ? 'repeat(12, 1fr)' : 'repeat(24, 1fr)',
+        gridTemplateColumns: 'repeat(24, 1fr)',
         gridAutoRows: ROW_HEIGHT,
-        gap: 4,
-        minHeight: isMobile ? undefined : maxRow * ROW_HEIGHT,
+        gap: TILE_GAP,
+        minHeight: maxRow * ROW_HEIGHT,
       }}>
-        {layout.map(item => {
+        {tiles.map(item => {
           const chart = chartMap.get(item.chart_id);
           if (!chart) return null;
 
@@ -307,75 +329,48 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
           // Responsive grid placement
           const colSpan = item.colSpan || 24;
           const mobileHeight = (item.rowSpan || 8) * ROW_HEIGHT;
-          const gridStyle: React.CSSProperties = isMobile
+          const gridStyle: React.CSSProperties = stacked
             ? { height: mobileHeight, minHeight: mobileHeight, width: '100%' }
-            : isTablet
-              ? {
-                  gridColumn: `1 / span ${Math.min(colSpan <= 12 ? colSpan : 12, 12)}`,
-                  gridRow: `${item.row || 1} / span ${item.rowSpan || 8}`,
-                }
-              : {
-                  gridColumn: `${item.col || 1} / span ${colSpan}`,
-                  gridRow: `${item.row || 1} / span ${item.rowSpan || 8}`,
-                };
+            : {
+                gridColumn: `${item.col || 1} / span ${colSpan}`,
+                gridRow: `${item.row || 1} / span ${item.rowSpan || 8}`,
+              };
 
           return (
             <div
               key={item.chart_id}
               style={{
                 ...gridStyle,
-                border: '1px solid #f0ebe5',
-                borderRadius: 10,
-                backgroundColor: '#fff',
                 overflow: 'hidden',
                 position: 'relative',
               }}
-              className="dashboard-chart-tile"
+              className="n-card dashboard-chart-tile"
             >
               {/* Per-chart loading indicator */}
               {refreshingCharts.has(chart.id) && (
                 <div style={{
                   position: 'absolute', top: 0, left: 0, right: 0, height: 2, zIndex: 11,
-                  background: 'linear-gradient(90deg, transparent, #c4a882, transparent)',
+                  background: 'linear-gradient(90deg, transparent, var(--brand-soft), transparent)',
                   animation: 'shimmer 1.5s infinite',
-                  borderRadius: '10px 10px 0 0',
                 }} />
               )}
-              {/* Chart action buttons — visible on hover */}
+              {/* Chart action buttons — on hover or keyboard focus */}
               <div
                 className="chart-inspect-btn"
                 style={{
-                  position: 'absolute', top: 4, right: 4, zIndex: 10,
+                  position: 'absolute', top: 6, right: 6, zIndex: 10,
                   display: 'flex', gap: 2, opacity: 0, transition: 'opacity 0.15s',
+                  backgroundColor: 'var(--bg)', borderRadius: 'var(--radius)',
                 }}
               >
-                <button
-                  onClick={() => setExpandedChartId(chart.id)}
-                  title="Full screen"
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    width: 24, height: 24, border: 'none', borderRadius: 4,
-                    backgroundColor: 'rgba(255,255,255,0.9)', cursor: 'pointer', color: '#999',
-                  }}
-                >
-                  <Maximize2 size={13} strokeWidth={1.75} />
-                </button>
-                <button
-                  onClick={() => setInspectedChartId(chart.id)}
-                  title="Chart settings"
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    width: 24, height: 24, border: 'none', borderRadius: 4,
-                    backgroundColor: 'rgba(255,255,255,0.9)', cursor: 'pointer', color: '#999',
-                  }}
-                >
-                  <Settings size={13} strokeWidth={1.75} />
-                </button>
+                <IconButton icon={Maximize2} label="Full screen" iconSize={16} onClick={() => setExpandedChartId(chart.id)} />
+                <IconButton icon={Settings} label="Chart settings" iconSize={16} onClick={() => setInspectedChartId(chart.id)} />
               </div>
               {isEmbedded && EmbeddedComponent ? (
-                <div style={{ height: '100%', overflow: 'auto' }}>
+                // Inset like the card it is, so the component never runs into the tile's edge.
+                <div style={{ height: '100%', overflow: 'auto', padding: '12px 14px 14px', boxSizing: 'border-box' }}>
                   {chart.chart_spec?.title && (
-                    <div style={{ padding: '0.5rem 0.75rem 0', fontSize: '0.7rem', fontWeight: 600, color: '#999', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    <div style={{ marginBottom: 8, fontSize: 'var(--fs-base)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>
                       {(chart.chart_spec as unknown as Record<string, unknown>).title as string}
                     </div>
                   )}
@@ -387,9 +382,13 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
               ) : (
                 <Chart
                   data={{ rows: chart.data, ...chart.chart_spec }}
-                  props={{ ...chart.chart_spec, chart_type: chart.chart_type, fillContainer: true } as Record<string, unknown>}
+                  // The tile is titled with the chart's own title (what the full-screen
+                  // view and chart settings show); a spec without one read "Chart".
+                  props={{ ...chart.chart_spec, ...(chart.title ? { title: chart.title } : {}), chart_type: chart.chart_type, fillContainer: true } as Record<string, unknown>}
                   hideAddToReport
                   fillContainer
+                  // The tile is the card; the chart draws no second border inside it.
+                  hideBorder
                   onDrillDown={(payload) => {
                     const xAxisKey = ((chart.chart_spec as unknown as Record<string, unknown>)?.x_axis as Record<string, unknown> | undefined)?.key as string || '';
                     const matchingRows = (chart.data || []).filter(r => String(r[xAxisKey]) === payload.label);
@@ -404,18 +403,18 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
 
       {/* Debug / errors panel */}
       {(refreshErrors || debugInfo) && (
-        <details style={{ marginTop: '1rem' }}>
-          <summary style={{ fontSize: '0.68rem', fontWeight: 600, color: '#999', cursor: 'pointer' }}>
-            Refresh Details
+        <details style={{ marginTop: 16 }}>
+          <summary style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--muted)', cursor: 'pointer' }}>
+            Refresh details
             {refreshErrors && refreshErrors.length > 0 && (
-              <span style={{ color: '#dc3545', marginLeft: 6 }}>{refreshErrors.length} error{refreshErrors.length > 1 ? 's' : ''}</span>
+              <span style={{ color: 'var(--error)', marginLeft: 6 }}>{refreshErrors.length} error{refreshErrors.length > 1 ? 's' : ''}</span>
             )}
           </summary>
-          <div style={{ marginTop: '0.4rem' }}>
+          <div style={{ marginTop: 6 }}>
             {refreshErrors && refreshErrors.length > 0 && (
-              <div style={{ marginBottom: '0.5rem' }}>
+              <div style={{ marginBottom: 8 }}>
                 {refreshErrors.map((err, i) => (
-                  <div key={i} style={{ fontSize: '0.7rem', color: '#dc3545', padding: '0.2rem 0' }}>
+                  <div key={i} style={{ fontSize: 'var(--fs-xs)', color: 'var(--error)', padding: '3px 0' }}>
                     <strong>{String(err.title || err.chart_id)}</strong>: {String(err.error)}
                   </div>
                 ))}
@@ -423,9 +422,9 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
             )}
             {debugInfo && (
               <pre style={{
-                fontSize: '0.65rem', color: '#666', backgroundColor: '#f8f8f8',
-                padding: '0.5rem', borderRadius: 6, overflow: 'auto', maxHeight: 300,
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word', border: '1px solid #eee',
+                fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--text-soft)', backgroundColor: 'var(--surface-alt)',
+                padding: 8, borderRadius: 'var(--radius-sm)', overflow: 'auto', maxHeight: 300,
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', border: '1px solid var(--line)',
               }}>
                 {JSON.stringify(debugInfo, null, 2)}
               </pre>
@@ -463,9 +462,9 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       })()}
 
       <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
-        .dashboard-chart-tile:hover .chart-inspect-btn { opacity: 1 !important; }
+        .dashboard-chart-tile:hover .chart-inspect-btn,
+        .dashboard-chart-tile:focus-within .chart-inspect-btn { opacity: 1 !important; }
       `}</style>
     </div>
   );

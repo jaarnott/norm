@@ -1,5 +1,8 @@
 'use client';
 
+import { Minus, TrendingDown, TrendingUp, TriangleAlert } from 'lucide-react';
+import Icon from '../ui/Icon';
+
 interface KpiCardProps {
   rows: Record<string, unknown>[];
   spec?: {
@@ -39,25 +42,31 @@ function formatValue(val: number, format?: string, prefix?: string, suffix?: str
 }
 
 function getThresholdColor(val: number, threshold?: { warning: number; danger: number; direction: 'above' | 'below' }): string {
-  if (!threshold) return '#1a1a1a';
+  if (!threshold) return 'var(--text)';
   const { warning, danger, direction } = threshold;
   if (direction === 'above') {
-    if (val >= danger) return '#dc3545';
-    if (val >= warning) return '#f59e0b';
-    return '#28a745';
+    if (val >= danger) return 'var(--error)';
+    if (val >= warning) return 'var(--warn)';
+    return 'var(--ok)';
   }
   // below
-  if (val <= danger) return '#dc3545';
-  if (val <= warning) return '#f59e0b';
-  return '#28a745';
+  if (val <= danger) return 'var(--error)';
+  if (val <= warning) return 'var(--warn)';
+  return 'var(--ok)';
 }
+
+const centred = {
+  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+  height: '100%', textAlign: 'center',
+} as const;
 
 export default function KpiCard({ rows, spec, title }: KpiCardProps) {
   const countRows = spec?.aggregate === 'count';
   if ((!spec?.value_key && !countRows) || !rows || (rows.length === 0 && !countRows)) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#bbb', fontSize: '0.82rem' }}>
-        No data
+      <div style={{ ...centred, padding: '0.5rem', gap: 4, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+        {title && <div style={{ fontWeight: 500 }}>{title}</div>}
+        <div>No data</div>
       </div>
     );
   }
@@ -70,13 +79,17 @@ export default function KpiCard({ rows, spec, title }: KpiCardProps) {
   const keyExists = countRows || rows.some(r => valueKey in r);
   if (!keyExists) {
     const availableKeys = Object.keys(rows[0]).filter(k => !k.startsWith('_') && typeof rows[0][k] === 'number');
+    // A plain sentence first; the field names under it are what whoever set
+    // the dashboard up needs to fix it.
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '0.5rem', textAlign: 'center' }}>
-        <div style={{ fontSize: '0.72rem', color: '#dc3545', fontWeight: 600, marginBottom: 4 }}>
-          Field &quot;{valueKey}&quot; not found
+      <div style={{ ...centred, padding: '0.5rem 0.75rem', gap: 4 }}>
+        {title && <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--muted)' }}>{title}</div>}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+          <Icon icon={TriangleAlert} size="dense" tone="muted" />
+          This figure can&apos;t be shown right now.
         </div>
-        <div style={{ fontSize: '0.62rem', color: '#999' }}>
-          Available: {availableKeys.join(', ') || 'none'}
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+          The data has no &ldquo;{valueKey}&rdquo; field. Number fields: {availableKeys.join(', ') || 'none'}.
         </div>
       </div>
     );
@@ -102,27 +115,32 @@ export default function KpiCard({ rows, spec, title }: KpiCardProps) {
   const color = getThresholdColor(value, spec.threshold);
 
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center',
-      height: '100%', padding: '0.75rem', textAlign: 'center',
-    }}>
+    <div style={{ ...centred, padding: '0.75rem' }}>
       {title && (
-        <div style={{ fontSize: '0.7rem', fontWeight: 600, color: '#999', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.3rem' }}>
+        <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--muted)', lineHeight: 1.3, marginBottom: 4 }}>
           {title}
         </div>
       )}
-      <div style={{ fontSize: '2rem', fontWeight: 800, color, lineHeight: 1.1 }}>
+      <div style={{ fontSize: 'var(--fs-2xl)', fontWeight: 700, color, lineHeight: 1.2, fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.01em' }}>
         {formatValue(value, spec.format, spec.prefix, spec.suffix)}
       </div>
       {delta !== null && (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 4, marginTop: '0.3rem',
-          fontSize: '0.72rem', fontWeight: 500,
-          color: delta > 0 ? '#28a745' : delta < 0 ? '#dc3545' : '#999',
+          display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center', gap: 4, marginTop: 6,
+          fontSize: 'var(--fs-sm)', fontVariantNumeric: 'tabular-nums',
         }}>
-          <span>{delta > 0 ? '▲' : delta < 0 ? '▼' : '—'}</span>
-          <span>{Math.abs(delta).toFixed(1)}%</span>
-          {compLabel && <span style={{ color: '#bbb' }}>{compLabel}</span>}
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 600,
+            color: delta > 0 ? 'var(--ok)' : delta < 0 ? 'var(--error)' : 'var(--muted)',
+          }}>
+            <Icon
+              icon={delta > 0 ? TrendingUp : delta < 0 ? TrendingDown : Minus}
+              size="dense"
+              label={delta > 0 ? 'Up' : delta < 0 ? 'Down' : 'No change'}
+            />
+            {Math.abs(delta).toFixed(1)}%
+          </span>
+          {compLabel && <span style={{ color: 'var(--muted)' }}>{compLabel}</span>}
         </div>
       )}
     </div>

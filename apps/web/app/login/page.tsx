@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState } from 'react';
+import { Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import LoginForm from '../components/auth/LoginForm';
 import { setToken, setStoredUser } from '../lib/api';
@@ -8,7 +8,6 @@ import { setToken, setStoredUser } from '../lib/api';
 function LoginInner() {
   const router = useRouter();
   const params = useSearchParams();
-  const [, setLoggedIn] = useState(false);
 
   // Honour a ?next= target (e.g. the MCP consent screen bounced us here).
   // Same-origin paths only, so this can't be turned into an open redirect.
@@ -18,24 +17,12 @@ function LoginInner() {
   const handleLogin = (token: string, user: { id: string; email: string; full_name: string; role: string }) => {
     setToken(token);
     setStoredUser(user);
-    setLoggedIn(true);
     router.push(next);
   };
 
-  return (
-    <div style={{
-      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      backgroundColor: '#faf8f5', fontFamily: 'system-ui, sans-serif',
-    }}>
-      <div style={{ width: '100%', maxWidth: 400 }}>
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <span style={{ fontSize: '2rem', fontWeight: 800, color: '#a08060' }}>Norm</span>
-          <p style={{ color: '#888', fontSize: '0.9rem', marginTop: '0.5rem' }}>Sign in to your account</p>
-        </div>
-        <LoginForm onSuccess={handleLogin} />
-      </div>
-    </div>
-  );
+  // LoginForm draws the whole screen, wordmark included — this page used to
+  // add a second "Norm / Sign in to your account" header above it.
+  return <LoginForm onSuccess={handleLogin} />;
 }
 
 export default function LoginPage() {

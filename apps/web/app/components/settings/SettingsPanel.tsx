@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback, useId, useRef } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { ChevronDown, ChevronRight, Info, Plus, X } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { AgentConfig, AgentBinding, VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
@@ -25,6 +27,14 @@ import MemoryTab from './MemoryTab';
 import AddressSearch from './AddressSearch';
 import { getStoredUser } from '../../lib/api';
 import type { User } from '../../types';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
+import PageHeader from '../ui/PageHeader';
+import Tabs, { type TabEntry } from '../ui/Tabs';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import Badge from '../ui/Badge';
+import Avatar from '../ui/Avatar';
+import PageState from '../ui/PageState';
 
 interface ConnectorField {
   key: string;
@@ -51,6 +61,78 @@ interface ConnectorMeta {
 }
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
+
+// --- Shared presentation ---
+
+/** A section's header row: 18px title, a muted count, actions on the right. */
+function SectionHeader({ title, meta, actions }: { title: string; meta?: ReactNode; actions?: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
+        <h2 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</h2>
+        {meta && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{meta}</span>}
+      </div>
+      {actions && <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>{actions}</div>}
+    </div>
+  );
+}
+
+/** A figure under its small label (the usage summaries). */
+function Stat({ label, value, unit, large = false }: { label: string; value: ReactNode; unit?: string; large?: boolean }) {
+  return (
+    <div>
+      <div className="n-eyebrow">{label}</div>
+      <div style={{ marginTop: 2, fontSize: large ? 'var(--fs-lg)' : 'var(--fs-base)', fontWeight: 600, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
+        {value}
+        {unit && <span style={{ marginLeft: 4, fontSize: 'var(--fs-xs)', fontWeight: 400, color: 'var(--muted)' }}>{unit}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** A modal over a dimmed page; a click outside the box closes it. */
+function Dialog({ title, width, onClose, closeButton = false, children }: {
+  title: string;
+  width: number;
+  onClose: () => void;
+  closeButton?: boolean;
+  children: ReactNode;
+}) {
+  const titleId = useId();
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 1000, padding: 16,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      backgroundColor: 'rgba(26, 26, 26, 0.35)',
+    }}>
+      <div role="dialog" aria-modal="true" aria-labelledby={titleId} onClick={e => e.stopPropagation()} style={{
+        width, maxWidth: '100%', maxHeight: '80vh', overflowY: 'auto', boxSizing: 'border-box',
+        padding: 24, borderRadius: 'var(--radius-lg)', backgroundColor: 'var(--bg)',
+        boxShadow: '0 12px 40px rgba(26, 26, 26, 0.18)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+          <h3 id={titleId} style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</h3>
+          {closeButton && <IconButton icon={X} label="Close" onClick={onClose} style={{ margin: '-6px -8px -6px 0' }} />}
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Text for screen readers only (an icon column's header). */
+const srOnly: CSSProperties = { position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' };
+
+/** AddressSearch takes a style, not a class: the .n-input look, inline. */
+const addressInputStyle: CSSProperties = {
+  width: '100%', minHeight: 34, padding: '6px 10px', boxSizing: 'border-box',
+  border: '1px solid var(--field)', borderRadius: 'var(--radius)', backgroundColor: 'var(--bg)',
+  color: 'var(--text)', fontFamily: 'inherit', fontSize: 'var(--fs-base)', lineHeight: 1.45,
+};
+
+/** An open row is selected, joined to its details band below (as on Orders). */
+const expandedCell: CSSProperties = { backgroundColor: 'var(--selected)', borderBottom: 'none' };
+
 // --- Venues Tab ---
 
 interface VenueConnector {
@@ -67,7 +149,14 @@ interface VenueConnector {
   config?: Record<string, string>;
 }
 
-function VenueCard({ venue, onDelete, onUpdate }: { venue: VenueDetail; onDelete: () => void; onUpdate: () => void }) {
+/**
+ * One venue: a table row (or, on phones, a list row) that opens to its
+ * settings, its connections and the delete button. `isLast` rounds the
+ * bottom corners: the card can't clip them, because the address
+ * suggestions have to hang out of it.
+ */
+function VenueCard({ venue, onDelete, onUpdate, compact, isLast }: { venue: VenueDetail; onDelete: () => void; onUpdate: () => void; compact: boolean; isLast: boolean }) {
+  const fieldId = useId();
   const [expanded, setExpanded] = useState(false);
   const [connectors, setConnectors] = useState<VenueConnector[]>([]);
   const [connectorForms, setConnectorForms] = useState<Record<string, Record<string, string>>>({});
@@ -139,221 +228,210 @@ function VenueCard({ venue, onDelete, onUpdate }: { venue: VenueDetail; onDelete
     loadConnectors();
   };
 
-  return (
-    <div>
-      <div
-        onClick={handleToggle}
-        style={{
-          padding: '0.75rem 1rem', border: '1px solid #e5e7eb',
-          borderRadius: expanded ? '8px 8px 0 0' : 8,
-          backgroundColor: '#fff', display: 'flex', alignItems: 'center', gap: '0.75rem',
-          cursor: 'pointer',
-        }}
-      >
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 600, color: '#111', fontSize: '0.9rem' }}>{venue.name}</div>
-          {venue.location && <div style={{ fontSize: '0.75rem', color: '#999' }}>{venue.location}</div>}
-          <div style={{ fontSize: '0.7rem', color: '#aaa' }}>
-            {venue.timezone || 'No timezone'}{venue.day_start_time ? ` · Day starts ${venue.day_start_time}` : ''}
+  const connectorCount = venue.connector_count || 0;
+
+  // Opens and closes the row: a real button, so it works from the keyboard
+  // (its click reaches the row's handler).
+  const chevron = (
+    <IconButton
+      icon={expanded ? ChevronDown : ChevronRight}
+      iconSize={16}
+      aria-expanded={expanded}
+      label={`${expanded ? 'Hide' : 'Show'} details for ${venue.name}`}
+    />
+  );
+
+  const details = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Venue settings */}
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+          <span className="n-eyebrow">Venue settings</span>
+          {!editingVenue && (
+            <Button size="sm" onClick={() => { setVenueForm({ location: venue.location || '', timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' }); setEditingVenue(true); }}>
+              Edit
+            </Button>
+          )}
+        </div>
+        {editingVenue ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div style={{ flex: '1.4 1 220px', minWidth: 0 }}>
+              <label className="n-label">Address</label>
+              <AddressSearch
+                value={venueForm.location}
+                onChange={loc => setVenueForm(f => ({ ...f, location: loc }))}
+                onSelect={sel => setVenueForm(f => ({ ...f, location: sel.address, timezone: sel.timezone || f.timezone }))}
+                placeholder="Search address"
+                inputStyle={addressInputStyle}
+              />
+            </div>
+            <div style={{ flex: '1 1 160px', minWidth: 0 }}>
+              <label className="n-label" htmlFor={`${fieldId}-tz`}>Timezone</label>
+              <input id={`${fieldId}-tz`} className="n-input" value={venueForm.timezone} onChange={e => setVenueForm(f => ({ ...f, timezone: e.target.value }))}
+                placeholder="e.g. Pacific/Auckland" style={{ width: '100%' }} />
+            </div>
+            <div style={{ flex: '0 0 120px' }}>
+              <label className="n-label" htmlFor={`${fieldId}-day`}>Day start</label>
+              <input id={`${fieldId}-day`} className="n-input" type="time" value={venueForm.day_start_time} onChange={e => setVenueForm(f => ({ ...f, day_start_time: e.target.value }))}
+                style={{ width: '100%' }} />
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button variant="primary" onClick={async () => {
+                setSavingVenue(true);
+                try {
+                  await apiFetch(`/api/venues/${venue.id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ location: venueForm.location || null, timezone: venueForm.timezone || null, day_start_time: venueForm.day_start_time || null }),
+                  });
+                  setEditingVenue(false);
+                  onUpdate();
+                } finally { setSavingVenue(false); }
+              }} disabled={savingVenue}>{savingVenue ? 'Saving…' : 'Save'}</Button>
+              <Button onClick={() => setEditingVenue(false)}>Cancel</Button>
+            </div>
           </div>
-        </div>
-        <div style={{ fontSize: '0.72rem', color: '#999' }}>
-          {venue.connector_count || 0} connector{(venue.connector_count || 0) !== 1 ? 's' : ''}
-        </div>
-        <span style={{
-          fontSize: '0.6rem', color: '#bbb',
-          transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
-          transition: 'transform 0.15s',
-        }}>&#9654;</span>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 24px', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+            <span>Timezone: <strong style={{ fontWeight: 600, color: 'var(--text)' }}>{venue.timezone || '—'}</strong></span>
+            <span>Day starts: <strong style={{ fontWeight: 600, color: 'var(--text)' }}>{venue.day_start_time || '—'}</strong></span>
+          </div>
+        )}
       </div>
 
-      {expanded && (
-        <div style={{
-          padding: '0.75rem 1rem', border: '1px solid #e5e7eb', borderTop: 'none',
-          borderRadius: '0 0 8px 8px', backgroundColor: '#fafafa',
-        }}>
-          {/* Venue settings */}
-          <div style={{ marginBottom: '0.75rem', paddingBottom: '0.75rem', borderBottom: '1px solid #e5e7eb' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
-              <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase' }}>Venue Settings</span>
-              {!editingVenue && (
-                <button onClick={() => { setVenueForm({ location: venue.location || '', timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' }); setEditingVenue(true); }} style={{
-                  padding: '2px 8px', fontSize: '0.68rem', border: '1px solid #ddd', borderRadius: 4,
-                  backgroundColor: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit',
-                }}>Edit</button>
-              )}
-            </div>
-            {editingVenue ? (
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
-                <div style={{ flex: 1.4 }}>
-                  <label style={{ fontSize: '0.65rem', color: '#666', fontWeight: 600 }}>Address</label>
-                  <AddressSearch
-                    value={venueForm.location}
-                    onChange={loc => setVenueForm(f => ({ ...f, location: loc }))}
-                    onSelect={sel => setVenueForm(f => ({ ...f, location: sel.address, timezone: sel.timezone || f.timezone }))}
-                    placeholder="Search address"
-                    inputStyle={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit', boxSizing: 'border-box' }}
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: '0.65rem', color: '#666', fontWeight: 600 }}>Timezone</label>
-                  <input value={venueForm.timezone} onChange={e => setVenueForm(f => ({ ...f, timezone: e.target.value }))}
-                    placeholder="e.g. Pacific/Auckland"
-                    style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-                </div>
-                <div style={{ width: 100 }}>
-                  <label style={{ fontSize: '0.65rem', color: '#666', fontWeight: 600 }}>Day Start</label>
-                  <input type="time" value={venueForm.day_start_time} onChange={e => setVenueForm(f => ({ ...f, day_start_time: e.target.value }))}
-                    style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-                </div>
-                <button onClick={async () => {
-                  setSavingVenue(true);
-                  try {
-                    await apiFetch(`/api/venues/${venue.id}`, {
-                      method: 'PUT',
-                      body: JSON.stringify({ location: venueForm.location || null, timezone: venueForm.timezone || null, day_start_time: venueForm.day_start_time || null }),
-                    });
-                    setEditingVenue(false);
-                    onUpdate();
-                  } finally { setSavingVenue(false); }
-                }} disabled={savingVenue} style={{
-                  padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600,
-                  backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 4,
-                  cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
-                }}>{savingVenue ? 'Saving...' : 'Save'}</button>
-                <button onClick={() => setEditingVenue(false)} style={{
-                  padding: '4px 12px', fontSize: '0.72rem',
-                  backgroundColor: '#fff', color: '#666', border: '1px solid #ddd', borderRadius: 4,
-                  cursor: 'pointer', fontFamily: 'inherit',
-                }}>Cancel</button>
-              </div>
-            ) : (
-              <div style={{ fontSize: '0.78rem', color: '#555' }}>
-                <span>Timezone: <strong>{venue.timezone || '—'}</strong></span>
-                <span style={{ marginLeft: '1rem' }}>Day starts: <strong>{venue.day_start_time || '—'}</strong></span>
-              </div>
-            )}
-          </div>
-
-          {loadingConnectors ? (
-            <div style={{ fontSize: '0.75rem', color: '#999' }}>Loading connectors...</div>
-          ) : connectors.length === 0 ? (
-            <div style={{ fontSize: '0.75rem', color: '#999' }}>No connectors available. Add connector specs first.</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-              {connectors.map(c => {
-                const isEditing = editingConnector === c.name;
-                const form = connectorForms[c.name] || {};
-                const fields = c.fields || [];
-                return (
-                  <div key={c.name} style={{
-                    backgroundColor: '#fff', border: '1px solid #f3f4f6', borderRadius: 6,
-                    overflow: 'hidden',
-                  }}>
-                    <div style={{
-                      display: 'flex', alignItems: 'center', gap: '0.5rem',
-                      padding: '0.5rem 0.6rem',
-                    }}>
-                      <span style={{ fontSize: '0.82rem', fontWeight: 500, color: '#333', flex: 1 }}>{c.label}</span>
-                      {c.auth_type === 'oauth2' ? (
-                        c.oauth_connected && c.needs_reconnect ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }} title={c.last_auth_error || 'This connection stopped working and needs to be reconnected.'}>
-                            <span style={{
-                              fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: 8,
-                              backgroundColor: '#fee2e2', color: '#991b1b',
-                            }}>Reconnect needed</span>
-                            <button onClick={(e) => { e.stopPropagation(); handleOAuthConnect(c.name); }} style={{
-                              padding: '3px 10px', fontSize: '0.72rem', fontWeight: 600,
-                              border: 'none', borderRadius: 6, backgroundColor: '#b91c1c', color: '#fff',
-                              cursor: 'pointer', fontFamily: 'inherit',
-                            }}>Reconnect</button>
-                          </div>
-                        ) : c.oauth_connected ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                            <span style={{
-                              fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: 8,
-                              backgroundColor: '#d1fae5', color: '#065f46',
-                            }}>Connected</span>
-                            <button onClick={(e) => { e.stopPropagation(); handleOAuthDisconnect(c.name); }} style={{
-                              padding: '2px 8px', fontSize: '0.68rem', border: '1px solid #ddd',
-                              borderRadius: 4, backgroundColor: '#fff', color: '#666',
-                              cursor: 'pointer', fontFamily: 'inherit',
-                            }}>Disconnect</button>
-                          </div>
-                        ) : (
-                          <button onClick={(e) => { e.stopPropagation(); handleOAuthConnect(c.name); }} style={{
-                            padding: '3px 10px', fontSize: '0.72rem', fontWeight: 600,
-                            border: 'none', borderRadius: 6, backgroundColor: '#111', color: '#fff',
-                            cursor: 'pointer', fontFamily: 'inherit',
-                          }}>Connect</button>
-                        )
-                      ) : (
-                        <button onClick={(e) => { e.stopPropagation(); setEditingConnector(isEditing ? null : c.name); }} style={{
-                          padding: '2px 8px', fontSize: '0.68rem', border: '1px solid #ddd',
-                          borderRadius: 4, backgroundColor: '#fff',
-                          color: c.configured ? '#065f46' : '#666',
-                          cursor: 'pointer', fontFamily: 'inherit',
-                        }}>{c.configured ? 'Edit' : 'Configure'}</button>
-                      )}
-                    </div>
-
-                    {/* Credential form */}
-                    {isEditing && fields.length > 0 && (
-                      <div style={{
-                        padding: '0.5rem 0.6rem', borderTop: '1px solid #f3f4f6',
-                        display: 'flex', flexDirection: 'column', gap: '0.4rem',
-                      }}>
-                        {fields.map(f => (
-                          <div key={f.key}>
-                            <label style={{ fontSize: '0.65rem', color: '#666', fontWeight: 600 }}>{f.label}</label>
-                            <input
-                              type={f.secret ? 'password' : 'text'}
-                              value={form[f.key] || ''}
-                              onChange={e => setConnectorForms(prev => ({
-                                ...prev,
-                                [c.name]: { ...(prev[c.name] || {}), [f.key]: e.target.value },
-                              }))}
-                              placeholder={f.secret && c.configured ? '••••••••' : f.label}
-                              style={{
-                                width: '100%', padding: '4px 8px', border: '1px solid #ddd',
-                                borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit',
-                              }}
-                            />
-                          </div>
-                        ))}
-                        <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.25rem' }}>
-                          <button onClick={(e) => { e.stopPropagation(); handleSaveConnector(c.name); }}
-                            disabled={savingConnector === c.name}
-                            style={{
-                              padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600,
-                              backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 4,
-                              cursor: 'pointer', fontFamily: 'inherit',
-                            }}>{savingConnector === c.name ? 'Saving...' : 'Save'}</button>
-                          <button onClick={(e) => { e.stopPropagation(); setEditingConnector(null); }} style={{
-                            padding: '4px 12px', fontSize: '0.72rem',
-                            backgroundColor: '#fff', color: '#666', border: '1px solid #ddd', borderRadius: 4,
-                            cursor: 'pointer', fontFamily: 'inherit',
-                          }}>Cancel</button>
+      {/* Connections */}
+      <div>
+        <div className="n-eyebrow" style={{ marginBottom: 8 }}>Connections</div>
+        {loadingConnectors ? (
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>Loading connectors…</div>
+        ) : connectors.length === 0 ? (
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No connectors available. Add connector specs first.</div>
+        ) : (
+          <div className="n-card" style={{ borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+            {connectors.map((c, i) => {
+              const isEditing = editingConnector === c.name;
+              const form = connectorForms[c.name] || {};
+              const fields = c.fields || [];
+              return (
+                <div key={c.name} style={i > 0 ? { borderTop: '1px solid var(--line-soft)' } : undefined}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px' }}>
+                    <span style={{ flex: '1 1 140px', minWidth: 0, fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>{c.label}</span>
+                    {c.auth_type === 'oauth2' ? (
+                      c.oauth_connected && c.needs_reconnect ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={c.last_auth_error || 'This connection stopped working and needs to be reconnected.'}>
+                          <Badge tone="error">Reconnect needed</Badge>
+                          <Button variant="primary" size="sm" onClick={(e) => { e.stopPropagation(); handleOAuthConnect(c.name); }}>Reconnect</Button>
                         </div>
+                      ) : c.oauth_connected ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <Badge tone="ok">Connected</Badge>
+                          <Button size="sm" onClick={(e) => { e.stopPropagation(); handleOAuthDisconnect(c.name); }}>Disconnect</Button>
+                        </div>
+                      ) : (
+                        <Button variant="primary" size="sm" onClick={(e) => { e.stopPropagation(); handleOAuthConnect(c.name); }}>Connect</Button>
+                      )
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {c.configured && <Badge tone="ok">Configured</Badge>}
+                        <Button size="sm" onClick={(e) => { e.stopPropagation(); setEditingConnector(isEditing ? null : c.name); }}>
+                          {c.configured ? 'Edit' : 'Configure'}
+                        </Button>
                       </div>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          )}
 
-          {/* Delete venue */}
-          <div style={{ borderTop: '1px solid #e5e7eb', marginTop: '0.75rem', paddingTop: '0.5rem' }}>
-            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{
-              padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500,
-              border: '1px solid #fecaca', borderRadius: 6, backgroundColor: '#fff', color: '#dc2626',
-              cursor: 'pointer', fontFamily: 'inherit',
-            }}>Delete venue</button>
+                  {/* Credential form */}
+                  {isEditing && fields.length > 0 && (
+                    <div style={{
+                      display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px 12px',
+                      borderTop: '1px solid var(--line-soft)', backgroundColor: 'var(--surface)',
+                    }}>
+                      {fields.map(f => (
+                        <div key={f.key}>
+                          <label className="n-label" htmlFor={`${fieldId}-${c.name}-${f.key}`}>{f.label}</label>
+                          <input
+                            id={`${fieldId}-${c.name}-${f.key}`}
+                            className="n-input"
+                            type={f.secret ? 'password' : 'text'}
+                            value={form[f.key] || ''}
+                            onChange={e => setConnectorForms(prev => ({
+                              ...prev,
+                              [c.name]: { ...(prev[c.name] || {}), [f.key]: e.target.value },
+                            }))}
+                            placeholder={f.secret && c.configured ? '••••••••' : f.label}
+                            style={{ width: '100%' }}
+                          />
+                        </div>
+                      ))}
+                      <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                        <Button variant="primary" size="sm" onClick={(e) => { e.stopPropagation(); handleSaveConnector(c.name); }}
+                          disabled={savingConnector === c.name}>{savingConnector === c.name ? 'Saving…' : 'Save'}</Button>
+                        <Button size="sm" onClick={(e) => { e.stopPropagation(); setEditingConnector(null); }}>Cancel</Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
+
+      {/* Delete venue */}
+      <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+        <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); onDelete(); }}>Delete venue</Button>
+      </div>
     </div>
+  );
+
+  // Phones: a list row — name, address, then timezone · day start · count.
+  if (compact) {
+    return (
+      <div>
+        <div onClick={handleToggle} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 4px 10px 12px', cursor: 'pointer' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, color: 'var(--text)' }}>{venue.name}</div>
+            {venue.location && (
+              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{venue.location}</div>
+            )}
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+              {venue.timezone || 'No timezone'}{venue.day_start_time ? ` · Day starts ${venue.day_start_time}` : ''}
+              {` · ${connectorCount} connection${connectorCount !== 1 ? 's' : ''}`}
+            </div>
+          </div>
+          {chevron}
+        </div>
+        {expanded && <div style={{ padding: '4px 12px 16px' }}>{details}</div>}
+      </div>
+    );
+  }
+
+  // The last row rounds its bottom corners (hover fill, open details).
+  const corner = (side: 'left' | 'right'): CSSProperties =>
+    isLast && !expanded ? (side === 'left' ? { borderBottomLeftRadius: 11 } : { borderBottomRightRadius: 11 }) : {};
+  const cell = expanded ? expandedCell : undefined;
+  return (
+    <>
+      <tr onClick={handleToggle} style={{ cursor: 'pointer' }}>
+        <td style={{ ...cell, ...corner('left') }}>
+          <div style={{ fontWeight: 600, color: 'var(--text)' }}>{venue.name}</div>
+          {venue.location && <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{venue.location}</div>}
+        </td>
+        <td style={{ ...cell, color: venue.timezone ? 'var(--text)' : 'var(--muted)' }}>{venue.timezone || 'No timezone'}</td>
+        <td style={{ ...cell, color: venue.day_start_time ? 'var(--text)' : 'var(--muted)' }}>{venue.day_start_time || '—'}</td>
+        <td className="num" style={cell}>{connectorCount}</td>
+        <td style={{ ...cell, ...corner('right'), padding: '4px 8px', textAlign: 'right' }}>{chevron}</td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={5} style={{
+            padding: '8px 12px 16px', backgroundColor: 'var(--surface-alt)',
+            ...(isLast ? { borderBottomLeftRadius: 11, borderBottomRightRadius: 11 } : {}),
+          }}>
+            {details}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -367,6 +445,8 @@ function VenuesTab() {
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fieldId = useId();
+  const { isMobile } = useBreakpoint();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -424,79 +504,90 @@ function VenuesTab() {
     loadData();
   };
 
-  if (loading) return <div style={{ color: '#999' }}>Loading...</div>;
+  if (loading) return <PageState kind="loading" title="Loading venues…" />;
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Venues {org && <span style={{ fontWeight: 400, textTransform: 'none' }}>— {org.name}</span>}
-        </h3>
-        <button onClick={() => setAdding(!adding)} style={{
-          padding: '4px 12px', fontSize: '0.75rem', fontWeight: 600,
-          border: '1px solid #ddd', borderRadius: 6, backgroundColor: '#fff',
-          cursor: 'pointer', fontFamily: 'inherit', color: '#333',
-        }}>+ Add Venue</button>
-      </div>
+      <SectionHeader
+        title="Venues"
+        meta={venues.length > 0 ? `${venues.length} ${venues.length === 1 ? 'venue' : 'venues'}` : undefined}
+        actions={
+          // Secondary while the form is open, so its Add is the one primary.
+          <Button variant={adding ? 'secondary' : 'primary'} icon={Plus} onClick={() => setAdding(!adding)}>Add venue</Button>
+        }
+      />
 
       {adding && (
-        <div style={{
-          padding: '0.75rem', border: '1px solid #dbeafe', borderRadius: 8,
-          backgroundColor: '#f8fafc', marginBottom: '1rem',
-        }}>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Name</label>
-              <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Venue name"
-                style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+        <div className="n-card" style={{ padding: 16, marginBottom: 16 }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+              <label className="n-label" htmlFor={`${fieldId}-name`}>Name</label>
+              <input id={`${fieldId}-name`} className="n-input" value={newName} onChange={e => setNewName(e.target.value)} placeholder="Venue name"
+                style={{ width: '100%' }} />
             </div>
-            <div style={{ flex: 1.4 }}>
-              <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Address</label>
+            <div style={{ flex: '1.4 1 220px', minWidth: 0 }}>
+              <label className="n-label">Address</label>
               <AddressSearch
                 value={newLocation}
                 onChange={setNewLocation}
                 onSelect={sel => { if (sel.timezone) setNewTimezone(sel.timezone); }}
                 placeholder="Search address (optional)"
-                inputStyle={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }}
+                inputStyle={addressInputStyle}
               />
             </div>
-            <div style={{ flex: 1 }}>
-              <label style={{ fontSize: '0.68rem', color: '#666', fontWeight: 600 }}>Timezone</label>
-              <input value={newTimezone} onChange={e => setNewTimezone(e.target.value)} placeholder="Auto-set from address"
-                style={{ width: '100%', padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+            <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+              <label className="n-label" htmlFor={`${fieldId}-tz`}>Timezone</label>
+              <input id={`${fieldId}-tz`} className="n-input" value={newTimezone} onChange={e => setNewTimezone(e.target.value)} placeholder="Auto-set from address"
+                style={{ width: '100%' }} />
             </div>
-            <button onClick={handleAdd} disabled={saving} style={{
-              padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
-              backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
-              cursor: saving ? 'default' : 'pointer', fontFamily: 'inherit', opacity: saving ? 0.6 : 1,
-            }}>{saving ? 'Adding…' : 'Add'}</button>
-            <button onClick={() => { setAdding(false); setError(null); }} style={{
-              padding: '5px 12px', fontSize: '0.75rem',
-              backgroundColor: 'transparent', color: '#666', border: '1px solid #ddd', borderRadius: 6,
-              cursor: 'pointer', fontFamily: 'inherit',
-            }}>Cancel</button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button variant="primary" onClick={handleAdd} disabled={saving}>{saving ? 'Adding…' : 'Add'}</Button>
+              <Button onClick={() => { setAdding(false); setError(null); }}>Cancel</Button>
+            </div>
           </div>
           {error && (
-            <div style={{
-              marginTop: '0.5rem', padding: '6px 10px', fontSize: '0.75rem',
-              color: '#b91c1c', backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6,
+            <div role="alert" style={{
+              marginTop: 12, padding: '8px 12px', fontSize: 'var(--fs-sm)',
+              color: 'var(--error)', backgroundColor: 'var(--error-bg)', borderRadius: 'var(--radius)',
             }}>{error}</div>
           )}
         </div>
       )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        {venues.map(v => (
-          <VenueCard key={v.id} venue={v} onDelete={() => handleDelete(v.id)} onUpdate={loadData} />
-        ))}
-        {venues.length === 0 && (
-          <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.82rem' }}>
-            {org
-              ? 'No venues yet. Click "Add Venue" to create one.'
-              : 'Your account isn’t linked to an organization yet, so venues can’t be created. Contact your administrator.'}
-          </div>
-        )}
-      </div>
+      {venues.length === 0 ? (
+        org
+          ? <PageState kind="empty" title="No venues yet" detail='Click "Add venue" to create one.' />
+          : <PageState kind="empty" title="No organization linked" detail="Your account isn’t linked to an organization yet, so venues can’t be created. Contact your administrator." />
+      ) : isMobile ? (
+        <div className="n-card">
+          {venues.map((v, i) => (
+            <div key={v.id} style={i > 0 ? { borderTop: '1px solid var(--line)' } : undefined}>
+              <VenueCard venue={v} onDelete={() => handleDelete(v.id)} onUpdate={loadData} compact isLast={i === venues.length - 1} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        // No overflow clip on this card: an open venue's address suggestions
+        // hang below it. The corner cells round themselves instead.
+        <div className="n-card">
+          <table className="n-table">
+            <thead>
+              <tr>
+                <th style={{ borderTopLeftRadius: 11 }}>Name</th>
+                <th>Timezone</th>
+                <th>Day starts</th>
+                <th className="num">Connections</th>
+                <th style={{ width: 48, borderTopRightRadius: 11 }}><span style={srOnly}>Details</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {venues.map((v, i) => (
+                <VenueCard key={v.id} venue={v} onDelete={() => handleDelete(v.id)} onUpdate={loadData} compact={false} isLast={i === venues.length - 1} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -541,58 +632,60 @@ function usageTitle(d: UsageFigures): string {
 /** Daily bars by cost — the figure that matters — with every token on hover. */
 function DailyCostBars({ days, compact }: { days: Record<string, UsageFigures>; compact?: boolean }) {
   const entries = Object.entries(days).sort(([a], [b]) => a.localeCompare(b));
-  if (entries.length === 0) return <div style={{ fontSize: '0.75rem', color: '#999' }}>No daily data yet</div>;
+  if (entries.length === 0) return <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No daily data yet</div>;
   const max = Math.max(...entries.map(([, d]) => d.cost_usd || 0), 0.0001);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 2 : 3 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: compact ? 2 : 4 }}>
       {entries.map(([date, d]) => {
         const label = new Date(date + 'T00:00:00').toLocaleDateString('en-NZ', compact
           ? { weekday: 'short', day: 'numeric' } : { weekday: 'short', day: 'numeric', month: 'short' });
         return (
-          <div key={date} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }} title={usageTitle(d)}>
-            <span style={{ fontSize: '0.68rem', color: '#999', width: compact ? 50 : 80, textAlign: 'right', flexShrink: 0 }}>{label}</span>
-            <div style={{ flex: 1, height: compact ? 12 : 16, backgroundColor: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
-              <div style={{ width: `${((d.cost_usd || 0) / max) * 100}%`, backgroundColor: '#6366f1', height: '100%' }} />
+          <div key={date} style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={usageTitle(d)}>
+            <span style={{ width: compact ? 56 : 84, flexShrink: 0, textAlign: 'right', fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{label}</span>
+            <div style={{ flex: 1, height: compact ? 10 : 12, overflow: 'hidden', borderRadius: 3, backgroundColor: 'var(--surface-alt)' }}>
+              <div style={{ width: `${((d.cost_usd || 0) / max) * 100}%`, height: '100%', backgroundColor: 'var(--accent)' }} />
             </div>
-            <span style={{ fontSize: '0.65rem', color: '#999', width: 90, flexShrink: 0 }}>
+            <span style={{ width: 96, flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--muted)', fontVariantNumeric: 'tabular-nums' }}>
               {fmtUsd(d.cost_usd)} · {fmtTokens(d.billable_tokens || 0)}
             </span>
           </div>
         );
       })}
-      <div style={{ fontSize: '0.6rem', color: '#bbb', marginTop: '0.25rem' }}>Cost · billable tokens per day — hover a day for every token type</div>
+      <div style={{ marginTop: 4, paddingLeft: compact ? 64 : 92, fontSize: 'var(--fs-2xs)', color: 'var(--muted)' }}>
+        Cost · billable tokens per day — hover a day for every token type
+      </div>
     </div>
   );
 }
 
-const _KIND_LABEL: Record<string, string> = { chat: 'Chat', 'invoice extraction': 'Invoice extraction', other: 'Other' };
+const KIND_LABEL: Record<string, string> = { chat: 'Chat', 'invoice extraction': 'Invoice extraction', other: 'Other' };
 
 /** Where the month's cost went: by kind of work, and the costliest chats. */
 function UsageBreakdownPanel({ data }: { data: UsageBreakdown | null }) {
-  if (!data) return <div style={{ fontSize: '0.75rem', color: '#999' }}>Loading breakdown…</div>;
+  if (!data) return <div style={{ marginTop: 12, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>Loading breakdown…</div>;
   const kinds = Object.entries(data.by_kind).sort(([, a], [, b]) => b.cost_usd - a.cost_usd);
   const total = kinds.reduce((t, [, k]) => t + k.cost_usd, 0) || 1;
-  const head = { fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' as const, margin: '0.75rem 0 0.4rem' };
+  const row: CSSProperties = { display: 'flex', gap: 12, padding: '2px 0', fontSize: 'var(--fs-sm)', color: 'var(--text)', fontVariantNumeric: 'tabular-nums' };
   return (
     <div>
-      <div style={head}>By kind of work</div>
+      <div className="n-eyebrow" style={{ margin: '16px 0 6px' }}>By kind of work</div>
       {kinds.map(([kind, k]) => (
-        <div key={kind} style={{ display: 'flex', gap: '0.75rem', fontSize: '0.75rem', color: '#374151', padding: '2px 0' }}>
-          <span style={{ width: 140 }}>{_KIND_LABEL[kind] || kind}</span>
+        <div key={kind} style={row}>
+          <span style={{ width: 140 }}>{KIND_LABEL[kind] || kind}</span>
           <span style={{ width: 70, fontWeight: 600 }}>{fmtUsd(k.cost_usd)}</span>
-          <span style={{ width: 50, color: '#999' }}>{Math.round((k.cost_usd / total) * 100)}%</span>
-          <span style={{ color: '#999' }}>{k.calls} calls · {fmtTokens(k.billable_tokens)} billable</span>
+          <span style={{ width: 44, color: 'var(--muted)' }}>{Math.round((k.cost_usd / total) * 100)}%</span>
+          <span style={{ color: 'var(--muted)' }}>{k.calls} calls · {fmtTokens(k.billable_tokens)} billable</span>
         </div>
       ))}
       {data.top_threads.length > 0 && (
         <>
-          <div style={head}>Most expensive chats</div>
+          <div className="n-eyebrow" style={{ margin: '16px 0 6px' }}>Most expensive chats</div>
           {data.top_threads.map(t => (
-            <div key={t.thread_id} style={{ display: 'flex', gap: '0.75rem', fontSize: '0.75rem', color: '#374151', padding: '2px 0' }}
+            <div key={t.thread_id} style={row}
               title="Cache ratio: tokens read back from the cache for each token written — higher is better">
               <span style={{ width: 70, fontWeight: 600 }}>{fmtUsd(t.cost_usd)}</span>
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title || t.thread_id}</span>
-              <span style={{ color: '#999', whiteSpace: 'nowrap' }}>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title || t.thread_id}</span>
+              <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>
                 {t.calls} calls{t.cache_ratio != null ? ` · cache ${t.cache_ratio}:1` : ''}
               </span>
             </div>
@@ -627,6 +720,8 @@ function UsersTab() {
   const [memberDailyUsage, setMemberDailyUsage] = useState<Record<string, Record<string, DailyUsageEntry>>>({});
   const [showDailyUsage, setShowDailyUsage] = useState(false);
   const [dailyUsage, setDailyUsage] = useState<Record<string, DailyUsageEntry>>({});
+  const inviteId = useId();
+  const { isMobile } = useBreakpoint();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -749,116 +844,180 @@ function UsersTab() {
     loadData();
   };
 
-  if (loading) return <div style={{ color: '#999' }}>Loading...</div>;
+  if (loading) return <PageState kind="loading" title="Loading users…" />;
+
+  const pendingCount = members.filter(m => m.is_active === false).length;
+  const peopleMeta = members.length > 0
+    ? `${members.length} ${members.length === 1 ? 'person' : 'people'}${pendingCount > 0 ? ` · ${pendingCount} invite${pendingCount === 1 ? '' : 's'} pending` : ''}`
+    : undefined;
+
+  /** "$1.23 · 45.6K" — the month's cost, then the billable tokens plan limits count. */
+  const memberTokens = (m: OrgMember): string | null => {
+    const u = usage[m.user_id];
+    if (!u) return null;
+    return `${fmtUsd(u.cost_usd)} · ${fmtTokens(u.billable_tokens || 0)}`;
+  };
+  const memberUsageTitle = (m: OrgMember): string | undefined => {
+    const u = usage[m.user_id];
+    return u ? usageTitle(u) : undefined;
+  };
+
+  const toggleMember = async (m: OrgMember, isExpanded: boolean) => {
+    const next = isExpanded ? null : m.user_id;
+    setExpandedMember(next);
+    if (next && org && !memberDailyUsage[m.user_id]) {
+      const res = await apiFetch(`/api/organizations/${org.id}/usage/daily?user_id=${m.user_id}`);
+      if (res.ok) {
+        const d = await res.json();
+        setMemberDailyUsage(prev => ({ ...prev, [m.user_id]: d.days || {} }));
+      }
+    }
+  };
+
+  // Role picker and the permissions button. Clicks here don't open the row.
+  const roleControl = (m: OrgMember) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} onClick={e => e.stopPropagation()}>
+      {availableRoles.length > 0 ? (
+        <select
+          className="n-select"
+          aria-label={`Role for ${m.full_name || m.email}`}
+          value={m.role_id || ''}
+          onChange={e => handleRoleChange(m.user_id, e.target.value)}
+          style={{ fontSize: 'var(--fs-sm)' }}
+        >
+          {!m.role_id && <option value="">— Unassigned —</option>}
+          {availableRoles.map(r => (
+            <option key={r.id} value={r.id}>{r.display_name}</option>
+          ))}
+        </select>
+      ) : (
+        <Badge>{m.role_display_name || m.role}</Badge>
+      )}
+      <IconButton
+        icon={Info}
+        iconSize={16}
+        label="View role permissions"
+        onClick={() => setViewingRoleId(viewingRoleId === (m.role_id || '') ? null : (m.role_id || ''))}
+      />
+    </div>
+  );
+
+  const statusControl = (m: OrgMember) => {
+    if (m.is_active !== false) return <Badge tone="ok">Active</Badge>;
+    const status = resendStatus[m.email];
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <Badge tone="warn">Invite pending</Badge>
+        {status === 'sending' ? (
+          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>Sending…</span>
+        ) : status === 'sent' ? (
+          <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--ok)' }}>Sent!</span>
+        ) : status === 'failed' ? (
+          <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--error)' }}>Failed</span>
+        ) : (
+          <Button variant="link" size="sm" onClick={e => { e.stopPropagation(); handleResendInvite(m.email); }}>Resend invite</Button>
+        )}
+      </div>
+    );
+  };
+
+  // The venues a member can open, from the access list loaded above.
+  const venueAccess = (m: OrgMember) => {
+    const ids = memberVenues[m.user_id];
+    if (!ids) return <span style={{ color: 'var(--muted)' }}>—</span>;
+    const named = venues.filter(v => ids.includes(v.id));
+    if (named.length === 0) return <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No venues</span>;
+    if (venues.length > 1 && named.length === venues.length) return <Badge>All venues</Badge>;
+    return (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {named.map(v => <Badge key={v.id}>{v.name}</Badge>)}
+      </div>
+    );
+  };
+
+  const chevron = (m: OrgMember, isExpanded: boolean) => (
+    <IconButton
+      icon={isExpanded ? ChevronDown : ChevronRight}
+      iconSize={16}
+      aria-expanded={isExpanded}
+      label={`${isExpanded ? 'Hide' : 'Show'} details for ${m.full_name || m.email}`}
+    />
+  );
+
+  const memberDetails = (m: OrgMember) => {
+    const userVenues = memberVenues[m.user_id] || [];
+    const u = usage[m.user_id];
+    const days = memberDailyUsage[m.user_id] || {};
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Usage summary */}
+        {u ? (
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <Stat label="Cost" value={fmtUsd(u.cost_usd)} />
+            <div title={usageTitle(u)}><Stat label="Billable tokens" value={fmtTokens(u.billable_tokens || 0)} /></div>
+            <Stat label="Calls" value={u.llm_call_count || 0} />
+          </div>
+        ) : (
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No usage this month</div>
+        )}
+
+        {/* Daily usage chart */}
+        {Object.keys(days).length > 0 && (
+          <div>
+            <div className="n-eyebrow" style={{ marginBottom: 6 }}>Daily usage</div>
+            <DailyCostBars days={days} compact />
+          </div>
+        )}
+
+        {/* Venues */}
+        <div>
+          <div className="n-eyebrow" style={{ marginBottom: 6 }}>Venue access</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
+            {venues.map(v => (
+              <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={userVenues.includes(v.id)}
+                  onChange={e => { e.stopPropagation(); handleToggleVenue(m.user_id, v.id, e.target.checked); }}
+                  style={{ accentColor: 'var(--accent)' }} />
+                {v.name}
+              </label>
+            ))}
+            {venues.length === 0 && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No venues created yet</span>}
+          </div>
+        </div>
+
+        {/* Delete */}
+        <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+          <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleRemove(m.user_id); }}>Remove from organization</Button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Users {org && <span style={{ fontWeight: 400, textTransform: 'none' }}>— {org.name}</span>}
-        </h3>
-        <button onClick={() => { setShowInviteModal(true); setAddError(''); setAddSuccess(''); setAddEmail(''); setAddVenueIds([]); }}
-          style={{
-            padding: '6px 16px', fontSize: '0.75rem', fontWeight: 600,
-            backgroundColor: '#c4a882', color: '#fff', border: 'none', borderRadius: 6,
-            cursor: 'pointer', fontFamily: 'inherit',
-          }}>+ Invite User</button>
-      </div>
-
-      {/* Usage summary */}
-      {usageTotals.calls > 0 && (
-        <div style={{ marginBottom: '1rem' }}>
-          <div style={{
-            display: 'flex', gap: '2rem',
-            padding: '0.75rem 1rem', border: '1px solid #e5e7eb', borderRadius: showDailyUsage ? '8px 8px 0 0' : 8,
-            backgroundColor: '#fafafa',
-          }}>
-            <div
-              onClick={async () => {
-                const next = !showDailyUsage;
-                setShowDailyUsage(next);
-                if (next && org && Object.keys(dailyUsage).length === 0) {
-                  const res = await apiFetch(`/api/organizations/${org.id}/usage/daily`);
-                  if (res.ok) {
-                    const d = await res.json();
-                    setDailyUsage(d.days || {});
-                  }
-                }
-                if (next && org && !usageBreakdown) {
-                  const res = await apiFetch(`/api/organizations/${org.id}/usage/breakdown`);
-                  if (res.ok) setUsageBreakdown(await res.json());
-                }
-              }}
-              style={{ cursor: 'pointer' }}
-            >
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.03em', display: 'flex', alignItems: 'center', gap: 4 }}>
-                This Month
-                <span style={{ fontSize: '0.55rem', transform: showDailyUsage ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>&#9654;</span>
-              </div>
-              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111' }}>
-                {fmtUsd(usageTotals.cost)}
-                <span style={{ fontSize: '0.72rem', fontWeight: 400, color: '#999', marginLeft: 4 }}>
-                  · {fmtTokens(usageTotals.billable)} billable tokens
-                </span>
-              </div>
-            </div>
-            {([
-              ['Full-price input', usageTotals.input],
-              ['Cache read', usageTotals.cacheRead],
-              ['Cache write', usageTotals.cacheWrite],
-              ['Output', usageTotals.output],
-            ] as [string, number][]).map(([label, n]) => (
-              <div key={label}>
-                <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>{label}</div>
-                <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#111' }}>{fmtTokens(n)}</div>
-              </div>
-            ))}
-            <div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>LLM Calls</div>
-              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#111' }}>{usageTotals.calls}</div>
-            </div>
-          </div>
-
-          {/* Daily usage chart */}
-          {showDailyUsage && (
-            <div style={{
-              padding: '0.75rem 1rem', border: '1px solid #e5e7eb', borderTop: 'none',
-              borderRadius: '0 0 8px 8px', backgroundColor: '#fff',
-            }}>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                Daily Usage
-              </div>
-              <DailyCostBars days={dailyUsage} />
-              <UsageBreakdownPanel data={usageBreakdown} />
-            </div>
-          )}
-        </div>
-      )}
+      <SectionHeader
+        title="Users"
+        meta={peopleMeta}
+        actions={
+          <Button variant="primary" icon={Plus} onClick={() => { setShowInviteModal(true); setAddError(''); setAddSuccess(''); setAddEmail(''); setAddVenueIds([]); }}>
+            Invite user
+          </Button>
+        }
+      />
 
       {/* Invite User Modal */}
       {showInviteModal && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 1000,
-        }} onClick={() => setShowInviteModal(false)}>
-          <div style={{
-            backgroundColor: '#fff', borderRadius: 12, padding: '1.5rem', width: 420, maxWidth: '90vw',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
-          }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ margin: '0 0 1rem', fontSize: '0.95rem', fontWeight: 600, color: '#1a1a1a' }}>Invite User</h3>
-
-            <div style={{ marginBottom: '0.75rem' }}>
-              <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 600, display: 'block', marginBottom: 4 }}>Email</label>
-              <input value={addEmail} onChange={e => { setAddEmail(e.target.value); setAddError(''); setAddSuccess(''); }}
-                placeholder="user@example.com"
-                style={{ width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7', borderRadius: 8, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+        <Dialog title="Invite user" width={420} onClose={() => setShowInviteModal(false)}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div>
+              <label className="n-label" htmlFor={`${inviteId}-email`}>Email</label>
+              <input id={`${inviteId}-email`} className="n-input" value={addEmail} onChange={e => { setAddEmail(e.target.value); setAddError(''); setAddSuccess(''); }}
+                placeholder="user@example.com" style={{ width: '100%' }} />
             </div>
 
-            <div style={{ marginBottom: '0.75rem' }}>
-              <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 600, display: 'block', marginBottom: 4 }}>Role</label>
-              <select value={addRole} onChange={e => setAddRole(e.target.value)}
-                style={{ width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7', borderRadius: 8, fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box' }}>
+            <div>
+              <label className="n-label" htmlFor={`${inviteId}-role`}>Role</label>
+              <select id={`${inviteId}-role`} className="n-select" value={addRole} onChange={e => setAddRole(e.target.value)} style={{ width: '100%' }}>
                 {availableRoles.map(r => (
                   <option key={r.id} value={r.id}>{r.display_name}</option>
                 ))}
@@ -867,16 +1026,16 @@ function UsersTab() {
             </div>
 
             {venues.length > 0 && (
-              <div style={{ marginBottom: '0.75rem' }}>
-                <label style={{ fontSize: '0.72rem', color: '#666', fontWeight: 600, display: 'block', marginBottom: 4 }}>Venues</label>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <div>
+                <div className="n-label">Venues</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
                   {venues.map(v => (
-                    <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.78rem', color: '#555', cursor: 'pointer' }}>
+                    <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text)', cursor: 'pointer' }}>
                       <input type="checkbox" checked={addVenueIds.includes(v.id)}
                         onChange={e => {
                           setAddVenueIds(prev => e.target.checked ? [...prev, v.id] : prev.filter(id => id !== v.id));
                         }}
-                        style={{ accentColor: '#c4a882' }} />
+                        style={{ accentColor: 'var(--accent)' }} />
                       {v.name}
                     </label>
                   ))}
@@ -884,23 +1043,15 @@ function UsersTab() {
               </div>
             )}
 
-            {addError && <div style={{ color: '#dc2626', fontSize: '0.78rem', marginBottom: '0.5rem' }}>{addError}</div>}
-            {addSuccess && <div style={{ color: '#28a745', fontSize: '0.78rem', marginBottom: '0.5rem' }}>{addSuccess}</div>}
-
-            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
-              <button onClick={() => setShowInviteModal(false)} style={{
-                padding: '8px 16px', fontSize: '0.78rem', fontWeight: 500,
-                backgroundColor: 'transparent', color: '#666', border: '1px solid #e2ddd7', borderRadius: 8,
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}>Cancel</button>
-              <button onClick={async () => { await handleInvite(); }} style={{
-                padding: '8px 20px', fontSize: '0.78rem', fontWeight: 600,
-                backgroundColor: '#c4a882', color: '#fff', border: 'none', borderRadius: 8,
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}>Send Invite</button>
-            </div>
+            {addError && <div role="alert" style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>{addError}</div>}
+            {addSuccess && <div role="status" style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok)' }}>{addSuccess}</div>}
           </div>
-        </div>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+            <Button onClick={() => setShowInviteModal(false)}>Cancel</Button>
+            <Button variant="primary" onClick={async () => { await handleInvite(); }}>Send invite</Button>
+          </div>
+        </Dialog>
       )}
 
       {/* Role Permissions Modal */}
@@ -917,214 +1068,158 @@ function UsersTab() {
           groups[label].push(p);
         }
         return (
-          <div style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            zIndex: 1000,
-          }} onClick={() => setViewingRoleId(null)}>
-            <div style={{
-              backgroundColor: '#fff', borderRadius: 12, padding: '1.5rem', width: 400, maxWidth: '90vw',
-              maxHeight: '80vh', overflow: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
-            }} onClick={e => e.stopPropagation()}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, color: '#1a1a1a' }}>
-                  {role.display_name} Permissions
-                </h3>
-                <button onClick={() => setViewingRoleId(null)} style={{
-                  border: 'none', background: 'none', cursor: 'pointer', fontSize: '1.1rem', color: '#999',
-                }}>×</button>
-              </div>
-              <p style={{ fontSize: '0.78rem', color: '#666', margin: '0 0 1rem' }}>
-                {perms.length} permissions granted
-              </p>
-              {Object.entries(groups).map(([cat, catPerms]) => (
-                <div key={cat} style={{ marginBottom: '0.75rem' }}>
-                  <div style={{ fontSize: '0.7rem', fontWeight: 600, color: '#999', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
-                    {cat}
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {catPerms.map(p => (
-                      <span key={p} style={{
-                        fontSize: '0.68rem', padding: '2px 8px', borderRadius: 4,
-                        backgroundColor: '#f0ebe5', color: '#8a7356',
-                      }}>{p.split(':')[1]}</span>
-                    ))}
-                  </div>
+          <Dialog title={`${role.display_name} permissions`} width={400} onClose={() => setViewingRoleId(null)} closeButton>
+            <p style={{ margin: '-8px 0 16px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+              {perms.length} permissions granted
+            </p>
+            {Object.entries(groups).map(([cat, catPerms]) => (
+              <div key={cat} style={{ marginBottom: 12 }}>
+                <div className="n-eyebrow" style={{ marginBottom: 6 }}>{cat}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {catPerms.map(p => (
+                    <Badge key={p}>{p.split(':')[1]}</Badge>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>
+            ))}
+          </Dialog>
         );
       })()}
 
       {/* User list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-        {members.map(m => {
-          const isExpanded = expandedMember === m.user_id;
-          const userVenues = memberVenues[m.user_id] || [];
-          return (
-            <div key={m.id}>
-              <div
-                onClick={async () => {
-                  const next = isExpanded ? null : m.user_id;
-                  setExpandedMember(next);
-                  if (next && org && !memberDailyUsage[m.user_id]) {
-                    const res = await apiFetch(`/api/organizations/${org.id}/usage/daily?user_id=${m.user_id}`);
-                    if (res.ok) {
-                      const d = await res.json();
-                      setMemberDailyUsage(prev => ({ ...prev, [m.user_id]: d.days || {} }));
-                    }
-                  }
-                }}
-                style={{
-                  padding: '0.6rem 1rem', border: '1px solid #e5e7eb',
-                  borderRadius: isExpanded ? '8px 8px 0 0' : 8,
-                  backgroundColor: '#fff', display: 'flex', alignItems: 'center', gap: '0.75rem',
-                  cursor: 'pointer',
-                }}
-              >
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, color: '#111', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {m.full_name || m.email}
-                    {m.is_active === false && (
-                      <span style={{ fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px', borderRadius: 10, backgroundColor: '#fff3cd', color: '#856404' }}>Pending</span>
+      {members.length === 0 ? (
+        <PageState kind="empty" title="No members yet" />
+      ) : isMobile ? (
+        // Phones: one row per person — who, their role, then status and venues.
+        <div className="n-card" style={{ overflow: 'hidden' }}>
+          {members.map((m, i) => {
+            const isExpanded = expandedMember === m.user_id;
+            const tokens = memberTokens(m);
+            return (
+              <div key={m.id} style={i > 0 ? { borderTop: '1px solid var(--line)' } : undefined}>
+                <div onClick={() => toggleMember(m, isExpanded)} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 4px 12px 12px', cursor: 'pointer' }}>
+                  <Avatar name={m.full_name || m.email} size={28} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.full_name || m.email}</div>
+                    {m.full_name && (
+                      <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.email}</div>
                     )}
-                  </div>
-                  <div style={{ fontSize: '0.72rem', color: '#999' }}>{m.email}</div>
-                </div>
-                {m.is_active === false && (() => {
-                  const status = resendStatus[m.email];
-                  if (status === 'sending') return <span style={{ fontSize: '0.68rem', color: '#999' }}>Sending...</span>;
-                  if (status === 'sent') return <span style={{ fontSize: '0.68rem', color: '#28a745', fontWeight: 600 }}>Sent!</span>;
-                  if (status === 'failed') return <span style={{ fontSize: '0.68rem', color: '#dc3545', fontWeight: 600 }}>Failed</span>;
-                  return (
-                    <button onClick={e => { e.stopPropagation(); handleResendInvite(m.email); }} style={{
-                      padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
-                      backgroundColor: '#fff', color: '#c4a882', border: '1px solid #c4a882', borderRadius: 6,
-                      cursor: 'pointer', fontFamily: 'inherit',
-                    }}>Resend Invite</button>
-                  );
-                })()}
-                {(() => {
-                  const u = usage[m.user_id];
-                  if (!u) return null;
-                  return (
-                    <span style={{ fontSize: '0.68rem', color: '#999' }} title={usageTitle(u)}>
-                      {fmtUsd(u.cost_usd)} · {fmtTokens(u.billable_tokens || 0)} billable
-                    </span>
-                  );
-                })()}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} onClick={e => e.stopPropagation()}>
-                  {availableRoles.length > 0 ? (
-                    <select
-                      value={m.role_id || ''}
-                      onChange={e => handleRoleChange(m.user_id, e.target.value)}
-                      style={{
-                        fontSize: '0.7rem', fontWeight: 600, padding: '2px 6px', borderRadius: 6,
-                        border: '1px solid #e5e7eb', backgroundColor: '#f9fafb', cursor: 'pointer',
-                        fontFamily: 'inherit', color: '#374151',
-                      }}
-                    >
-                      {!m.role_id && <option value="">— Unassigned —</option>}
-                      {availableRoles.map(r => (
-                        <option key={r.id} value={r.id}>{r.display_name}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span style={{
-                      fontSize: '0.65rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-                      backgroundColor: m.role_name === 'owner' ? '#dbeafe' : m.role_name === 'manager' ? '#fef3c7' : '#f3f4f6',
-                      color: m.role_name === 'owner' ? '#1e40af' : m.role_name === 'manager' ? '#92400e' : '#6b7280',
-                    }}>{m.role_display_name || m.role}</span>
-                  )}
-                  <button
-                    onClick={() => setViewingRoleId(viewingRoleId === (m.role_id || '') ? null : (m.role_id || ''))}
-                    title="View role permissions"
-                    style={{
-                      border: 'none', background: 'none', cursor: 'pointer',
-                      fontSize: '0.7rem', color: '#999', padding: '2px 4px', borderRadius: 4,
-                    }}
-                  >ℹ</button>
-                </div>
-                <span style={{
-                  fontSize: '0.6rem', color: '#bbb',
-                  transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.15s',
-                }}>&#9654;</span>
-              </div>
-              {isExpanded && (
-                <div style={{
-                  padding: '0.75rem 1rem', border: '1px solid #e5e7eb', borderTop: 'none',
-                  borderRadius: '0 0 8px 8px', backgroundColor: '#fafafa',
-                }}>
-                  {/* Usage summary */}
-                  {(() => {
-                    const u = usage[m.user_id];
-                    if (!u) return <div style={{ fontSize: '0.75rem', color: '#999', marginBottom: '0.5rem' }}>No usage this month</div>;
-                    return (
-                      <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '0.75rem', fontSize: '0.75rem' }}>
-                        <div>
-                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Cost</div>
-                          <div style={{ fontWeight: 600, color: '#111' }}>{fmtUsd(u.cost_usd)}</div>
-                        </div>
-                        <div title={usageTitle(u)}>
-                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Billable tokens</div>
-                          <div style={{ fontWeight: 600, color: '#111' }}>{fmtTokens(u.billable_tokens || 0)}</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>Calls</div>
-                          <div style={{ fontWeight: 600, color: '#111' }}>{u.llm_call_count || 0}</div>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Daily usage chart */}
-                  {Object.keys(memberDailyUsage[m.user_id] || {}).length > 0 && (
-                    <div style={{ marginBottom: '0.75rem' }}>
-                      <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Daily Usage</div>
-                      <DailyCostBars days={memberDailyUsage[m.user_id] || {}} compact />
+                    <div style={{ marginTop: 8 }}>{roleControl(m)}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                      {statusControl(m)}
+                      {venueAccess(m)}
+                      {tokens && <span title={memberUsageTitle(m)} style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{tokens} billable</span>}
                     </div>
-                  )}
-
-                  {/* Venues */}
-                  <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Venue Access</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                    {venues.map(v => (
-                      <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.78rem', color: '#555', cursor: 'pointer' }}>
-                        <input type="checkbox" checked={userVenues.includes(v.id)}
-                          onChange={e => { e.stopPropagation(); handleToggleVenue(m.user_id, v.id, e.target.checked); }}
-                          style={{ accentColor: '#2563eb' }} />
-                        {v.name}
-                      </label>
-                    ))}
-                    {venues.length === 0 && <span style={{ color: '#999', fontSize: '0.75rem' }}>No venues created yet</span>}
                   </div>
-
-                  {/* Delete */}
-                  <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: '0.5rem' }}>
-                    <button onClick={(e) => { e.stopPropagation(); handleRemove(m.user_id); }} style={{
-                      padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500,
-                      border: '1px solid #fecaca', borderRadius: 6, backgroundColor: '#fff', color: '#dc2626',
-                      cursor: 'pointer', fontFamily: 'inherit',
-                    }}>Remove from organization</button>
-                  </div>
+                  {chevron(m, isExpanded)}
                 </div>
-              )}
-            </div>
-          );
-        })}
-        {members.length === 0 && (
-          <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.82rem' }}>
-            No members yet.
+                {isExpanded && <div style={{ padding: '0 12px 16px' }}>{memberDetails(m)}</div>}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="n-card" style={{ overflowX: 'auto' }}>
+          <table className="n-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Role</th>
+                <th>Venues</th>
+                <th>Status</th>
+                <th className="num" title="Cost and billable tokens this month">Usage</th>
+                <th style={{ width: 48 }}><span style={srOnly}>Details</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {members.map(m => {
+                const isExpanded = expandedMember === m.user_id;
+                const cell = isExpanded ? expandedCell : undefined;
+                const tokens = memberTokens(m);
+                return (
+                  <Fragment key={m.id}>
+                    <tr onClick={() => toggleMember(m, isExpanded)} style={{ cursor: 'pointer' }}>
+                      <td style={cell}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <Avatar name={m.full_name || m.email} size={28} />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, color: 'var(--text)' }}>{m.full_name || m.email}</div>
+                            {m.full_name && <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{m.email}</div>}
+                          </div>
+                        </div>
+                      </td>
+                      <td style={cell}>{roleControl(m)}</td>
+                      <td style={cell}>{venueAccess(m)}</td>
+                      <td style={cell}>{statusControl(m)}</td>
+                      <td className="num" title={memberUsageTitle(m)} style={{ ...cell, color: tokens ? 'var(--text-soft)' : 'var(--muted)', whiteSpace: 'nowrap' }}>{tokens ?? '—'}</td>
+                      <td style={{ ...cell, padding: '4px 8px', textAlign: 'right' }}>{chevron(m, isExpanded)}</td>
+                    </tr>
+                    {isExpanded && (
+                      <tr>
+                        {/* Indented to line up with the name, past the avatar. */}
+                        <td colSpan={6} style={{ padding: '8px 12px 16px 50px', backgroundColor: 'var(--surface-alt)' }}>
+                          {memberDetails(m)}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Usage this month — the whole organisation */}
+      {usageTotals.calls > 0 && (
+        <div className="n-card" style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: '12px 32px', flexWrap: 'wrap', padding: '12px 16px' }}>
+            <Stat label="This month" value={fmtUsd(usageTotals.cost)} unit={`· ${fmtTokens(usageTotals.billable)} billable tokens`} large />
+            <Stat label="Full-price input" value={fmtTokens(usageTotals.input)} />
+            <Stat label="Cache read" value={fmtTokens(usageTotals.cacheRead)} />
+            <Stat label="Cache write" value={fmtTokens(usageTotals.cacheWrite)} />
+            <Stat label="Output" value={fmtTokens(usageTotals.output)} />
+            <Stat label="LLM calls" value={usageTotals.calls} />
+            <Button
+              variant="quiet"
+              size="sm"
+              icon={showDailyUsage ? ChevronDown : ChevronRight}
+              aria-expanded={showDailyUsage}
+              style={{ marginLeft: 'auto' }}
+              onClick={async () => {
+                const next = !showDailyUsage;
+                setShowDailyUsage(next);
+                if (next && org && Object.keys(dailyUsage).length === 0) {
+                  const res = await apiFetch(`/api/organizations/${org.id}/usage/daily`);
+                  if (res.ok) {
+                    const d = await res.json();
+                    setDailyUsage(d.days || {});
+                  }
+                }
+                if (next && org && !usageBreakdown) {
+                  const res = await apiFetch(`/api/organizations/${org.id}/usage/breakdown`);
+                  if (res.ok) setUsageBreakdown(await res.json());
+                }
+              }}
+            >
+              Daily usage
+            </Button>
           </div>
-        )}
-      </div>
+
+          {/* Daily usage chart */}
+          {showDailyUsage && (
+            <div style={{ padding: '12px 16px 16px', borderTop: '1px solid var(--line-soft)' }}>
+              <DailyCostBars days={dailyUsage} />
+              <UsageBreakdownPanel data={usageBreakdown} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
+export type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   if (!user) return false;
@@ -1132,8 +1227,9 @@ function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   return perms.some(p => user.permissions?.includes(p));
 }
 
-export default function SettingsPanel() {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('venues');
+export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab } = {}) {
+  // Opens on a given tab when asked (the quota dialog's "Top up" → Billing).
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'venues');
   const [orgId, setOrgId] = useState<string | null>(null);
   const storedUser = getStoredUser() as User | null;
   const isAdmin = storedUser?.role === 'admin';
@@ -1154,14 +1250,38 @@ export default function SettingsPanel() {
   const showSecrets = isAdmin;
   const showMcp = isAdmin;
   const showThreads = isAdmin;
+  // The organisation's name, shown beside the page title.
+  const [orgName, setOrgName] = useState<string | null>(null);
+  const fieldId = useId();
 
   // Fetch org ID for billing tab
   useEffect(() => {
     apiFetch('/api/organizations').then(r => r.json()).then(d => {
       const orgs = d.organizations || [];
-      if (orgs.length > 0) setOrgId(orgs[0].id);
+      if (orgs.length > 0) {
+        setOrgId(orgs[0].id);
+        setOrgName(orgs[0].name || null);
+      }
     }).catch(() => {});
   }, []);
+
+  // The tab strip scrolls sideways when it doesn't fit; a fade at its right
+  // edge says there is more, until the strip is scrolled to its end.
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const [tabsMore, setTabsMore] = useState(false);
+  const measureTabs = useCallback(() => {
+    const list = tabsRef.current?.querySelector<HTMLElement>('[role="tablist"]');
+    if (list) setTabsMore(list.scrollLeft + list.clientWidth < list.scrollWidth - 1);
+  }, []);
+  useEffect(() => {
+    const frame = requestAnimationFrame(measureTabs);
+    document.fonts?.ready.then(measureTabs).catch(() => {});
+    window.addEventListener('resize', measureTabs);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', measureTabs);
+    };
+  }, [measureTabs]);
 
   // --- Connector state ---
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
@@ -1412,64 +1532,75 @@ export default function SettingsPanel() {
 
   const statusColor = (s: TestStatus) => {
     switch (s) {
-      case 'testing': return '#c4a882';
-      case 'success': return '#38a169';
-      case 'error': return '#e53e3e';
-      default: return '#999';
+      case 'testing': return 'var(--muted)';
+      case 'success': return 'var(--ok)';
+      case 'error': return 'var(--error)';
+      default: return 'var(--muted)';
     }
   };
 
-  const tabStyle = (tab: SettingsTab): React.CSSProperties => ({
-    padding: '6px 16px',
-    fontSize: '0.82rem',
-    fontWeight: 500,
-    border: 'none',
-    borderBottom: activeTab === tab ? '2px solid #c4a882' : '2px solid transparent',
-    backgroundColor: 'transparent',
-    color: activeTab === tab ? '#c4a882' : '#666',
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-  });
+  // The tab strip, in groups (everyone · admin config · admin operations).
+  // Every tab keeps its settings-tab-<id> test id and its permission check.
+  const tabItems: TabEntry[] = [];
+  const addTab = (show: boolean, id: SettingsTab, label: string) => {
+    if (show) tabItems.push({ id, label, testId: `settings-tab-${id}` });
+  };
+  addTab(true, 'preferences', 'Preferences');
+  addTab(true, 'venues', 'Venues');
+  addTab(true, 'members', 'Users');
+  addTab(showRoles, 'roles', 'Roles');
+  addTab(true, 'billing', 'Billing');
+  addTab(true, 'email', 'Email');
+  if (showAgents || showConnectors || showComponents) tabItems.push('divider');
+  addTab(showAgents, 'agents', 'Agents');
+  addTab(showConnections, 'connections', 'Connections');
+  addTab(isAdmin, 'app-map', 'App map');
+  addTab(showConnectors, 'connectors', 'Connector specs');
+  addTab(showComponents, 'components', 'Components');
+  addTab(showPlaybooks, 'playbooks', 'Playbooks');
+  addTab(showSupplierSpecs, 'supplier-specs', 'Supplier specs');
+  addTab(showPlaybooks, 'templates', 'Templates');
+  if (showDeployments || showTests || showSecrets) tabItems.push('divider');
+  addTab(showDeployments, 'deployments', 'Deployments');
+  addTab(showTests, 'tests', 'Tests');
+  addTab(showSecrets, 'secrets', 'Secrets');
+  addTab(showMcp, 'mcp', 'MCP');
+  addTab(showThreads, 'threads', 'Threads');
+
+  // A 1px gap under the fade keeps the strip's rule unbroken.
+  const tabsFade: CSSProperties = {
+    position: 'absolute', top: 0, right: 0, bottom: 1, width: 48, pointerEvents: 'none',
+    background: 'linear-gradient(to right, transparent, var(--canvas))',
+  };
+  const preStyle: CSSProperties = {
+    margin: 0, padding: 8, maxHeight: 200, overflow: 'auto', borderRadius: 'var(--radius-sm)',
+    backgroundColor: 'var(--code-bg)', color: 'var(--code-text)',
+    fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', lineHeight: 1.4,
+  };
+  const threadsTab = activeTab === 'threads';
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <div style={{
-        padding: '1.25rem 1.5rem',
-        borderBottom: '1px solid #eee',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-      }}>
-        <span style={{ fontSize: '1.1rem' }}>&#9881;</span>
-        <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>Settings</h2>
+    // Fills the area it is given and scrolls inside it — no viewport units, so
+    // it sits under the phone top bar without running past the bottom.
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--canvas)' }}>
+      <div className="n-page" style={{ flex: '0 0 auto' }}>
+        <PageHeader
+          title="Settings"
+          status={orgName ? <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{orgName}</span> : undefined}
+        >
+          <div ref={tabsRef} style={{ position: 'relative' }} onScrollCapture={measureTabs}>
+            <Tabs label="Settings sections" items={tabItems} value={activeTab} onChange={id => setActiveTab(id as SettingsTab)} />
+            {tabsMore && <div aria-hidden="true" style={tabsFade} />}
+          </div>
+        </PageHeader>
       </div>
 
-      {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 4, padding: '0 1.5rem', borderBottom: '1px solid #eee', overflowX: 'auto', WebkitOverflowScrolling: 'touch', alignItems: 'center' }}>
-        <button data-testid="settings-tab-preferences" onClick={() => setActiveTab('preferences')} style={tabStyle('preferences')}>Preferences</button>
-        <button data-testid="settings-tab-venues" onClick={() => setActiveTab('venues')} style={tabStyle('venues')}>Venues</button>
-        <button data-testid="settings-tab-members" onClick={() => setActiveTab('members')} style={tabStyle('members')}>Users</button>
-        {showRoles && <button data-testid="settings-tab-roles" onClick={() => setActiveTab('roles')} style={tabStyle('roles')}>Roles</button>}
-        <button data-testid="settings-tab-billing" onClick={() => setActiveTab('billing')} style={tabStyle('billing')}>Billing</button>
-        <button onClick={() => setActiveTab('email')} style={tabStyle('email')}>Email</button>
-        {(showAgents || showConnectors || showComponents) && <span style={{ width: 1, height: 18, backgroundColor: '#ddd', flexShrink: 0, margin: '0 6px' }} />}
-        {showAgents && <button data-testid="settings-tab-agents" onClick={() => setActiveTab('agents')} style={tabStyle('agents')}>Agents</button>}
-        {showConnections && <button data-testid="settings-tab-connections" onClick={() => setActiveTab('connections')} style={tabStyle('connections')}>Connections</button>}
-        {isAdmin && <button data-testid="settings-tab-app-map" onClick={() => setActiveTab('app-map')} style={tabStyle('app-map')}>App Map</button>}
-        {showConnectors && <button data-testid="settings-tab-connectors" onClick={() => setActiveTab('connectors')} style={tabStyle('connectors')}>Connector Specs</button>}
-        {showComponents && <button data-testid="settings-tab-components" onClick={() => setActiveTab('components')} style={tabStyle('components')}>Components</button>}
-        {showPlaybooks && <button data-testid="settings-tab-playbooks" onClick={() => setActiveTab('playbooks')} style={tabStyle('playbooks')}>Playbooks</button>}
-        {showSupplierSpecs && <button data-testid="settings-tab-supplier-specs" onClick={() => setActiveTab('supplier-specs')} style={tabStyle('supplier-specs')}>Supplier Specs</button>}
-        {showPlaybooks && <button data-testid="settings-tab-templates" onClick={() => setActiveTab('templates')} style={tabStyle('templates')}>Templates</button>}
-        {(showDeployments || showTests || showSecrets) && <span style={{ width: 1, height: 18, backgroundColor: '#ddd', flexShrink: 0, margin: '0 6px' }} />}
-        {showDeployments && <button data-testid="settings-tab-deployments" onClick={() => setActiveTab('deployments')} style={tabStyle('deployments')}>Deployments</button>}
-        {showTests && <button data-testid="settings-tab-tests" onClick={() => setActiveTab('tests')} style={tabStyle('tests')}>Tests</button>}
-        {showSecrets && <button data-testid="settings-tab-secrets" onClick={() => setActiveTab('secrets')} style={tabStyle('secrets')}>Secrets</button>}
-        {showMcp && <button data-testid="settings-tab-mcp" onClick={() => setActiveTab('mcp')} style={tabStyle('mcp')}>MCP</button>}
-        {showThreads && <button data-testid="settings-tab-threads" onClick={() => setActiveTab('threads')} style={tabStyle('threads')}>Threads</button>}
-      </div>
-
-      <div style={{ flex: 1, overflow: activeTab === 'threads' ? 'hidden' : 'auto', padding: activeTab === 'threads' ? 0 : '1.5rem' }}>
+      <div
+        className={threadsTab ? undefined : 'n-page'}
+        style={threadsTab
+          ? { flex: 1, minHeight: 0, overflow: 'hidden' }
+          : { flex: 1, minHeight: 0, overflowY: 'auto', paddingTop: 8, paddingBottom: 40 }}
+      >
         {/* ============ THREADS TAB (admin) ============ */}
         {activeTab === 'threads' && <AdminThreadsPanel />}
 
@@ -1482,7 +1613,7 @@ export default function SettingsPanel() {
             {/* What Norm may do without asking — every write, receiving and
                 reconciling included. One home for one question. */}
             <ApprovalPreferences />
-            <div style={{ height: '2rem' }} />
+            <div style={{ height: 32 }} />
             <MemoryTab />
           </>
         )}
@@ -1497,7 +1628,7 @@ export default function SettingsPanel() {
         {activeTab === 'app-map' && isAdmin && <AppMapPanel />}
         {activeTab === 'connections' && (
           <div style={{ width: '100%' }}>
-            <h3 style={{ margin: '0 0 0.5rem', fontSize: '0.9rem' }}>Connections</h3>
+            <SectionHeader title="Connections" />
             <ConnectionsMatrix />
           </div>
         )}
@@ -1507,16 +1638,16 @@ export default function SettingsPanel() {
 
             {!specEditing && <ConsolidatorCoveragePanel />}
 
-            {!specEditing && <div style={{ borderTop: '1px solid #e8e4de', marginTop: '2rem', paddingTop: '1.5rem' }}>
-            <h3 style={{ margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Platform Connectors
-            </h3>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '0.5rem',
-              marginBottom: '1rem', padding: '0.6rem 0.75rem',
-              border: '1px solid #edf2f7', borderRadius: 8, backgroundColor: '#fafafa',
+            {!specEditing && <section style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
+            <SectionHeader
+              title="Platform connectors"
+              meta={connectors.length > 0 ? `${connectors.length} ${connectors.length === 1 ? 'connector' : 'connectors'}` : undefined}
+            />
+            <div className="n-card" style={{
+              display: 'flex', alignItems: 'center', gap: '4px 12px', flexWrap: 'wrap',
+              marginBottom: 16, padding: '10px 16px',
             }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: '#555', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', color: 'var(--text)', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={(() => { try { return localStorage.getItem('norm_show_tool_details') !== 'false'; } catch { return true; } })()}
@@ -1525,11 +1656,11 @@ export default function SettingsPanel() {
                     // Force re-render
                     setConnectors(c => [...c]);
                   }}
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: 'pointer', accentColor: 'var(--accent)' }}
                 />
                 Show tool call details in conversations
               </label>
-              <span style={{ fontSize: '0.72rem', color: '#999' }}>
+              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
                 Toggle request/response cards in the chat view
               </span>
             </div>
@@ -1537,62 +1668,40 @@ export default function SettingsPanel() {
             {connectors.map(c => {
               const status = testStatus[c.name] || 'idle';
               return (
-                <div key={c.name} style={{
-                  border: '1px solid #e2e8f0',
-                  borderRadius: 10,
-                  padding: '1.25rem',
-                  marginBottom: '1rem',
-                  backgroundColor: '#fff',
+                <div key={c.name} className="n-card" style={{
+                  padding: 16,
+                  marginBottom: 12,
                   opacity: c.configured && !c.enabled ? 0.6 : 1,
                   transition: 'opacity 0.2s',
                 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{c.label}</span>
-                      {c.configured && (
-                        <span style={{
-                          fontSize: '0.7rem',
-                          backgroundColor: '#e6fffa',
-                          color: '#234e52',
-                          padding: '2px 8px',
-                          borderRadius: 10,
-                          fontWeight: 500,
-                        }}>
-                          Configured
-                        </span>
-                      )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <span style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)' }}>{c.label}</span>
+                      {c.configured && <Badge tone="ok">Configured</Badge>}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       {c.configured && (
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.78rem', color: '#555' }}>
-                          <div
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={c.enabled}
+                            aria-label={`${c.label} active`}
                             onClick={() => handleToggleEnabled(c.name)}
                             style={{
-                              width: 34,
-                              height: 18,
-                              borderRadius: 9,
-                              backgroundColor: c.enabled ? '#38a169' : '#cbd5e0',
-                              position: 'relative',
-                              cursor: 'pointer',
+                              display: 'flex', alignItems: 'center', justifyContent: c.enabled ? 'flex-end' : 'flex-start',
+                              width: 36, height: 20, boxSizing: 'border-box', padding: 2,
+                              border: 'none', borderRadius: 999, cursor: 'pointer',
+                              backgroundColor: c.enabled ? 'var(--primary)' : 'var(--field)',
                               transition: 'background-color 0.2s',
                             }}
                           >
-                            <div style={{
-                              width: 14,
-                              height: 14,
-                              borderRadius: '50%',
-                              backgroundColor: '#fff',
-                              position: 'absolute',
-                              top: 2,
-                              left: c.enabled ? 18 : 2,
-                              transition: 'left 0.2s',
-                              boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
-                            }} />
-                          </div>
+                            <span style={{ width: 16, height: 16, borderRadius: '50%', backgroundColor: 'var(--bg)' }} />
+                          </button>
                           {c.enabled ? 'Active' : 'Inactive'}
-                        </label>
+                        </div>
                       )}
-                      <span style={{ fontSize: '0.75rem', color: '#999' }}>{c.domain}</span>
+                      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{c.domain}</span>
                     </div>
                   </div>
 
@@ -1601,63 +1710,34 @@ export default function SettingsPanel() {
                     <>
                       {c.oauth_connected && c.needs_reconnect ? (
                         <div style={{
-                          fontSize: '0.78rem',
-                          color: '#b91c1c',
-                          marginBottom: '0.75rem',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
+                          display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
+                          fontSize: 'var(--fs-sm)', color: 'var(--error)',
                         }} title={c.last_auth_error || undefined}>
-                          <span style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: '50%',
-                            backgroundColor: '#b91c1c',
-                            display: 'inline-block',
-                          }} />
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: 'var(--error)', flex: '0 0 auto' }} />
                           Reconnect needed — this connection stopped working
                         </div>
                       ) : c.oauth_connected ? (
                         <div style={{
-                          fontSize: '0.78rem',
-                          color: '#38a169',
-                          marginBottom: '0.75rem',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
+                          display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
+                          fontSize: 'var(--fs-sm)', color: 'var(--ok)',
                         }}>
-                          <span style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: '50%',
-                            backgroundColor: '#38a169',
-                            display: 'inline-block',
-                          }} />
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: 'var(--ok)', flex: '0 0 auto' }} />
                           OAuth connected
                         </div>
                       ) : null}
 
                       {/* Still show non-secret credential fields (e.g. subdomain) */}
                       {c.fields.filter(f => !f.secret).map(f => (
-                        <div key={f.key} style={{ marginBottom: '0.75rem' }}>
-                          <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                            {f.label}
-                          </label>
+                        <div key={f.key} style={{ marginBottom: 12 }}>
+                          <label className="n-label" htmlFor={`${fieldId}-${c.name}-${f.key}`}>{f.label}</label>
                           <input
+                            id={`${fieldId}-${c.name}-${f.key}`}
+                            className="n-input"
                             type="text"
                             value={forms[c.name]?.[f.key] || ''}
                             onChange={e => updateField(c.name, f.key, e.target.value)}
                             placeholder={`Enter ${f.label.toLowerCase()}`}
-                            style={{
-                              width: '100%',
-                              padding: '8px 10px',
-                              border: '1px solid #ddd',
-                              borderRadius: 6,
-                              fontSize: '0.85rem',
-                              fontFamily: 'inherit',
-                              boxSizing: 'border-box',
-                              outline: 'none',
-                            }}
+                            style={{ width: '100%' }}
                           />
                         </div>
                       ))}
@@ -1665,26 +1745,15 @@ export default function SettingsPanel() {
                   ) : (
                     <>
                       {c.fields.map(f => (
-                        <div key={f.key} style={{ marginBottom: '0.75rem' }}>
-                          <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                            {f.label}
-                          </label>
+                        <div key={f.key} style={{ marginBottom: 12 }}>
+                          <label className="n-label" htmlFor={`${fieldId}-${c.name}-${f.key}`}>{f.label}</label>
                           {f.type === 'select' && f.options ? (
                             <select
+                              id={`${fieldId}-${c.name}-${f.key}`}
+                              className="n-select"
                               value={forms[c.name]?.[f.key] || f.default || ''}
                               onChange={e => updateField(c.name, f.key, e.target.value)}
-                              style={{
-                                width: '100%',
-                                padding: '8px 10px',
-                                border: '1px solid #ddd',
-                                borderRadius: 6,
-                                fontSize: '0.85rem',
-                                fontFamily: 'inherit',
-                                boxSizing: 'border-box',
-                                outline: 'none',
-                                backgroundColor: '#fff',
-                                cursor: 'pointer',
-                              }}
+                              style={{ width: '100%' }}
                             >
                               {f.options.map(opt => (
                                 <option key={opt.id} value={opt.id}>{opt.label}</option>
@@ -1692,20 +1761,13 @@ export default function SettingsPanel() {
                             </select>
                           ) : (
                             <input
+                              id={`${fieldId}-${c.name}-${f.key}`}
+                              className="n-input"
                               type={f.secret ? 'password' : 'text'}
                               value={forms[c.name]?.[f.key] || ''}
                               onChange={e => updateField(c.name, f.key, e.target.value)}
                               placeholder={f.secret ? '••••••••' : `Enter ${f.label.toLowerCase()}`}
-                              style={{
-                                width: '100%',
-                                padding: '8px 10px',
-                                border: '1px solid #ddd',
-                                borderRadius: 6,
-                                fontSize: '0.85rem',
-                                fontFamily: 'inherit',
-                                boxSizing: 'border-box',
-                                outline: 'none',
-                              }}
+                              style={{ width: '100%' }}
                             />
                           )}
                         </div>
@@ -1714,48 +1776,32 @@ export default function SettingsPanel() {
                   )}
 
                   {status !== 'idle' && (
-                    <div style={{
-                      fontSize: '0.78rem',
-                      color: statusColor(status),
-                      marginBottom: '0.75rem',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
+                    <div role="status" style={{
+                      display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
+                      fontSize: 'var(--fs-sm)', color: statusColor(status),
                     }}>
-                      <span style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: '50%',
-                        backgroundColor: statusColor(status),
-                        display: 'inline-block',
-                      }} />
-                      {status === 'testing' ? 'Testing connection...' : testMessage[c.name]}
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: statusColor(status), flex: '0 0 auto' }} />
+                      {status === 'testing' ? 'Testing connection…' : testMessage[c.name]}
                     </div>
                   )}
 
                   {testDetail[c.name] && (status === 'success' || status === 'error') && (
-                    <details style={{ marginBottom: '0.75rem', fontSize: '0.78rem' }}>
-                      <summary style={{ cursor: 'pointer', color: '#666', marginBottom: '0.4rem' }}>
+                    <details style={{ marginBottom: 12, fontSize: 'var(--fs-sm)' }}>
+                      <summary style={{ cursor: 'pointer', color: 'var(--text-soft)', marginBottom: 6 }}>
                         Show request &amp; response
                       </summary>
                       {testDetail[c.name]?.rendered_request && (
-                        <div style={{ marginBottom: '0.4rem' }}>
-                          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: 3 }}>Request</div>
-                          <pre style={{
-                            padding: '0.5rem', backgroundColor: '#1a202c', color: '#e2e8f0',
-                            borderRadius: 6, fontSize: '0.75rem', overflow: 'auto', lineHeight: 1.4, margin: 0, maxHeight: 200,
-                          }}>
+                        <div style={{ marginBottom: 8 }}>
+                          <div className="n-eyebrow" style={{ marginBottom: 4 }}>Request</div>
+                          <pre style={preStyle}>
                             {JSON.stringify(testDetail[c.name]?.rendered_request, null, 2)}
                           </pre>
                         </div>
                       )}
                       {testDetail[c.name]?.response && (
                         <div>
-                          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: 3 }}>Response</div>
-                          <pre style={{
-                            padding: '0.5rem', backgroundColor: '#1a202c', color: '#e2e8f0',
-                            borderRadius: 6, fontSize: '0.75rem', overflow: 'auto', lineHeight: 1.4, margin: 0, maxHeight: 200,
-                          }}>
+                          <div className="n-eyebrow" style={{ marginBottom: 4 }}>Response</div>
+                          <pre style={preStyle}>
                             {JSON.stringify(testDetail[c.name]?.response, null, 2)}
                           </pre>
                         </div>
@@ -1763,116 +1809,37 @@ export default function SettingsPanel() {
                     </details>
                   )}
 
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     {c.auth_type === 'oauth2' ? (
                       <>
                         {!c.oauth_connected ? (
-                          <button
-                            onClick={() => handleOAuthConnect(c.name)}
-                            style={{
-                              padding: '6px 14px',
-                              fontSize: '0.8rem',
-                              fontWeight: 500,
-                              border: 'none',
-                              borderRadius: 6,
-                              backgroundColor: '#c4a882',
-                              color: '#fff',
-                              cursor: 'pointer',
-                              fontFamily: 'inherit',
-                            }}
-                          >
+                          <Button variant="primary" size="sm" onClick={() => handleOAuthConnect(c.name)}>
                             Connect with OAuth
-                          </button>
+                          </Button>
                         ) : (
-                          <button
-                            onClick={() => handleOAuthDisconnect(c.name)}
-                            style={{
-                              padding: '6px 14px',
-                              fontSize: '0.8rem',
-                              fontWeight: 500,
-                              border: '1px solid #e53e3e',
-                              borderRadius: 6,
-                              backgroundColor: '#fff',
-                              color: '#e53e3e',
-                              cursor: 'pointer',
-                              fontFamily: 'inherit',
-                            }}
-                          >
+                          <Button variant="danger" size="sm" onClick={() => handleOAuthDisconnect(c.name)}>
                             Disconnect
-                          </button>
+                          </Button>
                         )}
                         {/* Save non-secret fields if any exist */}
                         {c.fields.some(f => !f.secret) && (
-                          <button
-                            onClick={() => handleSave(c.name)}
-                            disabled={saving[c.name]}
-                            style={{
-                              padding: '6px 14px',
-                              fontSize: '0.8rem',
-                              fontWeight: 500,
-                              border: '1px solid #ddd',
-                              borderRadius: 6,
-                              backgroundColor: '#fff',
-                              cursor: saving[c.name] ? 'not-allowed' : 'pointer',
-                              fontFamily: 'inherit',
-                            }}
-                          >
-                            {saving[c.name] ? 'Saving...' : 'Save'}
-                          </button>
+                          <Button size="sm" onClick={() => handleSave(c.name)} disabled={saving[c.name]}>
+                            {saving[c.name] ? 'Saving…' : 'Save'}
+                          </Button>
                         )}
                       </>
                     ) : (
                       <>
-                        <button
-                          onClick={() => handleTest(c.name)}
-                          disabled={status === 'testing'}
-                          style={{
-                            padding: '6px 14px',
-                            fontSize: '0.8rem',
-                            fontWeight: 500,
-                            border: '1px solid #ddd',
-                            borderRadius: 6,
-                            backgroundColor: '#fff',
-                            cursor: status === 'testing' ? 'not-allowed' : 'pointer',
-                            fontFamily: 'inherit',
-                          }}
-                        >
+                        <Button size="sm" onClick={() => handleTest(c.name)} disabled={status === 'testing'}>
                           Test
-                        </button>
-                        <button
-                          onClick={() => handleSave(c.name)}
-                          disabled={saving[c.name]}
-                          style={{
-                            padding: '6px 14px',
-                            fontSize: '0.8rem',
-                            fontWeight: 500,
-                            border: 'none',
-                            borderRadius: 6,
-                            backgroundColor: '#c4a882',
-                            color: '#fff',
-                            cursor: saving[c.name] ? 'not-allowed' : 'pointer',
-                            fontFamily: 'inherit',
-                          }}
-                        >
-                          {saving[c.name] ? 'Saving...' : 'Save'}
-                        </button>
+                        </Button>
+                        <Button variant="primary" size="sm" onClick={() => handleSave(c.name)} disabled={saving[c.name]}>
+                          {saving[c.name] ? 'Saving…' : 'Save'}
+                        </Button>
                         {c.configured && (
-                          <button
-                            onClick={() => handleDelete(c.name)}
-                            style={{
-                              padding: '6px 14px',
-                              fontSize: '0.8rem',
-                              fontWeight: 500,
-                              border: '1px solid #e53e3e',
-                              borderRadius: 6,
-                              backgroundColor: '#fff',
-                              color: '#e53e3e',
-                              cursor: 'pointer',
-                              fontFamily: 'inherit',
-                            }}
-                          >
+                          <Button variant="danger" size="sm" onClick={() => handleDelete(c.name)}>
                             Remove
-                          </button>
+                          </Button>
                         )}
                       </>
                     )}
@@ -1880,7 +1847,7 @@ export default function SettingsPanel() {
                 </div>
               );
             })}
-            </div>}
+            </section>}
           </>
         )}
 
@@ -1905,7 +1872,7 @@ export default function SettingsPanel() {
         {/* ============ SECRETS TAB ============ */}
         {activeTab === 'components' && <ComponentsPanel />}
         {activeTab === 'playbooks' && <PlaybooksPanel />}
-      {activeTab === 'supplier-specs' && <SupplierSpecsPanel />}
+        {activeTab === 'supplier-specs' && <SupplierSpecsPanel />}
         {activeTab === 'templates' && <TemplatesPanel />}
         {activeTab === 'secrets' && <SecretsPanel />}
       </div>

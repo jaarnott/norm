@@ -30,11 +30,16 @@ export default function McpEmbed({ data, props, onAction }: DisplayBlockProps) {
     if (!url) return null;
     try {
       const embedUrl = new URL(url);
+      // Literal values, not var(--…): these cross into another origin as URL
+      // parameters. They mirror tokens.css — near-black primary (--primary)
+      // with white text on it (--on-primary), --radius, and Figtree, which
+      // the embed won't have loaded, so system-ui is the real fallback.
       const tokens: Record<string, string> = {
-        'norm-primary': '#c4a882',
+        'norm-primary': '#1a1a1a',
+        'norm-primary-foreground': '#ffffff',
         'norm-mode': 'light',
         'norm-radius': '8px',
-        'norm-font-family': '-apple-system, BlinkMacSystemFont, sans-serif',
+        'norm-font-family': 'Figtree, system-ui, -apple-system, sans-serif',
       };
       for (const [key, value] of Object.entries(tokens)) {
         if (value && !embedUrl.searchParams.has(key)) {
@@ -111,13 +116,13 @@ export default function McpEmbed({ data, props, onAction }: DisplayBlockProps) {
 
   const isFullPage = containerHint === 'full_page';
 
+  // Inline: the one chat card (.n-card — white, hairline, radius 12).
+  // Full page: no chrome; the embed is the page.
   return (
-    <div style={{
+    <div className={isFullPage ? undefined : 'n-card'} style={{
       width: '100%',
-      borderRadius: isFullPage ? 0 : 12,
       overflow: 'hidden',
-      border: isFullPage ? 'none' : '1px solid #e5e5e5',
-      backgroundColor: '#fff',
+      ...(isFullPage ? { backgroundColor: 'var(--bg)' } : {}),
     }}>
       <iframe
         ref={iframeRef}

@@ -8,10 +8,14 @@ import type { VenueTimePrefs } from '../../../lib/rosterTime';
 import { companyDayDate, offsetToISO, formatClock, formatHourLabel } from '../../../lib/rosterTime';
 import {
   HOUR_W, DAY_HOURS, TIMELINE_W, SNAP_MINUTES,
-  minutesToPx, pxToMinutes, snapPx, timeToOffset, shiftsForDay, nowOffset,
+  pxToMinutes, snapPx, timeToOffset, shiftsForDay, nowOffset,
 } from './grid';
+import PageState from '../../ui/PageState';
 
-const SIDEBAR_W = 140;
+// Same staff-column width as the week grid, so the two views line up and a
+// phone keeps more of the timeline in view.
+const SIDEBAR_W = 120;
+const HEADER_H = 36;
 const ROW_H = 56;
 const MIN_SHIFT_MS = 15 * 60 * 1000;
 const DEFAULT_SHIFT_MS = 4 * 60 * 60 * 1000;
@@ -93,6 +97,8 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
   const origWidth = Math.max(origRight - origLeft, 20);
   const hrs = calcHours(shift.clockinTime, shift.clockoutTime);
   const color = roleColor(shift.roleId || '');
+  // An open (unassigned) shift reads as a slot still to fill: its own tint, a dashed edge.
+  const open = !shift.staffMemberId;
 
   const displayLeft = resizePreview?.left ?? origLeft;
   const displayWidth = resizePreview?.width ?? origWidth;
@@ -162,16 +168,26 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
       style={{
         position: 'absolute',
         left: displayLeft, width: displayWidth, top: 4, bottom: 4,
-        backgroundColor: color,
-        borderRadius: 6,
+        // Light bar, dark text (the role colour is only the stripe): readable at any hue.
+        backgroundColor: isSelected ? 'var(--accent-soft)' : open ? 'var(--open-bg)' : 'var(--bg)',
+        border: isSelected
+          ? '1px solid var(--focus)'
+          : open ? '1px dashed var(--line-strong)' : '1px solid var(--line-strong)',
+        borderRadius: 'var(--radius-sm)',
         display: 'flex', alignItems: 'center',
         overflow: 'hidden',
-        boxShadow: isSelected ? '0 0 0 2px var(--focus)' : resizePreview ? '0 0 0 2px rgba(255,255,255,0.5)' : '0 1px 3px rgba(0,0,0,0.12)',
+        boxShadow: isSelected ? '0 0 0 1px var(--focus)' : resizePreview ? '0 0 0 2px var(--brand-soft)' : undefined,
         opacity: isDragging ? 0.4 : 1,
         transition: resizePreview ? 'none' : 'box-shadow 0.15s, opacity 0.15s',
         zIndex: resizePreview ? 10 : 1,
       }}
     >
+      {/* Role stripe — a 3px category mark, as on the week grid. */}
+      <div style={{
+        position: 'absolute', left: 0, top: 0, bottom: 0, width: 3,
+        backgroundColor: color, pointerEvents: 'none', zIndex: 1,
+      }} />
+
       {/* Break overlays */}
       {(() => {
         const activeBreaks = (shift.breaks || []).filter(
@@ -192,8 +208,7 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
             <div key={b.id || idx} style={{
               position: 'absolute', top: 0, bottom: 0,
               left: `${leftPct}%`, width: `${widthPct}%`,
-              backgroundColor: 'rgba(255,255,255,0.3)',
-              backgroundImage: 'repeating-linear-gradient(135deg, transparent, transparent 2px, rgba(255,255,255,0.15) 2px, rgba(255,255,255,0.15) 4px)',
+              backgroundImage: 'repeating-linear-gradient(135deg, var(--line) 0 2px, transparent 2px 6px)',
               pointerEvents: 'none', zIndex: 0,
             }} />
           );
@@ -212,7 +227,7 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
         >
           <div className="resize-grip" style={{
             width: 2, height: 16, borderRadius: 1,
-            backgroundColor: 'rgba(255,255,255,0.4)',
+            backgroundColor: 'var(--icon)',
             opacity: 0, transition: 'opacity 0.15s',
           }} />
         </div>
@@ -232,25 +247,25 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
             {...attributes}
             onClick={onSelect}
             style={{
-              flex: 1, padding: '0 8px', cursor: interactive ? 'grab' : 'default',
+              flex: 1, padding: '0 8px 0 10px', cursor: interactive ? 'grab' : 'default',
               display: 'flex', flexDirection: 'column', justifyContent: 'center',
               minWidth: 0, position: 'relative', zIndex: 1,
+              fontSize: 'var(--fs-xs)', lineHeight: 1.35,
             }}
           >
             <span style={{
-              fontSize: '0.7rem', fontWeight: 600, color: 'var(--bg)',
+              fontWeight: 600, color: open ? 'var(--open)' : 'var(--text)',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-              textShadow: '0 1px 2px rgba(0,0,0,0.25)',
             }}>
               {shift.roleName || ''}
             </span>
             <span style={{
-              fontSize: '0.65rem', color: 'rgba(255,255,255,0.85)',
+              color: 'var(--text-soft)', fontVariantNumeric: 'tabular-nums',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
             }}>
               {previewStartTime}–{previewEndTime}
               {hrs > 0 && displayWidth > 80 && (
-                <span style={{ marginLeft: 4, opacity: 0.7 }}>
+                <span style={{ marginLeft: 4, color: 'var(--muted)' }}>
                   ({hrs.toFixed(1)}h{totalBreakMins > 0 ? ` \u00b7 ${Math.round(totalBreakMins)}m break` : ''})
                 </span>
               )}
@@ -271,7 +286,7 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
         >
           <div className="resize-grip" style={{
             width: 2, height: 16, borderRadius: 1,
-            backgroundColor: 'rgba(255,255,255,0.4)',
+            backgroundColor: 'var(--icon)',
             opacity: 0, transition: 'opacity 0.15s',
           }} />
         </div>
@@ -282,9 +297,10 @@ function ShiftBar({ shift, staffId, interactive, isSelected, onSelect, onResize,
 
 // --- Droppable lane with click-to-create ---
 
-function Lane({ laneId, index, interactive, dayDate, prefs, onCreateShift, children }: {
+function Lane({ laneId, isLast, interactive, dayDate, prefs, onCreateShift, children }: {
   laneId: string;
-  index: number;
+  /** The container's own edge closes the last lane. */
+  isLast: boolean;
   interactive: boolean;
   /** Business day this lane renders, and the venue clock it is measured in. */
   dayDate: string;
@@ -365,8 +381,8 @@ function Lane({ laneId, index, interactive, dayDate, prefs, onCreateShift, child
       onMouseLeave={handleMouseLeave}
       style={{
         width: TIMELINE_W, height: ROW_H, position: 'relative',
-        borderBottom: '1px solid var(--line)',
-        backgroundColor: isOver ? 'var(--draft-bg)' : index % 2 === 1 ? 'var(--surface)' : 'var(--bg)',
+        borderBottom: isLast ? undefined : '1px solid var(--line)',
+        backgroundColor: isOver ? 'var(--accent-soft)' : 'var(--bg)',
         transition: 'background-color 0.15s',
         cursor: interactive && onCreateShift ? 'crosshair' : 'default',
       }}
@@ -377,9 +393,9 @@ function Lane({ laneId, index, interactive, dayDate, prefs, onCreateShift, child
           position: 'absolute',
           left: dragPreview.left, width: dragPreview.width,
           top: 4, bottom: 4,
-          backgroundColor: 'rgba(37, 99, 235, 0.15)',
-          border: '1px dashed rgba(37, 99, 235, 0.5)',
-          borderRadius: 6,
+          backgroundColor: 'var(--accent-soft)',
+          border: '1px dashed var(--accent)',
+          borderRadius: 'var(--radius-sm)',
           pointerEvents: 'none',
         }} />
       )}
@@ -407,33 +423,42 @@ export default function DayTimeline({ shifts, selectedDate, prefs, editingShiftI
   );
 
   if (lanes.length === 0) {
-    return (
-      <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--muted-soft)', fontSize: '0.85rem' }}>
-        No shifts scheduled for this day.
-      </div>
-    );
+    return <PageState kind="empty" title="No shifts scheduled for this day." />;
   }
 
   return (
-    <div style={{ border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
+    <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)', overflow: 'hidden', backgroundColor: 'var(--bg)' }}>
       <style>{`
         [data-shift]:hover .resize-grip { opacity: 1 !important; }
       `}</style>
       <div style={{ display: 'flex' }}>
         {/* Sidebar */}
-        <div style={{ width: SIDEBAR_W, flexShrink: 0, borderRight: '1px solid var(--line)', backgroundColor: 'var(--surface)' }}>
-          <div style={{ height: 32, borderBottom: '2px solid var(--line)', display: 'flex', alignItems: 'center', padding: '0 0.5rem' }}>
-            <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Staff</span>
-          </div>
+        <div style={{ width: SIDEBAR_W, flexShrink: 0, borderRight: '1px solid var(--line)', backgroundColor: 'var(--bg)' }}>
+          {/* Header cells: the table-header look — 12px/600, sentence case, on the header fill */}
+          <div style={{
+            height: HEADER_H, padding: '0 12px',
+            display: 'flex', alignItems: 'center',
+            borderBottom: '1px solid var(--line-strong)', backgroundColor: 'var(--surface-alt)',
+            fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-soft)',
+          }}>Staff</div>
           {lanes.map((lane, i) => (
             <div key={lane.id} style={{
-              height: ROW_H, padding: '0.3rem 0.5rem',
-              borderBottom: '1px solid var(--line)',
+              height: ROW_H, padding: '0 12px',
+              borderBottom: i < lanes.length - 1 ? '1px solid var(--line)' : undefined,
               display: 'flex', flexDirection: 'column', justifyContent: 'center',
-              backgroundColor: i % 2 === 1 ? 'var(--surface-alt)' : 'var(--surface)',
+              lineHeight: 1.3,
             }}>
-              <div style={{ fontWeight: 600, color: 'var(--text)', fontSize: '0.78rem', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lane.name}</div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--muted)' }}>{lane.role}</div>
+              <div style={{
+                fontSize: 'var(--fs-sm)', fontWeight: 500,
+                color: lane.id === OPEN_ROW_ID ? 'var(--open)' : 'var(--text)',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>{lane.name}</div>
+              {lane.role && (
+                <div style={{
+                  fontSize: 'var(--fs-xs)', color: 'var(--muted)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>{lane.role}</div>
+              )}
             </div>
           ))}
         </div>
@@ -441,13 +466,17 @@ export default function DayTimeline({ shifts, selectedDate, prefs, editingShiftI
         {/* Timeline area */}
         <div style={{ flex: 1, overflowX: 'auto', minWidth: 0 }}>
           {/* Hour header */}
-          <div style={{ width: TIMELINE_W, height: 32, position: 'relative', borderBottom: '2px solid var(--line)' }}>
+          <div style={{
+            width: TIMELINE_W, height: HEADER_H, position: 'relative',
+            borderBottom: '1px solid var(--line-strong)', backgroundColor: 'var(--surface-alt)',
+          }}>
             {hourTicks.map((mins, i) => (
               <div key={i} style={{
                 position: 'absolute', left: i * HOUR_W, width: HOUR_W,
                 height: '100%', display: 'flex', alignItems: 'center',
-                borderRight: '1px solid var(--line-soft)',
-                paddingLeft: 4, fontSize: '0.68rem', color: 'var(--muted)', fontWeight: 500,
+                borderRight: '1px solid var(--line)',
+                paddingLeft: 6, fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-soft)',
+                whiteSpace: 'nowrap',
               }}>
                 {formatHourLabel(mins)}
               </div>
@@ -457,12 +486,12 @@ export default function DayTimeline({ shifts, selectedDate, prefs, editingShiftI
           {/* Lanes */}
           <div style={{ position: 'relative' }}>
             {lanes.map((lane, li) => (
-              <Lane key={lane.id} laneId={lane.id} index={li} interactive={interactive} dayDate={dayDate} prefs={prefs} onCreateShift={onCreateShift}>
+              <Lane key={lane.id} laneId={lane.id} isLast={li === lanes.length - 1} interactive={interactive} dayDate={dayDate} prefs={prefs} onCreateShift={onCreateShift}>
                 {/* Hour gridlines */}
                 {hourTicks.map((_, i) => (
                   <div key={i} style={{
                     position: 'absolute', left: i * HOUR_W, top: 0, bottom: 0,
-                    borderRight: '1px solid var(--surface-alt)', pointerEvents: 'none',
+                    borderRight: '1px solid var(--line-soft)', pointerEvents: 'none',
                   }} />
                 ))}
                 {/* Shift bars */}
@@ -483,17 +512,17 @@ export default function DayTimeline({ shifts, selectedDate, prefs, editingShiftI
               </Lane>
             ))}
 
-            {/* Now indicator */}
+            {/* Now indicator — the accent, like today's column on the week grid */}
             {nowLine != null && (
               <div style={{
                 position: 'absolute', left: nowLine, top: 0, bottom: 0,
-                width: 2, backgroundColor: 'var(--error)',
+                width: 2, backgroundColor: 'var(--accent)',
                 zIndex: 5, pointerEvents: 'none',
               }}>
                 <div style={{
                   position: 'absolute', top: -4, left: -3,
                   width: 8, height: 8, borderRadius: '50%',
-                  backgroundColor: 'var(--error)',
+                  backgroundColor: 'var(--accent)',
                 }} />
               </div>
             )}

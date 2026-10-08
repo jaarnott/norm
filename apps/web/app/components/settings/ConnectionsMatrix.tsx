@@ -7,21 +7,39 @@
  * Expanding a row opens the same connect ceremony the chat card uses.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { Check, ChevronDown, ChevronRight, Minus, TriangleAlert, type LucideIcon } from 'lucide-react';
 import { apiFetch, getToken } from '../../lib/api';
 import ConnectorConnectCard from '../display/ConnectorConnectCard';
 import { useTeam } from '../../hooks/useTeam';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 
 interface ConnVenue { venue_id: string; venue_name: string; status: string }
 
-const STATUS: Record<string, { color: string; label: string }> = {
-  connected: { color: '#2e7d4f', label: 'Connected' },
-  needs_reconnect: { color: '#b8860b', label: 'Needs attention' },
-  not_connected: { color: '#b0aca4', label: 'Not connected' },
+// A status reads by its SHAPE as well as its colour — tick, warning, dash —
+// so it survives colour blindness and a greyscale print.
+interface StatusLook { tone: BadgeTone; icon: LucideIcon; label: string }
+const STATUS: Record<string, StatusLook> = {
+  connected: { tone: 'ok', icon: Check, label: 'Connected' },
+  needs_reconnect: { tone: 'warn', icon: TriangleAlert, label: 'Needs attention' },
+  not_connected: { tone: 'neutral', icon: Minus, label: 'Not connected' },
 };
+
+/** The status icon on its badge tint. Named (hover + screen reader) unless a visible label sits beside it. */
+function StatusMark({ st, named = true }: { st: StatusLook; named?: boolean }) {
+  return (
+    <Badge tone={st.tone} title={named ? st.label : undefined}>
+      <Icon icon={st.icon} size={14} strokeWidth={2} label={named ? st.label : undefined} />
+    </Badge>
+  );
+}
 
 export default function ConnectionsMatrix() {
   const team = useTeam(getToken());
+  const { isDesktop } = useBreakpoint();
   const [info, setInfo] = useState<Record<string, ConnVenue[] | 'loading'>>({});
   const [open, setOpen] = useState<string | null>(null);
 
@@ -61,57 +79,85 @@ export default function ConnectionsMatrix() {
 
   const connectors = Object.keys(rows).sort();
   if (connectors.length === 0) {
-    return (
-      <div style={{ fontSize: '0.78rem', color: '#8a8a8a', padding: '0.5rem 0' }}>
-        {team.gatingActive
-          ? 'Nothing to connect yet — hire a team member and the systems its Apps work in appear here.'
-          : 'Connections appear here once team hiring is switched on. Until then, manage each venue\u2019s credentials under Venues.'}
-      </div>
+    if (!team.loaded) return <PageState kind="loading" title="Loading connections…" />;
+    return team.gatingActive ? (
+      <PageState kind="empty" title="Nothing to connect yet" detail="Hire a team member and the systems its Apps work in appear here." />
+    ) : (
+      <PageState
+        kind="empty"
+        title="Connections appear here once team hiring is switched on."
+        detail={'Until then, manage each venue’s credentials under Venues.'}
+      />
     );
   }
 
+  // On a phone or iPad the venue columns scroll sideways; the connection name stays put.
+  const pinned = (fill: string): CSSProperties =>
+    isDesktop ? {} : { position: 'sticky', left: 0, zIndex: 1, background: fill, boxShadow: 'inset -1px 0 0 var(--line)' };
+
   return (
     <div>
-      <p style={{ fontSize: '0.72rem', color: '#8a8a8a', margin: '0 0 0.8rem' }}>
-        The systems Norm works in. Connect each one per venue; every App that works in it is ready.
-      </p>
-      <table style={{ borderCollapse: 'collapse', fontSize: '0.76rem', width: '100%' }}>
-        <thead>
-          <tr>
-            <th style={{ textAlign: 'left', padding: '4px 10px 4px 0', color: '#8a8a8a', fontWeight: 600 }}>Connection</th>
-            {venueNames.map((v) => (
-              <th key={v.id} style={{ textAlign: 'center', padding: '4px 8px', color: '#8a8a8a', fontWeight: 600 }}>{v.name}</th>
-            ))}
-            <th style={{ textAlign: 'left', padding: '4px 8px', color: '#8a8a8a', fontWeight: 600 }}>Used by</th>
-          </tr>
-        </thead>
-        <tbody>
-          {connectors.map((conn) => {
-            const r = rows[conn];
-            const venues = info[conn];
-            return (
-              <tr key={conn} style={{ borderTop: '1px solid #eee' }}>
-                <td style={{ padding: '6px 10px 6px 0' }}>
-                  <button type="button" onClick={() => setOpen(open === conn ? null : conn)}
-                    style={{ border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, fontSize: '0.78rem', padding: 0, textAlign: 'left', whiteSpace: 'nowrap' }}>
-                    {r.name}
-                  </button>
-                </td>
-                {venueNames.map((v) => {
-                  const cell = Array.isArray(venues) ? venues.find((x) => x.venue_id === v.id) : null;
-                  const st = cell ? STATUS[cell.status] ?? STATUS.not_connected : null;
-                  return (
-                    <td key={v.id} title={st?.label} style={{ textAlign: 'center', padding: '6px 8px', color: st?.color ?? '#ccc' }}>●</td>
-                  );
-                })}
-                <td style={{ padding: '6px 8px', color: '#6b6b6b' }}>{[...r.usedBy].join(', ')}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px 24px', marginBottom: 12 }}>
+        <p style={{ margin: 0, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+          The systems Norm works in. Connect each one per venue; every App that works in it is ready.
+        </p>
+        <ul aria-label="Status key" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', margin: 0, padding: 0, listStyle: 'none', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+          {Object.entries(STATUS).map(([key, st]) => (
+            <li key={key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <StatusMark st={st} named={false} />
+              {st.label}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="n-card" style={{ overflowX: 'auto' }}>
+        <table className="n-table">
+          <thead>
+            <tr>
+              <th scope="col" style={pinned('var(--surface-alt)')}>Connection</th>
+              {venueNames.map((v) => (
+                <th key={v.id} scope="col" style={{ textAlign: 'center' }}>{v.name}</th>
+              ))}
+              <th scope="col">Used by</th>
+            </tr>
+          </thead>
+          <tbody>
+            {connectors.map((conn) => {
+              const r = rows[conn];
+              const venues = info[conn];
+              return (
+                <tr key={conn}>
+                  <td style={pinned('var(--bg)')}>
+                    <button type="button" onClick={() => setOpen(open === conn ? null : conn)} aria-expanded={open === conn}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, fontSize: 'var(--fs-base)', color: 'var(--text)', padding: 0, textAlign: 'left', whiteSpace: 'nowrap' }}>
+                      <Icon icon={open === conn ? ChevronDown : ChevronRight} size="dense" tone="muted" />
+                      {r.name}
+                    </button>
+                  </td>
+                  {venueNames.map((v) => {
+                    const cell = Array.isArray(venues) ? venues.find((x) => x.venue_id === v.id) : null;
+                    const st = cell ? STATUS[cell.status] ?? STATUS.not_connected : null;
+                    return (
+                      <td key={v.id} style={{ textAlign: 'center' }}>
+                        {st && <StatusMark st={st} />}
+                      </td>
+                    );
+                  })}
+                  <td>
+                    {/* Wide enough for two chips a line, so a busy connection's row stays short. */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, minWidth: 240 }}>
+                      {[...r.usedBy].map((app) => <Badge key={app}>{app}</Badge>)}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
       {open && (
-        <div style={{ maxWidth: 560, marginTop: '1rem' }}>
+        <div style={{ maxWidth: 560, marginTop: 16 }}>
           <ConnectorConnectCard data={{ connector_name: open }} onAction={async () => {}} />
         </div>
       )}

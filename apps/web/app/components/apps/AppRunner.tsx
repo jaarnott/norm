@@ -34,9 +34,50 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ExternalLink, Users } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import { setPageDocument } from '../../lib/pageDocument';
+import { useActiveVenue } from '../../hooks/useActiveVenue';
 import AppSharePanel from './AppSharePanel';
+import { HOST_CSS } from './hostStyles';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
+import VenueSelect from '../ui/VenueSelect';
+import Button from '../ui/Button';
+import Badge from '../ui/Badge';
+import AppIcon from '../ui/AppIcon';
+
+/**
+ * Where the app is shown. `page`: a menu page — fills the content area under
+ * a page header, like Orders. `embedded`: a card in a conversation — a compact
+ * framed header, and either its own height (inline) or the whole pane it sits
+ * in (`fill`, the split view). `standalone`: /apps/<slug>, a page of its own.
+ */
+export type AppVariant = 'page' | 'embedded' | 'standalone';
+
+/** Ask the shell to open this app's menu page (page.tsx listens). */
+export const OPEN_APP_PAGE_EVENT = 'norm:open-app-page';
+
+// Figtree for the sandbox: it runs on an opaque origin and cannot load Norm's
+// fonts, so the host fetches the file once and hands it over as a data: URL.
+// Fails soft — the app falls back to the system font.
+let fontFacePromise: Promise<string> | null = null;
+function loadFontFace(): Promise<string> {
+  if (!fontFacePromise) {
+    fontFacePromise = fetch('/fonts/Figtree-latin.woff2')
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('font'))))
+      .then((blob) => new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(
+          `@font-face { font-family: 'Figtree'; font-style: normal; font-weight: 300 900; font-display: swap; src: url(${String(reader.result)}) format('woff2'); }`,
+        );
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      }))
+      .catch(() => '');
+  }
+  return fontFacePromise;
+}
 
 interface AppDetail {
   slug: string;
@@ -140,23 +181,34 @@ const HOST_RUNTIME = `
 })();
 `;
 
-const BASE_CSS = `
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; color: #2a2a2a; background: #fff; }
-`;
-
-export default function AppRunner({ slug, component, inputs }: {
+export default function AppRunner({ slug, component, inputs, variant = 'embedded', fill = false, back }: {
   slug: string;
   /** which of the app's declared components to start on */
   component?: string;
   /** that component's inputs — where to start inside it */
   inputs?: Record<string, unknown>;
+  variant?: AppVariant;
+  /** embedded only: fill the pane it sits in instead of sizing to content */
+  fill?: boolean;
+  /** a back link above the title (Team, Apps, /apps/<slug>) */
+  back?: { label: string; onClick: () => void };
 }) {
   const [app, setApp] = useState<AppDetail | null>(null);
   const [venues, setVenues] = useState<VenueRow[]>([]);
   const [venueId, setVenueId] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(360);
+  const [fontFace, setFontFace] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
+  // A page remembers the venue it was last looking at, shared with every other
+  // page (Orders, Roster…). A card in a conversation keeps its own.
+  const persistVenue = variant !== 'embedded';
+  const [sharedVenue, setActiveVenue] = useActiveVenue();
+  const sharedRef = useRef<string | null>(null);
+  sharedRef.current = persistVenue ? sharedVenue : null;
+  // Pages fill their area and the iframe scrolls inside it; only an inline
+  // card grows with its content.
+  const fills = variant !== 'embedded' || fill;
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const venueRef = useRef<string>('');
   venueRef.current = venueId;
@@ -176,24 +228,29 @@ export default function AppRunner({ slug, component, inputs }: {
   useEffect(() => {
     let live = true;
     (async () => {
-      const [a, v] = await Promise.all([
+      const [a, v, font] = await Promise.all([
         apiFetch(`/api/apps/${slug}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Error ${r.status}`)))),
         apiFetch('/api/venues').then((r) => (r.ok ? r.json() : { venues: [] })).catch(() => ({ venues: [] })),
-      ]).catch((e) => { if (live) setError(e instanceof Error ? e.message : 'Could not load the app'); return [null, null]; });
+        loadFontFace(),
+      ]).catch((e) => { if (live) setError(e instanceof Error ? e.message : 'Could not load the app'); return [null, null, '']; });
       if (!live || !a) return;
+      setFontFace(font as string);
       setApp(a as AppDetail);
       const rows: VenueRow[] = ((v?.venues ?? []) as VenueRow[]).map((x) => ({ id: x.id, name: x.name }));
       setVenues(rows);
-      if (rows.length && !venueRef.current) setVenueId(rows[0].id);
+      if (rows.length && !venueRef.current) {
+        const remembered = sharedRef.current;
+        setVenueId(remembered && rows.some((r) => r.id === remembered) ? remembered : rows[0].id);
+      }
     })();
     return () => { live = false; };
   }, [slug]);
 
   // The whole document the sandbox runs: runtime first, then the app's markup.
   const srcdoc = useMemo(() => {
-    if (!app?.ui_source) return null;
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${BASE_CSS}</style><script>${HOST_RUNTIME}</script></head><body>${app.ui_source}</body></html>`;
-  }, [app?.ui_source]);
+    if (!app?.ui_source || fontFace === null) return null;
+    return `<!doctype html><html lang="en" data-norm-variant="${variant}"><head><meta charset="utf-8"><style>${fontFace}${HOST_CSS}</style><script>${HOST_RUNTIME}</script></head><body>${app.ui_source}</body></html>`;
+  }, [app?.ui_source, fontFace, variant]);
 
   const post = useCallback((msg: Record<string, unknown>) => {
     iframeRef.current?.contentWindow?.postMessage(msg, '*');
@@ -212,11 +269,13 @@ export default function AppRunner({ slug, component, inputs }: {
             app: { slug: app.slug, name: app.name, version: app.version },
             venueId: venueRef.current || null,
             venues,
+            host: { variant },
             ...startRef.current,
           },
         });
       } else if (m.type === 'norm:resize' && typeof m.height === 'number') {
-        setHeight(Math.min(Math.max(m.height, 120), 4000));
+        // A filling iframe scrolls inside itself; only an inline card grows.
+        if (!fills) setHeight(Math.min(Math.max(m.height, 120), 4000));
       } else if (m.type === 'norm:file-pick') {
         // The host owns the file dialog: the sandbox has no session and
         // cannot upload on its own.
@@ -348,68 +407,118 @@ export default function AppRunner({ slug, component, inputs }: {
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [app, venues, post]);
+  }, [app, venues, post, variant, fills]);
 
   // Venue changes re-init the app rather than reloading the iframe.
   useEffect(() => {
     if (app && venueId) {
-      post({ type: 'norm:init', context: { app: { slug: app.slug, name: app.name, version: app.version }, venueId, venues, ...startRef.current } });
+      post({ type: 'norm:init', context: { app: { slug: app.slug, name: app.name, version: app.version }, venueId, venues, host: { variant }, ...startRef.current } });
     }
-  }, [venueId, app, venues, post]);
+  }, [venueId, app, venues, post, variant]);
 
-  if (error) return <div style={{ padding: '2rem', color: '#c0392b' }}>✗ {error}</div>;
-  if (!app) return <div style={{ padding: '2rem', color: '#888' }}>Loading…</div>;
+  const changeVenue = (id: string) => {
+    setVenueId(id);
+    if (persistVenue) setActiveVenue(id);
+  };
+
+  const pagePad: React.CSSProperties = { padding: '20px 24px 0' };
+
+  if (error || !app) {
+    const state = error
+      ? <PageState kind="error" title="This app didn’t load" detail={error} />
+      : <PageState kind="loading" title="Opening the app…" />;
+    return variant === 'embedded' ? <div className="n-card" style={{ padding: 12 }}>{state}</div> : <div className="n-page">{back && <PageHeader title="" back={back} />}{state}</div>;
+  }
+
+  // The reach line is consent text — what the app can read and do — so a
+  // page shows all of it, in the same words as the consent screen.
+  const writesBlocked = (app.spec.writes?.length ?? 0) > 0 && !app.write_approved;
+  const reach = app.reach.map((r) => r.split(' — ')[0]).join(' · ');
+  const meta = app.builtin
+    ? (app.description || 'Built into Norm')
+    : [`Version ${app.version}`, reach].filter(Boolean).join(' · ');
+  const canShare = !app.builtin && (app.access === 'owner' || app.access === 'edit');
+  const venuePicker = venues.length > 1
+    ? <VenueSelect venues={venues} value={venueId} onChange={changeVenue} />
+    : null;
 
   if (app.missing_permissions.length > 0) {
+    const body = (
+      <PageState
+        kind="error"
+        title="You don’t have the permissions this app needs"
+        detail={<>Missing: <strong>{app.missing_permissions.join(', ')}</strong>. Ask an administrator for access, or for a narrower version of the app.</>}
+      />
+    );
+    return variant === 'embedded'
+      ? <div className="n-card" style={{ padding: 12 }}>{body}</div>
+      : <div className="n-page"><PageHeader title={app.name} back={back} />{body}</div>;
+  }
+
+  const frame = srcdoc ? (
+    <iframe
+      ref={iframeRef}
+      sandbox="allow-scripts"
+      srcDoc={srcdoc}
+      title={app.name}
+      style={fills
+        ? { display: 'block', flex: 1, minHeight: 0, width: '100%', border: 'none', background: 'transparent' }
+        : { display: 'block', width: '100%', height, border: 'none', background: 'transparent' }}
+    />
+  ) : app.ui_source ? null : (
+    <PageState kind="empty" title="This app has no interface yet." />
+  );
+
+  if (variant === 'embedded') {
+    // A card in the conversation: name, venue, and the way to the full page.
     return (
-      <div style={{ padding: '2rem', maxWidth: 560 }}>
-        <h2 style={{ margin: '0 0 0.5rem' }}>{app.icon} {app.name}</h2>
-        <p style={{ color: '#b45309' }}>
-          This app needs permissions you don&rsquo;t have:{' '}
-          <strong>{app.missing_permissions.join(', ')}</strong>. Ask an administrator
-          for access, or for a narrower version of the app.
-        </p>
+      <div className="n-card" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', ...(fills ? { height: '100%' } : {}) }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px 8px 14px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap' }}>
+          <AppIcon app={app} size="inline" />
+          <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{app.name}</span>
+          {writesBlocked && <Badge tone="warn">Writes not approved for you</Badge>}
+          <span style={{ flex: 1 }} />
+          {venuePicker}
+          <Button
+            size="sm"
+            variant="quiet"
+            icon={ExternalLink}
+            onClick={() => window.dispatchEvent(new CustomEvent(OPEN_APP_PAGE_EVENT, { detail: { slug: app.slug } }))}
+          >
+            Open page
+          </Button>
+        </div>
+        {frame}
       </div>
     );
   }
 
+  // page / standalone: the app fills the content area under one page header,
+  // like Orders — no box around it, no centred column.
   return (
-    <div style={{ maxWidth: 1080, margin: '0 auto', padding: '1rem' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem' }}>{app.icon} {app.name}</h2>
-        <span style={{ fontSize: '0.7rem', color: '#999' }}>{app.builtin ? 'built into Norm' : `v${app.version}`}</span>
-        {venues.length > 1 && (
-          <select value={venueId} onChange={(e) => setVenueId(e.target.value)}
-            style={{ marginLeft: 'auto', font: 'inherit', fontSize: '0.8rem', padding: '3px 8px' }}>
-            {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-          </select>
-        )}
-      </div>
-      {/* The reach line: always visible, same words as the consent screen. */}
-      {app.reach.length > 0 && (
-        <div style={{ fontSize: '0.68rem', color: '#8a8a8a', marginBottom: 8 }}>
-          {app.reach.map((r) => r.split(' — ')[0]).join(' · ')}
-          {(app.spec.writes?.length ?? 0) > 0 && !app.write_approved && (
-            <span style={{ color: '#b45309' }}> · writes not approved for you</span>
-          )}
-        </div>
-      )}
-      {srcdoc ? (
-        <iframe
-          ref={iframeRef}
-          sandbox="allow-scripts"
-          srcDoc={srcdoc}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div style={pagePad}>
+        <PageHeader
           title={app.name}
-          style={{ width: '100%', height, border: '1px solid #e5e2dc', borderRadius: 10, background: '#fff' }}
+          back={back}
+          meta={meta}
+          status={writesBlocked ? <Badge tone="warn">Writes not approved for you</Badge> : undefined}
+          actions={(venuePicker || canShare) ? (
+            <>
+              {venuePicker}
+              {canShare && (
+                <Button size="sm" variant={sharing ? 'quiet' : 'secondary'} icon={Users} aria-expanded={sharing} onClick={() => setSharing((x) => !x)}>
+                  Sharing
+                </Button>
+              )}
+            </>
+          ) : undefined}
         />
-      ) : (
-        <div style={{ padding: '2rem', color: '#888' }}>This app has no interface yet.</div>
-      )}
-      {/* Owners see the sharing panel; the endpoint 403s for anyone else and
-          the panel renders nothing. */}
-      {(app.access === 'owner' || app.access === 'edit') && (
-        <AppSharePanel slug={app.slug} />
-      )}
+        {/* Owners manage who can run it; the endpoint 403s for anyone else and
+            the panel renders nothing. */}
+        {sharing && canShare && <div style={{ marginBottom: 16 }}><AppSharePanel slug={app.slug} /></div>}
+      </div>
+      {frame}
     </div>
   );
 }

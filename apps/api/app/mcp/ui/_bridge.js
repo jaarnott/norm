@@ -31,6 +31,14 @@
   }
 
   function applyTheme(hostContext) {
+    // An app can pin its theme with <html data-theme-lock="light">: the
+    // display block's editors still draw white surfaces inline, so taking the
+    // host's dark theme gave them light text on white.
+    var lock = document.documentElement.getAttribute("data-theme-lock");
+    if (lock) {
+      document.documentElement.setAttribute("data-theme", lock);
+      return;
+    }
     if (hostContext && hostContext.theme) {
       document.documentElement.setAttribute("data-theme", hostContext.theme);
     }

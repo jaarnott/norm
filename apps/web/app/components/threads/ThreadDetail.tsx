@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, memo } from 'react';
-import { Timer } from 'lucide-react';
+import { ChevronRight, Timer, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -19,7 +19,11 @@ function isFullWidthBlock(b: DisplayBlock): boolean {
 import SplitDragHandle from '../layout/SplitDragHandle';
 import { useSplitPane } from '../../hooks/useSplitPane';
 import { getStoredUser } from '../../lib/api';
-import { useComposerAttachments, AttachButton, AttachmentChips, SentAttachmentChips, type SendOptions } from '../chat/AttachmentComposer';
+import { SentAttachmentChips, type SendOptions } from '../chat/AttachmentComposer';
+import Composer from '../chat/Composer';
+import Button from '../ui/Button';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Tabs from '../ui/Tabs';
 
 // -- Tab types --
 
@@ -44,7 +48,7 @@ function ThinkingSteps({ steps, isStreaming }: { steps: string[]; isStreaming: b
   return (
     <div style={{
       margin: '0.5rem 0',
-      borderLeft: '2px solid #e0e0e0',
+      borderLeft: '2px solid var(--line)',
       paddingLeft: '0.75rem',
     }}>
       <button
@@ -53,9 +57,8 @@ function ThinkingSteps({ steps, isStreaming }: { steps: string[]; isStreaming: b
           background: 'none',
           border: 'none',
           cursor: isStreaming ? 'default' : 'pointer',
-          fontSize: '0.75rem',
-          color: '#999',
-          fontFamily: 'inherit',
+          fontSize: 'var(--fs-sm)',
+          color: 'var(--muted)',
           padding: '0.25rem 0',
           display: 'flex',
           alignItems: 'center',
@@ -63,18 +66,11 @@ function ThinkingSteps({ steps, isStreaming }: { steps: string[]; isStreaming: b
         }}
       >
         {isStreaming ? (
-          <span className="thinking-dot" style={{ fontSize: '0.65rem' }}>&#9679;</span>
+          <span className="thinking-dot" aria-hidden style={{ fontSize: '0.65rem' }}>&#9679;</span>
         ) : (
-          <span style={{
-            display: 'inline-block',
-            transition: 'transform 0.15s',
-            transform: showSteps ? 'rotate(90deg)' : 'rotate(0deg)',
-            fontSize: '0.65rem',
-          }}>
-            &#9654;
-          </span>
+          <ChevronRight size={14} aria-hidden style={{ transition: 'transform 0.15s', transform: showSteps ? 'rotate(90deg)' : 'none' }} />
         )}
-        {isStreaming ? 'Working...' : `${steps.length} reasoning step${steps.length > 1 ? 's' : ''}`}
+        {isStreaming ? 'Working…' : `${steps.length} reasoning step${steps.length > 1 ? 's' : ''}`}
       </button>
       {showSteps && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.3rem' }}>
@@ -82,10 +78,9 @@ function ThinkingSteps({ steps, isStreaming }: { steps: string[]; isStreaming: b
             const display = step.replace(/^\[ts:[^\]]+\]\s*/, '');
             return (
               <div key={i} style={{
-                fontSize: '0.8rem',
-                color: '#888',
+                fontSize: 'var(--fs-sm)',
+                color: 'var(--muted)',
                 lineHeight: 1.5,
-                fontStyle: 'italic',
               }}>
                 {display}
               </div>
@@ -114,7 +109,7 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
 
   if (!messages || messages.length === 0) {
     return (
-      <div style={{ padding: '2rem', textAlign: 'center', color: '#bbb', fontSize: '0.85rem' }}>
+      <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--muted)', fontSize: 'var(--fs-base)' }}>
         No messages yet.
       </div>
     );
@@ -145,9 +140,9 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
                 maxWidth: isUser ? '80%' : hasTable ? '100%' : '90%',
                 padding: isUser ? '0.75rem 1rem' : '0.75rem 0',
                 borderRadius: isUser ? '18px 18px 4px 18px' : 0,
-                backgroundColor: isUser ? '#f5f0ea' : 'transparent',
-                color: '#333',
-                fontSize: '1rem',
+                backgroundColor: isUser ? 'var(--selected)' : 'transparent',
+                color: 'var(--text)',
+                fontSize: 'var(--fs-md)',
                 lineHeight: 1.6,
                 wordBreak: 'break-word',
                 whiteSpace: isUser ? 'pre-wrap' : undefined,
@@ -181,35 +176,25 @@ export const ConversationView = memo(function ConversationView({ messages, onWid
 // -- Detail components --
 
 const DetailRow = ({ label, value }: { label: string; value: string }) => (
-  <div style={{ display: 'flex', padding: '0.35rem 0', borderBottom: '1px solid #f5f5f5' }}>
-    <span style={{ width: 120, fontSize: '0.78rem', color: '#888', flexShrink: 0 }}>{label}</span>
-    <span style={{ fontSize: '0.78rem', fontWeight: 500, color: '#222' }}>{value}</span>
+  <div style={{ display: 'flex', padding: '0.4rem 0', borderBottom: '1px solid var(--line-soft)' }}>
+    <span style={{ width: 120, fontSize: 'var(--fs-sm)', color: 'var(--muted)', flexShrink: 0 }}>{label}</span>
+    <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text)' }}>{value}</span>
   </div>
 );
 
-const Btn = ({ label, bg, onClick, 'data-testid': testId }: { label: string; bg: string; onClick: () => void; 'data-testid'?: string }) => (
-  <button data-testid={testId} onClick={onClick} style={{
-    padding: '0.5rem 1.2rem', fontSize: '0.8rem', fontWeight: 600,
-    backgroundColor: bg, color: '#fff', border: 'none', borderRadius: 6,
-    cursor: 'pointer',
-  }}>
-    {label}
-  </button>
-);
+/** A white card on the cream pane: details, the legacy approval, the result. */
+const detailCard: React.CSSProperties = {
+  border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)',
+  padding: '0.85rem 1rem', backgroundColor: 'var(--bg)',
+};
 
 function ProcurementDetails({ task }: { task: ProcurementThread }) {
   return (
     <div style={{ marginBottom: '1rem' }}>
-      <div style={{
-        fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase',
-        letterSpacing: '0.06em', color: '#999', marginBottom: '0.5rem',
-      }}>
+      <div className="n-eyebrow" style={{ marginBottom: '0.5rem' }}>
         Order Details
       </div>
-      <div style={{
-        border: '1px solid #eee', borderRadius: 8,
-        padding: '0.75rem', backgroundColor: '#fafafa',
-      }}>
+      <div style={detailCard}>
         <DetailRow label="Product" value={task.product?.name || '?'} />
         <DetailRow label="Quantity" value={`${task.quantity ?? '?'} ${task.product?.unit ?? 'case'}(s)`} />
         <DetailRow label="Venue" value={task.venue?.name || '?'} />
@@ -222,16 +207,10 @@ function ProcurementDetails({ task }: { task: ProcurementThread }) {
 function HrDetails({ task }: { task: HrThread }) {
   return (
     <div style={{ marginBottom: '1rem' }}>
-      <div style={{
-        fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase',
-        letterSpacing: '0.06em', color: '#999', marginBottom: '0.5rem',
-      }}>
+      <div className="n-eyebrow" style={{ marginBottom: '0.5rem' }}>
         Employee Details
       </div>
-      <div style={{
-        border: '1px solid #eee', borderRadius: 8,
-        padding: '0.75rem', backgroundColor: '#fafafa', marginBottom: '0.75rem',
-      }}>
+      <div style={{ ...detailCard, marginBottom: '0.75rem' }}>
         <DetailRow label="Name" value={task.employee_name || '?'} />
         <DetailRow label="Role" value={task.role || '?'} />
         <DetailRow label="Venue" value={task.venue?.name || '?'} />
@@ -239,15 +218,12 @@ function HrDetails({ task }: { task: HrThread }) {
       </div>
       {task.checklist && task.checklist.length > 0 && (
         <div>
-          <div style={{
-            fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase',
-            letterSpacing: '0.06em', color: '#999', marginBottom: '0.4rem',
-          }}>
+          <div className="n-eyebrow" style={{ marginBottom: '0.4rem' }}>
             Onboarding Checklist
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.15rem 1rem' }}>
             {task.checklist.map((c) => (
-              <span key={c.item} style={{ fontSize: '0.78rem', color: c.done ? '#28a745' : '#bbb' }}>
+              <span key={c.item} style={{ fontSize: 'var(--fs-sm)', color: c.done ? 'var(--ok)' : 'var(--muted)' }}>
                 {c.done ? '\u2713' : '\u2500'} {c.item}
               </span>
             ))}
@@ -270,16 +246,10 @@ function DetailsView({ task, onAction }: { task: Thread; onAction: (threadId: st
 
       {/* Status */}
       <div style={{ marginBottom: '1rem' }}>
-        <div style={{
-          fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase',
-          letterSpacing: '0.06em', color: '#999', marginBottom: '0.5rem',
-        }}>
+        <div className="n-eyebrow" style={{ marginBottom: '0.5rem' }}>
           Status
         </div>
-        <div style={{
-          border: '1px solid #eee', borderRadius: 8,
-          padding: '0.75rem', backgroundColor: '#fafafa',
-        }}>
+        <div style={detailCard}>
           <DetailRow label="Status" value={task.status.replace(/_/g, ' ')} />
           <DetailRow label="Domain" value={task.domain} />
           <DetailRow label="Created" value={new Date(task.created_at).toLocaleString()} />
@@ -290,19 +260,17 @@ function DetailsView({ task, onAction }: { task: Thread; onAction: (threadId: st
       <div style={{ display: 'flex', gap: '0.5rem' }}>
         {task.status === 'awaiting_approval' && (
           <>
-            <Btn data-testid="approve-btn" label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} />
-            <Btn data-testid="reject-btn" label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} />
+            <Button variant="primary" data-testid="approve-btn" onClick={() => onAction(task.id, 'approve')}>Approve</Button>
+            <Button variant="danger" data-testid="reject-btn" onClick={() => onAction(task.id, 'reject')}>Reject</Button>
           </>
         )}
         {task.status === 'approved' && (
-          <Btn
-            label={isProcurement ? 'Submit to Supplier' : 'Submit Setup'}
-            bg="#4d65ff"
-            onClick={() => onAction(task.id, 'submit')}
-          />
+          <Button variant="primary" onClick={() => onAction(task.id, 'submit')}>
+            {isProcurement ? 'Submit to supplier' : 'Submit setup'}
+          </Button>
         )}
         {isTerminal && (
-          <span style={{ fontSize: '0.8rem', color: '#888', fontStyle: 'italic' }}>
+          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
             {task.status === 'submitted'
               ? (isProcurement ? 'Order sent to supplier' : 'Employee setup submitted')
               : 'Rejected'}
@@ -328,55 +296,49 @@ function ToolCallHistory({ toolCalls }: { toolCalls: ToolCallRecord[] }) {
             <div
               onClick={() => setExpandedId(isExpanded ? null : tc.id)}
               style={{
-                padding: '0.4rem 0.75rem',
-                borderRadius: 8,
-                backgroundColor: isFailed ? '#fff5f5' : '#f0f7ff',
-                border: `1px solid ${isFailed ? '#f5c6cb' : '#d4e5f7'}`,
-                fontSize: '0.75rem',
-                color: '#555',
+                padding: '0.35rem 0.7rem',
+                borderRadius: 'var(--radius)',
+                backgroundColor: 'var(--bg)',
+                border: `1px solid ${isFailed ? 'var(--error-bg)' : 'var(--line)'}`,
+                fontSize: 'var(--fs-xs)',
+                color: 'var(--text-soft)',
                 maxWidth: '80%',
                 cursor: 'pointer',
-                display: 'inline-block',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
               }}
             >
-              <span style={{ fontWeight: 600, color: isFailed ? '#c53030' : '#004085' }}>{tc.action}</span>
-              <span style={{ color: '#888', marginLeft: 4 }}>({tc.connector_name})</span>
+              <span style={{ fontWeight: 600, color: isFailed ? 'var(--error)' : 'var(--text)' }}>{tc.action}</span>
+              <span style={{ color: 'var(--muted)' }}>({tc.connector_name})</span>
               {tc.duration_ms != null && (
-                <span style={{ color: '#aaa', marginLeft: 4 }}>{tc.duration_ms}ms</span>
+                <span style={{ color: 'var(--muted)' }}>{tc.duration_ms}ms</span>
               )}
-              {isFailed && (
-                <span style={{
-                  fontSize: '0.65rem', fontWeight: 600, color: '#c53030',
-                  backgroundColor: '#fed7d7', padding: '1px 5px', borderRadius: 3, marginLeft: 6,
-                }}>FAILED</span>
-              )}
-              <span style={{
-                display: 'inline-block', marginLeft: 6, fontSize: '0.6rem', color: '#aaa',
-                transition: 'transform 0.15s', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-              }}>&#9654;</span>
+              {isFailed && <Badge tone="error">Failed</Badge>}
+              <ChevronRight size={12} aria-hidden style={{ color: 'var(--icon)', transition: 'transform 0.15s', transform: isExpanded ? 'rotate(90deg)' : 'none' }} />
             </div>
             {isExpanded && (
               <div style={{
                 marginTop: '0.3rem',
                 padding: '0.6rem 0.75rem',
-                borderRadius: 6,
-                backgroundColor: '#fafafa',
-                border: '1px solid #eee',
+                borderRadius: 'var(--radius)',
+                backgroundColor: 'var(--bg)',
+                border: '1px solid var(--line)',
                 maxWidth: '80%',
-                fontSize: '0.75rem',
+                fontSize: 'var(--fs-xs)',
               }}>
                 {tc.error_message && (
-                  <div style={{ color: '#c53030', marginBottom: '0.4rem' }}>
+                  <div style={{ color: 'var(--error)', marginBottom: '0.4rem' }}>
                     <span style={{ fontWeight: 600 }}>Error: </span>{tc.error_message}
                   </div>
                 )}
                 {tc.rendered_request && (
                   <div style={{ marginBottom: '0.4rem' }}>
-                    <div style={{ fontWeight: 600, color: '#555', marginBottom: '0.2rem' }}>Rendered Request</div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-soft)', marginBottom: '0.2rem' }}>Rendered Request</div>
                     <pre style={{
                       padding: '0.5rem',
-                      backgroundColor: '#1a202c',
-                      color: '#e2e8f0',
+                      backgroundColor: 'var(--code-bg)',
+                      color: 'var(--code-text)',
                       borderRadius: 4,
                       fontSize: '0.72rem',
                       overflow: 'auto',
@@ -389,11 +351,11 @@ function ToolCallHistory({ toolCalls }: { toolCalls: ToolCallRecord[] }) {
                 )}
                 {tc.input_params && (
                   <div style={{ marginBottom: '0.4rem' }}>
-                    <div style={{ fontWeight: 600, color: '#555', marginBottom: '0.2rem' }}>Input</div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-soft)', marginBottom: '0.2rem' }}>Input</div>
                     <pre style={{
                       padding: '0.5rem',
-                      backgroundColor: '#1a202c',
-                      color: '#e2e8f0',
+                      backgroundColor: 'var(--code-bg)',
+                      color: 'var(--code-text)',
                       borderRadius: 4,
                       fontSize: '0.72rem',
                       overflow: 'auto',
@@ -406,11 +368,11 @@ function ToolCallHistory({ toolCalls }: { toolCalls: ToolCallRecord[] }) {
                 )}
                 {tc.result_payload && (
                   <div>
-                    <div style={{ fontWeight: 600, color: '#555', marginBottom: '0.2rem' }}>Response</div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-soft)', marginBottom: '0.2rem' }}>Response</div>
                     <pre style={{
                       padding: '0.5rem',
-                      backgroundColor: '#1a202c',
-                      color: '#e2e8f0',
+                      backgroundColor: 'var(--code-bg)',
+                      color: 'var(--code-text)',
                       borderRadius: 4,
                       fontSize: '0.72rem',
                       overflow: 'auto',
@@ -454,23 +416,25 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
         <ToolCallHistory toolCalls={task.tool_calls.filter(tc => tc.status === 'executed' || tc.status === 'failed')} />
       )}
       {(task.status === 'awaiting_approval' || task.status === 'approved') && (
-        <div style={{ marginTop: '1rem', border: '1px solid #eee', borderRadius: 8, padding: '0.85rem', backgroundColor: '#fafafa' }}>
+        <div style={{ ...detailCard, marginTop: '1rem' }}>
           {isProcurement && (() => { const t = task as ProcurementThread; return (<><DetailRow label="Product" value={t.product?.name || '?'} /><DetailRow label="Quantity" value={`${t.quantity ?? '?'} ${t.product?.unit ?? 'case'}(s)`} /><DetailRow label="Venue" value={t.venue?.name || '?'} />{t.supplier && <DetailRow label="Supplier" value={t.supplier} />}</>); })()}
           {isHr && (() => { const t = task as HrThread; return (<><DetailRow label="Name" value={t.employee_name || '?'} /><DetailRow label="Role" value={t.role || '?'} /><DetailRow label="Venue" value={t.venue?.name || '?'} /><DetailRow label="Start date" value={t.start_date || '?'} /></>); })()}
-          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
-            {task.status === 'awaiting_approval' && (<><Btn data-testid="approve-btn" label="Approve" bg="#28a745" onClick={() => onAction(task.id, 'approve')} /><Btn data-testid="reject-btn" label="Reject" bg="#dc3545" onClick={() => onAction(task.id, 'reject')} /></>)}
-            {task.status === 'approved' && (<Btn label={isProcurement ? 'Submit to Supplier' : 'Submit Setup'} bg="#4d65ff" onClick={() => onAction(task.id, 'submit')} />)}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.75rem' }}>
+            {task.status === 'awaiting_approval' && (<><Button variant="danger" data-testid="reject-btn" onClick={() => onAction(task.id, 'reject')}>Reject</Button><Button variant="primary" data-testid="approve-btn" onClick={() => onAction(task.id, 'approve')}>Approve</Button></>)}
+            {task.status === 'approved' && (<Button variant="primary" onClick={() => onAction(task.id, 'submit')}>{isProcurement ? 'Submit to supplier' : 'Submit setup'}</Button>)}
           </div>
         </div>
       )}
       {isTerminal && (
-        <div style={{ marginTop: '1rem', border: '1px solid #eee', borderRadius: 8, padding: '0.85rem', backgroundColor: '#fafafa' }}>
+        <div style={{ ...detailCard, marginTop: '1rem' }}>
           {isProcurement && (() => { const t = task as ProcurementThread; return (<><DetailRow label="Product" value={t.product?.name || '?'} /><DetailRow label="Quantity" value={`${t.quantity ?? '?'} ${t.product?.unit ?? 'case'}(s)`} /><DetailRow label="Venue" value={t.venue?.name || '?'} />{t.supplier && <DetailRow label="Supplier" value={t.supplier} />}</>); })()}
           {isHr && (() => { const t = task as HrThread; return (<><DetailRow label="Name" value={t.employee_name || '?'} /><DetailRow label="Role" value={t.role || '?'} /><DetailRow label="Venue" value={t.venue?.name || '?'} /><DetailRow label="Start date" value={t.start_date || '?'} /></>); })()}
           {task.status === 'submitted' && task.integration_run ? (
-            <div style={{ marginTop: '0.75rem', borderTop: '1px solid #eee', paddingTop: '0.75rem' }}>
-              <div style={{ fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: task.integration_run.status === 'success' ? '#28a745' : '#dc3545', marginBottom: '0.4rem' }}>
-                {task.integration_run.status === 'success' ? 'Submitted successfully' : 'Submission failed'}
+            <div style={{ marginTop: '0.75rem', borderTop: '1px solid var(--line)', paddingTop: '0.75rem' }}>
+              <div style={{ marginBottom: '0.4rem' }}>
+                <Badge tone={task.integration_run.status === 'success' ? 'ok' : 'error'}>
+                  {task.integration_run.status === 'success' ? 'Submitted successfully' : 'Submission failed'}
+                </Badge>
               </div>
               {task.integration_run.reference && <DetailRow label="Reference" value={task.integration_run.reference} />}
               <DetailRow label="Connector" value={task.integration_run.connector} />
@@ -479,7 +443,7 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
               {task.approval && (<><DetailRow label="Approved by" value={task.approval.performed_by} /><DetailRow label="Approved at" value={new Date(task.approval.performed_at).toLocaleString()} /></>)}
             </div>
           ) : (
-            <div style={{ marginTop: '0.6rem', fontSize: '0.8rem', color: task.status === 'submitted' ? '#28a745' : '#888', fontStyle: 'italic' }}>
+            <div style={{ marginTop: '0.6rem', fontSize: 'var(--fs-sm)', color: task.status === 'submitted' ? 'var(--ok)' : 'var(--muted)' }}>
               {task.status === 'submitted' ? (isProcurement ? 'Order sent to supplier' : 'Employee setup submitted') : 'Rejected'}
             </div>
           )}
@@ -489,9 +453,9 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
         </div>
       )}
       {task.integration_run?.status === 'failed' && task.status === 'approved' && (
-        <div style={{ marginTop: '1rem', border: '1px solid #f5c6cb', borderRadius: 8, padding: '0.85rem', backgroundColor: '#fff5f5' }}>
-          <div style={{ fontSize: '0.8rem', color: '#dc3545', marginBottom: '0.5rem' }}>Submission failed: {task.integration_run.error || 'Unknown error'}</div>
-          <Btn label="Retry" bg="#dc3545" onClick={() => onAction(task.id, 'submit')} />
+        <div style={{ ...detailCard, marginTop: '1rem', borderColor: 'var(--error-bg)' }}>
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)', marginBottom: '0.6rem' }}>Submission failed: {task.integration_run.error || 'Unknown error'}</div>
+          <Button variant="secondary" onClick={() => onAction(task.id, 'submit')}>Retry</Button>
         </div>
       )}
     </>
@@ -501,56 +465,15 @@ function ConversationExtras({ task, loading, onAction, isProcurement, isHr, isTe
 // -- Main component --
 
 const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend: (msg: string, opts?: SendOptions) => void; loading: boolean; highlight?: boolean }) {
-  const [value, setValue] = useState('');
-  const att = useComposerAttachments();
-  // A message needs text (routing keys off it); attachments ride alongside.
-  const submit = () => {
-    if (!value.trim()) return;
-    onSend(value, { attachments: att.items });
-    setValue('');
-    att.clear();
-  };
   return (
-    <div style={{ padding: '12px 24px 24px' }}>
-      <div style={{ maxWidth: 768, margin: '0 auto' }}>
-        <AttachmentChips items={att.items} remove={att.remove} uploading={att.uploading} />
-      </div>
-      <form onSubmit={e => { e.preventDefault(); submit(); }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
-        <AttachButton onPick={att.addFiles} disabled={loading} />
-        <textarea
-          data-testid="message-input"
-          ref={el => {
-            if (el) { el.style.height = 'auto'; const h = Math.min(el.scrollHeight, 150); el.style.height = h + 'px'; el.style.overflow = h >= 150 ? 'auto' : 'hidden'; }
-          }}
-          value={value}
-          onChange={e => {
-            setValue(e.target.value);
-            const el = e.target; el.style.height = 'auto'; const h = Math.min(el.scrollHeight, 150); el.style.height = h + 'px'; el.style.overflow = h >= 150 ? 'auto' : 'hidden';
-          }}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          placeholder="Message Norm..."
-          rows={1}
-          style={{
-            flex: 1, minHeight: 50, maxHeight: 150,
-            padding: '14px 1.5rem', fontSize: '1rem',
-            border: highlight ? '1px solid #c4a882' : '1px solid #ddd',
-            borderRadius: 24, outline: 'none', fontFamily: 'inherit',
-            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'hidden',
-          }}
-        />
-        <button data-testid="send-btn" type="submit" disabled={loading} style={{
-          height: 50, padding: '0 1rem', fontSize: '0.8rem', fontWeight: 600,
-          backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 24,
-          cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-        }}>
-          {loading ? '...' : 'Send'}
-        </button>
-      </form>
+    <div className="n-composer-dock">
+      <Composer
+        onSend={(text, attachments) => onSend(text, { attachments })}
+        loading={loading}
+        highlight={highlight}
+        inputTestId="message-input"
+        sendTestId="send-btn"
+      />
     </div>
   );
 });
@@ -560,11 +483,7 @@ const InputBar = memo(function InputBar({ onSend, loading, highlight }: { onSend
 // ---------------------------------------------------------------------------
 
 const SCHEDULE_LABELS: Record<string, string> = { manual: 'Manual', hourly: 'Hourly', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
-const AT_STATUS: Record<string, { bg: string; color: string }> = {
-  active: { bg: '#d1fae5', color: '#065f46' },
-  paused: { bg: '#fef3c7', color: '#92400e' },
-  draft: { bg: '#f3f4f6', color: '#6b7280' },
-};
+const AT_STATUS: Record<string, BadgeTone> = { active: 'ok', paused: 'warn', draft: 'neutral' };
 const DAYS_OF_WEEK = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
 function formatAtSchedule(type: string, config: Record<string, unknown>): string {
@@ -597,7 +516,7 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
   const [toolFilterInput, setToolFilterInput] = useState('');
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
 
-  const ats = AT_STATUS[at.status] || AT_STATUS.draft;
+  const statusTone = AT_STATUS[at.status] ?? 'neutral';
 
   const handleRun = () => {
     onRun(at.prompt);
@@ -623,135 +542,132 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
     } finally { setSaving(false); }
   };
 
+  const fieldLabel = (text: string) => <div className="n-eyebrow" style={{ marginBottom: 4 }}>{text}</div>;
+  const readBox: React.CSSProperties = {
+    padding: '8px 10px', backgroundColor: 'var(--bg)', border: '1px solid var(--line)',
+    borderRadius: 'var(--radius)', color: 'var(--text)', lineHeight: 1.5,
+  };
+  const toolChip: React.CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 999,
+    fontSize: 'var(--fs-xs)', fontWeight: 500, background: 'var(--line-soft)', color: 'var(--text-soft)',
+  };
+
   return (
-    <div style={{ padding: '0.5rem 1.5rem', borderBottom: '1px solid #f3f4f6', backgroundColor: '#fafafa' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-        <Timer size={14} strokeWidth={2} style={{ color: '#9ca3af' }} />
-        <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6b7280' }}>Saved Thread</span>
-        <span style={{ fontSize: '0.65rem', fontWeight: 600, padding: '1px 8px', borderRadius: 10, backgroundColor: ats.bg, color: ats.color }}>{at.status}</span>
-        <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>{formatAtSchedule(at.schedule_type, at.schedule_config)}</span>
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Timer size={16} strokeWidth={1.75} aria-hidden style={{ color: 'var(--icon)' }} />
+        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>Saved thread</span>
+        <Badge tone={statusTone}>{at.status.charAt(0).toUpperCase() + at.status.slice(1)}</Badge>
+        <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{formatAtSchedule(at.schedule_type, at.schedule_config)}</span>
         {(at.waiting_for_approval ?? 0) > 0 && (
-          <span style={{ fontSize: '0.65rem', fontWeight: 600, padding: '1px 8px', borderRadius: 10, backgroundColor: '#e8daef', color: '#6c3483' }}>
-            A run is waiting for your approval — see its card below
-          </span>
+          <Badge tone="warn">A run is waiting for your approval — see its card below</Badge>
         )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.3rem' }}>
-          <button onClick={handleRun} style={{
-            padding: '3px 10px', fontSize: '0.68rem', fontWeight: 600,
-            border: 'none', borderRadius: 6, backgroundColor: '#111', color: '#fff',
-            cursor: 'pointer', fontFamily: 'inherit',
-          }}>Run Now</button>
-          <button onClick={handleToggle} disabled={toggling} style={{
-            padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
-            border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: '#fff', color: '#6b7280',
-            cursor: 'pointer', fontFamily: 'inherit',
-          }}>{at.status === 'active' ? 'Pause' : 'Activate'}</button>
-          <button onClick={() => setExpanded(!expanded)} style={{
-            padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
-            border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: expanded ? '#f3f4f6' : '#fff', color: '#6b7280',
-            cursor: 'pointer', fontFamily: 'inherit',
-          }}>Settings</button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          <Button size="sm" variant="primary" onClick={handleRun}>Run now</Button>
+          <Button size="sm" variant="secondary" onClick={handleToggle} disabled={toggling}>{at.status === 'active' ? 'Pause' : 'Activate'}</Button>
+          <Button size="sm" variant="quiet" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>Settings</Button>
         </div>
       </div>
 
       {expanded && (
-        <div style={{ marginTop: '0.5rem', fontSize: '0.78rem' }}>
+        <div style={{ marginTop: 12, fontSize: 'var(--fs-sm)', display: 'flex', flexDirection: 'column', gap: 10 }}>
           {!editing ? (
             <>
-              <div style={{ marginBottom: '0.4rem' }}>
-                <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Prompt</span>
-                <div style={{ padding: '0.4rem 0.5rem', backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, marginTop: 2, whiteSpace: 'pre-wrap', color: '#374151', lineHeight: 1.5 }}>
-                  {at.prompt}
-                </div>
+              <div>
+                {fieldLabel('Prompt')}
+                <div style={{ ...readBox, whiteSpace: 'pre-wrap' }}>{at.prompt}</div>
               </div>
               {at.task_config && Object.keys(at.task_config).length > 0 && (
-                <div style={{ marginBottom: '0.4rem' }}>
-                  <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Config</span>
-                  <pre style={{ padding: '0.4rem 0.5rem', backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, marginTop: 2, fontSize: '0.72rem', margin: 0, overflow: 'auto' }}>
+                <div>
+                  {fieldLabel('Config')}
+                  <pre style={{ ...readBox, margin: 0, fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', overflow: 'auto' }}>
                     {JSON.stringify(at.task_config, null, 2)}
                   </pre>
                 </div>
               )}
               {at.thread_summary && (
-                <div style={{ marginBottom: '0.4rem' }}>
-                  <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Summary</span>
-                  <div style={{ padding: '0.4rem 0.5rem', backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, marginTop: 2, color: '#374151' }}>
-                    {at.thread_summary}
-                  </div>
+                <div>
+                  {fieldLabel('Summary')}
+                  <div style={readBox}>{at.thread_summary}</div>
                 </div>
               )}
-              <div style={{ marginBottom: '0.4rem' }}>
-                <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Tools</span>
-                <div style={{ padding: '0.4rem 0.5rem', backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: '0.25rem', alignItems: 'center' }}>
+              <div>
+                {fieldLabel('Tools')}
+                <div style={{ ...readBox, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
                   {at.tool_filter && at.tool_filter.length > 0 ? (
-                    at.tool_filter.map(action => (
-                      <span key={action} style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: 10, backgroundColor: '#eef2ff', color: '#4338ca', fontWeight: 500 }}>{action}</span>
-                    ))
+                    at.tool_filter.map(action => <span key={action} style={toolChip}>{action}</span>)
                   ) : (
-                    <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>All tools (no filter)</span>
+                    <span style={{ color: 'var(--muted)' }}>All tools (no filter)</span>
                   )}
                 </div>
               </div>
-              <button onClick={() => {
-                setForm({ prompt: at.prompt, schedule_type: at.schedule_type, schedule_config: { ...at.schedule_config }, tool_filter: at.tool_filter ? [...at.tool_filter] : null });
-                setEditing(true);
-                if (at.agent_slug && agentTools.length === 0) {
-                  import('../../lib/api').then(({ apiFetch }) =>
-                    apiFetch('/api/playbooks/tools/all')
-                      .then(r => r.ok ? r.json() : null)
-                      .then(d => { if (d?.tools) setAgentTools(d.tools); })
-                      .catch(() => {})
-                  );
-                }
-              }} style={{
-                padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500,
-                border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: '#fff', color: '#374151',
-                cursor: 'pointer', fontFamily: 'inherit', marginTop: '0.3rem',
-              }}>Edit</button>
+              <div>
+                <Button size="sm" variant="secondary" onClick={() => {
+                  setForm({ prompt: at.prompt, schedule_type: at.schedule_type, schedule_config: { ...at.schedule_config }, tool_filter: at.tool_filter ? [...at.tool_filter] : null });
+                  setEditing(true);
+                  if (at.agent_slug && agentTools.length === 0) {
+                    import('../../lib/api').then(({ apiFetch }) =>
+                      apiFetch('/api/playbooks/tools/all')
+                        .then(r => r.ok ? r.json() : null)
+                        .then(d => { if (d?.tools) setAgentTools(d.tools); })
+                        .catch(() => {})
+                    );
+                  }
+                }}>Edit</Button>
+              </div>
             </>
           ) : (
             <>
-              <div style={{ marginBottom: '0.4rem' }}>
-                <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Prompt</span>
+              <div>
+                <label className="n-eyebrow" style={{ display: 'block', marginBottom: 4 }} htmlFor={`at-prompt-${at.id}`}>Prompt</label>
                 <textarea
+                  id={`at-prompt-${at.id}`}
+                  className="n-input"
                   value={form.prompt}
                   onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))}
                   rows={4}
-                  style={{ width: '100%', padding: '6px 10px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6, resize: 'vertical', marginTop: 2, boxSizing: 'border-box' }}
+                  style={{ width: '100%' }}
                 />
               </div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Schedule</span>
-                <select value={form.schedule_type} onChange={e => setForm(f => ({ ...f, schedule_type: e.target.value }))} style={{ padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span className="n-eyebrow">Schedule</span>
+                <select className="n-select" aria-label="Schedule" value={form.schedule_type} onChange={e => setForm(f => ({ ...f, schedule_type: e.target.value }))}>
                   {Object.entries(SCHEDULE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
                 {['daily', 'weekly', 'monthly'].includes(form.schedule_type) && (
-                  <input type="time" value={`${String((form.schedule_config.hour as number) ?? 9).padStart(2, '0')}:${String((form.schedule_config.minute as number) ?? 0).padStart(2, '0')}`} onChange={e => { const [h, m] = e.target.value.split(':').map(Number); setForm(f => ({ ...f, schedule_config: { ...f.schedule_config, hour: h, minute: m } })); }} style={{ padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6 }} />
+                  <input className="n-input" aria-label="Time" type="time" value={`${String((form.schedule_config.hour as number) ?? 9).padStart(2, '0')}:${String((form.schedule_config.minute as number) ?? 0).padStart(2, '0')}`} onChange={e => { const [h, m] = e.target.value.split(':').map(Number); setForm(f => ({ ...f, schedule_config: { ...f.schedule_config, hour: h, minute: m } })); }} />
                 )}
                 {form.schedule_type === 'weekly' && (
-                  <select value={(form.schedule_config.day_of_week as string) || 'monday'} onChange={e => setForm(f => ({ ...f, schedule_config: { ...f.schedule_config, day_of_week: e.target.value } }))} style={{ padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6, textTransform: 'capitalize' }}>
+                  <select className="n-select" aria-label="Day" value={(form.schedule_config.day_of_week as string) || 'monday'} onChange={e => setForm(f => ({ ...f, schedule_config: { ...f.schedule_config, day_of_week: e.target.value } }))}>
                     {DAYS_OF_WEEK.map(d => <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>)}
                   </select>
                 )}
               </div>
               {/* Tool Filter */}
-              <div style={{ marginBottom: '0.4rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: 4 }}>
-                  <span style={{ fontWeight: 600, color: '#6b7280', fontSize: '0.68rem', textTransform: 'uppercase' }}>Tool Filter</span>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span className="n-eyebrow">Tool filter</span>
                   {form.tool_filter ? (
-                    <button onClick={() => setForm(f => ({ ...f, tool_filter: null }))} style={{ fontSize: '0.65rem', color: '#6366f1', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>Clear filter (use all tools)</button>
+                    <button type="button" className="n-btn n-btn--link" style={{ fontSize: 'var(--fs-xs)' }} onClick={() => setForm(f => ({ ...f, tool_filter: null }))}>Clear filter (use all tools)</button>
                   ) : (
-                    <button onClick={() => setForm(f => ({ ...f, tool_filter: [] }))} style={{ fontSize: '0.65rem', color: '#6366f1', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>Add filter</button>
+                    <button type="button" className="n-btn n-btn--link" style={{ fontSize: 'var(--fs-xs)' }} onClick={() => setForm(f => ({ ...f, tool_filter: [] }))}>Add filter</button>
                   )}
                 </div>
                 {form.tool_filter !== null && (
                   <>
                     {form.tool_filter.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginBottom: 4 }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
                         {form.tool_filter.map(action => (
-                          <span key={action} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.68rem', padding: '2px 8px', borderRadius: 10, backgroundColor: '#eef2ff', color: '#4338ca', fontWeight: 500 }}>
+                          <span key={action} style={toolChip}>
                             {action}
-                            <span onClick={() => { const next = form.tool_filter!.filter(a => a !== action); setForm(f => ({ ...f, tool_filter: next.length > 0 ? next : [] })); }} style={{ cursor: 'pointer', fontWeight: 700, fontSize: '0.72rem', lineHeight: 1 }}>&times;</span>
+                            <button
+                              type="button"
+                              aria-label={`Remove ${action}`}
+                              onClick={() => { const next = form.tool_filter!.filter(a => a !== action); setForm(f => ({ ...f, tool_filter: next.length > 0 ? next : [] })); }}
+                              style={{ display: 'inline-flex', padding: 0, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--icon)' }}
+                            >
+                              <X size={12} aria-hidden />
+                            </button>
                           </span>
                         ))}
                       </div>
@@ -759,6 +675,8 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
                     <div style={{ position: 'relative' }}>
                       <input
                         type="text"
+                        className="n-input"
+                        aria-label="Search tools to add"
                         value={toolFilterInput}
                         onChange={e => { setToolFilterInput(e.target.value); setToolDropdownOpen(true); }}
                         onFocus={() => {
@@ -773,8 +691,8 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
                           }
                         }}
                         onBlur={() => setTimeout(() => setToolDropdownOpen(false), 150)}
-                        placeholder={agentTools.length > 0 ? 'Search tools to add...' : 'Loading tools...'}
-                        style={{ width: '100%', padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit', border: '1px solid #e5e7eb', borderRadius: 6, boxSizing: 'border-box' }}
+                        placeholder={agentTools.length > 0 ? 'Search tools to add…' : 'Loading tools…'}
+                        style={{ width: '100%' }}
                       />
                       {toolDropdownOpen && agentTools.length > 0 && (() => {
                         const selected = new Set(form.tool_filter || []);
@@ -783,22 +701,21 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
                           .filter(t => !toolFilterInput || t.action.toLowerCase().includes(toolFilterInput.toLowerCase()) || t.description.toLowerCase().includes(toolFilterInput.toLowerCase()));
                         if (filtered.length === 0) return null;
                         return (
-                          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, maxHeight: 180, overflowY: 'auto', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)', marginTop: 2 }}>
+                          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, maxHeight: 180, overflowY: 'auto', backgroundColor: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', boxShadow: '0 4px 12px rgba(26,26,26,0.08)', marginTop: 2 }}>
                             {filtered.map(t => (
                               <div
                                 key={t.action}
+                                className="n-option"
                                 onMouseDown={e => {
                                   e.preventDefault();
                                   setForm(f => ({ ...f, tool_filter: [...(f.tool_filter || []), t.action] }));
                                   setToolFilterInput('');
                                 }}
-                                style={{ padding: '5px 10px', cursor: 'pointer', fontSize: '0.78rem', borderBottom: '1px solid #f5f5f5' }}
-                                onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f0f4ff')}
-                                onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#fff')}
+                                style={{ borderBottom: '1px solid var(--line-soft)' }}
                               >
                                 <span style={{ fontWeight: 500 }}>{t.action}</span>
-                                <span style={{ color: '#aaa', fontSize: '0.68rem', marginLeft: 6 }}>[{t.connector} · {t.method}]</span>
-                                {t.description && <div style={{ fontSize: '0.68rem', color: '#888', marginTop: 1 }}>{t.description}</div>}
+                                <span style={{ color: 'var(--muted)', fontSize: 'var(--fs-xs)', marginLeft: 6 }}>[{t.connector} · {t.method}]</span>
+                                {t.description && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 1 }}>{t.description}</div>}
                               </div>
                             ))}
                           </div>
@@ -808,17 +725,9 @@ function AutomatedTaskHeader({ at, onUpdate, onRun }: {
                   </>
                 )}
               </div>
-              <div style={{ display: 'flex', gap: '0.3rem' }}>
-                <button onClick={handleSave} disabled={saving} style={{
-                  padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600,
-                  border: 'none', borderRadius: 6, backgroundColor: '#111', color: '#fff',
-                  cursor: 'pointer', fontFamily: 'inherit',
-                }}>{saving ? 'Saving...' : 'Save'}</button>
-                <button onClick={() => setEditing(false)} style={{
-                  padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500,
-                  border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: '#fff', color: '#6b7280',
-                  cursor: 'pointer', fontFamily: 'inherit',
-                }}>Cancel</button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <Button size="sm" variant="primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+                <Button size="sm" variant="secondary" onClick={() => setEditing(false)}>Cancel</Button>
               </div>
             </>
           )}
@@ -868,32 +777,20 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
     }
   }
   const hasSplitLayout = !!latestFullWidthBlock;
+  // An app fills the top pane and scrolls inside itself (its own dialogs then
+  // open in view); every other full-width component scrolls with the pane.
+  const fillsPane = latestFullWidthBlock?.component === 'app_runner';
 
   // --- Shared UI pieces ---
 
   const tabsRow = (
-    <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #eee' }}>
-      {TABS.map(tab => (
-        <button
-          key={tab.key}
-          data-testid={`tab-${tab.key}`}
-          onClick={() => setActiveTab(tab.key)}
-          style={{
-            padding: '0.45rem 1rem',
-            fontSize: '0.78rem',
-            fontWeight: activeTab === tab.key ? 600 : 400,
-            color: activeTab === tab.key ? '#111' : '#999',
-            backgroundColor: 'transparent',
-            border: 'none',
-            borderBottom: activeTab === tab.key ? '2px solid #111' : '2px solid transparent',
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-            marginBottom: -1,
-          }}
-        >
-          {tab.label}
-        </button>
-      ))}
+    <div style={{ padding: '0 24px' }}>
+      <Tabs
+        label="Thread view"
+        items={TABS.map(t => ({ id: t.key, label: t.label, testId: `tab-${t.key}` }))}
+        value={activeTab}
+        onChange={(id) => setActiveTab(id as TabKey)}
+      />
     </div>
   );
 
@@ -901,19 +798,19 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
 
   return (
     <div ref={containerRef} style={{
-      height: '100dvh',
+      height: '100%',
       display: 'flex',
       flexDirection: 'column',
-      backgroundColor: '#fff',
+      backgroundColor: 'var(--canvas)',
       userSelect: isDragging ? 'none' : undefined,
     }}>
-      {/* Header — minimal: only AutomatedTaskHeader + admin tabs if needed */}
+      {/* Header — minimal: only AutomatedTaskHeader + admin tabs if needed.
+          The tab strip draws its own rule; the saved-thread strip gets one
+          only when there are no tabs under it. */}
       {!hasSplitLayout && (
-        <div data-split-header style={{
-          ...(thread.automated_task || isAdmin ? { borderBottom: '1px solid #eee' } : {}),
-        }}>
+        <div data-split-header>
           {thread.automated_task && (
-            <div style={{ padding: '0.5rem 1.5rem 0' }}>
+            <div style={{ padding: '12px 24px', ...(isAdmin ? {} : { borderBottom: '1px solid var(--line)' }) }}>
               <AutomatedTaskHeader at={thread.automated_task} onUpdate={() => onAction(thread.id, 'reload')} onRun={onSend || (() => {})} />
             </div>
           )}
@@ -929,11 +826,15 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
           <div style={{
             height: topPaneHeight ?? '50%',
             flexShrink: 0,
-            overflowY: 'auto',
+            overflowY: fillsPane ? 'hidden' : 'auto',
+            display: 'flex',
+            flexDirection: 'column',
           }}>
-            <div style={{ padding: '0.75rem 0.5rem 0.75rem 1.5rem', minHeight: '100%' }}>
+            <div style={fillsPane
+              ? { flex: 1, minHeight: 0, padding: '12px 24px', display: 'flex', flexDirection: 'column' }
+              : { padding: '0.75rem 0.5rem 0.75rem 1.5rem', minHeight: '100%' }}>
               <DisplayBlockRenderer
-                block={latestFullWidthBlock!}
+                block={fillsPane ? { ...latestFullWidthBlock!, props: { ...latestFullWidthBlock!.props, fill: true } } : latestFullWidthBlock!}
                 onAction={onWidgetAction ? (action) => onWidgetAction(thread.id, action) : undefined}
                 threadId={thread.id}
               />

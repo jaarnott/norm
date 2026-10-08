@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
-import { useComposerAttachments, AttachButton, AttachmentChips, type SendOptions } from '../chat/AttachmentComposer';
+import Composer from '../chat/Composer';
+import type { SendOptions } from '../chat/AttachmentComposer';
 
 interface HomePanelProps {
   onSend: (message: string, opts?: SendOptions) => void;
@@ -9,100 +9,33 @@ interface HomePanelProps {
 }
 
 export default function HomePanel({ onSend, loading }: HomePanelProps) {
-  const [input, setInput] = useState('');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const att = useComposerAttachments();
-
-  const submit = useCallback(() => {
-    if (!input.trim()) return;
-    onSend(input, { attachments: att.items });
-    setInput('');
-    att.clear();
-  }, [onSend, input, att]);
-
-  const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value);
-  }, []);
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      submit();
-    }
-  }, [submit]);
-
   return (
-    <div className="full-height" style={{
+    <div style={{
+      height: '100%',
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: '#faf8f5',
+      padding: '0 16px',
+      backgroundColor: 'var(--canvas)',
     }}>
-      <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-        <div style={{ fontSize: '1.8rem', fontWeight: 700, color: '#111', marginBottom: '0.25rem' }}>
+      <div style={{ textAlign: 'center', marginBottom: 24 }}>
+        <h1 className="n-page-title" style={{ margin: '0 0 4px', fontSize: 'var(--fs-2xl)', fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--text)' }}>
           Norm
-        </div>
-        <div style={{ fontSize: '1rem', color: '#999' }}>
+        </h1>
+        <div style={{ fontSize: 'var(--fs-md)', color: 'var(--muted)' }}>
           AI Operations Control — What would you like to do?
         </div>
       </div>
 
-      <div style={{ width: '100%', maxWidth: 768, padding: '0 1.5rem' }}>
-        <AttachmentChips items={att.items} remove={att.remove} uploading={att.uploading} />
-      </div>
-      <form onSubmit={e => { e.preventDefault(); submit(); }} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', width: '100%', maxWidth: 768, padding: '0 1.5rem' }}>
-        <AttachButton onPick={att.addFiles} disabled={loading} />
-        <textarea
-          data-testid="home-message-input"
-          ref={el => {
-            (textareaRef as React.MutableRefObject<HTMLTextAreaElement | null>).current = el;
-            if (el) { el.style.height = 'auto'; const h = Math.min(el.scrollHeight, 150); el.style.height = h + 'px'; el.style.overflow = h >= 150 ? 'auto' : 'hidden'; }
-          }}
-          value={input}
-          onChange={e => {
-            handleInput(e);
-            const el = e.target; el.style.height = 'auto'; const h = Math.min(el.scrollHeight, 150); el.style.height = h + 'px'; el.style.overflow = h >= 150 ? 'auto' : 'hidden';
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder="Get Norm to do it"
-          rows={1}
-          style={{
-            flex: 1,
-            minHeight: 50,
-            maxHeight: 150,
-            padding: '14px 1.5rem',
-            fontSize: '1rem',
-            border: '1px solid #ddd',
-            borderRadius: 24,
-            outline: 'none',
-            fontFamily: 'inherit',
-            resize: 'none',
-            lineHeight: '1.4',
-            boxSizing: 'border-box',
-            overflow: 'hidden',
-          }}
+      <div style={{ width: '100%', maxWidth: 768 }}>
+        <Composer
+          onSend={(text, attachments) => onSend(text, { attachments })}
+          loading={loading}
+          inputTestId="home-message-input"
+          sendTestId="home-send-btn"
         />
-        <button
-          data-testid="home-send-btn"
-          type="submit"
-          disabled={loading}
-          style={{
-            height: 50,
-            padding: '0 1rem',
-            fontSize: '0.95rem',
-            fontWeight: 600,
-            backgroundColor: '#111',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 24,
-            cursor: loading ? 'not-allowed' : 'pointer',
-            fontFamily: 'inherit',
-          }}
-        >
-          {loading ? '...' : 'Send'}
-        </button>
-      </form>
+      </div>
     </div>
   );
 }

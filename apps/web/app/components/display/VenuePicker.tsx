@@ -1,11 +1,28 @@
 'use client';
 
+import { ChevronRight, Layers, Store } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
+import Icon from '../ui/Icon';
 
 interface Venue {
   id: string;
   name: string;
 }
+
+/** One choice: a full-width row in the card. Hover comes from .n-option, so no
+ *  inline background here; the focus ring sits inside the card's clipped edge. */
+const rowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  minHeight: 40,
+  padding: '8px 14px',
+  borderTop: '1px solid var(--line-soft)',
+  fontSize: 'var(--fs-base)',
+  fontWeight: 500,
+  lineHeight: 1.35,
+  outlineOffset: -2,
+};
 
 export default function VenuePicker({ data, onAction }: DisplayBlockProps) {
   const venues = (data?.venues as Venue[]) || [];
@@ -18,39 +35,22 @@ export default function VenuePicker({ data, onAction }: DisplayBlockProps) {
     }
   };
 
-  const btnStyle: React.CSSProperties = {
-    padding: '6px 14px',
-    fontSize: '0.82rem',
-    fontWeight: 500,
-    border: '1px solid #e5e7eb',
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    color: '#374151',
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    transition: 'all 0.15s',
-  };
-
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.4rem' }}>
+    <div className="n-card" role="group" aria-label="Choose a venue" style={{ maxWidth: 460, marginTop: '0.4rem', overflow: 'hidden' }}>
+      <div style={{ padding: '12px 14px 10px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>
+        Choose a venue
+      </div>
       {venues.map(v => (
-        <button
-          key={v.id}
-          onClick={() => handleClick(v.name)}
-          style={btnStyle}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = '#111'; e.currentTarget.style.backgroundColor = '#f9fafb'; }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = '#e5e7eb'; e.currentTarget.style.backgroundColor = '#fff'; }}
-        >
-          {v.name}
+        <button key={v.id} type="button" className="n-option" onClick={() => handleClick(v.name)} style={rowStyle}>
+          <Icon icon={Store} tone="muted" />
+          <span style={{ flex: 1, minWidth: 0 }}>{v.name}</span>
+          <Icon icon={ChevronRight} size="dense" tone="muted" />
         </button>
       ))}
-      <button
-        onClick={() => handleClick('all venues')}
-        style={{ ...btnStyle, color: '#6366f1', borderColor: '#c7d2fe' }}
-        onMouseEnter={e => { e.currentTarget.style.borderColor = '#6366f1'; e.currentTarget.style.backgroundColor = '#eef2ff'; }}
-        onMouseLeave={e => { e.currentTarget.style.borderColor = '#c7d2fe'; e.currentTarget.style.backgroundColor = '#fff'; }}
-      >
-        All venues
+      <button type="button" className="n-option" onClick={() => handleClick('all venues')} style={rowStyle}>
+        <Icon icon={Layers} tone="muted" />
+        <span style={{ flex: 1, minWidth: 0 }}>All venues</span>
+        <Icon icon={ChevronRight} size="dense" tone="muted" />
       </button>
     </div>
   );

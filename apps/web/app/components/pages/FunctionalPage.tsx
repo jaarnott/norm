@@ -1,12 +1,17 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useSplitPane } from '../../hooks/useSplitPane';
 import SplitDragHandle from '../layout/SplitDragHandle';
 import DisplayBlockRenderer from '../display/DisplayBlockRenderer';
 import { ConversationView } from '../threads/ThreadDetail';
-import { useComposerAttachments, AttachButton, AttachmentChips, type SendOptions } from '../chat/AttachmentComposer';
+import type { SendOptions } from '../chat/AttachmentComposer';
+import Composer from '../chat/Composer';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
+import BackLink from '../ui/BackLink';
+import { PageFillContext } from './pageFill';
 import type { FunctionalPageConfig } from './pageRegistry';
 import type { Thread, WidgetAction } from '../../types';
 
@@ -17,42 +22,44 @@ interface FunctionalPageProps {
   loading: boolean;
   onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
   activeVenueId?: string | null;
-  onVenueChange?: (venueId: string) => void;
 }
 
-export default function FunctionalPage({ config, thread, onSend, loading, onWidgetAction, activeVenueId, onVenueChange }: FunctionalPageProps) {
-  const [input, setInput] = useState('');
+// Fades the page out under the floating composer — from cream, the page's own
+// colour, so nothing reads as a white band across the content.
+const COMPOSER_FADE = 'linear-gradient(to bottom, rgba(250, 248, 245, 0) 0%, var(--canvas) 45%)';
+
+/**
+ * Every menu page: one frame (cream, 24px gutters, no max-width), the page's
+ * own header, and the composer. A page that owns its whole area (an app)
+ * `fill`s: no gutters, no outer scroll, the composer docked below it rather
+ * than floating over it.
+ *
+ * page.tsx keys this by page id, so moving between pages never shows the last
+ * page's data under the next page's title.
+ */
+export default function FunctionalPage({ config, thread, onSend, loading, onWidgetAction, activeVenueId }: FunctionalPageProps) {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
-  const [workingDocId, setWorkingDocId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [loadingData, setLoadingData] = useState(true);
+  const [loadingData, setLoadingData] = useState(config.loadAction.connector !== '_none');
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
+  // A page component can ask for the whole area (the Apps page, once it has
+  // opened an app). App pages always have it.
+  const [fillRequested, setFillRequested] = useState(false);
+  const fill = config.component === 'app_runner' || fillRequested;
   const { containerRef, topPaneHeight, isDragging, handleDragStart, handleSplitDoubleClick } = useSplitPane();
-  const att = useComposerAttachments(activeVenueId);
 
-  // Local venue override for pages that need a venue selector
-  const [localVenueId, setLocalVenueId] = useState<string | null>(activeVenueId || null);
-  const [venues, setVenues] = useState<Array<{ id: string; name: string }>>([]);
-  const needsVenueSelector = config.component === 'mcp_embed';
-
-  useEffect(() => {
-    if (needsVenueSelector) {
-      apiFetch('/api/venues').then(async res => {
-        if (res.ok) {
-          const data = await res.json();
-          setVenues(data.venues || data || []);
-        }
-      }).catch(() => {});
-    }
-  }, [needsVenueSelector]);
-
-  // Sync with parent venue when it changes externally
-  useEffect(() => { if (activeVenueId) setLocalVenueId(activeVenueId); }, [activeVenueId]);
-
-  const effectiveVenueId = needsVenueSelector ? localVenueId : activeVenueId;
-
-  // Reset report view when switching pages
-  useEffect(() => { setActiveReportId(null); }, [config.id]);
+  // The floating composer covers the bottom of the page; pad the page by its
+  // real height so the last rows can always scroll clear of it.
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const [dockHeight, setDockHeight] = useState(96);
+  const observeDock = useCallback((el: HTMLDivElement | null) => {
+    dockRef.current = el;
+    if (!el) return;
+    setDockHeight(el.offsetHeight);
+    const ro = new ResizeObserver(() => setDockHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Load data on mount — create a working document so edits sync in background
   useEffect(() => {
@@ -69,9 +76,9 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       body: JSON.stringify({
         connector_name: config.loadAction.connector,
         action: config.loadAction.action,
-        params: { ...params, ...(effectiveVenueId ? { venue_id: effectiveVenueId } : {}) },
+        params: { ...params, ...(activeVenueId ? { venue_id: activeVenueId } : {}) },
         doc_type: config.id,
-        venue_id: effectiveVenueId || undefined,
+        venue_id: activeVenueId || undefined,
       }),
     })
       .then(async res => {
@@ -86,12 +93,11 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
           return;
         }
         const result = await res.json();
-        setWorkingDocId(result.id);
         setData({ working_document_id: result.id, ...result.data });
       })
       .catch(err => setLoadError(err.message))
       .finally(() => setLoadingData(false));
-  }, [config.id, effectiveVenueId]);
+  }, [config.id, activeVenueId]);
 
   const handleAction = useCallback(async (action: WidgetAction): Promise<Record<string, unknown> | void> => {
     // Handle report builder open locally
@@ -129,99 +135,33 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   const messages = thread?.conversation || [];
   const hasConversation = !!thread;
 
-  const submitMessage = () => {
-    if (!input.trim()) return;
-    onSend(input, { pageContext: { page_id: config.id, agent: config.agent }, attachments: att.items });
-    setInput('');
-    att.clear();
-  };
-
-  const inputBar = (
-    <div style={{ padding: '12px 24px 24px' }}>
-      <div style={{ maxWidth: 768, margin: '0 auto' }}>
-        <AttachmentChips items={att.items} remove={att.remove} uploading={att.uploading} />
-      </div>
-      <form onSubmit={e => { e.preventDefault(); submitMessage(); }} style={{ maxWidth: 768, margin: '0 auto', display: 'flex', alignItems: 'flex-end', gap: '0.4rem' }}>
-        <AttachButton onPick={att.addFiles} disabled={loading} />
-        <textarea
-          value={input}
-          onChange={e => {
-            setInput(e.target.value);
-            const el = e.target; el.style.height = 'auto'; const h = Math.min(el.scrollHeight, 150); el.style.height = h + 'px'; el.style.overflow = h >= 150 ? 'auto' : 'hidden';
-          }}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              submitMessage();
-            }
-          }}
-          placeholder="Message Norm..."
-          rows={1}
-          style={{
-            flex: 1, minHeight: 50, maxHeight: 150,
-            padding: '14px 1.5rem', fontSize: '1rem',
-            border: '1px solid #ddd', borderRadius: 24, outline: 'none', fontFamily: 'inherit',
-            resize: 'none', lineHeight: '1.4', boxSizing: 'border-box', overflow: 'hidden',
-          }}
-        />
-        <button type="submit" disabled={loading} style={{
-          height: 50, padding: '0 1rem', fontSize: '0.8rem', fontWeight: 600,
-          backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 24,
-          cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-        }}>
-          {loading ? '...' : 'Send'}
-        </button>
-      </form>
+  const composer = (
+    <Composer
+      onSend={(text, attachments) => onSend(text, { pageContext: { page_id: config.id, agent: config.agent }, attachments })}
+      loading={loading}
+      venueId={activeVenueId}
+    />
+  );
+  const floatingComposer = (
+    <div
+      ref={observeDock}
+      className="n-composer-dock"
+      // Clicks pass through the fade to the page; only the composer takes them.
+      // z-index 10: above a page's sticky parts (grid columns use ≤5), below its
+      // dropdowns (20+) and dialogs (1000).
+      style={{ position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10, paddingTop: 28, background: COMPOSER_FADE, pointerEvents: 'none' }}
+    >
+      {composer}
     </div>
   );
-
-  const venueSelector = needsVenueSelector && venues.length > 1 ? (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: '0.5rem',
-      padding: '0.5rem 1.5rem', borderBottom: '1px solid #f0ede8',
-    }}>
-      <select
-        value={localVenueId || ''}
-        onChange={e => { setLocalVenueId(e.target.value); onVenueChange?.(e.target.value); }}
-        style={{
-          padding: '4px 8px', fontSize: '0.75rem',
-          border: '1px solid #e2ddd7', borderRadius: 6, fontFamily: 'inherit',
-        }}
-      >
-        {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-      </select>
-    </div>
-  ) : null;
-
-  const componentBlock = (data || config.loadAction.connector === '_none') ? (
-    <DisplayBlockRenderer
-      block={{
-        component: config.component,
-        data: data || {},
-        // persistVenue marks this as a PAGE instance: its venue selector may
-        // read from and write to the shared, remembered page venue. The same
-        // component rendered inside a conversation gets no such flag, so a
-        // conversation never moves the page venue or inherits it.
-        props: { ...config.componentProps, activeVenueId: effectiveVenueId, persistVenue: true },
-      }}
-      onAction={handleAction}
-      threadId={thread?.id}
-    />
-  ) : null;
 
   // If a report is open, show the Report Builder full-screen
   if (activeReportId) {
     return (
-      <div style={{ height: '100dvh', position: 'relative', backgroundColor: '#fff' }}>
-        <div style={{ height: '100%', overflowY: 'auto', paddingBottom: '100px' }}>
-          <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #e2e8f0' }}>
-            <button
-              onClick={() => setActiveReportId(null)}
-              style={{
-                border: 'none', background: 'none', color: '#888', cursor: 'pointer',
-                fontSize: '0.82rem', fontFamily: 'inherit', padding: '4px 0',
-              }}
-            >&larr; Back to Reports</button>
+      <div style={{ height: '100%', position: 'relative', backgroundColor: 'var(--canvas)' }}>
+        <div style={{ height: '100%', overflowY: 'auto', paddingBottom: dockHeight + 16 }}>
+          <div style={{ padding: '14px 24px 8px' }}>
+            <BackLink label="Reports" onClick={() => setActiveReportId(null)} />
           </div>
           <div style={{ height: 'calc(100dvh - 150px)' }}>
             <DisplayBlockRenderer
@@ -235,16 +175,34 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
             />
           </div>
         </div>
-        <div style={{
-          position: 'absolute', bottom: 0, left: 0, right: 0,
-          padding: '20px 0 0',
-          background: 'radial-gradient(ellipse at bottom, rgba(255,255,255,0.95) 60%, transparent 100%)',
-        }}>
-          {inputBar}
-        </div>
+        {floatingComposer}
       </div>
     );
   }
+
+  const componentBlock = (data || config.loadAction.connector === '_none') ? (
+    <DisplayBlockRenderer
+      block={{
+        component: config.component,
+        data: data || {},
+        // persistVenue marks this as a PAGE instance: its venue selector may
+        // read from and write to the shared, remembered page venue. The same
+        // component rendered inside a conversation gets no such flag, so a
+        // conversation never moves the page venue or inherits it.
+        props: { ...config.componentProps, activeVenueId, persistVenue: true },
+      }}
+      onAction={handleAction}
+      threadId={thread?.id}
+    />
+  ) : null;
+
+  // While FunctionalPage itself is loading the page's data, it shows the
+  // page's title; once loaded, the component draws its own header.
+  const pageBody = loadingData ? (
+    <><PageHeader title={config.label} /><PageState kind="loading" title="Loading…" /></>
+  ) : loadError ? (
+    <><PageHeader title={config.label} /><PageState kind="error" title={`Couldn’t load ${config.label}`} detail={loadError} /></>
+  ) : componentBlock;
 
   // ONE layout for both states. The with-conversation and without-conversation
   // views used to be two different element trees, so the FIRST message from a
@@ -253,60 +211,61 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   // to zero, which read as "Norm navigated me back to the base page". Keeping
   // the component pane at a stable position and only resizing/adding siblings
   // around it means sending a message never remounts what you're looking at.
+  // (The same holds for `fill`: only the wrapper's props change.)
   return (
-    <div ref={containerRef} style={{
-      height: '100dvh', display: 'flex', flexDirection: 'column', position: 'relative',
-      backgroundColor: '#fff', userSelect: isDragging ? 'none' : undefined,
-    }}>
-      {/* Component pane — full height until a conversation exists. */}
-      <div style={{
-        height: hasConversation ? (topPaneHeight ?? '50%') : '100%',
-        flexShrink: 0,
-        overflowY: hasConversation ? 'scroll' : 'auto',
-        minHeight: 0,
+    <PageFillContext.Provider value={setFillRequested}>
+      <div ref={containerRef} style={{
+        height: '100%', display: 'flex', flexDirection: 'column', position: 'relative',
+        backgroundColor: 'var(--canvas)', userSelect: isDragging ? 'none' : undefined,
       }}>
-        {venueSelector}
-        <div style={{ padding: hasConversation ? '0.75rem 0.5rem 0.75rem 1.5rem' : '1rem 1.5rem 100px' }}>
-          {loadingData && <div style={{ padding: '1rem', color: '#999' }}>Loading...</div>}
-          {loadError && <div style={{ padding: '1rem', color: '#e53e3e' }}>{loadError}</div>}
-          {componentBlock}
-        </div>
-      </div>
-
-      {hasConversation && (
-        <SplitDragHandle
-          isDragging={isDragging}
-          topPaneHeight={topPaneHeight}
-          containerRef={containerRef}
-          onMouseDown={handleDragStart}
-          onDoubleClick={handleSplitDoubleClick}
-        />
-      )}
-
-      {/* Conversation + input. Without a conversation the input floats over
-          the bottom of the page, exactly as the old full-height view did. */}
-      {hasConversation ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
-            <div style={{ maxWidth: 768, margin: '0 auto' }}>
-              <ConversationView
-                messages={messages}
-                onWidgetAction={onWidgetAction && thread ? (action) => onWidgetAction(thread.id, action) : undefined}
-                threadId={thread?.id}
-              />
-            </div>
-          </div>
-          {inputBar}
-        </div>
-      ) : (
+        {/* Component pane — full height until a conversation exists. */}
         <div style={{
-          position: 'absolute', bottom: 0, left: 0, right: 0,
-          padding: '20px 0 0',
-          background: 'radial-gradient(ellipse at bottom, rgba(255,255,255,0.95) 60%, transparent 100%)',
+          ...(hasConversation ? { height: topPaneHeight ?? '50%', flexShrink: 0 } : { flex: 1 }),
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflowY: fill ? 'hidden' : 'auto',
         }}>
-          {inputBar}
+          <div
+            className={fill ? undefined : 'n-page'}
+            style={fill
+              ? { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }
+              : { paddingBottom: hasConversation ? 20 : dockHeight + 16 }}
+          >
+            {fill && pageBody !== componentBlock ? <div className="n-page">{pageBody}</div> : pageBody}
+          </div>
         </div>
-      )}
-    </div>
+
+        {hasConversation && (
+          <SplitDragHandle
+            isDragging={isDragging}
+            topPaneHeight={topPaneHeight}
+            containerRef={containerRef}
+            onMouseDown={handleDragStart}
+            onDoubleClick={handleSplitDoubleClick}
+          />
+        )}
+
+        {/* Conversation + composer. Without a conversation the composer floats
+            over the bottom of the page — or, on a page that fills its area,
+            sits docked under it. */}
+        {hasConversation ? (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+              <div style={{ maxWidth: 768, margin: '0 auto' }}>
+                <ConversationView
+                  messages={messages}
+                  onWidgetAction={onWidgetAction && thread ? (action) => onWidgetAction(thread.id, action) : undefined}
+                  threadId={thread?.id}
+                />
+              </div>
+            </div>
+            <div className="n-composer-dock">{composer}</div>
+          </div>
+        ) : fill ? (
+          <div className="n-composer-dock" style={{ paddingTop: 8 }}>{composer}</div>
+        ) : floatingComposer}
+      </div>
+    </PageFillContext.Provider>
   );
 }

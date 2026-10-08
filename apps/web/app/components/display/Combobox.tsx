@@ -10,8 +10,7 @@
  * owns the text (`value`); `onType` fires on free typing, `onPick` on selection.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { colors } from '../../lib/theme';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 export interface ComboOption {
   id: string;
@@ -44,6 +43,7 @@ export default function Combobox({
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
+  const listId = useId();
 
   const q = (value || '').trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -74,16 +74,9 @@ export default function Combobox({
     setOpen(false);
   };
 
-  const inputStyle: React.CSSProperties = {
-    padding: '5px 8px',
-    fontSize: '0.85rem',
-    border: `1px solid ${colors.border}`,
-    borderRadius: 6,
-    fontFamily: 'inherit',
-    width: '100%',
-    boxSizing: 'border-box',
-    ...style,
-  };
+  // tokens.css does the work: .n-input for the field, .n-option for each
+  // choice (hover, and aria-selected for the keyboard highlight).
+  const inputStyle: React.CSSProperties = { width: '100%', ...style };
 
   const panel: React.CSSProperties = {
     position: 'absolute',
@@ -91,20 +84,25 @@ export default function Combobox({
     left: 0,
     right: 0,
     zIndex: 50,
-    marginTop: 2,
-    background: '#fff',
-    border: `1px solid ${colors.border}`,
-    borderRadius: 8,
-    boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
+    marginTop: 4,
+    padding: '4px 0',
+    background: 'var(--bg)',
+    border: '1px solid var(--line)',
+    borderRadius: 'var(--radius)',
+    boxShadow: '0 6px 18px rgba(26,26,26,0.12)',
     maxHeight: 260,
-    overflowY: 'auto',
   };
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <input
+        className="n-input"
         value={value}
         placeholder={placeholder}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-controls={listId}
+        aria-expanded={open && filtered.length > 0}
         onChange={(e) => {
           onType(e.target.value);
           setOpen(true);
@@ -132,29 +130,23 @@ export default function Combobox({
         style={inputStyle}
       />
       {open && filtered.length > 0 && (
-        <div style={panel}>
+        <div id={listId} role="listbox" className="scroll-quiet" style={panel}>
           {filtered.map((o, i) => (
             <div
               key={`${o.kind || ''}-${o.id}`}
+              role="option"
+              aria-selected={i === hi}
+              className="n-option"
               onMouseDown={(e) => {
                 e.preventDefault();
                 pick(o);
               }}
               onMouseEnter={() => setHi(i)}
-              style={{
-                padding: '0.4rem 0.6rem',
-                cursor: 'pointer',
-                borderBottom: i < filtered.length - 1 ? `1px solid ${colors.borderLight}` : 'none',
-                background: i === hi ? colors.selectedBg : '#fff',
-                display: 'flex',
-                justifyContent: 'space-between',
-                gap: '0.6rem',
-                alignItems: 'baseline',
-              }}
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}
             >
-              <span style={{ fontSize: '0.82rem', color: colors.textPrimary }}>{o.name}</span>
+              <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{o.name}</span>
               {o.sublabel && (
-                <span style={{ fontSize: '0.68rem', color: colors.textMuted, whiteSpace: 'nowrap' }}>
+                <span style={{ flex: '0 0 auto', fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
                   {o.sublabel}
                 </span>
               )}
@@ -163,7 +155,7 @@ export default function Combobox({
         </div>
       )}
       {open && q.length >= minChars && filtered.length === 0 && (
-        <div style={{ ...panel, padding: '0.5rem 0.6rem', fontSize: '0.78rem', color: colors.textMuted }}>
+        <div style={{ ...panel, padding: '8px 10px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
           No match for &ldquo;{value}&rdquo;.
         </div>
       )}

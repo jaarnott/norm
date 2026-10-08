@@ -1,7 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { CircleCheck, Plus } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 
 interface Secret {
   key: string;
@@ -9,6 +13,9 @@ interface Secret {
   description: string | null;
   updated_at: string;
 }
+
+// Fields take .n-input (edge, radius, font); they only need to fill the row.
+const fieldStyle: React.CSSProperties = { width: '100%' };
 
 export default function SecretsPanel() {
   const [secrets, setSecrets] = useState<Secret[]>([]);
@@ -130,282 +137,202 @@ export default function SecretsPanel() {
     }
   };
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '0.5rem 0.65rem',
-    fontSize: '0.82rem',
-    border: '1px solid #e2ddd7',
-    borderRadius: 6,
-    backgroundColor: '#fff',
-    fontFamily: 'inherit',
-    color: '#1a1a1a',
-    outline: 'none',
-    boxSizing: 'border-box',
-  };
-
-  const labelStyle: React.CSSProperties = {
-    fontSize: '0.75rem',
-    fontWeight: 600,
-    color: '#555',
-    marginBottom: 4,
-    display: 'block',
-  };
-
   if (loading) {
-    return <div style={{ fontSize: '0.85rem', color: '#999', padding: '2rem 0' }}>Loading secrets...</div>;
+    return <PageState kind="loading" title="Loading secrets…" />;
   }
 
   return (
-    <div>
+    <div style={{ lineHeight: 1.45 }}>
       {/* Feedback message */}
       {feedback && (
-        <div style={{
-          padding: '0.5rem 0.85rem',
-          marginBottom: '1rem',
-          borderRadius: 6,
-          fontSize: '0.8rem',
-          fontWeight: 500,
-          backgroundColor: feedback.type === 'success' ? '#d4edda' : '#f8d7da',
-          color: feedback.type === 'success' ? '#155724' : '#721c24',
-          border: `1px solid ${feedback.type === 'success' ? '#c3e6cb' : '#f5c6cb'}`,
-        }}>
-          {feedback.message}
+        <div style={{ marginBottom: 16 }}>
+          {feedback.type === 'error' ? (
+            <PageState kind="error" title={feedback.message} />
+          ) : (
+            <div role="status" style={{
+              display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px',
+              borderRadius: 'var(--radius)', background: 'var(--ok-bg)', color: 'var(--ok)',
+              fontSize: 'var(--fs-base)', fontWeight: 600,
+            }}>
+              <Icon icon={CircleCheck} size={16} style={{ marginTop: 1 }} />
+              <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{feedback.message}</div>
+            </div>
+          )}
         </div>
       )}
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          System Secrets
-        </h3>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', columnGap: 10, minWidth: 0 }}>
+          <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>
+            System secrets
+          </h3>
+          {secrets.length > 0 && (
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+              {secrets.length} {secrets.length === 1 ? 'secret' : 'secrets'}
+            </span>
+          )}
+        </div>
         {!creating && editingKey === null && (
-          <button
-            onClick={openCreate}
-            style={{
-              padding: '0.4rem 0.85rem',
-              fontSize: '0.78rem',
-              fontWeight: 600,
-              border: 'none',
-              borderRadius: 6,
-              backgroundColor: '#1a1a1a',
-              color: '#fff',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            Add Secret
-          </button>
+          <Button variant="primary" icon={Plus} onClick={openCreate}>
+            Add secret
+          </Button>
         )}
       </div>
 
       {/* Create form */}
       {creating && (
-        <div style={{
-          padding: '1.25rem',
-          border: '1px solid #e2ddd7',
-          borderRadius: 8,
-          backgroundColor: '#fff',
-          marginBottom: '1rem',
-        }}>
-          <h4 style={{ margin: '0 0 1rem', fontSize: '0.9rem', fontWeight: 600, color: '#1a1a1a' }}>
-            Add New Secret
+        <div className="n-card" style={{ padding: 16, marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 12px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>
+            Add new secret
           </h4>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16, maxWidth: 560 }}>
             <div>
-              <label style={labelStyle}>Key</label>
+              <label className="n-label" htmlFor="secret-new-key">Key</label>
               <input
+                id="secret-new-key"
+                className="n-input"
                 value={newKey}
                 onChange={e => setNewKey(e.target.value)}
                 placeholder="e.g. OPENAI_API_KEY"
-                style={inputStyle}
+                style={fieldStyle}
               />
             </div>
             <div>
-              <label style={labelStyle}>Value</label>
+              <label className="n-label" htmlFor="secret-new-value">Value</label>
               <input
+                id="secret-new-value"
+                className="n-input"
                 type="password"
                 value={newValue}
                 onChange={e => setNewValue(e.target.value)}
                 placeholder="Secret value"
-                style={inputStyle}
+                style={fieldStyle}
               />
             </div>
             <div>
-              <label style={labelStyle}>Description</label>
+              <label className="n-label" htmlFor="secret-new-description">Description</label>
               <input
+                id="secret-new-description"
+                className="n-input"
                 value={newDescription}
                 onChange={e => setNewDescription(e.target.value)}
                 placeholder="Optional description"
-                style={inputStyle}
+                style={fieldStyle}
               />
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <Button
+              variant="primary"
               onClick={handleCreate}
               disabled={saving || !newKey || !newValue}
-              style={{
-                padding: '0.45rem 1rem',
-                fontSize: '0.8rem',
-                fontWeight: 600,
-                border: 'none',
-                borderRadius: 6,
-                backgroundColor: saving ? '#999' : '#1a1a1a',
-                color: '#fff',
-                cursor: saving ? 'default' : 'pointer',
-                fontFamily: 'inherit',
-              }}
             >
-              {saving ? 'Saving...' : 'Create Secret'}
-            </button>
-            <button
-              onClick={closeForm}
-              style={{
-                padding: '0.45rem 1rem',
-                fontSize: '0.8rem',
-                border: '1px solid #e2ddd7',
-                borderRadius: 6,
-                backgroundColor: '#fff',
-                color: '#555',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
+              {saving ? 'Saving…' : 'Create secret'}
+            </Button>
+            <Button onClick={closeForm}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
 
       {/* Secrets list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        {secrets.map(secret => (
-          <div
-            key={secret.key}
-            style={{
-              padding: '0.75rem 1rem',
-              border: '1px solid #e2ddd7',
-              borderRadius: 8,
-              backgroundColor: '#fff',
-            }}
-          >
-            {editingKey === secret.key ? (
-              /* Inline edit form */
-              <div>
-                <div style={{ fontWeight: 600, fontSize: '0.88rem', color: '#1a1a1a', marginBottom: '0.75rem' }}>
-                  {secret.key}
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', marginBottom: '0.75rem' }}>
+      {secrets.length > 0 && (
+        <div className="n-card" style={{ overflow: 'hidden' }}>
+          {secrets.map((secret, index) => {
+            const isEditing = editingKey === secret.key;
+            return (
+              <div
+                key={secret.key}
+                style={{
+                  padding: '12px 16px',
+                  borderTop: index > 0 ? '1px solid var(--line)' : 'none',
+                  background: isEditing ? 'var(--surface)' : undefined,
+                }}
+              >
+                {isEditing ? (
+                  /* Inline edit form */
                   <div>
-                    <label style={labelStyle}>New Value</label>
-                    <input
-                      type="password"
-                      value={editValue}
-                      onChange={e => setEditValue(e.target.value)}
-                      placeholder="Enter new value"
-                      style={inputStyle}
-                    />
+                    <div style={{ fontWeight: 600, fontSize: 'var(--fs-base)', color: 'var(--text)', marginBottom: 12, overflowWrap: 'anywhere' }}>
+                      {secret.key}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 12, maxWidth: 560 }}>
+                      <div>
+                        <label className="n-label" htmlFor="secret-edit-value">New value</label>
+                        <input
+                          id="secret-edit-value"
+                          className="n-input"
+                          type="password"
+                          value={editValue}
+                          onChange={e => setEditValue(e.target.value)}
+                          placeholder="Enter new value"
+                          style={fieldStyle}
+                        />
+                      </div>
+                      <div>
+                        <label className="n-label" htmlFor="secret-edit-description">Description</label>
+                        <input
+                          id="secret-edit-description"
+                          className="n-input"
+                          value={editDescription}
+                          onChange={e => setEditDescription(e.target.value)}
+                          placeholder="Optional description"
+                          style={fieldStyle}
+                        />
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={handleUpdate}
+                        disabled={saving || !editValue}
+                      >
+                        {saving ? 'Saving…' : 'Update'}
+                      </Button>
+                      <Button size="sm" onClick={closeForm}>
+                        Cancel
+                      </Button>
+                    </div>
                   </div>
-                  <div>
-                    <label style={labelStyle}>Description</label>
-                    <input
-                      value={editDescription}
-                      onChange={e => setEditDescription(e.target.value)}
-                      placeholder="Optional description"
-                      style={inputStyle}
-                    />
+                ) : (
+                  /* Display row */
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 'var(--fs-base)', color: 'var(--text)', overflowWrap: 'anywhere' }}>{secret.key}</div>
+                      {secret.value_masked && (
+                        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>
+                          {secret.value_masked}
+                        </div>
+                      )}
+                      {secret.description && (
+                        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 2 }}>{secret.description}</div>
+                      )}
+                      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 2 }}>
+                        Updated: {new Date(secret.updated_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flex: '0 0 auto' }}>
+                      <Button size="sm" onClick={() => openEdit(secret)}>
+                        Edit
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={() => handleDelete(secret.key)}>
+                        Delete
+                      </Button>
+                    </div>
                   </div>
-                </div>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <button
-                    onClick={handleUpdate}
-                    disabled={saving || !editValue}
-                    style={{
-                      padding: '0.35rem 0.8rem',
-                      fontSize: '0.78rem',
-                      fontWeight: 600,
-                      border: 'none',
-                      borderRadius: 6,
-                      backgroundColor: saving ? '#999' : '#1a1a1a',
-                      color: '#fff',
-                      cursor: saving ? 'default' : 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                  >
-                    {saving ? 'Saving...' : 'Update'}
-                  </button>
-                  <button
-                    onClick={closeForm}
-                    style={{
-                      padding: '0.35rem 0.8rem',
-                      fontSize: '0.78rem',
-                      border: '1px solid #e2ddd7',
-                      borderRadius: 6,
-                      backgroundColor: '#fff',
-                      color: '#555',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
+                )}
               </div>
-            ) : (
-              /* Display row */
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: '0.88rem', color: '#1a1a1a' }}>{secret.key}</div>
-                  <div style={{ fontSize: '0.75rem', color: '#999', marginTop: 2, fontFamily: 'monospace' }}>
-                    {secret.value_masked}
-                  </div>
-                  {secret.description && (
-                    <div style={{ fontSize: '0.72rem', color: '#bbb', marginTop: 2 }}>{secret.description}</div>
-                  )}
-                  <div style={{ fontSize: '0.65rem', color: '#ccc', marginTop: 2 }}>
-                    Updated: {new Date(secret.updated_at).toLocaleDateString()}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: '0.4rem' }}>
-                  <button
-                    onClick={() => openEdit(secret)}
-                    style={{
-                      padding: '0.3rem 0.6rem',
-                      fontSize: '0.72rem',
-                      border: '1px solid #e2ddd7',
-                      borderRadius: 4,
-                      backgroundColor: '#fff',
-                      color: '#555',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => handleDelete(secret.key)}
-                    style={{
-                      padding: '0.3rem 0.6rem',
-                      fontSize: '0.72rem',
-                      border: '1px solid #f5c6cb',
-                      borderRadius: 4,
-                      backgroundColor: '#fff',
-                      color: '#dc3545',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
-        {secrets.length === 0 && !creating && (
-          <div style={{ fontSize: '0.82rem', color: '#999' }}>No secrets configured yet.</div>
-        )}
-      </div>
+            );
+          })}
+        </div>
+      )}
+      {secrets.length === 0 && !creating && (
+        <div className="n-card">
+          <PageState kind="empty" title="No secrets configured yet." />
+        </div>
+      )}
     </div>
   );
 }

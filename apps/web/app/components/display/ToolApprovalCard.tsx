@@ -1,7 +1,10 @@
 'use client';
 
-import { useState, type CSSProperties } from 'react';
+import { useState } from 'react';
+import { CircleAlert, TriangleAlert } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
+import Button from '../ui/Button';
+import Badge, { type BadgeTone } from '../ui/Badge';
 import { getStoredUser } from '../../lib/api';
 import {
   allowable,
@@ -17,24 +20,19 @@ import {
 /** Rows a group shows before "Show all". */
 const FIRST_ROWS = 8;
 
-const TONES: Record<Tone, { bg: string; fg: string }> = {
-  pending: { bg: '#f5f0ea', fg: '#a08060' },
-  good: { bg: '#d4edda', fg: '#155724' },
-  bad: { bg: '#f8d7da', fg: '#842029' },
-  warn: { bg: '#fff3cd', fg: '#7a5b00' },
-  muted: { bg: '#e2e3e5', fg: '#666' },
+const BADGE_TONE: Record<Tone, BadgeTone> = {
+  pending: 'accent',
+  good: 'ok',
+  bad: 'error',
+  warn: 'warn',
+  muted: 'neutral',
 };
 
-function Badge({ label, tone }: { label: string; tone: Tone }) {
-  return (
-    <span style={{
-      fontSize: '0.65rem', fontWeight: 600, padding: '2px 8px', borderRadius: 4,
-      backgroundColor: TONES[tone].bg, color: TONES[tone].fg, whiteSpace: 'nowrap',
-    }}>
-      {label}
-    </span>
-  );
+function StateBadge({ label, tone }: { label: string; tone: Tone }) {
+  return <Badge tone={BADGE_TONE[tone]}>{label}</Badge>;
 }
+
+const LINE = '1px solid var(--line-soft)';
 
 function Row({ row, cardStatus, pending, ticked, onTick, isAdmin }: {
   row: ApprovalRow;
@@ -51,8 +49,8 @@ function Row({ row, cardStatus, pending, ticked, onTick, isAdmin }: {
 
   return (
     <div style={{
-      display: 'flex', gap: '0.55rem', alignItems: 'flex-start',
-      padding: '0.55rem 0.7rem', borderTop: '1px solid #f0ebe5',
+      display: 'flex', gap: '0.6rem', alignItems: 'flex-start',
+      padding: '0.6rem 0.9rem', borderTop: LINE,
       opacity: !pending && row.status === 'rejected' ? 0.6 : 1,
     }}>
       {pending && (
@@ -61,31 +59,31 @@ function Row({ row, cardStatus, pending, ticked, onTick, isAdmin }: {
           checked={ticked}
           onChange={onTick}
           aria-label={`Approve ${p?.target || row.summary}`}
-          style={{ marginTop: 3, accentColor: '#a08060', cursor: 'pointer' }}
+          style={{ marginTop: 3, accentColor: 'var(--accent)', cursor: 'pointer' }}
         />
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.4rem', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#333' }}>
+          <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>
             {p?.target || row.summary}
           </span>
-          {p?.venue && <span style={{ fontSize: '0.68rem', color: '#999' }}>{p.venue}</span>}
-          {state && <span style={{ marginLeft: 'auto' }}><Badge {...state} /></span>}
+          {p?.venue && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{p.venue}</span>}
+          {state && <span style={{ marginLeft: 'auto' }}><StateBadge {...state} /></span>}
         </div>
 
         {changes.length > 0 && (
           <div style={{
             display: 'grid', gridTemplateColumns: 'minmax(90px, max-content) 1fr',
-            columnGap: '0.7rem', rowGap: '0.15rem', marginTop: '0.3rem', fontSize: '0.74rem',
+            columnGap: '0.75rem', rowGap: '0.2rem', marginTop: '0.35rem', fontSize: 'var(--fs-sm)',
           }}>
             {changes.map((c, i) => (
               <div key={i} style={{ display: 'contents' }}>
-                <span style={{ color: '#888', overflowWrap: 'anywhere' }}>{c.field}</span>
-                <span style={{ color: '#333', overflowWrap: 'anywhere' }}>
+                <span style={{ color: 'var(--muted)', overflowWrap: 'anywhere' }}>{c.field}</span>
+                <span style={{ color: 'var(--text)', overflowWrap: 'anywhere' }}>
                   {c.before !== undefined && (
                     <>
-                      <span style={{ color: '#999', textDecoration: 'line-through' }}>{c.before}</span>
-                      <span style={{ color: '#bbb', margin: '0 0.3rem' }}>→</span>
+                      <span style={{ color: 'var(--muted)', textDecoration: 'line-through' }}>{c.before}</span>
+                      <span aria-hidden style={{ color: 'var(--icon)', margin: '0 0.3rem' }}>→</span>
                     </>
                   )}
                   <span style={{ fontWeight: 500 }}>{c.after}</span>
@@ -95,23 +93,26 @@ function Row({ row, cardStatus, pending, ticked, onTick, isAdmin }: {
           </div>
         )}
         {p?.more_changes ? (
-          <div style={{ fontSize: '0.68rem', color: '#999', marginTop: '0.2rem' }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: '0.2rem' }}>
             and {p.more_changes} more change{p.more_changes === 1 ? '' : 's'}
           </div>
         ) : null}
         {p?.note && (
           <div style={{
-            fontSize: '0.72rem', color: '#777', marginTop: '0.3rem', fontStyle: 'italic',
+            fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: '0.3rem', fontStyle: 'italic',
             display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
           }}>
             {p.note}
           </div>
         )}
         {(p?.warnings ?? []).map((w, i) => (
-          <div key={i} style={{ fontSize: '0.7rem', color: '#7a5b00', marginTop: '0.25rem' }}>⚠ {w}</div>
+          <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 5, fontSize: 'var(--fs-sm)', color: 'var(--warn)', marginTop: '0.25rem' }}>
+            <TriangleAlert size={13} aria-hidden style={{ flex: '0 0 auto', marginTop: 2 }} />
+            <span>{w}</span>
+          </div>
         ))}
         {row.outcome_note && row.outcome !== 'done' && (
-          <div style={{ fontSize: '0.7rem', color: row.outcome === 'failed' ? '#842029' : '#7a5b00', marginTop: '0.25rem' }}>
+          <div style={{ fontSize: 'var(--fs-sm)', color: row.outcome === 'failed' ? 'var(--error)' : 'var(--warn)', marginTop: '0.25rem' }}>
             {row.outcome_note}
           </div>
         )}
@@ -121,18 +122,18 @@ function Row({ row, cardStatus, pending, ticked, onTick, isAdmin }: {
             <button
               onClick={() => setDetails(d => !d)}
               style={{
-                background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                fontSize: '0.66rem', color: '#bbb', padding: '0.25rem 0 0',
+                background: 'none', border: 'none', cursor: 'pointer',
+                fontSize: 'var(--fs-xs)', color: 'var(--muted)', padding: '0.3rem 0 0',
               }}
             >
               {details ? 'Hide technical details' : `Technical details · ${row.connector_name}.${row.action}`}
             </button>
             {details && (
               <pre style={{
-                fontSize: '0.66rem', color: '#888', backgroundColor: '#faf8f5',
-                padding: '0.4rem', borderRadius: 6, marginTop: '0.3rem',
+                fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--text-soft)', backgroundColor: 'var(--surface)',
+                padding: '0.5rem', borderRadius: 'var(--radius-sm)', marginTop: '0.3rem',
                 overflow: 'auto', maxHeight: 250, lineHeight: 1.4,
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word', border: '1px solid #f0ebe5',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', border: LINE,
               }}>
                 {JSON.stringify(row.input_params, null, 2)}
               </pre>
@@ -184,24 +185,28 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
   const label = cardLabel(status, rows, data.status_note as string | undefined);
   const tone: Tone = pending ? 'pending' : label === 'Declined' || label.startsWith('Not done') ? 'muted' : 'good';
 
-  const button = (primary: boolean, disabled: boolean): CSSProperties => ({
-    padding: '0.35rem 1rem', fontSize: '0.75rem', fontWeight: 500, fontFamily: 'inherit',
-    border: primary ? 'none' : '1px solid #e2ddd7', borderRadius: 6,
-    backgroundColor: primary ? '#a08060' : '#fff', color: primary ? '#fff' : '#888',
-    cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1,
-  });
-
   return (
     <div style={{
-      border: `1px solid ${pending ? '#e2ddd7' : '#e2e3e5'}`, borderRadius: 10,
-      backgroundColor: pending ? '#faf8f5' : '#f7f7f8', marginTop: '0.5rem', overflow: 'hidden',
+      border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)',
+      backgroundColor: 'var(--bg)', marginTop: '0.5rem', overflow: 'hidden',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.7rem 0.9rem 0.5rem' }}>
-        <Badge label={label} tone={tone} />
-        <span style={{ fontSize: '0.7rem', color: '#999' }}>
-          {rows.length} change{rows.length === 1 ? '' : 's'}
-        </span>
-      </div>
+      {pending ? (
+        // The "needs you" band: tan, so a waiting card is found at a glance.
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', backgroundColor: 'var(--accent-soft)', color: 'var(--accent)' }}>
+          <CircleAlert size={16} aria-hidden style={{ flex: '0 0 auto' }} />
+          <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600 }}>{label}</span>
+          <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-xs)' }}>
+            {rows.length} change{rows.length === 1 ? '' : 's'}
+          </span>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px' }}>
+          <StateBadge label={label} tone={tone} />
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+            {rows.length} change{rows.length === 1 ? '' : 's'}
+          </span>
+        </div>
+      )}
 
       {groups.map(group => {
         const ids = group.rows.map(r => r.id);
@@ -209,10 +214,10 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
         const open = expanded.has(group.title);
         const shown = open ? group.rows : group.rows.slice(0, FIRST_ROWS);
         return (
-          <div key={group.title} style={{ backgroundColor: '#fff', borderTop: '1px solid #f0ebe5' }}>
+          <div key={group.title} style={{ borderTop: LINE }}>
             <div style={{
               display: 'flex', alignItems: 'center', gap: '0.5rem',
-              padding: '0.45rem 0.7rem', fontSize: '0.72rem', fontWeight: 600, color: '#a08060',
+              padding: '0.5rem 0.9rem', fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-soft)',
             }}>
               {pending && group.rows.length > 1 && (
                 <input
@@ -220,11 +225,11 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
                   checked={all}
                   onChange={() => toggle(ids, !all)}
                   aria-label={`Select all: ${group.title}`}
-                  style={{ accentColor: '#a08060', cursor: 'pointer' }}
+                  style={{ accentColor: 'var(--accent)', cursor: 'pointer' }}
                 />
               )}
               <span>{group.title}</span>
-              {group.rows.length > 1 && <span style={{ fontWeight: 400, color: '#bbb' }}>{group.rows.length}</span>}
+              {group.rows.length > 1 && <span style={{ fontWeight: 400, color: 'var(--muted)' }}>{group.rows.length}</span>}
             </div>
             {shown.map(row => (
               <Row
@@ -245,8 +250,8 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
                   return next;
                 })}
                 style={{
-                  width: '100%', background: 'none', border: 'none', borderTop: '1px solid #f0ebe5',
-                  padding: '0.4rem', fontSize: '0.7rem', color: '#a08060', cursor: 'pointer', fontFamily: 'inherit',
+                  width: '100%', background: 'none', border: 'none', borderTop: LINE,
+                  padding: '0.5rem', fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--accent)', cursor: 'pointer',
                 }}
               >
                 {open ? 'Show fewer' : `Show all ${group.rows.length}`}
@@ -257,9 +262,9 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
       })}
 
       {pending && !declining && allowable(rows).length > 0 && (
-        <div style={{ padding: '0.55rem 0.9rem 0', borderTop: '1px solid #f0ebe5' }}>
+        <div style={{ padding: '0.65rem 0.9rem 0', borderTop: LINE }}>
           {allowable(rows).map(t => (
-            <label key={t.key} style={{ display: 'flex', gap: '0.45rem', alignItems: 'baseline', fontSize: '0.74rem', color: '#555', cursor: 'pointer', marginBottom: '0.25rem' }}>
+            <label key={t.key} style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', cursor: 'pointer', marginBottom: '0.3rem' }}>
               <input
                 type="checkbox"
                 checked={always.has(t.key)}
@@ -268,12 +273,12 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
                   if (next.has(t.key)) next.delete(t.key); else next.add(t.key);
                   return next;
                 })}
-                style={{ accentColor: '#a08060', cursor: 'pointer' }}
+                style={{ accentColor: 'var(--accent)', cursor: 'pointer' }}
               />
               <span>Always allow Norm to {t.label} without asking</span>
             </label>
           ))}
-          <div style={{ fontSize: '0.66rem', color: '#aaa', marginLeft: '1.25rem' }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginLeft: '1.4rem' }}>
             Just for you. Change it any time in Settings → Preferences.
           </div>
         </div>
@@ -281,37 +286,36 @@ export default function ToolApprovalCard({ data, onAction }: DisplayBlockProps) 
 
       {pending && !declining && (
         <div style={{
-          display: 'flex', justifyContent: 'flex-end', gap: '0.4rem',
-          padding: '0.6rem 0.9rem', borderTop: allowable(rows).length > 0 ? 'none' : '1px solid #f0ebe5',
+          display: 'flex', justifyContent: 'flex-end', gap: '0.5rem',
+          padding: '0.75rem 0.9rem', borderTop: allowable(rows).length > 0 ? 'none' : LINE,
         }}>
-          <button onClick={() => setDeclining(true)} disabled={loading} style={button(false, loading)}>
+          <Button variant="secondary" onClick={() => setDeclining(true)} disabled={loading}>
             Decline
-          </button>
-          <button onClick={approve} disabled={loading || count === 0} style={button(true, loading || count === 0)}>
+          </Button>
+          <Button variant="primary" onClick={approve} disabled={loading || count === 0}>
             {loading ? '…' : count === rows.length ? (rows.length === 1 ? 'Approve' : 'Approve all') : `Approve ${count} of ${rows.length}`}
-          </button>
+          </Button>
         </div>
       )}
 
       {pending && declining && (
-        <div style={{ padding: '0.6rem 0.9rem', borderTop: '1px solid #f0ebe5' }}>
+        <div style={{ padding: '0.75rem 0.9rem', borderTop: LINE }}>
           <textarea
+            className="n-input"
+            aria-label="Reason for declining"
             value={reason}
             onChange={e => setReason(e.target.value)}
             placeholder="Why not? (optional — Norm reads this and learns from it)"
             rows={2}
-            style={{
-              width: '100%', boxSizing: 'border-box', fontFamily: 'inherit', fontSize: '0.75rem',
-              border: '1px solid #e2ddd7', borderRadius: 6, padding: '0.4rem', resize: 'vertical',
-            }}
+            style={{ width: '100%' }}
           />
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.4rem', marginTop: '0.4rem' }}>
-            <button onClick={() => setDeclining(false)} disabled={loading} style={button(false, loading)}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
+            <Button variant="secondary" onClick={() => setDeclining(false)} disabled={loading}>
               Back
-            </button>
-            <button onClick={decline} disabled={loading} style={button(true, loading)}>
+            </Button>
+            <Button variant="danger" onClick={decline} disabled={loading}>
               {loading ? '…' : rows.length === 1 ? 'Decline' : 'Decline all'}
-            </button>
+            </Button>
           </div>
         </div>
       )}

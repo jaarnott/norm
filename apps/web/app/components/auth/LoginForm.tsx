@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import AuthShell, { authInput, authLabel, authLink, authSubmit } from './AuthShell';
+import Button from '../ui/Button';
 
 interface LoginFormProps {
   onSuccess: (token: string, user: { id: string; email: string; full_name: string; role: string }) => void;
@@ -64,253 +66,132 @@ export default function LoginForm({ onSuccess }: LoginFormProps) {
     }
   };
 
-  return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100vh',
-      backgroundColor: '#faf8f5',
-      fontFamily: 'system-ui, sans-serif',
+  const subtitle = mode === 'forgot' ? 'Reset your password' : mode === 'login' ? 'Sign in to your account' : 'Create a new account';
+  const errorBox = error ? (
+    <div role="alert" style={{
+      fontSize: 'var(--fs-sm)', color: 'var(--error)', backgroundColor: 'var(--error-bg)',
+      padding: '8px 12px', borderRadius: 'var(--radius-sm)', marginTop: 16,
     }}>
-      <div style={{
-        maxWidth: 380,
-        width: '100%',
-        padding: '2rem 1.5rem',
-        margin: '0 1rem',
-        backgroundColor: '#fff',
-        borderRadius: 12,
-        boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
-      }}>
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1a1a1a', marginBottom: 4 }}>
-            Norm
-          </div>
-          <div style={{ fontSize: '0.85rem', color: '#888' }}>
-            {mode === 'forgot' ? 'Reset your password' : mode === 'login' ? 'Sign in to your account' : 'Create a new account'}
-          </div>
-        </div>
+      {error}
+    </div>
+  ) : null;
 
-        {mode === 'forgot' && forgotSuccess ? (
-          <div>
-            <div style={{
-              fontSize: '0.85rem', color: '#28a745', backgroundColor: '#d4edda',
-              padding: '12px 16px', borderRadius: 8, marginBottom: '1.25rem', textAlign: 'center',
-            }}>
-              If that email exists, we&apos;ve sent a reset link.
-            </div>
-            <button
-              onClick={() => { setMode('login'); setForgotSuccess(false); setError(''); }}
-              style={{
-                background: 'none', border: 'none', color: '#c4a882',
-                fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'inherit',
-                display: 'block', margin: '0 auto',
-              }}
-            >
-              Back to login
+  return (
+    <AuthShell
+      subtitle={subtitle}
+      titleId="login-title"
+      below={mode !== 'forgot' && !forgotSuccess ? (
+        <>
+          {mode === 'login' ? 'New to Norm? ' : 'Already have an account? '}
+          <button
+            type="button"
+            data-testid="login-toggle-mode"
+            onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); }}
+            style={{ ...authLink, fontWeight: 600 }}
+          >
+            {mode === 'login' ? 'Create an account' : 'Sign in'}
+          </button>
+        </>
+      ) : undefined}
+    >
+      {mode === 'forgot' && forgotSuccess ? (
+        <div>
+          <div role="status" style={{
+            fontSize: 'var(--fs-base)', color: 'var(--ok)', backgroundColor: 'var(--ok-bg)',
+            padding: '12px 16px', borderRadius: 'var(--radius)', marginBottom: 20, textAlign: 'center',
+          }}>
+            If that email exists, we&apos;ve sent a reset link.
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <button type="button" onClick={() => { setMode('login'); setForgotSuccess(false); setError(''); }} style={authLink}>
+              Back to sign in
             </button>
           </div>
-        ) : (
-        <form onSubmit={handleSubmit}>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} aria-labelledby="login-title" style={{ margin: 0 }}>
           {mode === 'forgot' ? (
             <>
-              <div style={{ marginBottom: '1rem' }}>
-                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                  Email
-                </label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  required
-                  style={{
-                    width: '100%', padding: '10px 12px', border: '1px solid #e2ddd7',
-                    borderRadius: 8, fontSize: '0.9rem', fontFamily: 'inherit',
-                    boxSizing: 'border-box', outline: 'none',
-                  }}
-                />
-              </div>
-
-              {error && (
-                <div style={{
-                  fontSize: '0.82rem', color: '#e53e3e', backgroundColor: '#fef2f2',
-                  padding: '8px 12px', borderRadius: 6, marginBottom: '1rem',
-                }}>
-                  {error}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={loading}
-                style={{
-                  width: '100%', padding: '10px', fontSize: '0.9rem', fontWeight: 600,
-                  border: 'none', borderRadius: 8, backgroundColor: '#c4a882', color: '#fff',
-                  cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                  opacity: loading ? 0.7 : 1,
-                }}
-              >
-                {loading ? 'Please wait...' : 'Send Reset Link'}
-              </button>
-
-              <div style={{ textAlign: 'center', marginTop: '1.25rem' }}>
-                <button
-                  onClick={() => { setMode('login'); setError(''); }}
-                  type="button"
-                  style={{
-                    background: 'none', border: 'none', color: '#c4a882',
-                    fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'inherit',
-                  }}
-                >
-                  Back to login
+              <label htmlFor="forgot-email" style={authLabel}>Email</label>
+              <input
+                id="forgot-email"
+                type="email"
+                autoComplete="email"
+                placeholder="you@venue.co.nz"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                required
+                style={authInput}
+              />
+              {errorBox}
+              <Button type="submit" variant="primary" disabled={loading} style={authSubmit}>
+                {loading ? 'Please wait…' : 'Send reset link'}
+              </Button>
+              <div style={{ textAlign: 'center', marginTop: 16, fontSize: 'var(--fs-sm)' }}>
+                <button type="button" onClick={() => { setMode('login'); setError(''); }} style={authLink}>
+                  Back to sign in
                 </button>
               </div>
             </>
           ) : (
-          <>
-          {mode === 'register' && (
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                Full Name
-              </label>
+            <>
+              {mode === 'register' && (
+                <div style={{ marginBottom: 16 }}>
+                  <label htmlFor="login-name" style={authLabel}>Full name</label>
+                  <input
+                    id="login-name"
+                    data-testid="login-name"
+                    type="text"
+                    autoComplete="name"
+                    value={fullName}
+                    onChange={e => setFullName(e.target.value)}
+                    required
+                    style={authInput}
+                  />
+                </div>
+              )}
+
+              <label htmlFor="login-email" style={authLabel}>Email</label>
               <input
-                data-testid="login-name"
-                type="text"
-                value={fullName}
-                onChange={e => setFullName(e.target.value)}
+                id="login-email"
+                data-testid="login-email"
+                type="email"
+                autoComplete="email"
+                placeholder="you@venue.co.nz"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
                 required
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: '1px solid #ddd',
-                  borderRadius: 8,
-                  fontSize: '0.9rem',
-                  fontFamily: 'inherit',
-                  boxSizing: 'border-box',
-                  outline: 'none',
-                }}
+                style={authInput}
               />
-            </div>
-          )}
 
-          <div style={{ marginBottom: '1rem' }}>
-            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-              Email
-            </label>
-            <input
-              data-testid="login-email"
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              required
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                border: '1px solid #ddd',
-                borderRadius: 8,
-                fontSize: '0.9rem',
-                fontFamily: 'inherit',
-                boxSizing: 'border-box',
-                outline: 'none',
-              }}
-            />
-          </div>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, margin: '16px 0 6px' }}>
+                <label htmlFor="login-password" style={{ ...authLabel, marginBottom: 0 }}>Password</label>
+                {mode === 'login' && (
+                  <button type="button" onClick={() => { setMode('forgot'); setError(''); }} style={{ ...authLink, fontSize: 'var(--fs-sm)' }}>
+                    Forgot password?
+                  </button>
+                )}
+              </div>
+              <input
+                id="login-password"
+                data-testid="login-password"
+                type="password"
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+                style={authInput}
+              />
 
-          <div style={{ marginBottom: '1.5rem' }}>
-            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-              Password
-            </label>
-            <input
-              data-testid="login-password"
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                border: '1px solid #ddd',
-                borderRadius: 8,
-                fontSize: '0.9rem',
-                fontFamily: 'inherit',
-                boxSizing: 'border-box',
-                outline: 'none',
-              }}
-            />
-          </div>
+              {errorBox}
 
-          {error && (
-            <div style={{
-              fontSize: '0.82rem',
-              color: '#e53e3e',
-              backgroundColor: '#fef2f2',
-              padding: '8px 12px',
-              borderRadius: 6,
-              marginBottom: '1rem',
-            }}>
-              {error}
-            </div>
-          )}
-
-          <button
-            data-testid="login-submit"
-            type="submit"
-            disabled={loading}
-            style={{
-              width: '100%',
-              padding: '10px',
-              fontSize: '0.9rem',
-              fontWeight: 600,
-              border: 'none',
-              borderRadius: 8,
-              backgroundColor: '#c4a882',
-              color: '#fff',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              fontFamily: 'inherit',
-              opacity: loading ? 0.7 : 1,
-            }}
-          >
-            {loading ? 'Please wait...' : mode === 'login' ? 'Sign In' : 'Create Account'}
-          </button>
-
-          {mode === 'login' && (
-            <div style={{ textAlign: 'center', marginTop: '0.75rem' }}>
-              <button
-                type="button"
-                onClick={() => { setMode('forgot'); setError(''); }}
-                style={{
-                  background: 'none', border: 'none', color: '#999',
-                  fontSize: '0.78rem', cursor: 'pointer', fontFamily: 'inherit',
-                }}
-              >
-                Forgot password?
-              </button>
-            </div>
-          )}
-          </>
+              <Button data-testid="login-submit" type="submit" variant="primary" disabled={loading} style={authSubmit}>
+                {loading ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}
+              </Button>
+            </>
           )}
         </form>
-        )}
-
-        {mode !== 'forgot' && !forgotSuccess && (
-        <div style={{ textAlign: 'center', marginTop: '1.25rem' }}>
-          <button
-            data-testid="login-toggle-mode"
-            onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); }}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: '#c4a882',
-              fontSize: '0.82rem',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            {mode === 'login' ? "Don't have an account? Register" : 'Already have an account? Sign in'}
-          </button>
-        </div>
-        )}
-      </div>
-    </div>
+      )}
+    </AuthShell>
   );
 }

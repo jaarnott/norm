@@ -1,8 +1,16 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useId } from 'react';
+import { Check, Plus, X } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch } from '../../lib/api';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
+
+/** Inner dividers: the faintest rule, as in the approval card. */
+const LINE = '1px solid var(--line-soft)';
 
 interface Criterion {
   id: string;
@@ -74,7 +82,8 @@ export default function CriteriaEditor({ data, props, onAction, threadId }: Disp
   }, [docData]);
 
   const interactive = !!onAction || !!workingDocId;
-  const title = (props?.title as string) || (parsed.scope === 'position' ? `Criteria: ${parsed.position_name}` : 'Company Criteria');
+  const title = (props?.title as string) || (parsed.scope === 'position' ? `Criteria: ${parsed.position_name}` : 'Company criteria');
+  const fieldId = useId();
 
   const patchDoc = useCallback(async (ops: Record<string, unknown>[]) => {
     if (!workingDocId || !threadId) return;
@@ -149,140 +158,112 @@ export default function CriteriaEditor({ data, props, onAction, threadId }: Disp
     } finally { setSaving(false); }
   }, [parsed.scope, parsed.position_name, criteria]);
 
-  const inputStyle: React.CSSProperties = {
-    padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: 4,
-    fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box', outline: 'none',
+  // The category column only exists when some criterion has a category.
+  const hasCategory = criteria.some(c => c.category);
+  const checkbox: React.CSSProperties = { width: 16, height: 16, margin: 0, accentColor: 'var(--accent)', cursor: 'pointer' };
+  const checkLabel: React.CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+    fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', cursor: 'pointer',
   };
 
   return (
-    <div style={{
-      border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden',
-      backgroundColor: '#fff', marginBottom: '0.75rem',
-      boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-    }}>
+    <div className="n-card" style={{ overflow: 'hidden', marginBottom: '0.75rem' }}>
       {/* Header */}
-      <div style={{
-        padding: '1rem 1.25rem',
-        borderBottom: '1px solid #e5e7eb',
-        background: 'linear-gradient(to bottom, #fafafa, #fff)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-          <span style={{ fontSize: '1rem', fontWeight: 700, color: '#111' }}>{title}</span>
-          <span style={{
-            fontSize: '0.68rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-            color: parsed.scope === 'company' ? '#1e40af' : '#065f46',
-            backgroundColor: parsed.scope === 'company' ? '#dbeafe' : '#d1fae5',
-            border: `1px solid ${parsed.scope === 'company' ? '#93c5fd' : '#6ee7b7'}`,
-          }}>
-            {parsed.scope === 'company' ? 'Company' : parsed.position_name}
-          </span>
+      <div style={{ padding: '14px 16px 12px', borderBottom: LINE }}>
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{title}</span>
+          <Badge>{parsed.scope === 'company' ? 'Company' : parsed.position_name}</Badge>
         </div>
-        <div style={{ fontSize: '0.78rem', color: '#6b7280', marginTop: '0.25rem' }}>
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginTop: 2 }}>
           {criteria.length} criteri{criteria.length === 1 ? 'on' : 'a'} defined
         </div>
       </div>
 
-      {/* Criteria list */}
-      <div style={{ padding: '0.5rem 1.25rem' }}>
+      {/* Criteria list. A row keeps its controls on one line when there is
+          room; on a phone the text takes the full width and the category,
+          "Required" and remove drop to a second line. */}
+      <div style={{ padding: '0 16px' }}>
         {criteria.length === 0 && !adding && (
-          <div style={{ padding: '1.5rem', textAlign: 'center', color: '#9ca3af', fontSize: '0.82rem' }}>
-            No criteria defined yet
-          </div>
+          <PageState kind="empty" title="No criteria defined yet" />
         )}
-        {criteria.map(c => (
+        {criteria.map((c, i) => (
           <div key={c.id} style={{
-            display: 'flex', alignItems: 'center', gap: '0.5rem',
-            padding: '0.5rem 0', borderBottom: '1px solid #f3f4f6',
+            display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 12, rowGap: 6,
+            padding: interactive ? '8px 0' : '10px 0',
+            borderBottom: interactive || i < criteria.length - 1 ? LINE : 'none',
           }}>
-            {interactive && (
-              <input
-                type="checkbox"
-                checked={c.required}
-                onChange={e => handleToggleRequired(c.id, e.target.checked)}
-                title={c.required ? 'Required' : 'Optional'}
-                style={{ accentColor: '#2563eb', cursor: 'pointer' }}
-              />
-            )}
-            <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ flex: '1 1 240px', minWidth: 0 }}>
               {interactive ? (
                 <input
+                  className="n-input"
+                  aria-label={`Criterion ${i + 1}`}
                   value={c.text}
                   onChange={e => handleUpdateText(c.id, e.target.value)}
-                  style={{ ...inputStyle, width: '100%', border: 'none', padding: '2px 0', fontSize: '0.85rem' }}
+                  style={{ width: '100%' }}
                 />
               ) : (
-                <span style={{ fontSize: '0.85rem', color: '#111' }}>{c.text}</span>
+                <span style={{ fontSize: 'var(--fs-base)', color: 'var(--text)' }}>{c.text}</span>
               )}
             </div>
-            {c.category && (
-              <span style={{
-                fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: 8,
-                backgroundColor: '#f3f4f6', color: '#6b7280',
-              }}>
-                {c.category}
-              </span>
-            )}
-            {!interactive && (
-              <span style={{
-                fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: 8,
-                backgroundColor: c.required ? '#dbeafe' : '#f3f4f6',
-                color: c.required ? '#1e40af' : '#9ca3af',
-              }}>
-                {c.required ? 'Required' : 'Optional'}
-              </span>
-            )}
-            {interactive && (
-              <button onClick={() => handleRemove(c.id)} title="Remove" style={{
-                border: 'none', background: 'none', cursor: 'pointer',
-                color: '#d1d5db', fontSize: '0.85rem', padding: '0 4px',
-                transition: 'color 0.15s',
-              }} onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')} onMouseLeave={e => (e.currentTarget.style.color = '#d1d5db')}>
-                &#10005;
-              </button>
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginLeft: 'auto' }}>
+              {hasCategory && (
+                <span style={{ minWidth: 104 }}>
+                  {c.category && <Badge>{c.category}</Badge>}
+                </span>
+              )}
+              {interactive ? (
+                <label style={checkLabel}>
+                  <input
+                    type="checkbox"
+                    checked={c.required}
+                    onChange={e => handleToggleRequired(c.id, e.target.checked)}
+                    title={c.required ? 'Required' : 'Optional'}
+                    style={checkbox}
+                  />
+                  Required
+                </label>
+              ) : (
+                <Badge tone={c.required ? 'info' : 'neutral'}>{c.required ? 'Required' : 'Optional'}</Badge>
+              )}
+              {interactive && (
+                <IconButton icon={X} label="Remove" onClick={() => handleRemove(c.id)} />
+              )}
+            </div>
           </div>
         ))}
       </div>
 
       {/* Add criterion */}
       {interactive && (
-        <div style={{ padding: '0 1.25rem 0.5rem' }}>
+        <div style={{ padding: '10px 16px 12px' }}>
           {!adding ? (
-            <button onClick={() => setAdding(true)} style={{
-              margin: '0.25rem 0', padding: '5px 12px', fontSize: '0.75rem', fontWeight: 500,
-              border: '1px dashed #d1d5db', borderRadius: 6, backgroundColor: 'transparent',
-              color: '#6b7280', cursor: 'pointer', fontFamily: 'inherit',
-            }}>+ Add criterion</button>
+            <Button variant="quiet" size="sm" icon={Plus} onClick={() => setAdding(true)} style={{ marginLeft: -12 }}>
+              Add criterion
+            </Button>
           ) : (
             <div style={{
-              margin: '0.25rem 0', padding: '0.6rem 0.75rem',
-              border: '1px solid #dbeafe', borderRadius: 8, backgroundColor: '#f8fafc',
-              display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap',
+              padding: 12, border: '1px solid var(--line)', borderRadius: 'var(--radius)',
+              backgroundColor: 'var(--surface)',
+              display: 'flex', flexWrap: 'wrap', gap: '10px 12px', alignItems: 'flex-end',
             }}>
-              <div style={{ flex: 2, minWidth: 200 }}>
-                <label style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase' }}>Criterion</label>
-                <input value={newText} onChange={e => setNewText(e.target.value)}
-                  placeholder="e.g., Must have valid work visa" style={{ ...inputStyle, width: '100%' }} autoFocus />
+              <div style={{ flex: '2 1 220px', minWidth: 0 }}>
+                <label className="n-label" htmlFor={`${fieldId}-text`}>Criterion</label>
+                <input id={`${fieldId}-text`} className="n-input" value={newText} onChange={e => setNewText(e.target.value)}
+                  placeholder="e.g., Must have valid work visa" style={{ width: '100%' }} autoFocus />
               </div>
-              <div style={{ flex: 0, minWidth: 100 }}>
-                <label style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase' }}>Category</label>
-                <input value={newCategory} onChange={e => setNewCategory(e.target.value)}
-                  placeholder="e.g., Legal" style={{ ...inputStyle, width: 100 }} />
+              <div style={{ flex: '1 1 130px', minWidth: 0 }}>
+                <label className="n-label" htmlFor={`${fieldId}-category`}>Category</label>
+                <input id={`${fieldId}-category`} className="n-input" value={newCategory} onChange={e => setNewCategory(e.target.value)}
+                  placeholder="e.g., Legal" style={{ width: '100%' }} />
               </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem', color: '#6b7280', cursor: 'pointer' }}>
-                <input type="checkbox" checked={newRequired} onChange={e => setNewRequired(e.target.checked)} style={{ accentColor: '#2563eb' }} />
+              <label style={{ ...checkLabel, minHeight: 34 }}>
+                <input type="checkbox" checked={newRequired} onChange={e => setNewRequired(e.target.checked)} style={checkbox} />
                 Required
               </label>
-              <button onClick={handleAdd} style={{
-                padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
-                backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}>Add</button>
-              <button onClick={() => setAdding(false)} style={{
-                padding: '5px 12px', fontSize: '0.75rem',
-                backgroundColor: 'transparent', color: '#6b7280', border: '1px solid #d1d5db', borderRadius: 6,
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}>Cancel</button>
+              <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
+                <Button variant="quiet" size="sm" onClick={() => setAdding(false)}>Cancel</Button>
+                <Button variant="secondary" size="sm" onClick={handleAdd}>Add</Button>
+              </div>
             </div>
           )}
         </div>
@@ -290,19 +271,15 @@ export default function CriteriaEditor({ data, props, onAction, threadId }: Disp
 
       {/* Save button */}
       {interactive && (
-        <div style={{
-          padding: '0.75rem 1.25rem', borderTop: '1px solid #f3f4f6',
-          display: 'flex', justifyContent: 'flex-end',
-        }}>
-          <button onClick={handleSubmit} disabled={saving || criteria.length === 0 || !dirty} style={{
-            padding: '8px 24px', fontSize: '0.82rem', fontWeight: 600,
-            border: 'none', borderRadius: 8,
-            backgroundColor: !dirty ? (saved ? '#d1fae5' : '#e5e7eb') : '#111',
-            color: !dirty ? (saved ? '#065f46' : '#9ca3af') : '#fff',
-            cursor: saving || criteria.length === 0 || !dirty ? 'not-allowed' : 'pointer',
-            fontFamily: 'inherit',
-            transition: 'background-color 0.2s, color 0.2s',
-          }}>{saving ? 'Saving...' : saved && !dirty ? 'Saved' : 'Save Criteria'}</button>
+        <div style={{ padding: '12px 16px', borderTop: LINE, display: 'flex', justifyContent: 'flex-end' }}>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={saving || criteria.length === 0 || !dirty}
+            icon={saved && !dirty ? Check : undefined}
+            // Just saved: the button reads as a green confirmation, not a faded one.
+            style={saved && !dirty ? { backgroundColor: 'var(--ok-bg)', color: 'var(--ok)', opacity: 1 } : undefined}
+          >{saving ? 'Saving…' : saved && !dirty ? 'Saved' : 'Save criteria'}</Button>
         </div>
       )}
     </div>

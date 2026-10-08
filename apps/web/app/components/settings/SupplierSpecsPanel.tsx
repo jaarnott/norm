@@ -1,7 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { ChartColumn, ChevronRight, Plus, Target, Trash2, TriangleAlert } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import BackLink from '../ui/BackLink';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 import DojoSampleView, { type DojoDiff, type ExtractionDoc, type ReplicaDoc } from './DojoSampleView';
 import ReceiveInvoiceEditor from '../display/ReceiveInvoiceEditor';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
@@ -73,24 +80,27 @@ interface DojoView {
 }
 interface DojoSummaryRow { spec_id: string; total: number; pass: number; fail: number; error: number; new: number }
 
-const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
-  pass: { bg: '#d1fae5', fg: '#065f46' },
-  fail: { bg: '#fee2e2', fg: '#991b1b' },
-  error: { bg: '#fee2e2', fg: '#991b1b' },
-  new: { bg: '#fdf6e7', fg: '#8a6d3b' },
+// Dojo run status → badge tone. "new" = no baseline yet, which an admin has to
+// set, so it reads as "needs your input".
+const STATUS_TONES: Record<string, BadgeTone> = {
+  pass: 'ok',
+  fail: 'error',
+  error: 'error',
+  new: 'accent',
 };
 
 function StatusBadge({ status, count }: { status: string; count?: number }) {
-  const c = STATUS_COLORS[status] || STATUS_COLORS.new;
+  const tone = STATUS_TONES[status] || STATUS_TONES.new;
+  const label = status ? status.charAt(0).toUpperCase() + status.slice(1) : status;
   return (
-    <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '1px 7px', borderRadius: 4, background: c.bg, color: c.fg, whiteSpace: 'nowrap' }}>
-      {status.toUpperCase()}{count != null ? ` ${count}` : ''}
-    </span>
+    <Badge tone={tone}>
+      {label}{count != null ? ` ${count}` : ''}
+    </Badge>
   );
 }
 
-const labelStyle: React.CSSProperties = { fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' as const, marginBottom: 4, display: 'block' };
-const inputStyle: React.CSSProperties = { width: '100%', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: '0.85rem', fontFamily: 'inherit', boxSizing: 'border-box' as const };
+// A sensei chip that opens the sample: a badge you can press.
+const badgeButton: React.CSSProperties = { border: 'none', cursor: 'pointer', fontFamily: 'inherit' };
 
 export default function SupplierSpecsPanel() {
   const [specs, setSpecs] = useState<SupplierSpec[]>([]);
@@ -109,14 +119,23 @@ export default function SupplierSpecsPanel() {
   const [dojoRunning, setDojoRunning] = useState(false);
   const [dojoSummary, setDojoSummary] = useState<Record<string, DojoSummaryRow>>({});
 
+  // Returns whether the list loaded, so the FIRST load can show loading/failed
+  // instead of "No supplier specs yet." (display only; reloads ignore it).
+  const [listState, setListState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const load = useCallback(async () => {
     try {
       const res = await apiFetch('/api/supplier-invoice-specs');
       if (res.ok) {
         const data = await res.json();
         setSpecs(data.specs || []);
+        setListState('ready');
+        return true;
       }
     } catch { /* transient — list stays as-is */ }
+    // Only a list that never loaded reads as failed; a failed refresh keeps
+    // what is on screen.
+    setListState((s) => (s === 'ready' ? s : 'failed'));
+    return false;
   }, []);
   const loadSummary = useCallback(async () => {
     try {
@@ -129,7 +148,10 @@ export default function SupplierSpecsPanel() {
       }
     } catch { /* chips stay as-is */ }
   }, []);
-  useEffect(() => { load(); loadSummary(); }, [load, loadSummary]);
+  useEffect(() => {
+    load();
+    loadSummary();
+  }, [load, loadSummary]);
 
   const loadSamples = useCallback(async (specId: string) => {
     try {
@@ -386,34 +408,33 @@ export default function SupplierSpecsPanel() {
       <div>
         {/* The form stays narrow; the sample viewer below goes full width. */}
         <div style={{ maxWidth: 720 }}>
-        <button type="button" onClick={() => setEditing(null)}
-          style={{ border: 'none', background: 'none', padding: 0, marginBottom: 8, fontSize: '0.74rem', color: '#8a6d3b', cursor: 'pointer', fontFamily: 'inherit' }}>
-          ← Back to supplier specs
-        </button>
-        <h3 style={{ margin: '0 0 12px', fontSize: '1rem' }}>{isNew ? 'New supplier spec' : main ? 'Edit — Main prompt (all suppliers)' : `Edit — ${editing.name}`}</h3>
-        {error && <div style={{ color: '#c0392b', fontSize: '0.8rem', marginBottom: 10 }}>{error}</div>}
+        <div style={{ marginBottom: 8 }}>
+          <BackLink label="Back to supplier specs" onClick={() => setEditing(null)} />
+        </div>
+        <h3 style={{ margin: '0 0 12px', fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{isNew ? 'New supplier spec' : main ? 'Edit — Main prompt (all suppliers)' : `Edit — ${editing.name}`}</h3>
+        {error && <div role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', marginBottom: 10 }}>{error}</div>}
         {!main && (
           <div style={{ marginBottom: 12 }}>
-            <label style={labelStyle}>Supplier name</label>
-            <input style={inputStyle} value={editing.name}
+            <label className="n-label" htmlFor="supplier-spec-name">Supplier name</label>
+            <input id="supplier-spec-name" className="n-input" style={{ width: '100%' }} value={editing.name}
               onChange={(e) => setEditing({ ...editing, name: e.target.value })}
               placeholder="e.g. Service Foods" />
           </div>
         )}
         {!main && (
           <div style={{ marginBottom: 12 }}>
-            <label style={labelStyle}>Aliases (one per line — other names this supplier appears under)</label>
-            <textarea style={{ ...inputStyle, minHeight: 64, resize: 'vertical' }} value={aliasesText}
+            <label className="n-label" htmlFor="supplier-spec-aliases">Aliases (one per line — other names this supplier appears under)</label>
+            <textarea id="supplier-spec-aliases" className="n-input" style={{ display: 'block', width: '100%', minHeight: 64 }} value={aliasesText}
               onChange={(e) => setAliasesText(e.target.value)}
               placeholder={'Service Foods Auckland\nService Foods Ltd'} />
           </div>
         )}
         <div style={{ marginBottom: 12 }}>
-          <label style={labelStyle}>{main ? 'Main extraction prompt' : 'Extraction instructions'}</label>
-          <textarea style={{ ...inputStyle, minHeight: main ? 320 : 140, resize: 'vertical' }} value={editing.instructions}
+          <label className="n-label" htmlFor="supplier-spec-instructions">{main ? 'Main extraction prompt' : 'Extraction instructions'}</label>
+          <textarea id="supplier-spec-instructions" className="n-input" style={{ display: 'block', width: '100%', minHeight: main ? 320 : 140 }} value={editing.instructions}
             onChange={(e) => setEditing({ ...editing, instructions: e.target.value })}
             placeholder={'e.g. This supplier prints quantities split across CTN and UNIT columns; the billed quantity is cartons × pack size + singles. The unit price is per single unit.'} />
-          <div style={{ fontSize: '0.7rem', color: '#999', marginTop: 4 }}>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 4 }}>
             {main
               ? 'The base prompt used to read EVERY invoice copy; a matching supplier spec is appended to it. Emptying or disabling this row falls back to the built-in prompt. Edits apply to all environments immediately and re-read each invoice once.'
               : 'Appended to the invoice-copy reading prompt whenever an invoice’s supplier matches the name or an alias. Affects how the copy is read only — the validation checks stay the same for every supplier.'}
@@ -422,21 +443,20 @@ export default function SupplierSpecsPanel() {
               dojo without saving. Main prompt → every sample; supplier spec →
               its own samples. */}
           {!isNew && (
-            <div style={{ marginTop: 6 }}>
-              <button type="button" onClick={testAgainstDojo} disabled={candidateRunning}
+            <div style={{ marginTop: 8 }}>
+              <Button size="sm" onClick={testAgainstDojo} disabled={candidateRunning}
                 title={main
                   ? 'run EVERY dojo sample under this draft main prompt (nothing is saved)'
-                  : 'run this supplier’s dojo samples under this draft spec text (nothing is saved)'}
-                style={{ fontSize: '0.72rem', padding: '4px 12px', border: '1px solid #b78a2f', borderRadius: 6, background: '#fff', color: '#8a6d3b', cursor: candidateRunning ? 'wait' : 'pointer' }}>
+                  : 'run this supplier’s dojo samples under this draft spec text (nothing is saved)'}>
                 {candidateRunning ? 'Testing against dojo…' : 'Test against dojo'}
-              </button>
+              </Button>
               {candidateResult && (
-                <div style={{ marginTop: 6, padding: '6px 10px', border: '1px solid #eee', borderRadius: 6, background: '#fbfaf8' }}>
-                  <div style={{ fontSize: '0.7rem', color: '#555', marginBottom: 3 }}>
+                <div style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 'var(--radius)', background: 'var(--surface)' }}>
+                  <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginBottom: 4 }}>
                     Candidate result (nothing saved): {candidateResult.passed} pass · {candidateResult.failed} fail · {candidateResult.errors} error · {candidateResult.new} no-baseline
                   </div>
                   {candidateResult.samples.map((s) => (
-                    <div key={s.id} style={{ fontSize: '0.68rem', display: 'flex', gap: 6, alignItems: 'center', padding: '1px 0' }}>
+                    <div key={s.id} style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)', display: 'flex', gap: 6, alignItems: 'center', padding: '2px 0' }}>
                       <StatusBadge status={s.status} count={s.status === 'fail' ? (s.diffs?.length ?? 0) : undefined} />
                       <span>{s.label}</span>
                     </div>
@@ -446,102 +466,96 @@ export default function SupplierSpecsPanel() {
             </div>
           )}
         </div>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 16, fontSize: '0.85rem' }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 16, fontSize: 'var(--fs-base)', color: 'var(--text)' }}>
           <input type="checkbox" checked={editing.enabled}
             onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })} /> Enabled
         </label>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={handleSave} disabled={saving || !editing.name.trim()}
-            style={{ padding: '8px 18px', border: 'none', borderRadius: 6, background: '#2e7d4f', color: '#fff', cursor: 'pointer', fontSize: '0.85rem' }}>
+          <Button variant="primary" onClick={handleSave} disabled={saving || !editing.name.trim()}>
             {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button onClick={() => setEditing(null)}
-            style={{ padding: '8px 14px', border: '1px solid #ddd', borderRadius: 6, background: '#fff', color: '#555', cursor: 'pointer', fontSize: '0.85rem' }}>
+          </Button>
+          <Button onClick={() => setEditing(null)}>
             Cancel
-          </button>
+          </Button>
           {!isNew && !main && (
-            <button onClick={() => handleDelete(editing)}
-              style={{ marginLeft: 'auto', padding: '8px 14px', border: '1px solid #f0c0ba', borderRadius: 6, background: '#fff', color: '#c0392b', cursor: 'pointer', fontSize: '0.85rem' }}>
+            <Button variant="danger" onClick={() => handleDelete(editing)} style={{ marginLeft: 'auto' }}>
               Delete
-            </button>
+            </Button>
           )}
         </div>
         </div>
 
         {/* ---- Dojo: sample invoices + regression runs ------------------- */}
         {!isNew && !main && (
-          <div style={{ marginTop: 24, borderTop: '1px solid #eee', paddingTop: 14 }}>
+          <div style={{ marginTop: 24, borderTop: '1px solid var(--line)', paddingTop: 16 }}>
             <div style={{ maxWidth: 720 }}>
-            <label style={{ ...labelStyle, marginBottom: 6 }}>Test invoices (Dojo)</label>
-            <div style={{ fontSize: '0.7rem', color: '#999', marginBottom: 8 }}>
+            <h4 style={{ margin: '0 0 4px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Test invoices (Dojo)</h4>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 8 }}>
               Each run reads the PDF with the CURRENT prompts (main + this spec) and compares against the stored expected values. Open a sample with View; ask the sensei there to review and baseline it.
             </div>
             {samples.length === 0 && (
-              <div style={{ fontSize: '0.75rem', color: '#aaa', padding: '6px 0' }}>
+              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', padding: '6px 0' }}>
                 No sample invoices yet — file one with <strong>Can&rsquo;t receive</strong> on an invoice card.
               </div>
             )}
             {samples.map((s) => (
-              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid #f4f4f4', fontSize: '0.78rem' }}>
+              <div key={s.id} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 4, padding: '6px 0', borderBottom: '1px solid var(--line-soft)', fontSize: 'var(--fs-sm)', color: 'var(--text)' }}>
                 <StatusBadge status={s.last_status} count={s.last_status === 'fail' ? s.diff_count : undefined} />
                 {(s.replica_warning_count ?? 0) > 0 && (
-                  <span title="the replica raised warnings — open the sample to see them"
-                    style={{ fontSize: '0.62rem', color: '#8a6d3b', background: '#fdf6e7', border: '1px solid #ecd9ac', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>
-                    ⚠ {s.replica_warning_count}
-                  </span>
+                  <Badge tone="warn" title="the replica raised warnings — open the sample to see them">
+                    <Icon icon={TriangleAlert} size={12} />
+                    {s.replica_warning_count}
+                  </Badge>
                 )}
                 {s.analysis_status === 'queued' && (
-                  <span title="queued — the sensei worker picks it up within seconds"
-                    style={{ fontSize: '0.62rem', color: '#4c3d8f', background: '#e8e6f5', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>sensei queued</span>
+                  <Badge tone="info" title="queued — the sensei worker picks it up within seconds">Sensei queued</Badge>
                 )}
                 {s.analysis_status === 'running' && !s.analysis_stale && (
-                  <span style={{ fontSize: '0.62rem', color: '#1d4ed8', background: '#dbeafe', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>
-                    sensei analysing{s.analysis_phase ? ` — ${s.analysis_phase}` : '…'}
-                  </span>
+                  <Badge tone="info">
+                    Sensei analysing{s.analysis_phase ? ` — ${s.analysis_phase}` : '…'}
+                  </Badge>
                 )}
                 {s.analysis_status === 'running' && s.analysis_stale && (
-                  <span title="the executor died mid-run — the worker requeues and restarts it automatically"
-                    style={{ fontSize: '0.62rem', color: '#8a6d3b', background: '#fdf6e7', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>
-                    sensei restarting (attempt {(s.analysis_attempts ?? 0) + 1})…
-                  </span>
+                  <Badge tone="warn" title="the executor died mid-run — the worker requeues and restarts it automatically">
+                    Sensei restarting (attempt {(s.analysis_attempts ?? 0) + 1})…
+                  </Badge>
                 )}
                 {s.analysis_status === 'ready' && (
                   <button type="button" onClick={() => viewSample(s.id)}
                     title="open the sample — the sensei's proposal shows at the top of the invoice view"
-                    style={{ fontSize: '0.62rem', fontWeight: 700, color: '#065f46', background: '#d1fae5', border: '1px solid #a7dcc4', borderRadius: 4, padding: '1px 7px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                    sensei proposal
+                    className="n-badge n-badge--accent" style={badgeButton}>
+                    Sensei proposal
+                    <Icon icon={ChevronRight} size={12} />
                   </button>
                 )}
                 {s.analysis_status === 'not_green' && (
                   <button type="button" onClick={() => viewSample(s.id)}
                     title="open the sample — the sensei's proposal shows at the top of the invoice view"
-                    style={{ fontSize: '0.62rem', fontWeight: 700, color: '#8a6d3b', background: '#fdf6e7', border: '1px solid #ecd9ac', borderRadius: 4, padding: '1px 7px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                    sensei not green
+                    className="n-badge n-badge--warn" style={badgeButton}>
+                    Sensei not green
+                    <Icon icon={ChevronRight} size={12} />
                   </button>
                 )}
                 {s.analysis_status === 'failed' && (
                   <span title={s.analysis_error || 'the sensei run errored — ask it again from the sample view'}
-                    style={{ fontSize: '0.62rem', color: '#991b1b', background: '#fee2e2', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap', maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    sensei failed{s.analysis_error ? ` — ${s.analysis_error}` : ''}
+                    className="n-badge n-badge--error"
+                    style={{ display: 'block', maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    Sensei failed{s.analysis_error ? ` — ${s.analysis_error}` : ''}
                   </span>
                 )}
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
-                {s.last_run_at && <span style={{ fontSize: '0.65rem', color: '#aaa', whiteSpace: 'nowrap' }}>{new Date(s.last_run_at).toLocaleString()}</span>}
-                <button onClick={() => runSample(s.id)} disabled={runningSample !== null}
-                  title={'extract with the CURRENT prompts' + (s.analysis_status === 'ready' ? ' — the ready proposal is NOT used until you Apply it' : '')}
-                  style={{ fontSize: '0.68rem', padding: '2px 10px', border: '1px solid #2e7d4f', borderRadius: 4, background: '#fff', color: '#2e7d4f', cursor: runningSample ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
+                {s.last_run_at && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{new Date(s.last_run_at).toLocaleString()}</span>}
+                <Button size="sm" onClick={() => runSample(s.id)} disabled={runningSample !== null}
+                  title={'extract with the CURRENT prompts' + (s.analysis_status === 'ready' ? ' — the ready proposal is NOT used until you Apply it' : '')}>
                   {runningSample === s.id ? 'Running…' : 'Run'}
-                </button>
+                </Button>
                 {s.last_run_at && (
-                  <button onClick={() => (dojoView?.sampleId === s.id ? setDojoView(null) : viewSample(s.id))}
-                    style={{ fontSize: '0.68rem', padding: '2px 10px', border: '1px solid #ccc', borderRadius: 4, background: dojoView?.sampleId === s.id ? '#f0f0ec' : '#fff', color: '#555', cursor: 'pointer' }}>
+                  <Button size="sm" variant={dojoView?.sampleId === s.id ? 'quiet' : 'secondary'}
+                    onClick={() => (dojoView?.sampleId === s.id ? setDojoView(null) : viewSample(s.id))}>
                     {dojoView?.sampleId === s.id ? 'Close' : 'View'}
-                  </button>
+                  </Button>
                 )}
-                <button onClick={() => deleteSample(s.id)}
-                  style={{ fontSize: '0.68rem', padding: '2px 8px', border: 'none', background: 'none', color: '#c0392b', cursor: 'pointer' }}>
-                  ✕
-                </button>
+                <IconButton icon={Trash2} label="Delete sample" iconSize={16} onClick={() => deleteSample(s.id)} />
               </div>
             ))}
             </div>
@@ -578,7 +592,7 @@ export default function SupplierSpecsPanel() {
                     explanation instead. The stored BASELINE lives in its own
                     section below, independent of the replica. */}
                 {!dojoView.replica && (
-                  <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#faf9f7', padding: '1rem', fontSize: '0.74rem', color: '#6b655c' }}>
+                  <div className="n-card" style={{ padding: 16, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
                     {samples.find((x) => x.id === dojoView.sampleId)?.source_venue_id ? (
                       <>
                         No replica stored for this run — press <strong>Run</strong> on
@@ -596,11 +610,10 @@ export default function SupplierSpecsPanel() {
                         <strong> Can&rsquo;t receive</strong> from the invoice card.
                       </>
                     )}
-                    <div style={{ marginTop: 8 }}>
-                      <button type="button" onClick={() => runAnalysis(dojoView.sampleId)} disabled={analysing !== null}
-                        style={{ fontSize: '0.68rem', padding: '3px 12px', border: '1px solid #b78a2f', borderRadius: 4, background: '#fff', color: '#8a6d3b', cursor: analysing ? 'default' : 'pointer' }}>
+                    <div style={{ marginTop: 10 }}>
+                      <Button size="sm" onClick={() => runAnalysis(dojoView.sampleId)} disabled={analysing !== null}>
                         {analysing === dojoView.sampleId ? 'Sensei analysing…' : 'Ask the sensei'}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 )}
@@ -616,9 +629,9 @@ export default function SupplierSpecsPanel() {
                         analysing={analysing === dojoView.sampleId}
                       />
                     ) : (
-                      <div style={{ fontSize: '0.72rem', color: '#8a8a8a' }}>
+                      <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
                         {(dojoView.replica as { error?: string })?.error ? (
-                          <span style={{ color: '#a02b2b' }}>
+                          <span style={{ color: 'var(--error)' }}>
                             The last run couldn’t build the invoice view: {(dojoView.replica as { error?: string }).error} — run the sample to try a fresh build.
                           </span>
                         ) : (
@@ -629,7 +642,7 @@ export default function SupplierSpecsPanel() {
                     {/* The replica rendered as a real Receive Invoice card —
                         secondary, collapsed by default. */}
                     <details style={{ marginTop: 10 }}>
-                      <summary style={{ fontSize: '0.72rem', color: '#666', cursor: 'pointer' }}>
+                      <summary style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', cursor: 'pointer' }}>
                         Card view (replica as a Receive Invoice card)
                       </summary>
                       <div style={{ marginTop: 8 }}>
@@ -651,7 +664,7 @@ export default function SupplierSpecsPanel() {
                     baseline is what the sensei tests against; editing here
                     makes it admin-owned, which the sensei never overwrites. */}
                 <div style={{ marginTop: 10 }}>
-                  <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', marginBottom: 8 }}>
+                  <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)', marginBottom: 8 }}>
                     Last run
                   </div>
                   <DojoSampleView
@@ -692,13 +705,17 @@ export default function SupplierSpecsPanel() {
     <div style={{ maxWidth: 860 }}>
       {/* The Dojo: triage every venue's outstanding invoices before they
           join the per-supplier regression suite below. */}
-      <div onClick={() => setShowDojo(true)}
-        style={{ border: '1px solid #e6d9b8', borderLeft: '4px solid #b78a2f', borderRadius: 8, background: '#fffdf6', padding: '12px 16px', marginBottom: 14, cursor: 'pointer' }}>
+      <div className="n-card" onClick={() => setShowDojo(true)}
+        style={{ padding: '12px 16px', marginBottom: 12, cursor: 'pointer' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <strong style={{ fontSize: '0.9rem', color: '#1e1c18' }}>🥋 Dojo</strong>
-          <span style={{ marginLeft: 'auto', fontSize: '0.72rem', color: '#8a6d3b' }}>Enter →</span>
+          <Icon icon={Target} size="inline" tone="muted" />
+          <strong style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Dojo</strong>
+          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>
+            Enter
+            <Icon icon={ChevronRight} size="dense" tone="muted" />
+          </span>
         </div>
-        <div style={{ fontSize: '0.74rem', color: '#6b655c', marginTop: 4 }}>
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 4 }}>
           Review outstanding invoices from every venue side-by-side with what Norm
           extracts, let the sensei tune supplier specs, then promote keepers into
           regression testing.
@@ -706,51 +723,55 @@ export default function SupplierSpecsPanel() {
       </div>
       {/* The measurement half: every human receive is evidence for (or
           against) letting autopilot run unattended. */}
-      <div onClick={() => setShowReport(true)}
-        style={{ border: '1px solid #cfe0d6', borderLeft: '4px solid #2e7d4f', borderRadius: 8, background: '#f8fdfa', padding: '12px 16px', marginBottom: 14, cursor: 'pointer' }}>
+      <div className="n-card" onClick={() => setShowReport(true)}
+        style={{ padding: '12px 16px', marginBottom: 16, cursor: 'pointer' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <strong style={{ fontSize: '0.9rem', color: '#1e1c18' }}>📊 Autopilot readiness</strong>
-          <span style={{ marginLeft: 'auto', fontSize: '0.72rem', color: '#2e7d4f' }}>Open →</span>
+          <Icon icon={ChartColumn} size="inline" tone="muted" />
+          <strong style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Autopilot readiness</strong>
+          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>
+            Open
+            <Icon icon={ChevronRight} size="dense" tone="muted" />
+          </span>
         </div>
-        <div style={{ fontSize: '0.74rem', color: '#6b655c', marginTop: 4 }}>
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 4 }}>
           How often accepting Norm&rsquo;s suggestions was enough to receive an invoice
           with no hand edits — per supplier, plus what Norm keeps missing.
         </div>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10 }}>
-        <div style={{ fontSize: '0.8rem', color: '#777' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginBottom: 12, gap: 10 }}>
+        <div style={{ flex: '1 1 260px', minWidth: 0, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
           Per-supplier notes for reading invoice copies — matched by supplier name or alias during the invoice review.
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {Object.keys(dojoSummary).length > 0 && (
-            <button onClick={runDojo} disabled={dojoRunning}
-              title="re-run every stored sample invoice under the current prompts and compare against the expected values"
-              style={{ padding: '7px 14px', border: '1px solid #b78a2f', borderRadius: 6, background: '#fff', color: '#8a6d3b', cursor: dojoRunning ? 'wait' : 'pointer', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>
+            <Button onClick={runDojo} disabled={dojoRunning}
+              title="re-run every stored sample invoice under the current prompts and compare against the expected values">
               {dojoRunning ? 'Running Dojo…' : 'Run Dojo'}
-            </button>
+            </Button>
           )}
-          <button onClick={() => openEdit({ ...EMPTY }, true)}
-            style={{ padding: '7px 14px', border: '1px solid #2e7d4f', borderRadius: 6, background: '#fff', color: '#2e7d4f', cursor: 'pointer', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>
-            + New Spec
-          </button>
+          <Button variant="primary" icon={Plus} onClick={() => openEdit({ ...EMPTY }, true)}>
+            New spec
+          </Button>
         </div>
       </div>
-      {error && <div style={{ color: '#c0392b', fontSize: '0.8rem', marginBottom: 10 }}>{error}</div>}
+      {error && <div role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', marginBottom: 10 }}>{error}</div>}
       {specs.length === 0 && (
-        <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.85rem' }}>
-          No supplier specs yet.
-        </div>
+        listState === 'loading' ? <PageState kind="loading" title="Loading supplier specs…" />
+        : listState === 'failed' ? <PageState kind="error" title="Couldn’t load supplier specs." detail="Refresh the page to try again." />
+        : <PageState kind="empty" title="No supplier specs yet." />
       )}
       {/* Main prompt pinned first; supplier rows keep the server's name order. */}
-      {[...specs.filter(isMainPrompt), ...specs.filter((s) => !isMainPrompt(s))].map((s) => (
+      {specs.length > 0 && (
+      <div className="n-card" style={{ overflow: 'hidden' }}>
+      {[...specs.filter(isMainPrompt), ...specs.filter((s) => !isMainPrompt(s))].map((s, i) => (
         <div key={s.id} onClick={() => openEdit(s, false)}
-          style={{ border: isMainPrompt(s) ? '1px solid #cfe0d6' : '1px solid #eee', borderRadius: 8, padding: '10px 14px', marginBottom: 8, cursor: 'pointer', background: isMainPrompt(s) ? '#f6faf7' : '#fff' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <strong style={{ fontSize: '0.9rem' }}>{s.name}</strong>
-            {isMainPrompt(s) && <span style={{ fontSize: '0.65rem', color: '#2e7d4f', border: '1px solid #b7d5c2', borderRadius: 4, padding: '1px 6px' }}>applies to every supplier</span>}
-            {!s.enabled && <span style={{ fontSize: '0.65rem', color: '#999', border: '1px solid #ddd', borderRadius: 4, padding: '1px 6px' }}>disabled</span>}
+          style={{ borderTop: i > 0 ? '1px solid var(--line)' : 'none', padding: '10px 14px', cursor: 'pointer', background: isMainPrompt(s) ? 'var(--surface)' : 'var(--bg)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, rowGap: 4 }}>
+            <strong style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)', marginRight: 2 }}>{s.name}</strong>
+            {isMainPrompt(s) && <Badge tone="info">Applies to every supplier</Badge>}
+            {!s.enabled && <Badge tone="warn">Disabled</Badge>}
             {(s.aliases || []).map((a) => (
-              <span key={a} style={{ fontSize: '0.68rem', color: '#666', background: '#f4f2ee', borderRadius: 4, padding: '1px 7px' }}>{a}</span>
+              <Badge key={a}>{a}</Badge>
             ))}
             {(() => {
               const sum = dojoSummary[s.id];
@@ -766,12 +787,14 @@ export default function SupplierSpecsPanel() {
             })()}
           </div>
           {s.instructions && (
-            <div style={{ fontSize: '0.75rem', color: '#888', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {s.instructions}
             </div>
           )}
         </div>
       ))}
+      </div>
+      )}
     </div>
   );
 }

@@ -223,12 +223,21 @@ export function calcHours(start: unknown, end: unknown): number {
   } catch { return 0; }
 }
 
+/**
+ * A role's stripe colour: a muted categorical hue hashed from its id, so a role
+ * keeps its colour week to week. Only ever a 3px stripe beside a shift — never a
+ * fill under text. (A categorical palette, like a chart's: var() can't hash.)
+ *
+ * No role id — LoadedHub's labour view carries none — gets the neutral rule:
+ * hashing '' gave hue 0, so every shift wore the same error-looking red.
+ */
 export function roleColor(roleId: string): string {
+  if (!roleId) return 'var(--line-strong)';
   let hash = 0;
   for (let i = 0; i < roleId.length; i++) {
     hash = roleId.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return `hsl(${Math.abs(hash) % 360}, 55%, 65%)`;
+  return `hsl(${Math.abs(hash) % 360}, 40%, 58%)`;
 }
 
 export function staffName(shift: Shift): string {
@@ -277,9 +286,9 @@ export function buildStaffRows(shifts: Shift[], days: Date[], prefs: VenueTimePr
 export const formInputStyle: React.CSSProperties = {
   width: '100%',
   padding: '4px 8px',
-  border: '1px solid var(--line)',
-  borderRadius: 4,
-  fontSize: '0.82rem',
+  border: '1px solid var(--field)',
+  borderRadius: 'var(--radius-sm)',
+  fontSize: 'var(--fs-sm)',
   fontFamily: 'inherit',
   boxSizing: 'border-box' as const,
 };

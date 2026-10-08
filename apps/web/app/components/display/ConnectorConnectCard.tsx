@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
+import Button from '../ui/Button';
+import Badge from '../ui/Badge';
 
 type VenueStatus = 'connected' | 'needs_reconnect' | 'not_connected';
 
@@ -123,31 +125,31 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
   if (!connectorName) return null;
 
   const box: React.CSSProperties = {
-    border: '1px solid #e5e7eb', borderRadius: 10, padding: '0.85rem 1rem',
-    marginTop: '0.5rem', fontFamily: 'inherit', maxWidth: 460,
+    border: '1px solid var(--line)', borderRadius: 'var(--radius-lg)', padding: '0.9rem 1rem',
+    marginTop: '0.5rem', maxWidth: 460, backgroundColor: 'var(--bg)',
   };
   const label = info?.display_name || connectorName;
 
   if (error && !info) {
-    return <div style={box}><span style={{ color: '#b91c1c', fontSize: '0.85rem' }}>{error}</span></div>;
+    return <div style={box}><span role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-base)' }}>{error}</span></div>;
   }
   if (!info) {
-    return <div style={box}><span style={{ color: '#6b7280', fontSize: '0.85rem' }}>Loading {label}…</span></div>;
+    return <div style={box}><span style={{ color: 'var(--muted)', fontSize: 'var(--fs-base)' }}>Loading {label}…</span></div>;
   }
 
   const isOAuth = info.auth_type === 'oauth2';
 
   return (
     <div style={box}>
-      <div style={{ fontWeight: 600, fontSize: '0.92rem', marginBottom: '0.6rem' }}>
+      <div style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)', marginBottom: '0.7rem' }}>
         Connect {label}
       </div>
 
       {isOAuth ? (
         info.venues.length === 0 ? (
-          <div style={{ fontSize: '0.83rem', color: '#6b7280' }}>No venues you can connect.</div>
+          <div style={{ fontSize: 'var(--fs-base)', color: 'var(--muted)' }}>No venues you can connect.</div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             {info.venues.map(v => {
               const broken = v.status === 'needs_reconnect';
               const connected = v.status === 'connected';
@@ -156,30 +158,26 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
               const wrongCompany = !!(connected && v.wrong_company);
               return (
                 <div key={v.venue_id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                  <span style={{ flex: 1, fontSize: '0.85rem', color: '#374151' }}>
+                  <span style={{ flex: 1, fontSize: 'var(--fs-base)', color: 'var(--text)' }}>
                     {v.venue_name}
                     {connected && v.connected_as && (
-                      <span style={{ display: 'block', fontSize: '0.7rem', color: wrongCompany ? '#b91c1c' : '#9ca3af' }}>
+                      <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: wrongCompany ? 'var(--error)' : 'var(--muted)' }}>
                         as {v.connected_as}{wrongCompany ? ' — wrong company, reconnect' : ''}
                       </span>
                     )}
                   </span>
                   {connected && !wrongCompany ? (
-                    <span style={{ fontSize: '0.72rem', fontWeight: 600, padding: '1px 8px', borderRadius: 8, backgroundColor: '#d1fae5', color: '#065f46' }}>Connected</span>
+                    <Badge tone="ok">Connected</Badge>
                   ) : (
-                    <button
+                    <Button
+                      size="sm"
+                      variant={broken || wrongCompany ? 'danger' : 'primary'}
                       onClick={() => startOAuth(v.venue_id)}
                       disabled={busy === v.venue_id}
                       title={v.last_auth_error || undefined}
-                      style={{
-                        padding: '4px 12px', fontSize: '0.76rem', fontWeight: 600, border: 'none',
-                        borderRadius: 6, cursor: busy === v.venue_id ? 'default' : 'pointer',
-                        backgroundColor: broken || wrongCompany ? '#b91c1c' : '#111', color: '#fff', fontFamily: 'inherit',
-                        opacity: busy === v.venue_id ? 0.6 : 1,
-                      }}
                     >
                       {busy === v.venue_id ? 'Opening…' : broken || wrongCompany ? 'Reconnect' : 'Connect'}
-                    </button>
+                    </Button>
                   )}
                 </div>
               );
@@ -187,33 +185,33 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
           </div>
         )
       ) : savedKey ? (
-        <div style={{ fontSize: '0.83rem', color: '#065f46' }}>Saved. {label} is connected.</div>
+        <div style={{ fontSize: 'var(--fs-base)', color: 'var(--ok)' }}>Saved. {label} is connected.</div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
           {info.credential_fields.map(f => (
             <div key={f.key}>
-              <label style={{ display: 'block', fontSize: '0.76rem', color: '#555', marginBottom: 3 }}>{f.label}</label>
+              <label className="n-label" htmlFor={`cred-${connectorName}-${f.key}`}>{f.label}</label>
               <input
+                id={`cred-${connectorName}-${f.key}`}
+                className="n-input"
                 type={f.secret ? 'password' : 'text'}
                 autoComplete="off"
                 value={form[f.key] || ''}
                 onChange={e => setForm({ ...form, [f.key]: e.target.value })}
                 placeholder={`Enter ${f.label.toLowerCase()}`}
-                style={{ width: '100%', padding: '7px 9px', border: '1px solid #ddd', borderRadius: 6, fontSize: '0.84rem', fontFamily: 'inherit', boxSizing: 'border-box' }}
+                style={{ width: '100%' }}
               />
             </div>
           ))}
-          <button
-            onClick={saveApiKey}
-            disabled={busy === '__apikey__'}
-            style={{ alignSelf: 'flex-start', padding: '5px 14px', fontSize: '0.78rem', fontWeight: 600, border: 'none', borderRadius: 6, backgroundColor: '#111', color: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}
-          >
-            {busy === '__apikey__' ? 'Saving…' : 'Save & connect'}
-          </button>
+          <div>
+            <Button variant="primary" onClick={saveApiKey} disabled={busy === '__apikey__'}>
+              {busy === '__apikey__' ? 'Saving…' : 'Save & connect'}
+            </Button>
+          </div>
         </div>
       )}
 
-      {error && info && <div style={{ marginTop: '0.5rem', color: '#b91c1c', fontSize: '0.8rem' }}>{error}</div>}
+      {error && info && <div role="alert" style={{ marginTop: '0.6rem', color: 'var(--error)', fontSize: 'var(--fs-sm)' }}>{error}</div>}
     </div>
   );
 }

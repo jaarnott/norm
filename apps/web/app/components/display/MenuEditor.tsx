@@ -17,17 +17,75 @@
  * edit helpers here are the seam it will reuse.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Check, ChevronRight, Plus, Search, Trash2, X } from 'lucide-react';
 import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
-import { colors } from '../../lib/theme';
 import Combobox, { type ComboOption } from './Combobox';
 import { recipeCost, costRecipeFromVersion, type CostTables } from './recipeCost';
 import { formatMoney } from '../../lib/format';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
+import VenueSelect from '../ui/VenueSelect';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import BackLink from '../ui/BackLink';
+import Icon from '../ui/Icon';
+import Badge, { type BadgeTone } from '../ui/Badge';
 
 const num = (v: unknown): number => (typeof v === 'number' ? v : parseFloat(String(v)) || 0);
 const money = (n: number): string => formatMoney(n);
+
+// --- Layout ---
+// Below this width (a phone, a narrow chat card) a dish's price and cost fold
+// under its name, so a line fits without scrolling sideways.
+const COMPACT_BELOW = 680;
+// A dish line on a wide editor: Dish · Price · Cost · Food cost · remove.
+const LINE_GRID: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'minmax(0, 1fr) 104px 84px 80px 40px',
+  columnGap: 12,
+  alignItems: 'center',
+};
+/** Column label over the dish lines: the .n-table header type, without the fill. */
+const COL_LABEL: CSSProperties = { fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-soft)', whiteSpace: 'nowrap' };
+/** An icon or "$" sitting inside the left edge of an .n-input. */
+const FIELD_ADORN: CSSProperties = { position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' };
+/** A menu's name in the list: plain text that is a button, for keyboard reach. */
+const ROW_LINK: CSSProperties = {
+  padding: 0, border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left',
+  fontFamily: 'inherit', fontSize: 'inherit', lineHeight: 'inherit', fontWeight: 500, color: 'var(--text)',
+};
+
+/** The header inside a conversation or a Claude card: compact, no page title. */
+function CardHeader({ title, meta, back, status, actions }: {
+  title: string;
+  meta?: ReactNode;
+  back?: { label: string; onClick: () => void; disabled?: boolean };
+  status?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <div style={{ padding: '14px 16px 12px' }}>
+      {back && (
+        <div style={{ marginBottom: 6 }}>
+          <BackLink label={back.label} onClick={back.onClick} disabled={back.disabled} />
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 'var(--fs-md)', fontWeight: 600, lineHeight: 1.35, color: 'var(--text)' }}>{title}</div>
+            {status}
+          </div>
+          {meta && <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{meta}</div>}
+        </div>
+        {actions && <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>{actions}</div>}
+      </div>
+    </div>
+  );
+}
 
 interface MenuLine {
   id: string;
@@ -92,6 +150,23 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
   );
   const [isNewMenu, setIsNewMenu] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Layout only: the editor's own width picks the compact dish lines (see
+  // COMPACT_BELOW) — a phone, or a narrow card in a conversation or Claude.
+  const nameId = useId();
+  const editorRef = useRef<HTMLDivElement>(null);
+  const [compact, setCompact] = useState(() => typeof window !== 'undefined' && window.innerWidth < COMPACT_BELOW);
+  const editing = draft !== null;
+  useEffect(() => {
+    const el = editorRef.current;
+    if (!editing || !el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setCompact(w < COMPACT_BELOW);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [editing]);
 
   useEffect(() => {
     apiFetch('/api/venues')
@@ -159,7 +234,7 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
   // A dish's food cost = the linked recipe's cost. Food-cost % is that against the
   // sell price. Green ≤30%, amber ≤40%, red above — the usual kitchen bands.
   const dishCost = (recipeId?: string | null) => (recipeId && costTables ? recipeCost(recipeId, costTables) : null);
-  const fcColor = (pct: number): string => (pct <= 30 ? colors.success : pct <= 40 ? colors.warning : colors.error);
+  const fcTone = (pct: number): BadgeTone => (pct <= 30 ? 'ok' : pct <= 40 ? 'warn' : 'error');
   // Menus list: filter by search, sort alphabetically.
   const visibleMenus = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -186,7 +261,9 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
     setSavedNote(null);
     setError(null);
   };
-  const closeEditor = () => { setDraft(null); };
+  // A save error belongs to the editor; leaving it must not make the list
+  // read as "Couldn't load menus".
+  const closeEditor = () => { setDraft(null); setError(null); };
 
   // --- Draft mutations (the seam the MCP working-doc path will reuse) ---
   const setName = (name: string) => setDraft((d) => (d ? { ...d, name } : d));
@@ -248,168 +325,257 @@ export default function MenuEditor({ data, props }: DisplayBlockProps) {
     setSaving(false);
   };
 
-  // --- Styles (mirror InvoicesDashboard/OrdersDashboard) ---
-  const input: React.CSSProperties = { padding: '5px 8px', fontSize: '0.85rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit' };
-  const btn = (bg: string, fg = '#fff'): React.CSSProperties => ({ padding: '5px 12px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6, background: bg, color: fg, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' });
-  const ghost: React.CSSProperties = { ...btn('#fff', colors.textSecondary), border: `1px solid ${colors.border}` };
-  const selectStyle: React.CSSProperties = { padding: '3px 8px', fontSize: '0.75rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit', color: colors.textSecondary, backgroundColor: '#fff' };
-  const thStyle: React.CSSProperties = { padding: '8px 12px', textAlign: 'left', fontSize: '0.72rem', fontWeight: 600, color: colors.textSecondary, borderBottom: `2px solid ${colors.border}`, whiteSpace: 'nowrap' };
-  const tdStyle: React.CSSProperties = { padding: '8px 12px', fontSize: '0.8rem', color: colors.textPrimary, borderBottom: `1px solid ${colors.borderLight}` };
-
-  const venueSelect = venues.length > 1 && (
-    <select value={venueId || ''} onChange={(e) => changeVenue(e.target.value)} style={selectStyle}>
-      {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-    </select>
-  );
-  const notes = (
-    <>
-      {savedNote && <span style={{ fontSize: '0.8rem', color: colors.success }}>{savedNote}</span>}
-      {error && <span style={{ fontSize: '0.8rem', color: colors.error }}>{error}</span>}
-    </>
-  );
+  // --- Presentation ---
+  // A PAGE (Executive chef › Menus) draws the page header and sits straight on
+  // the cream page; in a conversation or inside Claude it is one compact card.
+  const isPage = persistVenue && !embedded;
+  const venuePicker = venues.length > 1 ? <VenueSelect venues={venues} value={venueId} onChange={changeVenue} /> : null;
+  const savedStatus = savedNote ? (
+    <span role="status" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--ok)' }}>
+      <Icon icon={Check} size="dense" />
+      {savedNote}
+    </span>
+  ) : null;
 
   // --- Editor view ---
   if (draft) {
-    return (
-      <div style={{ maxWidth: 760 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-          {!embedded && <button onClick={closeEditor} disabled={saving} style={ghost}>← Menus</button>}
-          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>{isNewMenu ? 'New menu' : 'Edit menu'}</h2>
-          {venueSelect}
-          {notes}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+    const title = isNewMenu ? 'New menu' : 'Edit menu';
+    const lineTotal = draft.groups.reduce((n, g) => n + g.lines.length, 0);
+    const meta = `${draft.groups.length} section${draft.groups.length === 1 ? '' : 's'} · ${lineTotal} line${lineTotal === 1 ? '' : 's'}`;
+    // Back does nothing while a save is in flight (it was a disabled button).
+    const back = embedded ? undefined : { label: 'Menus', onClick: closeEditor, disabled: saving };
+    const saveButton = (
+      <Button variant="primary" onClick={save} disabled={saving || !draft.name.trim()}>
+        {saving ? 'Saving…' : isNewMenu ? 'Create in Loaded' : 'Save to Loaded'}
+      </Button>
+    );
+    // Narrow: the venue picker and Save share one full-width row under the
+    // title (as on the phone mock) instead of wrapping onto two.
+    const sharedRow = compact && venuePicker ? (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', flex: '1 1 auto', minWidth: 0 }}>{venuePicker}</div>
+        {saveButton}
+      </div>
+    ) : null;
+    const actions = sharedRow ? undefined : <>{venuePicker}{saveButton}</>;
+    const pad = compact ? 12 : 16; // a section's inner gutter
+    const rowRule: CSSProperties = { borderBottom: '1px solid var(--line)' };
+
+    const body = (
+      <>
+        {error && (
+          <div style={{ marginBottom: 12 }}>
+            <PageState kind="error" title={error} />
+          </div>
+        )}
+        <div style={{ marginBottom: 16 }}>
+          <label className="n-label" htmlFor={nameId}>Menu name</label>
           <input
+            id={nameId}
+            className="n-input"
             value={draft.name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Menu name"
-            style={{ ...input, fontSize: '1rem', fontWeight: 600, flex: 1 }}
+            style={{ width: '100%', maxWidth: 560, fontSize: 'var(--fs-md)', fontWeight: 600 }}
           />
-          <button onClick={save} disabled={saving || !draft.name.trim()} style={btn(colors.executive_chef)}>
-            {saving ? 'Saving…' : isNewMenu ? 'Create in Loaded' : 'Save to Loaded'}
-          </button>
         </div>
 
         {draft.groups.map((g) => (
-          <div key={g.id} style={{ border: `1px solid ${colors.border}`, borderRadius: 8, marginBottom: '0.75rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.6rem', background: colors.selectedBg, borderTopLeftRadius: 7, borderTopRightRadius: 7 }}>
-              <input value={g.name} onChange={(e) => renameSection(g.id, e.target.value)} style={{ ...input, fontWeight: 600, flex: 1, background: '#fff' }} />
-              <button onClick={() => removeSection(g.id)} style={{ ...ghost, width: 28, padding: '5px 0', textAlign: 'center' }} title="Remove section">✕</button>
+          <div
+            key={g.id}
+            className={isPage ? 'n-card' : undefined}
+            style={isPage
+              ? { marginBottom: 12 }
+              : { marginBottom: 12, border: '1px solid var(--line)', borderRadius: 'var(--radius)', background: 'var(--bg)' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: `10px ${pad - 4}px 10px ${pad}px`, ...rowRule }}>
+              <input
+                className="n-input"
+                aria-label="Section name"
+                value={g.name}
+                onChange={(e) => renameSection(g.id, e.target.value)}
+                style={{ flex: '1 1 auto', minWidth: 0, maxWidth: 480, fontWeight: 600 }}
+              />
+              <IconButton icon={Trash2} label="Remove section" onClick={() => removeSection(g.id)} style={{ marginLeft: 'auto' }} />
             </div>
-            <div style={{ padding: '0.5rem 0.6rem' }}>
-              {g.lines.length === 0 && (
-                <div style={{ fontSize: '0.8rem', color: colors.textMuted, padding: '0.15rem 0 0.5rem' }}>No lines yet — add one below.</div>
+            <div style={{ padding: `0 ${pad}px 12px` }}>
+              {g.lines.length === 0 ? (
+                <div style={{ padding: '12px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No lines yet — add one below.</div>
+              ) : !compact && (
+                <div aria-hidden="true" style={{ ...LINE_GRID, padding: '10px 0 6px', borderBottom: '1px solid var(--line-strong)' }}>
+                  <span style={COL_LABEL}>Dish</span>
+                  <span style={{ ...COL_LABEL, textAlign: 'right' }}>Price</span>
+                  <span style={{ ...COL_LABEL, textAlign: 'right' }}>Cost</span>
+                  <span style={{ ...COL_LABEL, textAlign: 'right' }}>Food cost</span>
+                  <span />
+                </div>
               )}
               {g.lines.map((ln) => {
                 const c = dishCost(ln.recipeId);
                 const price = Number(ln.workingPrice) || 0;
                 const fc = c && c.complete && price > 0 ? (c.cost / price) * 100 : null;
-                return (
-                  <div key={ln.id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.4rem' }}>
-                    <div style={{ flex: 1 }}>
-                      <Combobox
-                        value={ln.recipeId ? recipeName(ln.recipeId) : ln.name}
-                        options={recipeOptions}
-                        onType={(t) => updateLine(g.id, ln.id, { name: t, recipeId: null })}
-                        onPick={(o) => updateLine(g.id, ln.id, { recipeId: o.id, stockItemId: null, name: o.name })}
-                        placeholder="Search recipe or type a dish name"
-                      />
-                    </div>
-                    <span style={{ color: colors.textMuted, fontSize: '0.8rem' }}>$</span>
+                const costTitle = !ln.recipeId ? 'Link a recipe to cost this dish' : c?.complete ? 'Linked recipe cost vs sell price' : 'The linked recipe has unpriced ingredients — cost incomplete';
+                const cost = c?.complete
+                  ? <span style={{ color: 'var(--text)' }}>{money(c.cost)}</span>
+                  : <span style={{ color: 'var(--muted)' }}>—</span>;
+                const fcBadge = fc != null ? <Badge tone={fcTone(fc)}>{fc.toFixed(0)}% FC</Badge> : null;
+                const dishField = (
+                  <Combobox
+                    value={ln.recipeId ? recipeName(ln.recipeId) : ln.name}
+                    options={recipeOptions}
+                    onType={(t) => updateLine(g.id, ln.id, { name: t, recipeId: null })}
+                    onPick={(o) => updateLine(g.id, ln.id, { recipeId: o.id, stockItemId: null, name: o.name })}
+                    placeholder="Search recipe or type a dish name"
+                  />
+                );
+                const priceField = (
+                  <span style={{ position: 'relative', display: 'block' }}>
+                    <span aria-hidden="true" style={{ ...FIELD_ADORN, fontSize: 'var(--fs-base)', color: 'var(--muted)' }}>$</span>
                     <input
                       type="number" step="0.01" min="0"
                       value={ln.workingPrice}
                       onChange={(e) => updateLine(g.id, ln.id, { workingPrice: parseFloat(e.target.value) })}
-                      style={{ ...input, width: 84, textAlign: 'right' }}
+                      aria-label={`Price of ${(ln.recipeId ? recipeName(ln.recipeId) : ln.name) || 'this dish'}`}
+                      className="n-input"
+                      style={{ width: '100%', paddingLeft: 22, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
                     />
-                    <div style={{ width: 96, textAlign: 'right', fontSize: '0.74rem', lineHeight: 1.25 }} title={!ln.recipeId ? 'Link a recipe to cost this dish' : c?.complete ? 'Linked recipe cost vs sell price' : 'The linked recipe has unpriced ingredients — cost incomplete'}>
-                      {c?.complete ? (
-                        <>
-                          <div style={{ color: colors.textPrimary }}>{money(c.cost)}</div>
-                          {fc != null && <div style={{ color: fcColor(fc), fontWeight: 600 }}>{fc.toFixed(0)}% FC</div>}
-                        </>
-                      ) : (
-                        <span style={{ color: colors.textMuted }}>—</span>
-                      )}
+                  </span>
+                );
+                const remove = <IconButton icon={X} label="Remove line" iconSize={16} onClick={() => removeLine(g.id, ln.id)} />;
+
+                if (compact) {
+                  // Dish and remove on one row; price, cost and food cost under it.
+                  return (
+                    <div key={ln.id} style={{ padding: '10px 0', ...rowRule }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>{dishField}</div>
+                        {remove}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                        <div style={{ width: 104 }}>{priceField}</div>
+                        <div title={costTitle} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)', fontVariantNumeric: 'tabular-nums' }}>
+                          <span style={{ color: 'var(--muted)' }}>Cost</span>
+                          {cost}
+                          {fcBadge}
+                        </div>
+                      </div>
                     </div>
-                    <button onClick={() => removeLine(g.id, ln.id)} style={{ ...ghost, width: 28, padding: '5px 0', textAlign: 'center' }} title="Remove line">✕</button>
+                  );
+                }
+                return (
+                  <div key={ln.id} style={{ ...LINE_GRID, padding: '8px 0', ...rowRule }}>
+                    <div style={{ minWidth: 0 }}>{dishField}</div>
+                    {priceField}
+                    <div title={costTitle} style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{cost}</div>
+                    <div title={costTitle} style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fcBadge}</div>
+                    <div style={{ justifySelf: 'end' }}>{remove}</div>
                   </div>
                 );
               })}
-              <button onClick={() => addLine(g.id)} style={{ ...ghost, marginTop: 4 }}>+ Add line</button>
+              <Button variant="quiet" size="sm" icon={Plus} onClick={() => addLine(g.id)} style={{ marginTop: 8, marginLeft: -8 }}>Add line</Button>
             </div>
           </div>
         ))}
 
-        <button onClick={addSection} style={ghost}>+ Add section</button>
+        <Button icon={Plus} onClick={addSection}>Add section</Button>
+      </>
+    );
+
+    return isPage ? (
+      <div ref={editorRef}>
+        <PageHeader back={back} title={title} meta={meta} status={savedStatus} actions={actions}>{sharedRow}</PageHeader>
+        {body}
+      </div>
+    ) : (
+      <div ref={editorRef} className="n-card">
+        <CardHeader back={back} title={title} meta={meta} status={savedStatus} actions={actions} />
+        <div style={{ padding: '0 16px 16px' }}>
+          {sharedRow && <div style={{ marginBottom: 12 }}>{sharedRow}</div>}
+          {body}
+        </div>
       </div>
     );
   }
 
   // --- List view ---
-  return (
-    <div>
-      {/* Header — mirrors OrdersDashboard: title + count + venue + New button */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>Menus</h2>
-          <span style={{ fontSize: '0.75rem', color: colors.textMuted }}>
-            {loading ? 'Loading…' : `${visibleMenus.length}${query ? ` of ${menus.length}` : ''} menu${menus.length === 1 ? '' : 's'}`}
-          </span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {notes}
-          {venueSelect}
-          <button onClick={newMenu} disabled={!venueId} style={{ ...btn(colors.executive_chef), background: venueId ? colors.executive_chef : '#ccc', cursor: venueId ? 'pointer' : 'default' }}>+ New menu</button>
-        </div>
+  const meta = loading ? 'Loading…' : `${visibleMenus.length}${query ? ` of ${menus.length}` : ''} menu${menus.length === 1 ? '' : 's'}`;
+  const actions = (
+    <>
+      {venuePicker}
+      <Button variant="primary" icon={Plus} onClick={newMenu} disabled={!venueId}>New menu</Button>
+    </>
+  );
+  const search = menus.length > 3 ? (
+    <span style={{ position: 'relative', display: 'block', maxWidth: 320 }}>
+      <Icon icon={Search} size={16} tone="muted" style={FIELD_ADORN} />
+      <input
+        className="n-input"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search menus…"
+        aria-label="Search menus"
+        style={{ width: '100%', paddingLeft: 34 }}
+      />
+    </span>
+  ) : null;
+  // In a card the table runs edge to edge, its outer cells on the card's gutter.
+  const edgeL: CSSProperties | undefined = isPage ? undefined : { paddingLeft: 16 };
+  const edgeR: CSSProperties = isPage ? { paddingLeft: 0 } : { paddingLeft: 0, paddingRight: 16 };
+  // A load that failed with nothing to show is an error, never "No menus yet";
+  // one that failed over a list already on screen keeps the list, error above.
+  const errorBanner = error && !loading && menus.length > 0 ? <PageState kind="error" title={error} /> : null;
+  const content = loading ? (
+    <PageState kind="loading" title="Loading menus…" />
+  ) : error && menus.length === 0 ? (
+    <PageState kind="error" title="Couldn’t load menus" detail={error} />
+  ) : visibleMenus.length === 0 ? (
+    <PageState kind="empty" title={menus.length === 0 ? 'No menus yet.' : `No menus match “${query}”.`} />
+  ) : (
+    <table className="n-table">
+      <thead>
+        <tr>
+          <th style={edgeL}>Menu</th>
+          <th className="num" style={{ width: 1 }}>Sections</th>
+          <th className="num" style={{ width: 1 }}>Lines</th>
+          <th style={{ width: 1, ...edgeR }} />
+        </tr>
+      </thead>
+      <tbody>
+        {visibleMenus.map((m) => {
+          const lineCount = m.groups.reduce((n, g) => n + g.lines.length, 0);
+          return (
+            <tr key={m.id} onClick={() => editMenu(m)} style={{ cursor: 'pointer' }}>
+              <td style={edgeL}>
+                {/* The row opens the menu; the name is a button so the row is reachable by keyboard. */}
+                <button type="button" style={ROW_LINK}>{m.name || 'Untitled menu'}</button>
+              </td>
+              <td className="num" style={{ color: 'var(--text-soft)' }}>{m.groups.length}</td>
+              <td className="num" style={{ color: lineCount ? 'var(--text)' : 'var(--muted)' }}>{lineCount}</td>
+              <td style={{ width: 1, ...edgeR }}>
+                <Icon icon={ChevronRight} size={16} tone="muted" style={{ display: 'block' }} />
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+
+  if (isPage) {
+    return (
+      <div>
+        <PageHeader title="Menus" meta={meta} status={savedStatus} actions={actions}>{search}</PageHeader>
+        {errorBanner && <div style={{ marginBottom: 12 }}>{errorBanner}</div>}
+        {content}
       </div>
-
-      {menus.length > 3 && (
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search menus…"
-          style={{ ...input, width: '100%', maxWidth: 320, marginBottom: '0.75rem', boxSizing: 'border-box' }}
-        />
-      )}
-
-      {loading ? (
-        <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>Loading menus…</div>
-      ) : visibleMenus.length === 0 ? (
-        <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>
-          {menus.length === 0 ? 'No menus yet.' : `No menus match “${query}”.`}
-        </div>
-      ) : (
-        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420 }}>
-            <thead>
-              <tr>
-                <th style={thStyle}>Menu</th>
-                <th style={{ ...thStyle, textAlign: 'right', width: 90 }}>Sections</th>
-                <th style={{ ...thStyle, textAlign: 'right', width: 90 }}>Lines</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleMenus.map((m) => {
-                const lineCount = m.groups.reduce((n, g) => n + g.lines.length, 0);
-                return (
-                  <tr
-                    key={m.id}
-                    onClick={() => editMenu(m)}
-                    style={{ cursor: 'pointer' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = colors.pageBg; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}
-                  >
-                    <td style={{ ...tdStyle, fontWeight: 600 }}>{m.name || 'Untitled menu'}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', color: colors.textSecondary }}>{m.groups.length}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', color: lineCount ? colors.textPrimary : colors.textMuted }}>{lineCount}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+    );
+  }
+  return (
+    <div className="n-card" style={{ overflowX: 'auto' }}>
+      <CardHeader title="Menus" meta={meta} status={savedStatus} actions={actions} />
+      {search && <div style={{ padding: '0 16px 12px' }}>{search}</div>}
+      {errorBanner && <div style={{ padding: '0 16px 12px' }}>{errorBanner}</div>}
+      {content}
     </div>
   );
 }

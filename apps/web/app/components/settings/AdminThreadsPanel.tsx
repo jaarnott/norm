@@ -3,10 +3,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Search, ChevronLeft, ChevronRight, User as UserIcon } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
-import { colors } from '../../lib/theme';
+import { memberName } from '../../lib/memberNames';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 import type { AdminThread, Thread } from '../../types';
 import ThreadDetail from '../threads/ThreadDetail';
 import { CopyableThreadId } from '../threads/ActivityTimeline';
+import Avatar from '../ui/Avatar';
+import BackLink from '../ui/BackLink';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
 
 // Threads since Sep 2026 are all Norm's (no router); the member domains
 // filter the threads from before.
@@ -15,7 +22,7 @@ const DOMAIN_OPTIONS = [
   { value: 'norm', label: 'Norm' },
   { value: 'procurement', label: 'Procurement' },
   { value: 'hr', label: 'HR' },
-  { value: 'time_attendance', label: 'Time & Attendance' },
+  { value: 'time_attendance', label: 'Time & attendance' },
   { value: 'marketing', label: 'Marketing' },
   { value: 'reports', label: 'Reports' },
   { value: 'meta', label: 'Meta' },
@@ -31,14 +38,22 @@ const STATUS_OPTIONS = [
   { value: 'needs_clarification', label: 'Needs clarification' },
 ];
 
-const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
-  completed: { bg: colors.badgeApproved.bg, color: colors.badgeApproved.text },
-  in_progress: { bg: '#e8f0fe', color: '#1a73e8' },
-  awaiting_approval: { bg: colors.badgeApproval.bg, color: colors.badgeApproval.text },
-  awaiting_tool_approval: { bg: '#e8daef', color: '#6c3483' },
-  awaiting_user_input: { bg: colors.badgeInput.bg, color: colors.badgeInput.text },
-  needs_clarification: { bg: colors.badgeClarification.bg, color: colors.badgeClarification.text },
+/** Status pill tones (ui/Badge): done → ok, waiting on an approval → warn,
+ *  waiting on the person's answer → accent, still running → info. */
+const STATUS_TONES: Record<string, BadgeTone> = {
+  completed: 'ok',
+  in_progress: 'info',
+  awaiting_approval: 'warn',
+  awaiting_tool_approval: 'warn',
+  awaiting_user_input: 'accent',
+  needs_clarification: 'accent',
 };
+
+/** "awaiting_tool_approval" → "Awaiting tool approval". */
+function statusLabel(status: string | undefined): string {
+  const words = (status || 'unknown').replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 function timeAgo(dateStr: string): string {
   const date = new Date(dateStr);
@@ -52,10 +67,6 @@ function timeAgo(dateStr: string): string {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d ago`;
   return date.toLocaleDateString();
-}
-
-function getDomainColor(domain: string): string {
-  return (colors as unknown as Record<string, string>)[domain] || colors.unknown;
 }
 
 const PAGE_SIZE = 50;
@@ -155,115 +166,115 @@ export default function AdminThreadsPanel() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const noop = useCallback(() => {}, []);
 
-  const selectStyle: React.CSSProperties = {
-    padding: '6px 8px', fontSize: '0.78rem', border: `1px solid ${colors.border}`,
-    borderRadius: 6, background: '#fff', color: colors.textPrimary, outline: 'none',
-    minWidth: 0, flex: 1,
-  };
+  // Phones show one pane at a time: the list, or the thread picked from it
+  // (with a way back). Wider screens show both side by side.
+  const { isMobile } = useBreakpoint();
+  const hideList = isMobile && !!selectedThreadId;
+  const hideDetail = isMobile && !selectedThreadId;
+
+  const field: React.CSSProperties = { flex: 1, minWidth: 0 };
 
   return (
-    <div style={{ display: 'flex', height: '100%', background: colors.pageBg }}>
+    <div style={{ display: 'flex', height: '100%', background: 'var(--canvas)' }}>
       {/* Left pane — thread list */}
       <div style={{
-        width: 380, minWidth: 320, borderRight: `1px solid ${colors.border}`,
-        display: 'flex', flexDirection: 'column', background: '#fff',
+        width: isMobile ? '100%' : 380, minWidth: isMobile ? 0 : 320,
+        borderRight: isMobile ? 'none' : '1px solid var(--line)',
+        display: hideList ? 'none' : 'flex', flexDirection: 'column',
       }}>
         {/* Filters */}
-        <div style={{ padding: '12px 14px', borderBottom: `1px solid ${colors.borderLight}`, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ padding: isMobile ? '12px 16px' : '14px 16px', borderBottom: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 8 }}>
           {/* Search */}
           <div style={{ position: 'relative' }}>
-            <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: colors.textMuted }} />
+            <Icon icon={Search} size="dense" tone="muted" style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
             <input
               type="text"
+              className="n-input"
               placeholder="Search threads..."
+              aria-label="Search threads"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              style={{ ...selectStyle, flex: undefined, width: '100%', paddingLeft: 30 }}
+              style={{ width: '100%', paddingLeft: 32 }}
             />
           </div>
           {/* Dropdowns row */}
-          <div style={{ display: 'flex', gap: 6 }}>
-            <select value={userFilter} onChange={e => setUserFilter(e.target.value)} style={selectStyle}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <select className="n-select" aria-label="User" value={userFilter} onChange={e => setUserFilter(e.target.value)} style={field}>
               <option value="">All users</option>
               {users.map(u => (
                 <option key={u.email} value={u.id || u.email}>{u.full_name || u.email}</option>
               ))}
             </select>
-            <select value={domainFilter} onChange={e => setDomainFilter(e.target.value)} style={selectStyle}>
+            <select className="n-select" aria-label="Domain" value={domainFilter} onChange={e => setDomainFilter(e.target.value)} style={field}>
               {DOMAIN_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={selectStyle}>
-              {STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={{ ...selectStyle, flex: 0.8 }} title="From date" />
-            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} style={{ ...selectStyle, flex: 0.8 }} title="To date" />
+          {/* Status gets the full width: its longest choices don't fit half of it. */}
+          <select className="n-select" aria-label="Status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ width: '100%' }}>
+            {STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          {/* Date range */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="date" className="n-input" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={field} title="From date" aria-label="From date" />
+            <span aria-hidden="true" style={{ flex: '0 0 auto', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>–</span>
+            <input type="date" className="n-input" value={dateTo} onChange={e => setDateTo(e.target.value)} style={field} title="To date" aria-label="To date" />
           </div>
         </div>
 
         {/* Thread list */}
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div className="scroll-quiet" style={{ flex: 1, overflowY: 'auto' }}>
           {loading && threads.length === 0 && (
-            <div style={{ padding: 24, textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>Loading...</div>
+            <PageState kind="loading" title="Loading threads…" />
           )}
           {!loading && threads.length === 0 && (
-            <div style={{ padding: 24, textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>No threads found</div>
+            <PageState kind="empty" title="No threads found" />
           )}
           {threads.map(t => {
             const isSelected = t.id === selectedThreadId;
-            const statusStyle = STATUS_COLORS[t.status] || { bg: '#f0f0f0', color: '#666' };
             return (
               <div
                 key={t.id}
                 onClick={() => setSelectedThreadId(t.id)}
+                className="n-thread-row"
                 style={{
-                  padding: '10px 14px', cursor: 'pointer',
-                  borderBottom: `1px solid ${colors.borderLight}`,
-                  background: isSelected ? colors.selectedBg : 'transparent',
-                  transition: 'background 0.1s',
+                  padding: '12px 16px', cursor: 'pointer',
+                  borderBottom: '1px solid var(--line)',
+                  // Selected: the selected tile plus the accent bar on the left
+                  // edge, as in the thread list beside a conversation.
+                  backgroundColor: isSelected ? 'var(--selected)' : undefined,
+                  boxShadow: isSelected ? 'inset 3px 0 0 var(--accent)' : undefined,
                 }}
               >
                 {/* User row */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                  <UserIcon size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />
-                  <span style={{ fontSize: '0.72rem', color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                  <Icon icon={UserIcon} size="meta" tone="muted" />
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {t.user_name || 'Unknown'} &middot; {t.user_email || ''}
                   </span>
                 </div>
                 {/* Title + meta */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
                   <span style={{
-                    fontSize: '0.82rem', fontWeight: 500, color: colors.textPrimary,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
+                    fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0,
                   }}>
                     {t.title || t.message?.slice(0, 80) || 'Untitled'}
                   </span>
-                  <span style={{ fontSize: '0.7rem', color: colors.textMuted, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
                     {t.created_at ? timeAgo(t.created_at) : ''}
                   </span>
                 </div>
                 {/* Thread id (for debugging reference) */}
                 <div style={{
-                  fontSize: '0.62rem', color: '#b5b5b5', fontFamily: 'ui-monospace, monospace',
-                  marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  fontSize: 'var(--fs-xs)', color: 'var(--muted)', fontFamily: 'var(--font-mono)',
+                  marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>
                   {t.id}
                 </div>
                 {/* Domain + status badges */}
-                <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                  <span style={{
-                    fontSize: '0.68rem', fontWeight: 600, textTransform: 'uppercase',
-                    color: getDomainColor(t.domain), letterSpacing: '0.03em',
-                  }}>
-                    {t.domain || 'unknown'}
-                  </span>
-                  <span style={{
-                    fontSize: '0.65rem', padding: '1px 6px', borderRadius: 4,
-                    background: statusStyle.bg, color: statusStyle.color, fontWeight: 500,
-                  }}>
-                    {t.status?.replace(/_/g, ' ') || 'unknown'}
-                  </span>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                  <Badge>{memberName(t.domain || 'unknown')}</Badge>
+                  <Badge tone={STATUS_TONES[t.status] ?? 'neutral'}>{statusLabel(t.status)}</Badge>
                 </div>
               </div>
             );
@@ -272,53 +283,66 @@ export default function AdminThreadsPanel() {
 
         {/* Pagination */}
         <div style={{
-          padding: '8px 14px', borderTop: `1px solid ${colors.border}`,
+          padding: '6px 8px 6px 16px', borderTop: '1px solid var(--line)',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          fontSize: '0.75rem', color: colors.textMuted,
+          fontSize: 'var(--fs-xs)', color: 'var(--muted)', fontVariantNumeric: 'tabular-nums',
         }}>
           <span>{total} thread{total !== 1 ? 's' : ''}</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <IconButton
+              icon={ChevronLeft}
+              label="Previous page"
+              iconSize={16}
               onClick={() => setPage(p => Math.max(1, p - 1))}
               disabled={page <= 1}
-              style={{ background: 'none', border: 'none', cursor: page <= 1 ? 'default' : 'pointer', color: page <= 1 ? colors.borderLight : colors.textSecondary, padding: 4 }}
-            >
-              <ChevronLeft size={16} />
-            </button>
+            />
             <span>Page {page} of {totalPages}</span>
-            <button
+            <IconButton
+              icon={ChevronRight}
+              label="Next page"
+              iconSize={16}
               onClick={() => setPage(p => Math.min(totalPages, p + 1))}
               disabled={page >= totalPages}
-              style={{ background: 'none', border: 'none', cursor: page >= totalPages ? 'default' : 'pointer', color: page >= totalPages ? colors.borderLight : colors.textSecondary, padding: 4 }}
-            >
-              <ChevronRight size={16} />
-            </button>
+            />
           </div>
         </div>
       </div>
 
       {/* Right pane — thread detail */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, minWidth: 0, display: hideDetail ? 'none' : 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {isMobile && (
+          <div style={{ padding: '10px 16px 0' }}>
+            <BackLink label="Back to threads" onClick={() => setSelectedThreadId(null)} />
+          </div>
+        )}
         {!selectedThread && (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textMuted, fontSize: '0.9rem' }}>
-            Select a thread to view details
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {detailLoading
+              ? <PageState kind="loading" title="Loading the thread…" />
+              : <PageState kind="empty" title="Select a thread to view details" />}
           </div>
         )}
         {selectedThread && (
           <>
             {/* User banner */}
             <div style={{
-              padding: '10px 20px', borderBottom: `1px solid ${colors.borderLight}`,
-              display: 'flex', alignItems: 'center', gap: 8, background: '#fafafa',
+              // 24px: level with ThreadDetail's tab strip underneath.
+              padding: isMobile ? '10px 16px' : '12px 24px', borderBottom: '1px solid var(--line)',
+              display: 'flex', alignItems: 'center', flexWrap: 'wrap', columnGap: 10, rowGap: 8,
             }}>
-              <UserIcon size={16} style={{ color: colors.textSecondary }} />
-              <span style={{ fontSize: '0.85rem', fontWeight: 500, color: colors.textPrimary }}>
-                {(selectedThread as unknown as { user_name?: string }).user_name || 'Unknown user'}
-              </span>
-              <span style={{ fontSize: '0.78rem', color: colors.textMuted }}>
-                {(selectedThread as unknown as { user_email?: string }).user_email || ''}
-              </span>
-              <span style={{ marginLeft: 'auto' }}>
+              <Avatar
+                name={(selectedThread as unknown as { user_name?: string }).user_name || (selectedThread as unknown as { user_email?: string }).user_email || '?'}
+                size={28}
+              />
+              <div style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', columnGap: 8 }}>
+                <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>
+                  {(selectedThread as unknown as { user_name?: string }).user_name || 'Unknown user'}
+                </span>
+                <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflowWrap: 'anywhere' }}>
+                  {(selectedThread as unknown as { user_email?: string }).user_email || ''}
+                </span>
+              </div>
+              <span style={{ marginLeft: 'auto', maxWidth: '100%', overflow: 'hidden' }}>
                 <CopyableThreadId threadId={selectedThread.id} />
               </span>
             </div>

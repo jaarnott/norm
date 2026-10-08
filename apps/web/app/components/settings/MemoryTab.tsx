@@ -11,7 +11,12 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Check } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import PageState from '../ui/PageState';
 
 interface Memory {
   id: string;
@@ -34,6 +39,12 @@ const TYPE_HINT: Record<string, string> = {
   preference: 'How you like answers shaped',
   context: 'A fact about the business',
   correction: 'Something Norm got wrong',
+};
+
+/** A group heading inside the section (Waiting for you, In use). */
+const groupTitle: CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 8,
+  margin: 0, fontSize: 'var(--fs-base)', fontWeight: 600, lineHeight: 1.35, color: 'var(--text)',
 };
 
 export default function MemoryTab() {
@@ -75,146 +86,135 @@ export default function MemoryTab() {
     }
   };
 
-  if (!loaded) return <div style={{ color: '#999', fontSize: '0.85rem' }}>Loading…</div>;
-
-  const candidates = memories.filter((m) => m.status === 'candidate');
-  const active = memories.filter((m) => m.status === 'active');
-
-  const card = (m: Memory, isCandidate: boolean) => (
-    <div
-      key={m.id}
-      style={{
-        border: `1px solid ${isCandidate ? '#f0e0bd' : '#eee'}`,
-        background: isCandidate ? '#fffdf6' : '#fff',
-        borderRadius: 10,
-        padding: '0.9rem 1rem',
-        marginBottom: '0.75rem',
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '0.5rem' }}>
-        <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{m.title}</span>
-        <span style={{ fontSize: '0.65rem', color: '#999', whiteSpace: 'nowrap' }}>
-          {m.scope === 'org' ? 'everyone' : 'just you'} · {m.type}
-        </span>
-      </div>
-
-      {editing === m.id ? (
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          rows={3}
-          style={{
-            width: '100%', marginTop: '0.5rem', fontSize: '0.8rem', padding: '0.5rem',
-            border: '1px solid #ddd', borderRadius: 6, fontFamily: 'inherit',
-          }}
-        />
-      ) : (
-        <p style={{ margin: '0.4rem 0 0.6rem', fontSize: '0.8rem', color: '#444' }}>{m.body}</p>
-      )}
-
-      <div style={{ fontSize: '0.65rem', color: '#999', marginBottom: '0.6rem' }}>
-        {TYPE_HINT[m.type] || m.type}
-        {m.created_at && ` · learned ${new Date(m.created_at).toLocaleDateString()}`}
-        {m.trigger && ` · from ${m.trigger.replace('_', ' ')}`}
-        {m.last_used_at && ` · last used ${new Date(m.last_used_at).toLocaleDateString()}`}
-        {!m.last_used_at && m.status === 'active' && ' · never used'}
-      </div>
-
-      <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-        {isCandidate && (
-          <button
-            onClick={() => act(m.id, `/api/memories/${m.id}/approve`, { method: 'POST' })}
-            disabled={busy === m.id}
-            style={btn('#1a7f4b')}
-          >
-            Approve
-          </button>
-        )}
-        {editing === m.id ? (
-          <>
-            <button
-              onClick={() => act(m.id, `/api/memories/${m.id}`, {
-                method: 'PATCH', body: JSON.stringify({ body: draft }),
-              })}
-              disabled={busy === m.id}
-              style={btn('#333')}
-            >
-              Save
-            </button>
-            <button onClick={() => { setEditing(null); setError(null); }} style={btn('#999')}>
-              Cancel
-            </button>
-          </>
-        ) : (
-          <button onClick={() => { setEditing(m.id); setDraft(m.body); setError(null); }} style={btn('#666')}>
-            Edit
-          </button>
-        )}
-        <button
-          onClick={() => act(m.id, `/api/memories/${m.id}`, { method: 'DELETE' })}
-          disabled={busy === m.id}
-          style={btn('#a33')}
-        >
-          {isCandidate ? 'Discard' : 'Forget'}
-        </button>
-      </div>
-    </div>
-  );
-
-  return (
-    <div style={{ maxWidth: 720 }}>
-      <h3 style={{ margin: '0 0 0.35rem', fontSize: '0.95rem', fontWeight: 600 }}>What Norm has learned</h3>
-      <p style={{ margin: '0 0 1.25rem', fontSize: '0.8rem', color: '#777' }}>
+  // Section header: 18px/600 title and its muted line, as on every settings tab.
+  const header = (
+    <>
+      <h2 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>What Norm has learned</h2>
+      <p style={{ margin: '4px 0 16px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
         Norm remembers how you like answers and what your business calls things. It never
         remembers anything that changes a figure or approves spending — those are rules it
         follows, not preferences it learns.
       </p>
+    </>
+  );
 
-      {error && (
-        <div style={{
-          border: '1px solid #f0c9c9', background: '#fff7f7', color: '#a33',
-          borderRadius: 8, padding: '0.6rem 0.75rem', fontSize: '0.78rem', marginBottom: '1rem',
-        }}>
-          {error}
+  if (!loaded) return <div style={{ maxWidth: 720, lineHeight: 1.45 }}>{header}<PageState kind="loading" title="Loading…" /></div>;
+
+  const candidates = memories.filter((m) => m.status === 'candidate');
+  const active = memories.filter((m) => m.status === 'active');
+
+  const card = (m: Memory, isCandidate: boolean) => {
+    const isEditing = editing === m.id;
+    return (
+      <div key={m.id} className="n-card" style={{ padding: '14px 16px', marginBottom: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
+          <span style={{ minWidth: 0, fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{m.title}</span>
+          <span style={{ flex: '0 0 auto', fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+            {m.scope === 'org' ? 'Everyone' : 'Just you'} · {m.type}
+          </span>
         </div>
-      )}
+
+        {isEditing ? (
+          <textarea
+            className="n-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={3}
+            aria-label={`Edit: ${m.title}`}
+            style={{ display: 'block', width: '100%', marginTop: 8 }}
+          />
+        ) : (
+          <p style={{ margin: '4px 0 0', fontSize: 'var(--fs-base)', color: 'var(--text-soft)' }}>{m.body}</p>
+        )}
+
+        <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+          {TYPE_HINT[m.type] || m.type}
+          {m.created_at && ` · learned ${new Date(m.created_at).toLocaleDateString()}`}
+          {m.trigger && ` · from ${m.trigger.replace('_', ' ')}`}
+          {m.last_used_at && ` · last used ${new Date(m.last_used_at).toLocaleDateString()}`}
+          {!m.last_used_at && m.status === 'active' && ' · never used'}
+        </div>
+
+        {/* One primary per card: Approve, or Save while editing. */}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12 }}>
+          {isCandidate && (
+            <Button
+              size="sm"
+              variant={isEditing ? 'secondary' : 'primary'}
+              icon={Check}
+              onClick={() => act(m.id, `/api/memories/${m.id}/approve`, { method: 'POST' })}
+              disabled={busy === m.id}
+            >
+              Approve
+            </Button>
+          )}
+          {isEditing ? (
+            <>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => act(m.id, `/api/memories/${m.id}`, {
+                  method: 'PATCH', body: JSON.stringify({ body: draft }),
+                })}
+                disabled={busy === m.id}
+              >
+                Save
+              </Button>
+              <Button size="sm" variant="quiet" onClick={() => { setEditing(null); setError(null); }}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" onClick={() => { setEditing(m.id); setDraft(m.body); setError(null); }}>
+              Edit
+            </Button>
+          )}
+          {/* Discarding a suggestion is a decline; forgetting one in use is a delete. */}
+          <Button
+            size="sm"
+            variant={isCandidate ? 'secondary' : 'danger'}
+            onClick={() => act(m.id, `/api/memories/${m.id}`, { method: 'DELETE' })}
+            disabled={busy === m.id}
+          >
+            {isCandidate ? 'Discard' : 'Forget'}
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ maxWidth: 720, lineHeight: 1.45 }}>
+      {header}
+
+      {error && <div style={{ marginBottom: 16 }}><PageState kind="error" title={error} /></div>}
 
       {candidates.length > 0 && (
-        <>
-          <h4 style={{ margin: '0 0 0.15rem', fontSize: '0.82rem', fontWeight: 600 }}>
-            Waiting for you ({candidates.length})
-          </h4>
-          <p style={{ margin: '0 0 0.75rem', fontSize: '0.72rem', color: '#999' }}>
+        <div style={{ marginBottom: 24 }}>
+          <h3 style={groupTitle}>
+            Waiting for you <Badge tone="accent">{candidates.length}</Badge>
+          </h3>
+          <p style={{ margin: '2px 0 10px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
             Norm noticed these from how you work but isn&apos;t sure yet, so it won&apos;t use them until you approve.
           </p>
           {candidates.map((m) => card(m, true))}
-          <div style={{ height: '1rem' }} />
-        </>
+        </div>
       )}
 
-      <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.82rem', fontWeight: 600 }}>
-        In use ({active.length})
-      </h4>
+      <h3 style={{ ...groupTitle, marginBottom: 10 }}>
+        In use <span style={{ fontWeight: 400, color: 'var(--muted)' }}>{active.length}</span>
+      </h3>
       {active.length === 0 ? (
-        <p style={{ fontSize: '0.8rem', color: '#999' }}>
-          Nothing yet. Tell Norm something like &ldquo;remember that we call the back bar the
-          annex&rdquo; and it will appear here.
-        </p>
+        <div className="n-card">
+          <PageState
+            kind="empty"
+            title="Nothing yet"
+            detail={<>Tell Norm something like &ldquo;remember that we call the back bar the annex&rdquo; and it will appear here.</>}
+          />
+        </div>
       ) : (
         active.map((m) => card(m, false))
       )}
     </div>
   );
-}
-
-function btn(color: string): React.CSSProperties {
-  return {
-    fontSize: '0.72rem',
-    padding: '0.3rem 0.7rem',
-    borderRadius: 6,
-    border: `1px solid ${color}`,
-    background: '#fff',
-    color,
-    cursor: 'pointer',
-  };
 }

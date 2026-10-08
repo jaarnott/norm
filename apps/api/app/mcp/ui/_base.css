@@ -1,33 +1,34 @@
 /* Shared look for every Norm ui:// app. Injected server-side (ui_apps.py).
-   Status tokens mirror apps/web/app/globals.css — keep the two in step.
-   Theme follows the host: it sets data-theme, else we fall back to the OS. */
+   Light values mirror apps/web/app/styles/tokens.css — keep the two in step.
+   display-block.html also bundles tokens.css itself (its editors use the full
+   token set) and pins itself light via data-theme-lock: its editors still
+   draw white surfaces inline, so following Claude's dark mode half-broke them.
+   Other apps follow the host: it sets data-theme, else we fall back to the OS. */
 :root {
-  --bg:#fff; --text:#1a1a1a; --muted:#8a8378; --line:#ece6df;
-  --brand:#a08060; --accent:#8a6d3b; --accent-soft:#f4e8d8;
-  --bar:#a08060; --bar-hi:#b89a76; --good:#5a7d5a; --warn:#b07a4a;
-  --ok:#28a745; --ok-bg:#eaf7ee; --error:#ef4444; --error-bg:#fde8e5;
-  --published:#28a745; --published-bg:#eaf7ee; --draft:#2563eb; --draft-bg:#eff6ff;
-  --open:#7a8499; --open-bg:#f1f3f7; --locked:#9aa3b2;
+  --bg:#fff; --text:#1a1a1a; --muted:#69615a; --line:#e2ddd7;
+  --brand:#a08060; --accent:#7d6234; --accent-soft:#f4e8d8;
+  --bar:#a08060; --bar-hi:#b89a76; --good:#2f6b40; --warn:#8a5a1f;
+  --ok:#2f6b40; --ok-bg:#e8f2ea; --error:#a93a2a; --error-bg:#fbe9e5;
+  --published:#2f6b40; --published-bg:#e8f2ea; --draft:#3f5f80; --draft-bg:#ecf1f6;
+  --open:#5c554d; --open-bg:#f0ebe5; --locked:#9a9184;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#1c1a17; --text:#f0ece6; --muted:#9a9284; --line:#33302a;
-          --brand:#c4a882; --accent:#c4a882; --accent-soft:#3a3229;
-          --bar:#c4a882; --bar-hi:#d8c19a; --good:#8fb08f; --warn:#d0a06a;
-  --ok:#6fbf7f; --ok-bg:#21311f; --error:#f28a80; --error-bg:#3a2320;
-  --published:#6fbf7f; --published-bg:#21311f; --draft:#6f9dff; --draft-bg:#1e2740;
-  --open:#98a1b5; --open-bg:#262a33; --locked:#7d8593;
-          --ok:#6fbf7f; --ok-bg:#21311f; --error:#f28a80; --error-bg:#3a2320;
-          --published:#6fbf7f; --published-bg:#21311f; --draft:#6f9dff; --draft-bg:#1e2740;
-          --open:#98a1b5; --open-bg:#262a33; --locked:#7d8593;
-        }
+  :root {
+    --bg:#1c1a17; --text:#f0ece6; --muted:#9a9284; --line:#33302a;
+    --brand:#c4a882; --accent:#c4a882; --accent-soft:#3a3229;
+    --bar:#c4a882; --bar-hi:#d8c19a; --good:#8fb08f; --warn:#d0a06a;
+    --ok:#6fbf7f; --ok-bg:#21311f; --error:#f28a80; --error-bg:#3a2320;
+    --published:#6fbf7f; --published-bg:#21311f; --draft:#6f9dff; --draft-bg:#1e2740;
+    --open:#98a1b5; --open-bg:#262a33; --locked:#7d8593;
+  }
 }
 :root[data-theme="light"] {
-  --bg:#fff; --text:#1a1a1a; --muted:#8a8378; --line:#ece6df;
-  --brand:#a08060; --accent:#8a6d3b; --accent-soft:#f4e8d8;
-  --bar:#a08060; --bar-hi:#b89a76; --good:#5a7d5a; --warn:#b07a4a;
-  --ok:#28a745; --ok-bg:#eaf7ee; --error:#ef4444; --error-bg:#fde8e5;
-  --published:#28a745; --published-bg:#eaf7ee; --draft:#2563eb; --draft-bg:#eff6ff;
-  --open:#7a8499; --open-bg:#f1f3f7; --locked:#9aa3b2;
+  --bg:#fff; --text:#1a1a1a; --muted:#69615a; --line:#e2ddd7;
+  --brand:#a08060; --accent:#7d6234; --accent-soft:#f4e8d8;
+  --bar:#a08060; --bar-hi:#b89a76; --good:#2f6b40; --warn:#8a5a1f;
+  --ok:#2f6b40; --ok-bg:#e8f2ea; --error:#a93a2a; --error-bg:#fbe9e5;
+  --published:#2f6b40; --published-bg:#e8f2ea; --draft:#3f5f80; --draft-bg:#ecf1f6;
+  --open:#5c554d; --open-bg:#f0ebe5; --locked:#9a9184;
 }
 :root[data-theme="dark"] {
   --bg:#1c1a17; --text:#f0ece6; --muted:#9a9284; --line:#33302a;
@@ -39,7 +40,7 @@
 }
 * { box-sizing: border-box; }
 html, body { margin:0; background:var(--bg); color:var(--text);
-  font-family: system-ui, -apple-system, sans-serif; }
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
 #root { padding:16px 18px; }
 .head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
 .brand { font-weight:800; color:var(--brand); font-size:.95rem; letter-spacing:-.01em; }

@@ -23,7 +23,7 @@ export default function SplitDragHandle({ isDragging, topPaneHeight, containerRe
         height: paneCollapsed ? 10 : 1,
         flexShrink: 0,
         cursor: 'row-resize',
-        backgroundColor: paneCollapsed ? '#f0f0f0' : '#e2e8f0',
+        backgroundColor: paneCollapsed ? 'var(--line-soft)' : 'var(--line)',
         position: 'relative',
         transition: isDragging ? 'none' : 'height 0.15s',
       }}
@@ -36,7 +36,7 @@ export default function SplitDragHandle({ isDragging, topPaneHeight, containerRe
         position: 'absolute', left: '50%', top: '50%',
         transform: 'translate(-50%, -50%)',
         width: 32, height: 3, borderRadius: 2,
-        backgroundColor: isDragging ? '#999' : '#ccc',
+        backgroundColor: isDragging ? 'var(--icon)' : 'var(--line-strong)',
         opacity: paneCollapsed || isDragging ? 1 : 0,
         transition: 'opacity 0.15s',
       }} />

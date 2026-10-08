@@ -1,7 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { LoaderCircle, TriangleAlert } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Badge from '../ui/Badge';
+import BackLink from '../ui/BackLink';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 import DojoSampleView, { type DojoDiff, type ExtractionDoc, type ReplicaDoc } from './DojoSampleView';
 import InvoicePdfPane from './InvoicePdfPane';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
@@ -74,9 +80,29 @@ interface OpenState {
   view?: RunView | null;
 }
 
-const chip = (bg: string, fg: string, border: string): React.CSSProperties => ({
-  fontSize: '0.62rem', fontWeight: 700, color: fg, background: bg, border: `1px solid ${border}`, borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap',
+const sectionTitle: React.CSSProperties = { margin: '0 0 8px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' };
+
+// The lists are white cards of rows. `clip`, not `hidden`, rounds the open
+// row's band into the card's corners without making the card a scroll
+// container — that would unstick the PDF pane inside the toolkit.
+const listCard: React.CSSProperties = { overflow: 'clip' };
+
+// One row of a list. The open row and the toolkit under it share a tinted
+// band, as an expanded order does on the Orders page, so the white panes
+// inside read as belonging to that row.
+const rowStyle = (first: boolean, isOpen: boolean): React.CSSProperties => ({
+  display: 'flex',
+  alignItems: 'center',
+  flexWrap: 'wrap',
+  gap: '6px 10px',
+  padding: '10px 12px',
+  borderTop: first ? 'none' : '1px solid var(--line)',
+  fontSize: 'var(--fs-base)',
+  color: 'var(--text)',
+  cursor: 'pointer',
+  background: isOpen ? 'var(--surface-alt)' : undefined,
 });
+const band: React.CSSProperties = { padding: '2px 12px 14px', background: 'var(--surface-alt)' };
 
 const money = (v: number | null) => (typeof v === 'number' ? formatMoney(v) : '—');
 const day = (v: string | null) => (v ? String(v).slice(0, 10) : '—');
@@ -346,7 +372,7 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
   const toolkit = (sampleId: string) => {
     const view = open?.view;
     return (
-      <div style={{ marginTop: 10, display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <div style={{ flex: '1 1 420px', minWidth: 320, position: 'sticky', top: 8 }}>
           <InvoicePdfPane sampleId={sampleId} />
         </div>
@@ -375,14 +401,14 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
               analysing={analysing === sampleId}
             />
           ) : (
-            <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#faf9f7', padding: '1rem', fontSize: '0.74rem', color: '#6b655c' }}>
+            <div className="n-card" style={{ padding: 16, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
               {/* A replica that FAILED to build stores {replica: true, error}
                   — parrot the stored reason. The error is a snapshot of the
                   LAST run: a connection fixed since (or the env-portable
                   venue resolver, 16 Aug 2026) can make the next Run succeed,
                   so invite one rather than predicting failure. */}
               {(view?.replica as { error?: string } | null)?.error ? (
-                <span style={{ color: '#a02b2b' }}>
+                <span style={{ color: 'var(--error)' }}>
                   The last run couldn’t build the invoice view: {(view!.replica as { error?: string }).error} — press Run to try a fresh build.
                 </span>
               ) : (
@@ -395,8 +421,8 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
               against; editing here makes it admin-owned, which the sensei
               never overwrites. */}
           {view && (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', marginBottom: 8 }}>
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)', marginBottom: 8 }}>
                 Last run
               </div>
               <DojoSampleView
@@ -416,37 +442,41 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
               />
             </div>
           )}
-          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-            <button type="button" onClick={() => open && runSample(sampleId, open.key, open.draft)}
-              title="re-extract under the CURRENT prompts (e.g. after applying a spec update)"
-              style={{ fontSize: '0.72rem', padding: '4px 14px', border: '1px solid #2e7d4f', borderRadius: 6, background: '#fff', color: '#2e7d4f', cursor: 'pointer' }}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+            <Button size="sm" onClick={() => open && runSample(sampleId, open.key, open.draft)}
+              title="re-extract under the CURRENT prompts (e.g. after applying a spec update)">
               Run
-            </button>
+            </Button>
             {open?.draft && (
-              <button type="button" onClick={() => promote(sampleId)} disabled={busy === sampleId}
+              <Button size="sm" variant="primary" onClick={() => promote(sampleId)} disabled={busy === sampleId}
                 title="keep this draft as a per-supplier regression sample — it joins Run Dojo from here on"
-                style={{ fontSize: '0.72rem', padding: '4px 14px', border: 'none', borderRadius: 6, background: '#2e7d4f', color: '#fff', cursor: busy ? 'wait' : 'pointer' }}>
+                style={busy ? { cursor: 'wait' } : undefined}>
                 {busy === sampleId ? 'Keeping…' : 'Keep as sample'}
-              </button>
+              </Button>
             )}
             {open?.draft && (
-              <button type="button" onClick={() => discard(sampleId)} disabled={busy === sampleId}
-                style={{ fontSize: '0.72rem', padding: '4px 14px', border: '1px solid #f0c0ba', borderRadius: 6, background: '#fff', color: '#c0392b', cursor: busy ? 'wait' : 'pointer' }}>
+              <Button size="sm" variant="danger" onClick={() => discard(sampleId)} disabled={busy === sampleId}
+                style={busy ? { cursor: 'wait' } : undefined}>
                 Discard draft
-              </button>
+              </Button>
             )}
-            <button type="button" onClick={() => { setOpen(null); setAnalysisView(null); }}
-              style={{ fontSize: '0.72rem', padding: '4px 14px', border: '1px solid #ccc', borderRadius: 6, background: '#fff', color: '#555', cursor: 'pointer' }}>
+            <Button size="sm" variant="quiet" onClick={() => { setOpen(null); setAnalysisView(null); }}>
               Close
-            </button>
+            </Button>
           </div>
         </div>
       </div>
     );
   };
 
+  // Staging/running shows a spinner; a failure reads as an error.
   const progress = (note?: string, isError?: boolean) => (
-    <div style={{ marginTop: 8, fontSize: '0.74rem', color: isError ? '#c0392b' : '#8a6d3b' }}>{note}</div>
+    <div role={isError ? 'alert' : 'status'}
+      style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-sm)', color: isError ? 'var(--error)' : 'var(--text-soft)' }}>
+      <Icon icon={isError ? TriangleAlert : LoaderCircle} size="dense"
+        style={{ marginTop: 2, ...(isError ? {} : { animation: 'n-spin 1s linear infinite' }) }} />
+      <span>{note}</span>
+    </div>
   );
 
   const byVenue = new Map<string, OutstandingRow[]>();
@@ -455,128 +485,136 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <div>
-      <button type="button" onClick={onBack}
-        style={{ border: 'none', background: 'none', padding: 0, marginBottom: 8, fontSize: '0.74rem', color: '#8a6d3b', cursor: 'pointer', fontFamily: 'inherit' }}>
-        ← Back to supplier specs
-      </button>
-      <h3 style={{ margin: '0 0 4px', fontSize: '1rem' }}>Dojo</h3>
-      <div style={{ fontSize: '0.74rem', color: '#777', marginBottom: 14, maxWidth: 720 }}>
+    <div style={{ lineHeight: 1.45, color: 'var(--text)' }}>
+      <div style={{ marginBottom: 8 }}>
+        <BackLink label="Back to supplier specs" onClick={onBack} />
+      </div>
+      <h3 style={{ margin: '0 0 4px', fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>Dojo</h3>
+      <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginBottom: 16, maxWidth: 720 }}>
         The testing ground: invoices arrive here when someone presses Can&rsquo;t receive on an
         invoice card. Open one side-by-side with what Norm extracts, run the sensei to tune the
         supplier spec, and apply its proposal to keep the invoice as a regression sample.
       </div>
-      {error && <div style={{ color: '#c0392b', fontSize: '0.78rem', marginBottom: 10 }}>{error}</div>}
+      {error && <div style={{ marginBottom: 12 }}><PageState kind="error" title={error} /></div>}
 
       {/* ---- In the dojo, awaiting review -------------------------------- */}
       {(overview?.pending_review.length ?? 0) > 0 && (
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>
-            In the dojo, awaiting review ({overview!.pending_review.length})
-          </div>
-          {overview!.pending_review.map((s) => (
-            <div key={s.id}>
-              <div onClick={() => (open?.key === s.id ? setOpen(null) : openSample(s.id, s.id, false))}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderBottom: '1px solid #f4f4f4', fontSize: '0.78rem', cursor: 'pointer', background: open?.key === s.id ? '#faf8f4' : undefined }}>
-                {/* Name first, state after — the row reads "which invoice,
-                    then where it's at". The regression PASS/FAIL badge is
-                    deliberately absent here: on a triage list it said
-                    nothing actionable (16 Aug 2026). */}
-                <span style={{ fontWeight: 600 }}>{s.spec_name}</span>
-                <span style={{ color: '#777', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
-                {s.analysis_status === 'queued' && <span title="queued — the sensei worker picks it up within seconds" style={chip('#e8e6f5', '#4c3d8f', '#cfc9ea')}>sensei queued</span>}
-                {s.analysis_status === 'running' && !s.analysis_stale && (
-                  <span style={chip('#dbeafe', '#1d4ed8', '#bfdbfe')}>
-                    sensei analysing{s.analysis_phase ? ` — ${s.analysis_phase}` : '…'}
-                  </span>
-                )}
-                {s.analysis_status === 'running' && s.analysis_stale && (
-                  <span title="the executor died mid-run — the worker requeues and restarts it automatically"
-                    style={chip('#fdf6e7', '#8a6d3b', '#ecd9ac')}>
-                    sensei restarting (attempt {(s.analysis_attempts ?? 0) + 1})…
-                  </span>
-                )}
-                {s.analysis_status === 'ready' && <span style={chip('#d1fae5', '#065f46', '#a7dcc4')}>sensei proposal</span>}
-                {s.analysis_status === 'not_green' && <span style={chip('#fdf6e7', '#8a6d3b', '#ecd9ac')}>sensei not green</span>}
-                {s.analysis_status === 'failed' && (
-                  <span title={s.analysis_error || 'the sensei run errored'}
-                    style={{ ...chip('#fee2e2', '#991b1b', '#f5c6c6'), maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    sensei failed{s.analysis_error ? ` — ${s.analysis_error}` : ''}
-                  </span>
-                )}
-                {!s.has_expected && !s.analysis_status && (
-                  <span title="no baseline yet — run the sensei (or set expected values by hand) to make this a regression sample"
-                    style={chip('#f4f4f4', '#777', '#e2e2e2')}>not processed</span>
-                )}
-                {/* Run the sensei straight from the list — no need to open the
-                    row. Enqueues instantly; hidden (with Remove) while a run
-                    is queued or live. On rows the sensei has already worked,
-                    it reads as a re-run. */}
-                {s.analysis_status !== 'queued' && (s.analysis_status !== 'running' || s.analysis_stale) && (
-                  <span onClick={(e) => e.stopPropagation()}
-                    style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <button type="button"
-                      onClick={() => analyse(s.id)}
-                      disabled={analysing === s.id}
-                      title="Run the sensei on this invoice — it studies the extraction and drafts a supplier-spec update for review"
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: 22, padding: '0 8px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', cursor: analysing === s.id ? 'wait' : 'pointer', fontSize: '0.68rem', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-                      {analysing === s.id ? 'Queueing…' : s.analysis_status ? 'Re-run sensei' : 'Run sensei'}
-                    </button>
-                    <button type="button"
-                      onClick={() => removeSample(s.id)}
-                      disabled={busy === s.id}
-                      title="Remove this invoice from the dojo — deletes the staged copy, its baseline and any sensei analysis"
-                      style={{ display: 'inline-flex', alignItems: 'center', height: 22, padding: '0 8px', border: '1px solid #f0c0ba', borderRadius: 4, background: '#fff', color: '#c0392b', cursor: busy === s.id ? 'wait' : 'pointer', fontSize: '0.68rem', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-                      {busy === s.id ? 'Removing…' : 'Remove'}
-                    </button>
-                  </span>
+        <div style={{ marginBottom: 24 }}>
+          <h4 style={sectionTitle}>
+            In the dojo, awaiting review{' '}
+            <span style={{ fontWeight: 400, color: 'var(--muted)' }}>({overview!.pending_review.length})</span>
+          </h4>
+          <div className="n-card" style={listCard}>
+            {overview!.pending_review.map((s, i) => (
+              <div key={s.id}>
+                <div onClick={() => (open?.key === s.id ? setOpen(null) : openSample(s.id, s.id, false))}
+                  style={rowStyle(i === 0, open?.key === s.id)}>
+                  {/* Name first, state after — the row reads "which invoice,
+                      then where it's at". The regression PASS/FAIL badge is
+                      deliberately absent here: on a triage list it said
+                      nothing actionable (16 Aug 2026). */}
+                  <span style={{ fontWeight: 600 }}>{s.spec_name}</span>
+                  <span style={{ minWidth: 0, fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
+                  {s.analysis_status === 'queued' && (
+                    <Badge tone="info" title="queued — the sensei worker picks it up within seconds">Sensei queued</Badge>
+                  )}
+                  {s.analysis_status === 'running' && !s.analysis_stale && (
+                    <Badge tone="info">
+                      Sensei analysing{s.analysis_phase ? ` — ${s.analysis_phase}` : '…'}
+                    </Badge>
+                  )}
+                  {s.analysis_status === 'running' && s.analysis_stale && (
+                    <Badge tone="warn" title="the executor died mid-run — the worker requeues and restarts it automatically">
+                      Sensei restarting (attempt {(s.analysis_attempts ?? 0) + 1})…
+                    </Badge>
+                  )}
+                  {s.analysis_status === 'ready' && <Badge tone="accent">Sensei proposal</Badge>}
+                  {s.analysis_status === 'not_green' && <Badge tone="warn">Sensei not green</Badge>}
+                  {s.analysis_status === 'failed' && (
+                    <span title={s.analysis_error || 'the sensei run errored'} className="n-badge n-badge--error"
+                      style={{ display: 'block', maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      Sensei failed{s.analysis_error ? ` — ${s.analysis_error}` : ''}
+                    </span>
+                  )}
+                  {!s.has_expected && !s.analysis_status && (
+                    <Badge title="no baseline yet — run the sensei (or set expected values by hand) to make this a regression sample">
+                      Not processed
+                    </Badge>
+                  )}
+                  {/* Run the sensei straight from the list — no need to open the
+                      row. Enqueues instantly; hidden (with Remove) while a run
+                      is queued or live. On rows the sensei has already worked,
+                      it reads as a re-run. */}
+                  {s.analysis_status !== 'queued' && (s.analysis_status !== 'running' || s.analysis_stale) && (
+                    <span onClick={(e) => e.stopPropagation()}
+                      style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <Button size="sm"
+                        onClick={() => analyse(s.id)}
+                        disabled={analysing === s.id}
+                        title="Run the sensei on this invoice — it studies the extraction and drafts a supplier-spec update for review"
+                        style={analysing === s.id ? { cursor: 'wait' } : undefined}>
+                        {analysing === s.id ? 'Queueing…' : s.analysis_status ? 'Re-run sensei' : 'Run sensei'}
+                      </Button>
+                      <Button size="sm" variant="danger"
+                        onClick={() => removeSample(s.id)}
+                        disabled={busy === s.id}
+                        title="Remove this invoice from the dojo — deletes the staged copy, its baseline and any sensei analysis"
+                        style={busy === s.id ? { cursor: 'wait' } : undefined}>
+                        {busy === s.id ? 'Removing…' : 'Remove'}
+                      </Button>
+                    </span>
+                  )}
+                </div>
+                {open?.key === s.id && (
+                  <div style={band}>
+                    {open.phase !== 'ready' && progress(open.note, open.phase === 'error')}
+                    {open.sampleId && open.phase === 'ready' && toolkit(open.sampleId)}
+                  </div>
                 )}
               </div>
-              {open?.key === s.id && (
-                <div style={{ padding: '0 0 14px' }}>
-                  {open.phase !== 'ready' && progress(open.note, open.phase === 'error')}
-                  {open.sampleId && open.phase === 'ready' && toolkit(open.sampleId)}
-                </div>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 
       {/* ---- Outstanding invoices, all venues ---------------------------- */}
-      <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>
-        Outstanding invoices
-      </div>
-      {loading && <div style={{ fontSize: '0.75rem', color: '#999', padding: '6px 0' }}>Loading outstanding invoices from every venue…</div>}
+      <h4 style={sectionTitle}>Outstanding invoices</h4>
+      {loading && <PageState kind="loading" title="Loading outstanding invoices from every venue…" />}
       {(overview?.errors ?? []).map((e, i) => (
-        <div key={i} style={{ fontSize: '0.7rem', color: '#a02b2b', marginBottom: 4 }}>⚠ {e.venue_name}: {e.error}</div>
+        <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginBottom: 6, fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>
+          <Icon icon={TriangleAlert} size="dense" style={{ marginTop: 2 }} />
+          <span>{e.venue_name}: {e.error}</span>
+        </div>
       ))}
-      {!loading && (overview?.outstanding.length ?? 0) === 0 && (
-        <div style={{ fontSize: '0.75rem', color: '#aaa', padding: '6px 0' }}>No outstanding invoices anywhere. 🎉</div>
+      {/* A failed load leaves `overview` null and reads as the error above, never
+          as an empty list. (Not `error`: a failed action sets that too.) */}
+      {!loading && overview && overview.outstanding.length === 0 && (
+        <PageState kind="empty" title="No outstanding invoices anywhere." />
       )}
       {[...byVenue.entries()].map(([venueName, rows]) => (
-        <div key={venueName} style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#555', margin: '8px 0 2px' }}>{venueName}</div>
-          {rows.map((r) => (
-            <div key={r.invoice_id}>
-              <div onClick={() => openOutstanding(r)}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderBottom: '1px solid #f4f4f4', fontSize: '0.78rem', cursor: 'pointer', background: open?.key === r.invoice_id ? '#faf8f4' : undefined }}>
-                <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{r.reference || r.invoice_id.slice(0, 8)}</span>
-                <span style={{ color: '#555', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.supplier_name || '—'}</span>
-                <span style={{ color: '#999', whiteSpace: 'nowrap' }}>{day(r.issued_at)}</span>
-                <span style={{ marginLeft: 'auto', color: '#555', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{money(r.total)}</span>
-                {!r.has_file && <span style={chip('#f4f4f4', '#999', '#e2e2e2')}>no copy</span>}
-                {r.in_dojo && <span style={chip('#d1fae5', '#065f46', '#a7dcc4')}>in dojo</span>}
-                {r.draft && <span style={chip('#fdf6e7', '#8a6d3b', '#ecd9ac')}>draft</span>}
-              </div>
-              {open?.key === r.invoice_id && (
-                <div style={{ padding: '0 0 14px' }}>
-                  {open.phase !== 'ready' && progress(open.note, open.phase === 'error')}
-                  {open.sampleId && open.phase === 'ready' && toolkit(open.sampleId)}
+        <div key={venueName} style={{ marginBottom: 16 }}>
+          <div style={{ margin: '0 0 6px', fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)' }}>{venueName}</div>
+          <div className="n-card" style={listCard}>
+            {rows.map((r, i) => (
+              <div key={r.invoice_id}>
+                <div onClick={() => openOutstanding(r)} style={rowStyle(i === 0, open?.key === r.invoice_id)}>
+                  <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{r.reference || r.invoice_id.slice(0, 8)}</span>
+                  <span style={{ minWidth: 0, color: 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.supplier_name || '—'}</span>
+                  <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{day(r.issued_at)}</span>
+                  <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{money(r.total)}</span>
+                  {!r.has_file && <Badge>No copy</Badge>}
+                  {r.in_dojo && <Badge tone="ok">In dojo</Badge>}
+                  {r.draft && <Badge tone="info">Draft</Badge>}
                 </div>
-              )}
-            </div>
-          ))}
+                {open?.key === r.invoice_id && (
+                  <div style={band}>
+                    {open.phase !== 'ready' && progress(open.note, open.phase === 'error')}
+                    {open.sampleId && open.phase === 'ready' && toolkit(open.sampleId)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       ))}
     </div>

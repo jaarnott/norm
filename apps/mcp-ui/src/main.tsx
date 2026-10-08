@@ -11,6 +11,9 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { REGISTRY, type BlockProps } from './registry';
+// The web app's tokens and shared component classes — the bundled editors are
+// styled with them, exactly as on the web.
+import '../../web/app/styles/tokens.css';
 // Side-effect import: defines window.NormApp.
 import '../../api/app/mcp/ui/_bridge.js';
 

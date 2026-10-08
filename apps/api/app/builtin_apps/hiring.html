@@ -1,67 +1,226 @@
 <style>
-  :root { --line:#e5e2dc; --muted:#8a8a8a; --ink:#2a2a2a; --green:#2e7d4f; }
-  body { font-size: 13px; }
-  .wrap { max-width: 1150px; margin: 0 auto; padding: 14px 16px 40px; }
-  h1 { font-size: 1.05rem; margin: 0; }
-  .sub { color: var(--muted); font-size: .72rem; }
-  .tabs { display:flex; gap:4px; margin:12px 0 14px; border-bottom:1px solid var(--line); }
-  .tab { border:none; background:none; padding:6px 12px; font:inherit; font-size:.78rem; color:var(--muted);
-         cursor:pointer; border-bottom:2px solid transparent; }
-  .tab[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--green); font-weight:600; }
-  .card { border:1px solid var(--line); border-radius:10px; background:#fff; padding:.7rem .9rem; margin-top:8px; }
-  .row { display:flex; align-items:center; gap:12px; }
-  .grow { flex:1; min-width:0; }
-  .name { font-weight:600; }
-  .pill { font-size:.6rem; padding:1px 7px; border-radius:99px; white-space:nowrap; }
-  .ok { background:#d1fae5; color:#065f46; }
-  .go { background:#fef3c7; color:#92400e; }
-  .no { background:#fee2e2; color:#991b1b; }
-  .off { background:#f3f4f6; color:#6b7280; }
-  button.act { font-size:.7rem; padding:3px 11px; border:1px solid var(--line); border-radius:5px;
-               background:#fff; cursor:pointer; font-family:inherit; color:#555; }
-  button.act:hover { border-color:#bbb; }
-  button.primary { background:var(--green); color:#fff; border-color:var(--green); }
-  .board { display:flex; gap:10px; overflow-x:auto; padding-bottom:6px; }
-  .col { min-width:210px; flex:0 0 210px; }
-  .colhead { font-size:.64rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted);
-             font-weight:600; padding:0 2px 5px; display:flex; justify-content:space-between; }
-  .cand { border:1px solid var(--line); border-radius:8px; background:#fff; padding:.45rem .6rem;
-          margin-bottom:6px; cursor:grab; }
-  .cand:hover { border-color:#bbb; }
-  .cand:active { cursor:grabbing; }
-  .drop { min-height:44px; border-radius:8px; padding:2px; }
-  .drop.over { background:#eef6f0; outline:2px dashed var(--green); outline-offset:-2px; }
-  .cand .who { font-size:.76rem; font-weight:600; }
-  input[type=text], input[type=email], input[type=number], input[type=date], select {
-    font:inherit; font-size:.72rem; padding:3px 6px; border:1px solid var(--line); border-radius:5px; background:#fff; box-sizing:border-box; }
-  .empty { border:1px dashed var(--line); border-radius:10px; padding:26px; text-align:center; color:var(--muted); }
-  .back { font-size:.7rem; color:#6b6b6b; background:none; border:none; cursor:pointer; padding:0; font-family:inherit; }
-  .link { color:var(--green); cursor:pointer; } .link:hover { text-decoration:underline; }
-  .kv { display:flex; gap:8px; font-size:.74rem; padding:2px 0; }
-  .kv b { min-width:120px; color:var(--muted); font-weight:600; font-size:.68rem; }
-  .feed { font-size:.72rem; color:#555; padding:3px 0; border-bottom:1px solid #f4f2ee; }
-  .err { color:#b91c1c; font-size:.75rem; }
-  .field { display:flex; align-items:center; gap:8px; margin:5px 0; }
-  .field label { font-size:.66rem; color:var(--muted); min-width:110px; font-weight:600; text-transform:uppercase; letter-spacing:.03em; }
-  .tiny { font-size:.62rem; padding:1px 7px; } .danger { color:#b91c1c; border-color:#f0d0d0; }
-  .arrow { font-size:.6rem; padding:0 5px; }
-  .stars { cursor:pointer; font-size:1rem; letter-spacing:2px; color:#f0b429; }
-  textarea { width:100%; font:inherit; font-size:.75rem; border:1px solid var(--line); border-radius:6px; padding:6px; box-sizing:border-box; }
-  .modal { position:fixed; inset:0; background:rgba(30,30,30,.35); display:flex; align-items:flex-start;
-           justify-content:center; padding:40px 16px; z-index:50; overflow-y:auto; }
-  .modal .panel { background:#fff; border-radius:12px; max-width:520px; width:100%; padding:18px 20px; box-shadow:0 12px 40px rgba(0,0,0,.2); }
+  /* Norm Hiring. The host (AppRunner) hands every app Norm's tokens
+     (--norm-*), the element defaults (Figtree, 14px body, the page gutter as
+     body padding) and the opt-in .n-* classes. This sheet only lays the app
+     out on top of them: no palette of its own, no outer frame. */
+  .wrap { min-width: 0; }
+
+  /* The host draws the app's title above the frame, so ours shows only when
+     there is no host to do it. The scope line (which venue hiring goes into)
+     stays — the host's header doesn't say it. */
+  .head h1 { margin: 0; font-size: var(--norm-fs-xl); font-weight: 700; letter-spacing: -0.01em; }
+  .head .scope { margin-top: 2px; font-size: var(--norm-fs-sm); color: var(--norm-muted); }
+  html[data-norm-variant] .head h1 { display: none; }
+  html[data-norm-variant] .head { margin-bottom: 4px; }
+  html[data-norm-variant] .head .scope { margin-top: 0; }
+  html:not([data-norm-variant]) .bar { margin-top: 16px; }
+
+  /* Tabs on the left, the one primary action on the right, one rule under both. */
+  .bar { display: flex; align-items: flex-end; gap: 16px; box-shadow: inset 0 -1px 0 var(--norm-line); }
+  .bar .n-tabs { flex: 1 1 auto; min-width: 0; box-shadow: none; }
+  .bar > .n-btn { flex: 0 0 auto; align-self: center; margin-bottom: 8px; }
+  .n-btn svg { flex: 0 0 auto; }
+  .n-btn--primary svg { stroke-width: 2; }
+  #body { padding-top: 16px; }
+
+  .row { display: flex; align-items: center; gap: 12px; }
+  .grow { flex: 1; min-width: 0; }
+  .name { font-weight: 600; }
+  .meta { font-size: var(--norm-fs-xs); color: var(--norm-muted); }
+  .hint { font-size: var(--norm-fs-sm); color: var(--norm-muted); }
+  .lbl { font-size: var(--norm-fs-sm); font-weight: 500; color: var(--norm-text-soft); }
+  .none { padding: 4px 0; font-size: var(--norm-fs-sm); color: var(--norm-muted); }
+  .link { color: var(--norm-accent); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .btns { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+
+  /* Loading, empty and error: the same three states as every Norm page. */
+  .state { padding: 40px 16px; text-align: center; color: var(--norm-muted); }
+  .state .spin { display: block; margin: 0 auto 8px; color: var(--norm-icon); animation: spin 1s linear infinite; }
+  .state-title { color: var(--norm-text-soft); font-weight: 500; }
+  .state-detail { margin-top: 4px; font-size: var(--norm-fs-sm); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .state .spin { animation: none; } }
+  .alert { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: var(--norm-radius);
+           background: var(--norm-error-bg); color: var(--norm-error); }
+  .alert svg { flex: 0 0 auto; margin-top: 2px; }
+  .alert-title { font-weight: 600; }
+  .alert-detail { margin-top: 2px; font-size: var(--norm-fs-sm); overflow-wrap: anywhere; }
+
+  .back { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; border: none; background: none;
+          font: inherit; font-size: var(--norm-fs-sm); font-weight: 500; color: var(--norm-text-soft); cursor: pointer; }
+  .back:hover { color: var(--norm-text); }
+
+  /* Icon-only buttons: 32px target, 40px on touch. */
+  .ibtn { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; height: 32px;
+          padding: 0; border: none; border-radius: var(--norm-radius); background: transparent; color: var(--norm-icon); cursor: pointer; }
+  .ibtn:hover { background: var(--norm-surface-alt); color: var(--norm-text); }
+  .ibtn.danger:hover { background: var(--norm-error-bg); color: var(--norm-error); }
+  .ibtn-gap { display: inline-block; flex: 0 0 auto; width: 32px; height: 32px; }
+  @media (pointer: coarse) { .ibtn, .ibtn-gap { width: 40px; height: 40px; } }
+
+  /* Cards: white on the cream page. */
+  .card { margin-top: 12px; overflow: hidden; background: var(--norm-bg); border: 1px solid var(--norm-line); border-radius: var(--norm-radius-lg); }
+  .card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 14px 16px; }
+  .card-title { margin: 0; font-size: var(--norm-fs-md); font-weight: 600; }
+  .card-body { padding: 0 16px 16px; }
+  .card-body.top { padding-top: 16px; }
+  .card-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--norm-line-soft); }
+  .card-note { padding: 10px 16px 14px; }
+  .card > .n-table th:first-child, .card > .n-table td:first-child { padding-left: 16px; }
+  .card > .n-table th:last-child, .card > .n-table td:last-child { padding-right: 16px; }
+  .card > .n-table tr:last-child > td { border-bottom: none; }
+  .view-title { margin: 0; font-size: var(--norm-fs-lg); font-weight: 600; line-height: 1.3; }
+  .title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+  /* Lists (openings, talent pool): a table on the page; cards on a phone. */
+  .list .lead { min-width: 180px; overflow-wrap: anywhere; }
+  .list .open { cursor: pointer; }
+  @media (hover: hover) { .list .open:hover .name { text-decoration: underline; text-underline-offset: 2px; } }
+  .list .m-only { display: none; }
+  .list .status { white-space: nowrap; }
+  .list .status .n-badge + .n-badge { margin-left: 4px; }
+  .list .note { color: var(--norm-text-soft); }
+  .list th.tools, .list td.tools { width: 1%; text-align: right; white-space: nowrap; }
+  .jobs th.num { width: 96px; }
+  @media (max-width: 640px) {
+    .list thead { display: none; }
+    .list, .list tbody, .list td { display: block; }
+    .list tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; margin-bottom: 8px;
+               padding: 12px 16px; background: var(--norm-bg); border: 1px solid var(--norm-line); border-radius: var(--norm-radius-lg); }
+    .list td { padding: 0; border: none; }
+    .list tbody tr:hover > td { background: none; }
+    .list td.num, .list td.note { display: none; }
+    .list .m-only { display: block; }
+    .list .lead { min-width: 0; }
+    .list td.tools { width: auto; }
+    .jobs td.tools { grid-column: 1 / -1; margin-top: 6px; }
+    .pool td.tools { align-self: center; }
+  }
+
+  /* Forms: sentence-case labels above Norm fields. */
+  .form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; max-width: 760px; }
+  .fld { min-width: 0; }
+  .fld.wide { grid-column: 1 / -1; }
+  .fld .n-input, .fld .n-select { width: 100%; }
+  .fld .n-input.narrow, .ctl .n-input.narrow { width: 104px; }
+  .ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ctl .n-select { width: auto; }
+  .fld .hint { margin-top: 4px; }
+  .check { display: inline-flex; align-items: center; gap: 8px; color: var(--norm-text); cursor: pointer; }
+  .check input { width: 16px; height: 16px; margin: 0; accent-color: var(--norm-accent); }
+  .check .hint { font-size: var(--norm-fs-sm); }
+  .stack { display: flex; flex-direction: column; gap: 14px; }
+  .stack > .check { align-self: flex-start; }
+  .saved { font-size: var(--norm-fs-sm); font-weight: 500; color: var(--norm-ok); }
+  .stages th:first-child { width: 320px; }
+  .stages .n-input { width: 100%; max-width: 280px; }
+  .tools .btns { gap: 2px; }
+  .fields .badges .n-badge + .n-badge { margin-left: 4px; }
+  @media (max-width: 640px) {
+    .form { grid-template-columns: minmax(0, 1fr); }
+    .ctl .n-select { flex: 1 1 100%; }
+    .ctl .n-input.narrow { flex: 1 1 0; width: auto; min-width: 0; }
+    .card > .n-table.stages thead, .card > .n-table.fields thead { display: none; }
+    .card > .n-table.stages, .card > .n-table.fields, .stages tbody, .fields tbody { display: block; }
+    .stages tr, .fields tr { display: grid; align-items: center; gap: 6px 10px; padding: 10px 16px; border-bottom: 1px solid var(--norm-line); }
+    .stages tr:last-child, .fields tr:last-child { border-bottom: none; }
+    .card > .n-table.stages td, .card > .n-table.fields td { display: block; padding: 0; border: none; }
+    .stages tbody tr:hover > td, .fields tbody tr:hover > td { background: none; }
+    .stages tr { grid-template-columns: minmax(0, 1fr) auto; }
+    .stages td:first-child { grid-column: 1 / -1; }
+    .stages .n-input { max-width: none; }
+    .fields tr { grid-template-columns: auto minmax(0, 1fr) auto; }
+    .fields td:nth-child(1) { grid-column: 1 / 3; grid-row: 1; }
+    .fields td:nth-child(2) { grid-column: 1; grid-row: 2; }
+    .fields td:nth-child(3) { grid-column: 2; grid-row: 2; }
+    .fields td:nth-child(4) { grid-column: 3; grid-row: 1 / 3; }
+  }
+
+  /* Pipeline board: one column per stage on the warm fill, white cards in it. */
+  .jobhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px; }
+  .jobhead .grow { min-width: 200px; }
+  .board-hint { margin: 12px 0; }
+  .board { display: flex; gap: 12px; overflow-x: auto; margin: 0 calc(-1 * var(--norm-gutter)); padding: 0 var(--norm-gutter) 8px;
+           scrollbar-width: thin; scrollbar-color: var(--norm-line-strong) transparent; }
+  .col { display: flex; flex-direction: column; flex: 0 0 240px; min-width: 240px; padding: 10px 8px 8px;
+         background: var(--norm-surface-alt); border-radius: var(--norm-radius-lg); }
+  .colhead { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 4px 8px; font-size: var(--norm-fs-xs); font-weight: 600; color: var(--norm-text-soft); }
+  .colhead .colname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .colhead .count { margin-left: auto; font-weight: 500; color: var(--norm-muted); font-variant-numeric: tabular-nums; }
+  .drop { flex: 1; display: flex; flex-direction: column; gap: 6px; min-height: 64px; border-radius: var(--norm-radius); }
+  .drop.over { background: var(--norm-accent-soft); outline: 2px dashed var(--norm-brand-soft); outline-offset: -2px; }
+  .col-empty { padding: 14px 8px; border: 1px dashed var(--norm-line-strong); border-radius: var(--norm-radius);
+               text-align: center; font-size: var(--norm-fs-xs); color: var(--norm-muted); }
+  .cand { padding: 10px 12px; background: var(--norm-bg); border: 1px solid var(--norm-line); border-radius: var(--norm-radius); cursor: grab; }
+  .cand:hover { border-color: var(--norm-line-strong); }
+  .cand:active { cursor: grabbing; }
+  .cand-top { display: flex; align-items: center; gap: 8px; }
+  .cand .who { flex: 1; min-width: 0; font-size: var(--norm-fs-base); font-weight: 600; overflow-wrap: anywhere; }
+  .cand .meta { margin-top: 2px; }
+  .cand .n-badge { margin-top: 6px; }
+
+  /* Ratings: tan line stars, filled up to the rating. */
+  .stars { display: inline-flex; align-items: center; gap: 2px; }
+  .star { color: var(--norm-brand-soft); fill: none; }
+  .star.on { color: var(--norm-accent); fill: var(--norm-brand-soft); }
+  .star-btn { display: inline-flex; padding: 3px; border: none; border-radius: var(--norm-radius-sm); background: none; cursor: pointer; }
+  .star-btn:hover { background: var(--norm-surface-alt); }
+  @media (pointer: coarse) { .star-btn { padding: 6px; } }
+  .stars-mini { flex: 0 0 auto; display: inline-flex; gap: 1px; }
+
+  /* Candidate */
+  .cand-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+  .rating-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .grp { display: inline-flex; align-items: center; gap: 8px; }
+  .actions .n-select { max-width: 220px; }
+  .kv { display: flex; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--norm-line-soft); }
+  .kv:last-child { border-bottom: none; }
+  .kv b { flex: 0 0 180px; font-size: var(--norm-fs-sm); font-weight: 500; color: var(--norm-text-soft); }
+  .kv span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .feed { display: flex; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--norm-line-soft); }
+  .feed:last-child { border-bottom: none; }
+  .feed > span:first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .feed .meta { flex: 0 0 auto; }
+  .note-box { margin-top: 12px; }
+  .note-box textarea { width: 100%; }
+  .note-box .n-btn { margin-top: 8px; }
+  @media (max-width: 640px) {
+    .kv { flex-direction: column; gap: 2px; }
+    .kv b { flex: none; }
+    .feed { flex-wrap: wrap; gap: 2px 12px; }
+  }
+
+  /* Modals: a white panel over a dimmed page, buttons on the right. A dialog
+     taller than its frame (a conversation's split pane) scrolls, and its
+     buttons stay in reach at the foot of the view. */
+  .modal { --pad-b: 48px; position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start; justify-content: center;
+           padding: 48px 16px var(--pad-b); overflow-y: auto; background: rgba(26, 26, 26, .35); }
+  .modal .panel { width: 100%; max-width: 520px; padding: 20px 24px; overflow: clip; background: var(--norm-bg);
+                  border-radius: var(--norm-radius-lg); box-shadow: 0 12px 40px rgba(26, 26, 26, .18); }
+  .modal-title { margin: 0 0 16px; font-size: var(--norm-fs-lg); font-weight: 600; overflow-wrap: anywhere; }
+  .modal-foot { position: sticky; bottom: calc(-1 * var(--pad-b)); display: flex; justify-content: flex-end; gap: 8px;
+                margin: 8px -24px -20px; padding: 12px 24px 20px; background: var(--norm-bg); }
+  .modal.scrolls .modal-foot { box-shadow: 0 -1px 0 var(--norm-line); }
+  .modal textarea { width: 100%; }
+  @media (max-height: 600px) { .modal { --pad-b: 16px; padding-top: 16px; } }
+  @media (max-width: 640px) {
+    .modal { --pad-b: 16px; padding: 16px 16px var(--pad-b); }
+    .modal .panel { padding: 18px 16px; }
+    .modal-foot { margin: 8px -16px -18px; padding: 12px 16px 18px; }
+  }
 </style>
 
 <div class="wrap">
-  <div class="row" style="justify-content:space-between">
-    <div><h1>Hiring</h1><div class="sub" id="scope">—</div></div>
-    <button class="act primary" id="newjob">+ New job</button>
+  <div class="head"><h1>Hiring</h1><div class="scope" id="scope">—</div></div>
+  <div class="bar">
+    <div class="n-tabs" role="tablist" aria-label="Hiring">
+      <button type="button" class="n-tab tab" role="tab" data-view="jobs" aria-selected="true">Openings</button>
+      <button type="button" class="n-tab tab" role="tab" data-view="pool" aria-selected="false">Talent pool</button>
+    </div>
+    <button type="button" class="n-btn n-btn--primary" id="newjob"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New job</button>
   </div>
-  <div class="tabs" role="tablist">
-    <button class="tab" role="tab" data-view="jobs" aria-selected="true">Openings</button>
-    <button class="tab" role="tab" data-view="pool" aria-selected="false">Talent pool</button>
-  </div>
-  <div id="body"><div class="sub">Loading…</div></div>
+  <div id="body"><div class="state" role="status">Loading…</div></div>
 </div>
 <div id="modal"></div>
 
@@ -108,54 +267,179 @@
     for (var k in (extra || {})) p[k] = extra[k];
     return norm.run(p).then(function (d) { if (d && d.error) throw new Error(d.error); return d; });
   }
-  function loading() { body.innerHTML = '<div class="sub">Loading…</div>'; }
-  function fail(e) { body.innerHTML = '<div class="card err">' + esc(e && e.message ? e.message : e) + '</div>'; }
-  function closeModal() { modalHost.innerHTML = ''; }
+
+  // ---- Presentation helpers -----------------------------------------------
+  // Lucide line icons, inlined (the sandbox loads nothing): stroke 1.75, currentColor.
+  var ICON = {
+    plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+    up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+    down: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+    trash: '<path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    star: '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>',
+    loader: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+    alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  };
+  function icon(name, size, cls) {
+    return '<svg' + (cls ? ' class="' + cls + '"' : '') + ' width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+      ' stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICON[name] + '</svg>';
+  }
+  function iconBtn(name, label, attrs, cls) {
+    return '<button type="button" class="ibtn' + (cls ? ' ' + cls : '') + '" aria-label="' + label + '" title="' + label + '" ' + attrs + '>' + icon(name, 16) + '</button>';
+  }
+  function btn(label, variant, attrs, opts) {
+    opts = opts || {};
+    return '<button type="button" class="n-btn n-btn--' + variant + (opts.sm ? ' n-btn--sm' : '') + '" ' + attrs + '>' +
+      (opts.icon ? icon(opts.icon, opts.sm ? 14 : 16) : '') + label + '</button>';
+  }
+  function backLink(id, label) {
+    return '<button type="button" class="back" id="' + id + '">' + icon('back', 14) + label + '</button>';
+  }
+  function cap(s) { s = String(s == null ? '' : s).replace(/_/g, ' '); return s.charAt(0).toUpperCase() + s.slice(1); }
+  function badge(text, tone) { return '<span class="n-badge' + (tone ? ' n-badge--' + tone : '') + '">' + esc(text) + '</span>'; }
+  function jobBadge(s) { s = s || 'draft'; return badge(cap(s), s === 'open' ? 'ok' : (s === 'draft' ? 'info' : '')); }
+  function joinMeta(parts) { return parts.filter(function (x) { return x !== '' && x != null; }).join(' · '); }
+  function state(kind, title, detail) {
+    return '<div class="state"' + (kind === 'loading' ? ' role="status"' : '') + '>' +
+      (kind === 'loading' ? icon('loader', 18, 'spin') : '') +
+      '<div' + (kind === 'empty' ? ' class="state-title"' : '') + '>' + title + '</div>' +
+      (detail ? '<div class="state-detail">' + detail + '</div>' : '') + '</div>';
+  }
+  function fld(id, label, control, cls) {
+    return '<div class="fld' + (cls ? ' ' + cls : '') + '"><label class="n-label" for="' + id + '">' + label + '</label>' + control + '</div>';
+  }
+  function check(id, label, checked, hint) {
+    return '<label class="check"><input type="checkbox" id="' + id + '"' + (checked ? ' checked' : '') + '>' + label +
+      (hint ? ' <span class="hint">— ' + hint + '</span>' : '') + '</label>';
+  }
+  function modalFoot(cancelId, doId, doLabel, doVariant) {
+    return '<div class="modal-foot">' + btn('Cancel', 'secondary', 'id="' + cancelId + '"') + btn(doLabel, doVariant || 'primary', 'id="' + doId + '"') + '</div>';
+  }
+  function starIcon(on, size) {
+    return '<svg class="star' + (on ? ' on' : '') + '" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" stroke="currentColor"' +
+      ' stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICON.star + '</svg>';
+  }
+  // One primary per view: "New job" leads on the lists, and steps back to
+  // secondary inside a job or candidate, where that view's own action leads.
+  function newJobLeads(on) {
+    var b = document.getElementById('newjob');
+    b.classList.toggle('n-btn--primary', on);
+    b.classList.toggle('n-btn--secondary', !on);
+  }
+
+  function loading() { body.innerHTML = state('loading', 'Loading…'); }
+  function fail(e) {
+    body.innerHTML = '<div class="alert" role="alert">' + icon('alert', 16) +
+      '<div><div class="alert-title">That didn’t work</div><div class="alert-detail">' + esc(e && e.message ? e.message : e) + '</div></div></div>';
+  }
+  function closeModal() { modalHost.innerHTML = ''; document.body.style.minHeight = ''; }
+  // A card in a conversation grows to fit its content, so its frame never
+  // scrolls: a dialog pinned to the top of a tall card would open out of
+  // sight, and one taller than a short card would be cut off. There it opens
+  // level with the click that asked for it, and a short card grows to hold it.
+  var pointer = null;
+  document.addEventListener('pointerdown', function (ev) { pointer = { y: ev.clientY, at: Date.now() }; }, true);
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && modalHost.firstChild) closeModal(); });
+  function placeModal(overlay) {
+    var root = document.documentElement, vh = window.innerHeight;
+    if (root.getAttribute('data-norm-variant') !== 'embedded' || root.scrollHeight > vh + 1) return;
+    var h = overlay.firstChild.offsetHeight;
+    var at = function (top) {
+      overlay.style.paddingTop = Math.round(top) + 'px';
+      overlay.style.setProperty('--pad-b', '16px');
+      markScroll(overlay);
+    };
+    if (h + 32 > vh) { document.body.style.minHeight = (h + 32) + 'px'; at(16); return; }
+    var a = document.activeElement;
+    var y = pointer && Date.now() - pointer.at < 2000 ? pointer.y : (a && a !== document.body ? a.getBoundingClientRect().top : null);
+    // band: the part of the card on screen. Kept inside it when it fits,
+    // and never opening above it.
+    var place = function (band) {
+      var lo = 16, hi = vh - h - 16;
+      if (band) {
+        lo = Math.min(Math.max(lo, band.top + 16), hi);
+        if (band.bottom - band.top >= h + 32) hi = Math.max(lo, Math.min(hi, band.bottom - h - 16));
+      }
+      if (y == null && !band) return;
+      at(y == null ? lo : Math.min(Math.max(y - 60, lo), hi));
+    };
+    if (typeof IntersectionObserver !== 'function') { place(null); return; }
+    // Hidden until placed; a slow answer still moves it into view.
+    overlay.style.visibility = 'hidden';
+    var io = new IntersectionObserver(function (es) {
+      io.disconnect();
+      var r = es[es.length - 1].intersectionRect;
+      place(r.height > 0 ? { top: r.top, bottom: r.bottom } : null);
+      overlay.style.visibility = '';
+    });
+    io.observe(root);
+    setTimeout(function () { if (overlay.style.visibility) { place(null); overlay.style.visibility = ''; } }, 400);
+  }
+  // The footer rule shows only while the dialog is taller than its frame.
+  function markScroll(overlay) { overlay.classList.toggle('scrolls', overlay.scrollHeight > overlay.clientHeight + 1); }
+  window.addEventListener('resize', function () { var o = modalHost.querySelector('.modal'); if (o) markScroll(o); });
   function modal(html) {
-    modalHost.innerHTML = '<div class="modal"><div class="panel">' + html + '</div></div>';
-    modalHost.querySelector('.modal').addEventListener('click', function (ev) { if (ev.target === ev.currentTarget) closeModal(); });
+    modalHost.innerHTML = '<div class="modal"><div class="panel" role="dialog" aria-modal="true">' + html + '</div></div>';
+    var overlay = modalHost.querySelector('.modal'), title = overlay.querySelector('.modal-title');
+    if (title) { title.id = 'modal-title'; overlay.firstChild.setAttribute('aria-labelledby', 'modal-title'); }
+    overlay.addEventListener('click', function (ev) { if (ev.target === ev.currentTarget) closeModal(); });
+    placeModal(overlay);
+    markScroll(overlay);
   }
   function statusPill(s) {
-    var cls = s === 'hired' ? 'ok' : (s === 'rejected' ? 'no' : 'go');
-    return '<span class="pill ' + cls + '">' + esc(s || 'active') + '</span>';
+    s = s || 'active';
+    return badge(cap(s), s === 'rejected' ? 'error' : 'ok');
   }
   function bind(sel, fn) { body.querySelectorAll(sel).forEach(function (el) { el.addEventListener('click', function () { fn(el); }); }); }
 
   // ---- Openings ----------------------------------------------------------
   function showJobs() {
+    newJobLeads(true);
     loading();
     run('board').then(function (d) {
       var jobs = d.jobs || [];
-      if (!jobs.length) { body.innerHTML = '<div class="empty">No job openings yet. Click <b>+ New job</b> to create one.</div>'; return; }
-      body.innerHTML = jobs.map(function (j) {
-        return '<div class="card row">' +
-          '<div class="grow" style="cursor:pointer" data-pipe="' + esc(j.id) + '">' +
-            '<div class="row" style="gap:8px"><span class="name">' + esc(j.title) + '</span>' +
-              '<span class="pill ' + (j.status === 'open' ? 'ok' : 'off') + '">' + esc(j.status || 'draft') + '</span>' +
-              (j.is_published ? '<span class="pill off">published</span>' : '') + '</div>' +
-            '<div class="sub">' + j.application_count + ' applicant' + (j.application_count === 1 ? '' : 's') +
-              ' · ' + j.active_count + ' active · ' + j.hired_count + ' hired' +
-              (j.employment_type ? ' · ' + esc(j.employment_type.replace('_', ' ')) : '') + '</div>' +
-          '</div>' +
-          '<button class="act" data-edit="' + esc(j.id) + '">Edit</button>' +
-          '<button class="act primary" data-pipe="' + esc(j.id) + '">Pipeline</button>' +
-        '</div>';
-      }).join('');
+      if (!jobs.length) { body.innerHTML = state('empty', 'No job openings yet', 'Click <b>New job</b> to create one.'); return; }
+      body.innerHTML = '<table class="n-table list jobs"><thead><tr>' +
+          '<th scope="col">Job</th><th scope="col" class="num">Applicants</th><th scope="col" class="num">Active</th>' +
+          '<th scope="col" class="num">Hired</th><th scope="col">Status</th><th scope="col" class="tools"><span class="sr">Actions</span></th>' +
+        '</tr></thead><tbody>' +
+        jobs.map(function (j) {
+          var kind = joinMeta([j.employment_type ? cap(j.employment_type) : '', j.department || '']);
+          return '<tr>' +
+            '<td class="lead"><div class="open" data-pipe="' + esc(j.id) + '">' +
+              '<div class="name">' + esc(j.title) + '</div>' +
+              (kind ? '<div class="meta">' + esc(kind) + '</div>' : '') +
+              '<div class="meta m-only">' + esc(j.application_count) + ' applicant' + (j.application_count === 1 ? '' : 's') +
+                ' · ' + esc(j.active_count) + ' active · ' + esc(j.hired_count) + ' hired</div>' +
+            '</div></td>' +
+            '<td class="num">' + esc(j.application_count) + '</td>' +
+            '<td class="num">' + esc(j.active_count) + '</td>' +
+            '<td class="num">' + esc(j.hired_count) + '</td>' +
+            '<td class="status">' + jobBadge(j.status) + (j.is_published ? badge('Published') : '') + '</td>' +
+            '<td class="tools"><div class="btns">' +
+              btn('Edit', 'quiet', 'data-edit="' + esc(j.id) + '"', { sm: true }) +
+              btn('Pipeline', 'secondary', 'data-pipe="' + esc(j.id) + '"', { sm: true }) +
+            '</div></td>' +
+          '</tr>';
+        }).join('') + '</tbody></table>';
       bind('[data-pipe]', function (el) { showPipeline(el.getAttribute('data-pipe')); });
       bind('[data-edit]', function (el) { showJobEditor(el.getAttribute('data-edit')); });
     }).catch(fail);
   }
 
   function newJob() {
-    modal('<div class="name" style="font-size:.85rem">New job opening</div>' +
-      '<div class="field" style="margin-top:8px"><label>Title</label><input type="text" id="nj-title" style="flex:1" placeholder="e.g. Bar Team — Part Time"></div>' +
-      '<div class="field"><label>Department</label><input type="text" id="nj-dept" style="flex:1" placeholder="e.g. Bar, Kitchen, Crowd Control"></div>' +
-      '<div class="field"><label>Employment</label><select id="nj-emp">' +
-        '<option value="part_time">Part time</option><option value="full_time">Full time</option><option value="casual">Casual</option></select></div>' +
-      '<div class="field"><label>Positions</label><input type="number" id="nj-pos" min="1" value="1" style="width:70px"></div>' +
-      '<div class="sub" style="margin-top:6px">This seeds a standard pipeline and application form you can then tailor.</div>' +
-      '<div class="row" style="margin-top:10px"><button class="act primary" id="nj-create">Create</button>' +
-      '<span class="grow"></span><button class="act" id="nj-cancel">Cancel</button></div>');
+    modal('<h2 class="modal-title">New job opening</h2>' +
+      '<div class="stack">' +
+        fld('nj-title', 'Title', '<input type="text" class="n-input" id="nj-title" placeholder="e.g. Bar Team — Part Time">') +
+        fld('nj-dept', 'Department', '<input type="text" class="n-input" id="nj-dept" placeholder="e.g. Bar, Kitchen, Crowd Control">') +
+        '<div class="form">' +
+          fld('nj-emp', 'Employment', '<select class="n-select" id="nj-emp">' +
+            '<option value="part_time">Part time</option><option value="full_time">Full time</option><option value="casual">Casual</option></select>') +
+          fld('nj-pos', 'Positions', '<input type="number" class="n-input narrow" id="nj-pos" min="1" value="1">') +
+        '</div>' +
+        '<div class="hint">This seeds a standard pipeline and application form you can then tailor.</div>' +
+      '</div>' +
+      modalFoot('nj-cancel', 'nj-create', 'Create'));
     document.getElementById('nj-cancel').addEventListener('click', closeModal);
     document.getElementById('nj-create').addEventListener('click', function () {
       var title = document.getElementById('nj-title').value;
@@ -170,53 +454,58 @@
 
   // ---- Job editor --------------------------------------------------------
   function showJobEditor(jobId) {
+    newJobLeads(false);
     loading();
     run('job_editor', { job_id: jobId }).then(function (d) {
       var j = d.job;
       var stageRows = (d.stages || []).map(function (s, i) {
-        return '<tr><td><input type="text" data-sname="' + esc(s.id) + '" value="' + esc(s.name) + '" style="width:160px"></td>' +
-          '<td><select data-stype="' + esc(s.id) + '">' +
-            ['active', 'hired', 'rejected'].map(function (t) { return '<option value="' + t + '"' + (s.stage_type === t ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></td>' +
-          '<td style="text-align:right">' +
-            (i > 0 ? '<button class="act tiny arrow" data-sup="' + esc(s.id) + '">↑</button>' : '') +
-            (i < d.stages.length - 1 ? '<button class="act tiny arrow" data-sdn="' + esc(s.id) + '">↓</button>' : '') +
-            '<button class="act tiny danger" data-sdel="' + esc(s.id) + '">×</button></td></tr>';
+        return '<tr><td><input type="text" class="n-input" data-sname="' + esc(s.id) + '" value="' + esc(s.name) + '" aria-label="Stage name"></td>' +
+          '<td><select class="n-select" data-stype="' + esc(s.id) + '" aria-label="Stage type">' +
+            ['active', 'hired', 'rejected'].map(function (t) { return '<option value="' + t + '"' + (s.stage_type === t ? ' selected' : '') + '>' + cap(t) + '</option>'; }).join('') + '</select></td>' +
+          '<td class="tools"><div class="btns">' +
+            (i > 0 ? iconBtn('up', 'Move up', 'data-sup="' + esc(s.id) + '"') : '<span class="ibtn-gap"></span>') +
+            (i < d.stages.length - 1 ? iconBtn('down', 'Move down', 'data-sdn="' + esc(s.id) + '"') : '<span class="ibtn-gap"></span>') +
+            iconBtn('trash', 'Delete stage', 'data-sdel="' + esc(s.id) + '"', 'danger') + '</div></td></tr>';
       }).join('');
       var fieldsById = {};
       (d.fields || []).forEach(function (f) { fieldsById[f.id] = f; });
       var fieldRows = (d.fields || []).map(function (f) {
-        return '<tr><td>' + esc(f.label) + (f.knockout_enabled ? ' <span class="pill no">knockout</span>' : '') + '</td>' +
-          '<td><span class="sub">' + esc(f.field_type) + '</span></td>' +
-          '<td>' + (f.is_required ? '<span class="pill off">required</span>' : '') + (f.is_standard ? ' <span class="pill off">standard</span>' : '') +
-            (f.is_enabled === false ? ' <span class="pill off">off</span>' : '') + '</td>' +
-          '<td style="text-align:right"><button class="act tiny" data-fedit="' + esc(f.id) + '">edit</button>' +
-            (f.is_standard ? '' : ' <button class="act tiny danger" data-fdel="' + esc(f.id) + '">×</button>') + '</td></tr>';
+        return '<tr><td><span class="name">' + esc(f.label) + '</span>' + (f.knockout_enabled ? ' ' + badge('Knockout', 'warn') : '') + '</td>' +
+          '<td><span class="hint">' + esc(cap(f.field_type)) + '</span></td>' +
+          '<td class="badges">' + (f.is_required ? badge('Required') : '') + (f.is_standard ? badge('Standard') : '') +
+            (f.is_enabled === false ? badge('Off') : '') + '</td>' +
+          '<td class="tools"><div class="btns">' + btn('Edit', 'quiet', 'data-fedit="' + esc(f.id) + '"', { sm: true }) +
+            (f.is_standard ? '<span class="ibtn-gap"></span>' : iconBtn('trash', 'Delete field', 'data-fdel="' + esc(f.id) + '"', 'danger')) + '</div></td></tr>';
       }).join('');
-      body.innerHTML = '<button class="back" id="back">← All openings</button>' +
-        '<div class="card">' +
-          '<div class="field"><label>Title</label><input type="text" id="j-title" style="flex:1" value="' + esc(j.title || '') + '"></div>' +
-          '<div class="field"><label>Department</label><input type="text" id="j-dept" style="flex:1" value="' + esc(j.department || '') + '"></div>' +
-          '<div class="field"><label>Employment</label><select id="j-emp">' +
-            ['part_time', 'full_time', 'casual'].map(function (t) { return '<option value="' + t + '"' + (j.employment_type === t ? ' selected' : '') + '>' + t.replace('_', ' ') + '</option>'; }).join('') + '</select></div>' +
-          '<div class="field"><label>Positions</label><input type="number" id="j-pos" min="1" value="' + esc(j.positions_to_fill || 1) + '" style="width:70px"></div>' +
-          '<div class="field"><label>Pay</label><select id="j-paytype">' +
-            ['', 'hourly', 'salary'].map(function (t) { return '<option value="' + t + '"' + (j.pay_type === t ? ' selected' : '') + '>' + (t || 'not shown') + '</option>'; }).join('') + '</select>' +
-            '<input type="number" id="j-paymin" placeholder="min" style="width:90px" value="' + esc(j.pay_min == null ? '' : j.pay_min) + '">' +
-            '<span class="sub">to</span><input type="number" id="j-paymax" placeholder="max" style="width:90px" value="' + esc(j.pay_max == null ? '' : j.pay_max) + '"></div>' +
-          '<div class="field" style="align-items:flex-start"><label>Description</label><textarea id="j-desc" style="flex:1;min-height:60px" placeholder="What the role is about">' + esc(htmlToText(j.description_html)) + '</textarea></div>' +
-          '<div class="field" style="align-items:flex-start"><label>Requirements</label><textarea id="j-req" style="flex:1;min-height:60px" placeholder="What you are looking for">' + esc(htmlToText(j.requirements_html)) + '</textarea></div>' +
-          '<div class="row" style="margin-top:8px"><button class="act primary" id="j-save">Save</button><span class="sub" id="j-saved"></span>' +
-            '<span class="grow"></span>' +
-            '<span class="pill ' + (j.status === 'open' ? 'ok' : 'off') + '">' + esc(j.status) + '</span>' +
-            (j.is_published ? '<button class="act" id="j-unpub">Unpublish</button>' : '<button class="act" id="j-pub">Publish</button>') +
-            (j.status === 'closed' ? '<button class="act" id="j-reopen">Reopen</button>' : '<button class="act danger" id="j-close">Close</button>') +
+      body.innerHTML = backLink('back', 'All openings') +
+        '<section class="card">' +
+          '<div class="card-head"><h2 class="card-title grow">Job details</h2>' +
+            jobBadge(j.status) +
+            (j.is_published ? btn('Unpublish', 'secondary', 'id="j-unpub"', { sm: true }) : btn('Publish', 'secondary', 'id="j-pub"', { sm: true })) +
+            (j.status === 'closed' ? btn('Reopen', 'secondary', 'id="j-reopen"', { sm: true }) : btn('Close', 'danger', 'id="j-close"', { sm: true })) +
           '</div>' +
-        '</div>' +
-        '<div class="card"><div class="row"><div class="grow name" style="font-size:.8rem">Pipeline stages</div><button class="act" id="addstage">+ Stage</button></div>' +
-          '<table style="margin-top:6px;width:100%"><tbody>' + stageRows + '</tbody></table>' +
-          '<div class="sub" style="margin-top:4px">The TYPE drives status — a candidate on a "hired" stage is hired, whatever the stage is named.</div></div>' +
-        '<div class="card"><div class="row"><div class="grow name" style="font-size:.8rem">Application form</div><button class="act" id="addfield">+ Field</button></div>' +
-          '<table style="margin-top:6px;width:100%"><tbody>' + fieldRows + '</tbody></table></div>';
+          '<div class="card-body"><div class="form">' +
+            fld('j-title', 'Title', '<input type="text" class="n-input" id="j-title" value="' + esc(j.title || '') + '">') +
+            fld('j-dept', 'Department', '<input type="text" class="n-input" id="j-dept" value="' + esc(j.department || '') + '">') +
+            fld('j-emp', 'Employment', '<select class="n-select" id="j-emp">' +
+              ['part_time', 'full_time', 'casual'].map(function (t) { return '<option value="' + t + '"' + (j.employment_type === t ? ' selected' : '') + '>' + cap(t) + '</option>'; }).join('') + '</select>') +
+            fld('j-pos', 'Positions', '<input type="number" class="n-input narrow" id="j-pos" min="1" value="' + esc(j.positions_to_fill || 1) + '">') +
+            fld('j-paytype', 'Pay', '<div class="ctl"><select class="n-select" id="j-paytype">' +
+              ['', 'hourly', 'salary'].map(function (t) { return '<option value="' + t + '"' + (j.pay_type === t ? ' selected' : '') + '>' + (t ? cap(t) : 'Not shown') + '</option>'; }).join('') + '</select>' +
+              '<input type="number" class="n-input narrow" id="j-paymin" placeholder="Min" aria-label="Minimum pay" value="' + esc(j.pay_min == null ? '' : j.pay_min) + '">' +
+              '<span class="hint">to</span><input type="number" class="n-input narrow" id="j-paymax" placeholder="Max" aria-label="Maximum pay" value="' + esc(j.pay_max == null ? '' : j.pay_max) + '"></div>', 'wide') +
+            fld('j-desc', 'Description', '<textarea class="n-input" id="j-desc" rows="4" placeholder="What the role is about">' + esc(htmlToText(j.description_html)) + '</textarea>', 'wide') +
+            fld('j-req', 'Requirements', '<textarea class="n-input" id="j-req" rows="4" placeholder="What you are looking for">' + esc(htmlToText(j.requirements_html)) + '</textarea>', 'wide') +
+          '</div></div>' +
+          '<div class="card-foot">' + btn('Save', 'primary', 'id="j-save"') + '<span class="saved" id="j-saved" role="status"></span></div>' +
+        '</section>' +
+        '<section class="card"><div class="card-head"><h2 class="card-title grow">Pipeline stages</h2>' + btn('Add stage', 'secondary', 'id="addstage"', { sm: true, icon: 'plus' }) + '</div>' +
+          '<table class="n-table stages"><thead><tr><th scope="col">Stage</th><th scope="col">Type</th><th scope="col" class="tools"><span class="sr">Actions</span></th></tr></thead>' +
+          '<tbody>' + stageRows + '</tbody></table>' +
+          '<div class="card-note hint">The type drives status — a candidate on a “hired” stage is hired, whatever the stage is named.</div></section>' +
+        '<section class="card"><div class="card-head"><h2 class="card-title grow">Application form</h2>' + btn('Add field', 'secondary', 'id="addfield"', { sm: true, icon: 'plus' }) + '</div>' +
+          '<table class="n-table fields"><thead><tr><th scope="col">Field</th><th scope="col">Type</th><th scope="col"><span class="sr">Rules</span></th><th scope="col" class="tools"><span class="sr">Actions</span></th></tr></thead>' +
+          '<tbody>' + fieldRows + '</tbody></table></section>';
 
       var reload = function () { showJobEditor(jobId); };
       document.getElementById('back').addEventListener('click', showJobs);
@@ -255,16 +544,18 @@
   function csv(id) { return document.getElementById(id).value.split(',').map(function (x) { return x.trim(); }).filter(Boolean); }
 
   function addFieldModal(jobId, reload) {
-    modal('<div class="name" style="font-size:.85rem">Add application field</div>' +
-      '<div class="field" style="margin-top:8px"><label>Label</label><input type="text" id="af-label" style="flex:1"></div>' +
-      '<div class="field"><label>Key</label><input type="text" id="af-key" style="flex:1" placeholder="lowercase_no_spaces"></div>' +
-      '<div class="field"><label>Type</label><select id="af-type">' +
-        FIELD_TYPES.map(function (t) { return '<option>' + t + '</option>'; }).join('') + '</select></div>' +
-      '<div class="field"><label>Options</label><input type="text" id="af-opts" style="flex:1" placeholder="comma-separated (for select)"></div>' +
-      '<div class="field"><label>Required</label><input type="checkbox" id="af-req"></div>' +
-      '<div class="field"><label>Knockout</label><input type="checkbox" id="af-ko"><span class="sub">auto-reject on a value below</span></div>' +
-      '<div class="field"><label>KO values</label><input type="text" id="af-kov" style="flex:1" placeholder="comma-separated, e.g. No"></div>' +
-      '<div class="row" style="margin-top:10px"><button class="act primary" id="af-add">Add</button><span class="grow"></span><button class="act" id="af-cancel">Cancel</button></div>');
+    modal('<h2 class="modal-title">Add application field</h2>' +
+      '<div class="stack">' +
+        fld('af-label', 'Label', '<input type="text" class="n-input" id="af-label">') +
+        fld('af-key', 'Key', '<input type="text" class="n-input" id="af-key" placeholder="lowercase_no_spaces">') +
+        fld('af-type', 'Type', '<select class="n-select" id="af-type">' +
+          FIELD_TYPES.map(function (t) { return '<option value="' + t + '">' + cap(t) + '</option>'; }).join('') + '</select>') +
+        fld('af-opts', 'Options', '<input type="text" class="n-input" id="af-opts" placeholder="Comma-separated (for select)">') +
+        check('af-req', 'Required', false) +
+        check('af-ko', 'Knockout', false, 'auto-reject on a value below') +
+        fld('af-kov', 'Knockout values', '<input type="text" class="n-input" id="af-kov" placeholder="Comma-separated, e.g. No">') +
+      '</div>' +
+      modalFoot('af-cancel', 'af-add', 'Add'));
     document.getElementById('af-cancel').addEventListener('click', closeModal);
     document.getElementById('af-add').addEventListener('click', function () {
       var label = document.getElementById('af-label').value;
@@ -279,16 +570,18 @@
 
   function editFieldModal(f, reload) {
     if (!f) return;
-    modal('<div class="name" style="font-size:.85rem">Edit field — ' + esc(f.label) + '</div>' +
-      '<div class="field" style="margin-top:8px"><label>Label</label><input type="text" id="ef-label" style="flex:1" value="' + esc(f.label || '') + '"></div>' +
-      '<div class="field"><label>Type</label><select id="ef-type">' +
-        FIELD_TYPES.map(function (t) { return '<option' + (f.field_type === t ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select></div>' +
-      '<div class="field"><label>Options</label><input type="text" id="ef-opts" style="flex:1" placeholder="comma-separated (for select)" value="' + esc((f.options || []).join(', ')) + '"></div>' +
-      '<div class="field"><label>Required</label><input type="checkbox" id="ef-req"' + (f.is_required ? ' checked' : '') + '></div>' +
-      '<div class="field"><label>Enabled</label><input type="checkbox" id="ef-en"' + (f.is_enabled === false ? '' : ' checked') + '></div>' +
-      '<div class="field"><label>Knockout</label><input type="checkbox" id="ef-ko"' + (f.knockout_enabled ? ' checked' : '') + '><span class="sub">auto-reject on a value below</span></div>' +
-      '<div class="field"><label>KO values</label><input type="text" id="ef-kov" style="flex:1" placeholder="comma-separated, e.g. No" value="' + esc((f.knockout_values || []).join(', ')) + '"></div>' +
-      '<div class="row" style="margin-top:10px"><button class="act primary" id="ef-save">Save</button><span class="grow"></span><button class="act" id="ef-cancel">Cancel</button></div>');
+    modal('<h2 class="modal-title">Edit field — ' + esc(f.label) + '</h2>' +
+      '<div class="stack">' +
+        fld('ef-label', 'Label', '<input type="text" class="n-input" id="ef-label" value="' + esc(f.label || '') + '">') +
+        fld('ef-type', 'Type', '<select class="n-select" id="ef-type">' +
+          FIELD_TYPES.map(function (t) { return '<option value="' + t + '"' + (f.field_type === t ? ' selected' : '') + '>' + cap(t) + '</option>'; }).join('') + '</select>') +
+        fld('ef-opts', 'Options', '<input type="text" class="n-input" id="ef-opts" placeholder="Comma-separated (for select)" value="' + esc((f.options || []).join(', ')) + '">') +
+        check('ef-req', 'Required', f.is_required) +
+        check('ef-en', 'Enabled', f.is_enabled !== false) +
+        check('ef-ko', 'Knockout', f.knockout_enabled, 'auto-reject on a value below') +
+        fld('ef-kov', 'Knockout values', '<input type="text" class="n-input" id="ef-kov" placeholder="Comma-separated, e.g. No" value="' + esc((f.knockout_values || []).join(', ')) + '">') +
+      '</div>' +
+      modalFoot('ef-cancel', 'ef-save', 'Save'));
     document.getElementById('ef-cancel').addEventListener('click', closeModal);
     document.getElementById('ef-save').addEventListener('click', function () {
       run('update_field', { field_id: f.id, fields: {
@@ -305,28 +598,38 @@
 
   // ---- Pipeline ----------------------------------------------------------
   function showPipeline(jobId) {
+    newJobLeads(false);
     loading();
     run('pipeline', { job_id: jobId }).then(function (d) {
       var stages = d.stages || [];
       var cols = stages.map(function (s) {
         var st = s.stage_type;
         var cards = (s.applications || []).map(function (a) {
+          var rating = '';
+          if (a.rating) {
+            for (var i = 0; i < a.rating; i++) rating += starIcon(true, 12);
+            rating = '<span class="stars-mini" role="img" aria-label="Rated ' + esc(a.rating) + ' of 5">' + rating + '</span>';
+          }
           return '<div class="cand" draggable="true" data-app="' + esc(a.id) + '">' +
-            '<div class="who">' + esc(a.candidate_name) + (a.rating ? ' <span class="sub">' + '★'.repeat(a.rating) + '</span>' : '') + '</div>' +
-            '<div class="sub">' + esc(a.source || 'manual') + (a.knockout_flag ? ' · <span class="pill no">knockout</span>' : '') +
-              (a.applied_at ? ' · ' + agoLabel(a.applied_at) : '') + '</div></div>';
+            '<div class="cand-top"><span class="who">' + esc(a.candidate_name) + '</span>' + rating + '</div>' +
+            '<div class="meta">' + esc(joinMeta([cap(a.source || 'manual'), a.applied_at ? agoLabel(a.applied_at) : ''])) + '</div>' +
+            (a.knockout_flag ? badge('Knockout', 'warn') : '') + '</div>';
         }).join('');
-        return '<div class="col"><div class="colhead"><span>' + esc(s.name) +
-            (st && st !== 'active' ? ' <span class="pill ' + (st === 'hired' ? 'ok' : 'no') + '">' + esc(st) + '</span>' : '') +
-            '</span><span>' + (s.applications || []).length + '</span></div>' +
-          '<div class="drop" data-stage="' + esc(s.id) + '">' + (cards || '<div class="sub" style="padding:6px 2px">—</div>') + '</div></div>';
+        // A hired/rejected stage carries its type; say so unless its name already does.
+        var typed = st && st !== 'active' && String(s.name || '').trim().toLowerCase() !== st;
+        return '<div class="col"><div class="colhead"><span class="colname">' + esc(s.name) + '</span>' +
+            (typed ? badge(cap(st), st === 'hired' ? 'ok' : 'error') : '') +
+            '<span class="count">' + (s.applications || []).length + '</span></div>' +
+          '<div class="drop" data-stage="' + esc(s.id) + '">' + (cards || '<div class="col-empty">No candidates</div>') + '</div></div>';
       }).join('');
-      body.innerHTML = '<button class="back" id="back">← All openings</button>' +
-        '<div class="card"><div class="row"><div class="grow"><div class="name">' + esc(d.job.title) + '</div>' +
-          '<div class="sub">' + esc(d.job.department || '') + (d.job.positions_to_fill ? ' · ' + d.job.positions_filled + '/' + d.job.positions_to_fill + ' filled' : '') + '</div></div>' +
-          '<button class="act" id="editjob">Edit job</button><button class="act primary" id="addcand">+ Add candidate</button></div></div>' +
-        '<div class="sub" style="margin:8px 0 2px">Drag a card between columns to move someone, or click it to open. The stage TYPE (hired / rejected) drives their status.</div>' +
-        '<div class="board" style="margin-top:4px">' + cols + '</div>';
+      var jobMeta = joinMeta([d.job.department || '', d.job.positions_to_fill ? d.job.positions_filled + '/' + d.job.positions_to_fill + ' filled' : '']);
+      body.innerHTML = backLink('back', 'All openings') +
+        '<section class="card"><div class="jobhead"><div class="grow"><h2 class="view-title">' + esc(d.job.title) + '</h2>' +
+          (jobMeta ? '<div class="meta">' + esc(jobMeta) + '</div>' : '') + '</div>' +
+          '<div class="btns">' + btn('Edit job', 'secondary', 'id="editjob"', { sm: true }) +
+            btn('Add candidate', 'primary', 'id="addcand"', { sm: true, icon: 'plus' }) + '</div></div></section>' +
+        '<div class="hint board-hint">Drag a card between columns to move someone, or click it to open. The stage type (hired or rejected) drives their status.</div>' +
+        '<div class="board">' + cols + '</div>';
       document.getElementById('back').addEventListener('click', showJobs);
       document.getElementById('editjob').addEventListener('click', function () { showJobEditor(jobId); });
       document.getElementById('addcand').addEventListener('click', function () { addCandidateModal(jobId); });
@@ -351,13 +654,18 @@
   }
 
   function addCandidateModal(jobId) {
-    modal('<div class="name" style="font-size:.85rem">Add a candidate</div>' +
-      '<div class="field" style="margin-top:8px"><label>First name</label><input type="text" id="ac-first" style="flex:1"></div>' +
-      '<div class="field"><label>Last name</label><input type="text" id="ac-last" style="flex:1"></div>' +
-      '<div class="field"><label>Email</label><input type="email" id="ac-email" style="flex:1"></div>' +
-      '<div class="field"><label>Phone</label><input type="text" id="ac-phone" style="flex:1"></div>' +
-      '<div class="field"><label>Source</label><select id="ac-source"><option>manual</option><option>referral</option><option>seek</option><option>walk_in</option></select></div>' +
-      '<div class="row" style="margin-top:10px"><button class="act primary" id="ac-add">Add to pipeline</button><span class="grow"></span><button class="act" id="ac-cancel">Cancel</button></div>');
+    modal('<h2 class="modal-title">Add a candidate</h2>' +
+      '<div class="stack">' +
+        '<div class="form">' +
+          fld('ac-first', 'First name', '<input type="text" class="n-input" id="ac-first">') +
+          fld('ac-last', 'Last name', '<input type="text" class="n-input" id="ac-last">') +
+        '</div>' +
+        fld('ac-email', 'Email', '<input type="email" class="n-input" id="ac-email">') +
+        fld('ac-phone', 'Phone', '<input type="text" class="n-input" id="ac-phone">') +
+        fld('ac-source', 'Source', '<select class="n-select" id="ac-source">' +
+          ['manual', 'referral', 'seek', 'walk_in'].map(function (t) { return '<option value="' + t + '">' + cap(t) + '</option>'; }).join('') + '</select>') +
+      '</div>' +
+      modalFoot('ac-cancel', 'ac-add', 'Add to pipeline'));
     document.getElementById('ac-cancel').addEventListener('click', closeModal);
     document.getElementById('ac-add').addEventListener('click', function () {
       run('add_candidate', { job_id: jobId, venue_id: ctx && ctx.venueId,
@@ -370,42 +678,48 @@
 
   // ---- Candidate ---------------------------------------------------------
   function showCandidate(applicationId, jobId) {
+    newJobLeads(false);
     loading();
     run('candidate', { application_id: applicationId }).then(function (d) {
       var a = d.application, c = d.candidate;
       var options = (d.stages || []).map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === a.stage_id ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('');
-      var answers = (d.answers || []).map(function (x) { return '<div class="kv"><b>' + esc(x.label || x.field_key) + '</b><span>' + esc(x.value) + '</span></div>'; }).join('') || '<div class="sub">No application answers.</div>';
-      var notes = (d.notes || []).map(function (n) { return '<div class="feed">' + esc(n.body) + ' <span class="sub">— ' + esc(n.author || '') + '</span></div>'; }).join('') || '<div class="sub">No notes yet.</div>';
-      var feed = (d.activity || []).map(function (x) { return '<div class="feed">' + esc(x.summary) + ' <span class="sub">' + esc((x.at || '').slice(0, 16).replace('T', ' ')) + '</span></div>'; }).join('') || '<div class="sub">Nothing yet.</div>';
+      var answers = (d.answers || []).map(function (x) { return '<div class="kv"><b>' + esc(x.label || x.field_key) + '</b><span>' + esc(x.value) + '</span></div>'; }).join('') || '<div class="none">No application answers.</div>';
+      var notes = (d.notes || []).map(function (n) { return '<div class="feed"><span>' + esc(n.body) + '</span>' + (n.author ? '<span class="meta">' + esc(n.author) + '</span>' : '') + '</div>'; }).join('') || '<div class="none">No notes yet.</div>';
+      var feed = (d.activity || []).map(function (x) { return '<div class="feed"><span>' + esc(x.summary) + '</span><span class="meta">' + esc((x.at || '').slice(0, 16).replace('T', ' ')) + '</span></div>'; }).join('') || '<div class="none">Nothing yet.</div>';
       var interviews = (d.interviews || []).map(function (iv) {
-        return '<div class="feed">' + esc(iv.interview_type || 'interview') + ' · ' + esc((iv.scheduled_at || 'unscheduled').replace('T', ' ')) +
-          (iv.duration_minutes ? ' · ' + iv.duration_minutes + 'min' : '') +
+        return '<div class="feed"><span>' + esc(cap(iv.interview_type || 'interview')) + ' · ' + esc((iv.scheduled_at || 'unscheduled').replace('T', ' ')) +
+          (iv.duration_minutes ? ' · ' + esc(iv.duration_minutes) + ' min' : '') +
           (iv.location ? ' · ' + esc(iv.location) : '') +
-          (iv.meeting_url ? ' · <a class="link" href="' + esc(iv.meeting_url) + '" target="_blank">link</a>' : '') + '</div>';
-      }).join('') || '<div class="sub">No interviews.</div>';
-      var stars = ''; for (var i = 1; i <= 5; i++) stars += '<span data-star="' + i + '">' + (a.rating >= i ? '★' : '☆') + '</span>';
+          (iv.meeting_url ? ' · <a class="link" href="' + esc(iv.meeting_url) + '" target="_blank" rel="noopener noreferrer">Meeting link</a>' : '') + '</span></div>';
+      }).join('') || '<div class="none">No interviews.</div>';
+      var stars = ''; for (var i = 1; i <= 5; i++) stars += '<button type="button" class="star-btn" data-star="' + i + '" aria-label="Rate ' + i + ' of 5" title="Rate ' + i + ' of 5">' + starIcon(a.rating >= i, 18) + '</button>';
+      var section = function (title, inner) { return '<section class="card"><div class="card-head"><h2 class="card-title">' + title + '</h2></div><div class="card-body">' + inner + '</div></section>'; };
 
-      body.innerHTML = '<button class="back" id="back">← Pipeline</button>' +
-        '<div class="card"><div class="row"><div class="grow"><div class="name">' + esc(c.name) + '</div>' +
-          '<div class="sub">' + esc(c.email || '') + (c.phone ? ' · ' + esc(c.phone) : '') + '</div></div>' + statusPill(a.status) + '</div>' +
-          '<div class="row" style="margin-top:8px"><span class="sub">Rating</span><span class="stars" id="stars">' + stars + '</span>' +
-            '<span class="grow"></span>' +
-            '<label class="sub" style="display:inline-flex;gap:5px;align-items:center"><input type="checkbox" id="tp"' + (c.in_talent_pool ? ' checked' : '') + '> talent pool</label></div>' +
-          '<div class="row" style="margin-top:10px;gap:8px"><select id="stage">' + options + '</select>' +
-            '<button class="act" id="move">Move</button>' +
-            '<button class="act" id="interview">Schedule interview</button>' +
-            (a.status === 'rejected' ? '' : '<button class="act danger" id="reject">Not progressing</button>') +
-            (a.status === 'hired' ? '' :
-              '<select id="hire-role"><option value="team_member">Team member</option><option value="manager">Manager</option><option value="head_office">Head office</option></select>' +
-              '<input type="date" id="hire-start" title="start date">' +
-              '<button class="act primary" id="hire">Hire</button>') +
-            (a.person_id ? '<span class="sub">on the team — Training can enrol them</span>' : '') +
-          '</div></div>' +
-        '<div class="card"><div class="name" style="font-size:.78rem">Application</div>' + answers + '</div>' +
-        '<div class="card"><div class="name" style="font-size:.78rem">Interviews</div>' + interviews + '</div>' +
-        '<div class="card"><div class="name" style="font-size:.78rem">Notes</div>' + notes +
-          '<textarea id="note" rows="2" placeholder="Add a note…" style="margin-top:6px"></textarea><button class="act" id="addnote" style="margin-top:5px">Add note</button></div>' +
-        '<div class="card"><div class="name" style="font-size:.78rem">Activity</div>' + feed + '</div>';
+      body.innerHTML = backLink('back', 'Pipeline') +
+        '<section class="card">' +
+          '<div class="card-body top">' +
+            '<div class="cand-head"><div class="grow"><div class="title-row"><h2 class="view-title">' + esc(c.name) + '</h2>' + statusPill(a.status) + '</div>' +
+              '<div class="meta">' + esc(joinMeta([c.email || '', c.phone || ''])) + '</div></div>' +
+              check('tp', 'Talent pool', c.in_talent_pool) + '</div>' +
+            '<div class="rating-row"><span class="lbl">Rating</span><span class="stars" id="stars" role="group" aria-label="Rating">' + stars + '</span></div>' +
+          '</div>' +
+          '<div class="card-foot actions">' +
+            '<span class="grp"><select class="n-select" id="stage" aria-label="Stage">' + options + '</select>' + btn('Move', 'secondary', 'id="move"') + '</span>' +
+            btn('Schedule interview', 'secondary', 'id="interview"') +
+            (a.status === 'rejected' ? '' : btn('Not progressing', 'danger', 'id="reject"')) +
+          '</div>' +
+          (a.status === 'hired' ? '' :
+            '<div class="card-foot actions"><label class="lbl" for="hire-role">Hire as</label>' +
+              '<span class="grp"><select class="n-select" id="hire-role"><option value="team_member">Team member</option><option value="manager">Manager</option><option value="head_office">Head office</option></select>' +
+              '<input type="date" class="n-input" id="hire-start" title="Start date" aria-label="Start date"></span>' +
+              btn('Hire', 'primary', 'id="hire"') + '</div>') +
+          (a.person_id ? '<div class="card-foot"><span class="hint">On the team — Training can enrol them</span></div>' : '') +
+        '</section>' +
+        section('Application', answers) +
+        section('Interviews', interviews) +
+        section('Notes', '<div>' + notes + '</div><div class="note-box"><textarea class="n-input" id="note" rows="2" placeholder="Add a note…" aria-label="Add a note"></textarea>' +
+          btn('Add note', 'secondary', 'id="addnote"', { sm: true }) + '</div>') +
+        section('Activity', feed);
 
       var reload = function () { showCandidate(applicationId, jobId); };
       document.getElementById('back').addEventListener('click', function () { showPipeline(jobId); });
@@ -426,9 +740,9 @@
   }
 
   function rejectModal(applicationId, reload) {
-    modal('<div class="name" style="font-size:.85rem">Not progressing</div>' +
-      '<textarea id="rej-reason" rows="3" placeholder="Reason (optional, recorded on the candidate)" style="margin-top:8px"></textarea>' +
-      '<div class="row" style="margin-top:10px"><button class="act danger" id="rej-do">Reject</button><span class="grow"></span><button class="act" id="rej-cancel">Cancel</button></div>');
+    modal('<h2 class="modal-title">Not progressing</h2>' +
+      fld('rej-reason', 'Reason', '<textarea class="n-input" id="rej-reason" rows="3" placeholder="Optional — recorded on the candidate"></textarea>') +
+      modalFoot('rej-cancel', 'rej-do', 'Reject', 'danger'));
     document.getElementById('rej-cancel').addEventListener('click', closeModal);
     document.getElementById('rej-do').addEventListener('click', function () {
       run('reject', { application_id: applicationId, reason: document.getElementById('rej-reason').value || null }).then(function () { closeModal(); reload(); }).catch(fail);
@@ -436,14 +750,18 @@
   }
 
   function interviewModal(applicationId, reload) {
-    modal('<div class="name" style="font-size:.85rem">Schedule interview</div>' +
-      '<div class="field" style="margin-top:8px"><label>Type</label><select id="iv-type"><option value="phone_screen">Phone screen</option><option value="in_person">In person</option><option value="video">Video</option><option value="trial_shift">Trial shift</option></select></div>' +
-      '<div class="field"><label>When</label><input type="datetime-local" id="iv-when"></div>' +
-      '<div class="field"><label>Duration (min)</label><input type="number" id="iv-dur" style="width:90px" value="30"></div>' +
-      '<div class="field"><label>Location</label><input type="text" id="iv-loc" style="flex:1" placeholder="venue / room"></div>' +
-      '<div class="field"><label>Meeting URL</label><input type="text" id="iv-url" style="flex:1" placeholder="video call link (optional)"></div>' +
-      '<div class="field"><label>Briefing</label></div><textarea id="iv-inst" rows="2" placeholder="Notes for the candidate or panel"></textarea>' +
-      '<div class="row" style="margin-top:10px"><button class="act primary" id="iv-do">Schedule</button><span class="grow"></span><button class="act" id="iv-cancel">Cancel</button></div>');
+    modal('<h2 class="modal-title">Schedule interview</h2>' +
+      '<div class="stack">' +
+        fld('iv-type', 'Type', '<select class="n-select" id="iv-type"><option value="phone_screen">Phone screen</option><option value="in_person">In person</option><option value="video">Video</option><option value="trial_shift">Trial shift</option></select>') +
+        '<div class="form">' +
+          fld('iv-when', 'When', '<input type="datetime-local" class="n-input" id="iv-when">') +
+          fld('iv-dur', 'Duration (min)', '<input type="number" class="n-input narrow" id="iv-dur" value="30">') +
+        '</div>' +
+        fld('iv-loc', 'Location', '<input type="text" class="n-input" id="iv-loc" placeholder="Venue / room">') +
+        fld('iv-url', 'Meeting URL', '<input type="text" class="n-input" id="iv-url" placeholder="Video call link (optional)">') +
+        fld('iv-inst', 'Briefing', '<textarea class="n-input" id="iv-inst" rows="2" placeholder="Notes for the candidate or panel"></textarea>') +
+      '</div>' +
+      modalFoot('iv-cancel', 'iv-do', 'Schedule'));
     document.getElementById('iv-cancel').addEventListener('click', closeModal);
     document.getElementById('iv-do').addEventListener('click', function () {
       var dur = document.getElementById('iv-dur').value;
@@ -457,15 +775,21 @@
 
   // ---- Talent pool -------------------------------------------------------
   function showPool() {
+    newJobLeads(true);
     loading();
     run('talent_pool').then(function (d) {
       var rows = d.candidates || [];
-      if (!rows.length) { body.innerHTML = '<div class="empty">Nobody in the talent pool yet. Tick "talent pool" on a candidate to add them.</div>'; return; }
-      body.innerHTML = rows.map(function (c) {
-        return '<div class="card row"><div class="grow"><div class="name">' + esc(c.name) + '</div>' +
-          '<div class="sub">' + esc(c.email || '') + (c.talent_pool_note ? ' · ' + esc(c.talent_pool_note) : '') + '</div></div>' +
-          '<button class="act tiny" data-tpremove="' + esc(c.id) + '">Remove</button></div>';
-      }).join('');
+      if (!rows.length) { body.innerHTML = state('empty', 'Nobody in the talent pool yet', 'Tick <b>Talent pool</b> on a candidate to add them.'); return; }
+      body.innerHTML = '<table class="n-table list pool"><thead><tr>' +
+          '<th scope="col">Candidate</th><th scope="col">Note</th><th scope="col" class="tools"><span class="sr">Actions</span></th>' +
+        '</tr></thead><tbody>' +
+        rows.map(function (c) {
+          return '<tr><td class="lead"><div class="name">' + esc(c.name) + '</div>' +
+              (c.email ? '<div class="meta">' + esc(c.email) + '</div>' : '') +
+              (c.talent_pool_note ? '<div class="meta m-only">' + esc(c.talent_pool_note) + '</div>' : '') + '</td>' +
+            '<td class="note">' + esc(c.talent_pool_note || '') + '</td>' +
+            '<td class="tools"><div class="btns">' + btn('Remove', 'secondary', 'data-tpremove="' + esc(c.id) + '"', { sm: true }) + '</div></td></tr>';
+        }).join('') + '</tbody></table>';
       bind('[data-tpremove]', function (el) { run('set_talent_pool', { candidate_id: el.getAttribute('data-tpremove'), in_talent_pool: false }).then(showPool).catch(fail); });
     }).catch(fail);
   }

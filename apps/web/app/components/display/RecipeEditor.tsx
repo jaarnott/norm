@@ -13,9 +13,17 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronRight, FileUp, GripVertical, History, LoaderCircle, Plus, Search, X } from 'lucide-react';
 import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
-import { colors } from '../../lib/theme';
+import Badge from '../ui/Badge';
+import BackLink from '../ui/BackLink';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
+import VenueSelect from '../ui/VenueSelect';
 import Combobox, { type ComboOption } from './Combobox';
 import HtmlField from './HtmlField';
 import { type CostTables } from './recipeCost';
@@ -175,6 +183,16 @@ interface RawRecipe {
 
 const money = (n: number): string => formatMoney(n);
 
+// How much room the component has (see `fit` in the component).
+type Fit = 'phone' | 'narrow' | 'wide';
+const fitFor = (w: number): Fit => (w < 520 ? 'phone' : w < 720 ? 'narrow' : 'wide');
+
+// ---- Looks. tokens.css classes do most of the work (.n-table, .n-input,
+// .n-select, .n-label, .n-card); bundled into Claude, so tokens only.
+// Numbers in inputs line up like the columns they sit in.
+const numInput: React.CSSProperties = { textAlign: 'right', fontVariantNumeric: 'tabular-nums', padding: '0 8px' };
+const tabular: React.CSSProperties = { fontVariantNumeric: 'tabular-nums' };
+
 // Summarise a list-payload recipe for the table (ingredient count uses the same
 // deletedAt filter the editor's toDraft uses, so the count matches what you'd
 // see on opening the recipe).
@@ -296,6 +314,24 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   const [docVersion, setDocVersion] = useState<number>(() => (embedded ? 0 : openSession?.docVersion ?? 0));
   const lastVersionRef = useRef<number>(openSession?.docVersion ?? 0);
   const lastEditRef = useRef<number>(0);
+
+  // Layout only: how much room the component has — its OWN width, since a chat
+  // column or Claude's frame is narrower than the window. Below 720px the
+  // ingredient table becomes stacked lines; below 520px the recipe list
+  // becomes one-column rows.
+  const [fit, setFit] = useState<Fit>(() => (typeof window === 'undefined' ? 'wide' : fitFor(window.innerWidth)));
+  const fitObserver = useRef<ResizeObserver | null>(null);
+  const measureRef = useCallback((el: HTMLDivElement | null) => {
+    fitObserver.current?.disconnect();
+    fitObserver.current = null;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      if (w > 0) setFit(fitFor(w));
+    });
+    ro.observe(el);
+    fitObserver.current = ro;
+  }, []);
 
   // Upload → extract a draft recipe from a document (web-only). The extracted
   // draft can be turned into a NEW Loaded recipe (fromExtracted → blank draft →
@@ -708,34 +744,35 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     setSaving(false);
   };
 
-  // --- Styles (mirror InvoicesDashboard/OrdersDashboard) ---
-  const input: React.CSSProperties = { padding: '5px 8px', fontSize: '0.85rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit' };
-  const btn = (bg: string, fg = '#fff'): React.CSSProperties => ({ padding: '5px 12px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6, background: bg, color: fg, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' });
-  const ghost: React.CSSProperties = { ...btn('#fff', colors.textSecondary), border: `1px solid ${colors.border}` };
-  const selectStyle: React.CSSProperties = { padding: '3px 8px', fontSize: '0.75rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit', color: colors.textSecondary, backgroundColor: '#fff' };
-  const thStyle: React.CSSProperties = { padding: '8px 12px', textAlign: 'left', fontSize: '0.72rem', fontWeight: 600, color: colors.textSecondary, borderBottom: `2px solid ${colors.border}`, whiteSpace: 'nowrap' };
-  const tdStyle: React.CSSProperties = { padding: '8px 12px', fontSize: '0.8rem', color: colors.textPrimary, borderBottom: `1px solid ${colors.borderLight}` };
+  // --- Presentation ---
+  // A PAGE instance (props.persistVenue) gets the page header and sits on the
+  // page's own frame; in a conversation, or inside Claude, it is one compact
+  // card.
+  const isPage = persistVenue && !embedded;
 
-  const venueSelect = venues.length > 1 && (
-    <select value={venueId || ''} onChange={(e) => changeVenue(e.target.value)} style={selectStyle}>
-      {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-    </select>
+  const venuePicker = venues.length > 1 && (
+    <VenueSelect venues={venues} value={venueId} onChange={changeVenue} />
   );
-  const notes = (
-    <>
-      {savedNote && <span style={{ fontSize: '0.8rem', color: colors.success }}>{savedNote}</span>}
-      {error && <span style={{ fontSize: '0.8rem', color: colors.error }}>{error}</span>}
-    </>
+  const savedOk = savedNote && (
+    <span role="status" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', color: 'var(--ok)' }}>
+      <Icon icon={Check} size={14} />
+      {savedNote}
+    </span>
+  );
+  const errorBlock = error && (
+    <div style={{ marginBottom: 12 }}>
+      <PageState kind="error" title={error} />
+    </div>
   );
 
   // Unit picker, scoped to a stock unit type when known (so a solid ingredient
   // offers kg/g, not all 450+ units). Falls back to every unit if type unknown,
   // and always keeps the currently-selected unit visible.
-  const unitSelect = (value: string | null, onChange: (id: string) => void, type?: string, width = 120) => {
+  const unitSelect = (value: string | null, onChange: (id: string) => void, type?: string, style?: React.CSSProperties, label = 'Unit') => {
     const list = type ? units.filter((u) => !u.type || u.type === type || u.id === value) : units;
     return (
-      <select value={value || ''} onChange={(e) => onChange(e.target.value)} style={{ ...input, width }}>
-        {!value && <option value="">unit</option>}
+      <select className="n-select" aria-label={label} value={value || ''} onChange={(e) => onChange(e.target.value)} style={{ width: '100%', ...style }}>
+        {!value && <option value="">Unit</option>}
         {list.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
       </select>
     );
@@ -746,13 +783,14 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   // app; in a chat card, Claude's own text already carries the matches.
   if (embedded && !draft) {
     return selfLoadRecipeId ? (
-      <div style={{ fontSize: '0.85rem', color: colors.textMuted, padding: '0.6rem' }}>Loading recipe…</div>
+      <div className="n-card">
+        <PageState kind="loading" title="Loading recipe…" />
+      </div>
     ) : null;
   }
 
   if (draft) {
     const yieldUnitName = units.find((u) => u.id === draft.yield_unit_id)?.name || 'yield';
-    const lbl: React.CSSProperties = { fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: colors.textMuted };
     // Version viewer: a viewVersionId that isn't in this recipe (or null) means
     // the current, editable version; any other is a past version shown read-only.
     const curVer = draft.versions.find((v) => v.current) || null;
@@ -762,165 +800,311 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     const viewYieldQty = viewingPast && selVer ? selVer.yield_quantity : draft.yield_quantity;
     const viewYieldUnit = viewingPast && selVer ? (selVer.yield_unit_name || 'yield') : yieldUnitName;
     const viewTotal = viewingPast && selVer ? linesTotal(selVer.lines) : totalCost;
+    const showTotals = !!viewTotal && viewLines.some((l) => l.ref_id);
+
+    const title = draft.recipe_id ? 'Edit recipe' : 'New recipe';
+    const meta = draft.recipe_id ? undefined : 'This will be created in Loaded when you save.';
+    // Same as the old disabled back button: does nothing while a save runs.
+    const back = () => { if (!saving) closeEditor(); };
     const versionSelect = draft.recipe_id && draft.versions.length > 0 && (
-      <select value={selVer?.id || ''} onChange={(e) => setViewVersionId(e.target.value)} style={selectStyle} title="Recipe version">
+      <select className="n-select" value={selVer?.id || ''} onChange={(e) => setViewVersionId(e.target.value)} title="Recipe version" aria-label="Recipe version">
         {draft.versions.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
       </select>
     );
-    return (
-      <div style={{ maxWidth: 1080 }}>
-        {/* Header: back · title · venue · version · save */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-          {!embedded && <button onClick={closeEditor} disabled={saving} style={ghost}>← Recipes</button>}
-          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>{draft.recipe_id ? 'Edit recipe' : 'New recipe'}</h2>
-          {venueSelect}
-          {versionSelect}
-          <span style={{ flex: 1 }} />
-          {notes}
-          <button onClick={save} disabled={saving || viewingPast || !draft.name.trim()} title={viewingPast ? 'Switch to Current to edit' : undefined} style={btn(colors.executive_chef)}>{saving ? 'Saving…' : draft.recipe_id ? 'Save to Loaded' : 'Create in Loaded'}</button>
-        </div>
+    const actions = (
+      <>
+        {savedOk}
+        {venuePicker}
+        {versionSelect}
+        <Button variant="primary" onClick={save} disabled={saving || viewingPast || !draft.name.trim()} title={viewingPast ? 'Switch to Current to edit' : undefined}>
+          {saving ? 'Saving…' : draft.recipe_id ? 'Save to Loaded' : 'Create in Loaded'}
+        </Button>
+      </>
+    );
+    const SectionHeading = isPage ? 'h2' : 'h3';
+    const sectionTitle: React.CSSProperties = { margin: '0 0 8px', fontSize: isPage ? 'var(--fs-md)' : 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' };
+
+    // One ingredient line's pieces — laid out below as a table row when there
+    // is room, else as stacked lines. A past version renders read-only text.
+    const editable = !viewingPast;
+    const linePieces = (l: EditLine) => {
+      const lc = lineCostOf(l);
+      const sc = stockCostOf(l);
+      return {
+        grip: editable ? (
+          <span
+            draggable
+            onDragStart={(e) => { e.dataTransfer.setData('text/plain', l.key); e.dataTransfer.effectAllowed = 'move'; }}
+            title="Drag to reorder"
+            style={{ display: 'inline-flex', cursor: 'grab', color: 'var(--icon)', userSelect: 'none' }}
+          >
+            <Icon icon={GripVertical} size={16} />
+          </span>
+        ) : null,
+        qty: editable ? (
+          <input type="number" step="0.001" min="0" className="n-input" aria-label="Quantity" value={l.quantity} onChange={(e) => updateLine(l.key, { quantity: parseFloat(e.target.value) })} style={{ width: '100%', ...numInput }} />
+        ) : (
+          <>{+l.quantity.toFixed(3)}</>
+        ),
+        unit: editable
+          ? unitSelect(l.unit_id, (u) => pickUnit(l.key, u), unitTypeForLine(l))
+          : <span style={{ color: 'var(--text-soft)' }}>{l.unit_name || ''}</span>,
+        ingredient: editable ? (
+          <Combobox
+            value={l.name}
+            options={ingredientOptions}
+            onType={(t) => updateLine(l.key, { name: t, ref_id: null })}
+            onPick={(o) => pickIngredient(l.key, o)}
+            placeholder="Search ingredient or sub-recipe"
+          />
+        ) : (
+          <span style={{ color: 'var(--text)' }}>{l.name}</span>
+        ),
+        deleted: l.item_deleted ? <Badge tone="error" title="This stock item has been deleted in Loaded">Deleted</Badge> : null,
+        stockUnit: stockUnitOf(l),
+        stockCost: sc != null ? money(sc) : '—',
+        cost: lc?.complete ? money(lc.cost) : '—',
+        costStyle: { color: lc?.complete ? 'var(--text)' : 'var(--muted)' } as React.CSSProperties,
+        costTitle: lc && !lc.complete ? 'No price for this ingredient yet' : undefined,
+        remove: editable ? <IconButton icon={X} label="Remove ingredient" iconSize={16} onClick={() => removeLine(l.key)} /> : null,
+        // Drag-to-reorder drop target (current version only).
+        dnd: editable
+          ? {
+              onDragOver: (e: React.DragEvent) => e.preventDefault(),
+              onDrop: (e: React.DragEvent) => { e.preventDefault(); const from = e.dataTransfer.getData('text/plain'); if (from) reorderLines(from, l.key); },
+            }
+          : {},
+      };
+    };
+    const noLines = 'No ingredients yet — add one below.';
+
+    // Wide: a table. Inputs fill their cells; editable rows sit a little
+    // tighter. A past version is read-only, so it has no grip or remove column.
+    const cell: React.CSSProperties = { paddingLeft: 6, paddingRight: 6, ...(editable ? { paddingTop: 6, paddingBottom: 6 } : {}) };
+    const firstCell: React.CSSProperties = editable ? cell : { ...cell, paddingLeft: 12 };
+    const lastCell: React.CSSProperties = editable ? cell : { ...cell, paddingRight: 12 };
+    const gripCell: React.CSSProperties = { ...cell, width: 16, paddingLeft: 12, paddingRight: 0 };
+    const removeCell: React.CSSProperties = { ...cell, width: 32, paddingLeft: 0, paddingRight: 8 };
+    // The total lines up under the Recipe cost column: past the remove column
+    // (32 + 8) and the cell's own padding (6) when there is one.
+    const totalEdge = editable ? 46 : 12;
+    const ingredientTable = (
+      <table className="n-table">
+        <thead>
+          <tr>
+            {editable && <th style={gripCell} />}
+            <th className="num" style={{ ...firstCell, width: 84 }}>Qty</th>
+            <th style={{ ...cell, width: 140 }}>Unit</th>
+            <th style={cell}>Ingredient</th>
+            <th style={{ ...cell, width: 92 }}>Stock unit</th>
+            <th className="num" style={{ ...cell, width: 92 }}>Stock cost</th>
+            <th className="num" style={{ ...lastCell, width: 96 }}>Recipe cost</th>
+            {editable && <th style={removeCell} />}
+          </tr>
+        </thead>
+        <tbody>
+          {viewLines.length === 0 && (
+            <tr><td colSpan={editable ? 8 : 6} style={{ paddingLeft: 12, color: 'var(--muted)' }}>{noLines}</td></tr>
+          )}
+          {viewLines.map((l) => {
+            const p = linePieces(l);
+            return (
+              <tr key={l.key} {...p.dnd} style={l.item_deleted ? { background: 'var(--error-bg)' } : undefined}>
+                {editable && <td style={gripCell}>{p.grip}</td>}
+                <td className="num" style={firstCell}>{p.qty}</td>
+                <td style={cell}>{p.unit}</td>
+                <td style={cell}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>{p.ingredient}</div>
+                    {p.deleted}
+                  </div>
+                </td>
+                <td style={{ ...cell, color: 'var(--muted)' }}>{p.stockUnit}</td>
+                <td className="num" style={{ ...cell, color: 'var(--muted)' }} title={editable ? 'Cost per stock unit' : undefined}>{p.stockCost}</td>
+                <td className="num" style={{ ...lastCell, ...p.costStyle }} title={p.costTitle}>{p.cost}</td>
+                {editable && <td style={removeCell}>{p.remove}</td>}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    );
+
+    // Narrow: each line stacked — ingredient, then qty · unit · cost, then the
+    // stock unit and its cost.
+    const ingredientStack = (
+      <div style={{ borderTop: '1px solid var(--line-strong)' }}>
+        {viewLines.length === 0 && (
+          <div style={{ padding: '10px 0', borderBottom: '1px solid var(--line)', color: 'var(--muted)' }}>{noLines}</div>
+        )}
+        {viewLines.map((l) => {
+          const p = linePieces(l);
+          const indent = editable ? 22 : 0;
+          return (
+            <div
+              key={l.key}
+              {...p.dnd}
+              style={{
+                padding: '10px 0', borderBottom: '1px solid var(--line)',
+                ...(l.item_deleted ? { background: 'var(--error-bg)', margin: '0 -8px', paddingLeft: 8, paddingRight: 8 } : {}),
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {p.grip}
+                <div style={{ flex: 1, minWidth: 0, fontWeight: editable ? undefined : 500, overflowWrap: 'anywhere' }}>{p.ingredient}</div>
+                {p.remove}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: editable ? 8 : 2, paddingLeft: indent }}>
+                {editable ? (
+                  <>
+                    <div style={{ flex: '0 0 84px' }}>{p.qty}</div>
+                    <div style={{ flex: '1 1 0', minWidth: 0, maxWidth: 200 }}>{p.unit}</div>
+                  </>
+                ) : (
+                  <span style={tabular}>{p.qty} {p.unit}</span>
+                )}
+                <div style={{ marginLeft: 'auto', textAlign: 'right', ...tabular }} title={p.costTitle}>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>Recipe cost</div>
+                  <div style={{ fontWeight: 600, ...p.costStyle }}>{p.cost}</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 12px', marginTop: 6, paddingLeft: indent, fontSize: 'var(--fs-sm)', color: 'var(--muted)', ...tabular }}>
+                {p.deleted}
+                <span>Stock unit {p.stockUnit || '—'}</span>
+                <span title="Cost per stock unit">Stock cost {p.stockCost}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+
+    const stacked = fit !== 'wide';
+    const body = (
+      <>
+        {errorBlock}
         {viewingPast && (
-          <div style={{ fontSize: '0.78rem', color: colors.textMuted, background: colors.selectedBg, border: `1px solid ${colors.borderLight}`, borderRadius: 8, padding: '0.5rem 0.7rem', marginBottom: '0.9rem' }}>
-            Viewing a past version — read-only. Switch to <strong>Current</strong> to edit.
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', marginBottom: 16, borderRadius: 'var(--radius)', background: 'var(--info-bg)', color: 'var(--info)', fontSize: 'var(--fs-sm)' }}>
+            <Icon icon={History} size={16} style={{ marginTop: 1 }} />
+            <span>Viewing a past version — read-only. Switch to <strong>Current</strong> to edit.</span>
           </div>
         )}
 
-        {/* Details card: name · yield · live cost */}
-        <div style={{ border: `1px solid ${colors.border}`, borderRadius: 10, padding: '1rem 1.1rem', marginBottom: '1.1rem', background: '#fff' }}>
-          {!draft.recipe_id && <div style={{ fontSize: '0.78rem', color: colors.textMuted, marginBottom: '0.6rem' }}>This will be created in Loaded when you save.</div>}
-          <input value={draft.name} onChange={(e) => setName(e.target.value)} readOnly={viewingPast} placeholder="Recipe name"
-            style={{ fontSize: '1.2rem', fontWeight: 700, color: colors.textPrimary, width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: `1px solid ${colors.border}`, padding: '2px 0 7px', fontFamily: 'inherit', outline: 'none' }} />
-          <div style={{ marginTop: '0.9rem' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', width: 'fit-content' }}>
-              <span style={lbl}>Yield</span>
-              {viewingPast ? (
-                <div style={{ fontSize: '0.85rem', color: colors.textPrimary }}>{+viewYieldQty.toFixed(2)} {viewYieldUnit}</div>
-              ) : (
-                <div style={{ display: 'flex', gap: '0.4rem' }}>
-                  <input type="number" step="0.01" min="0" value={draft.yield_quantity} onChange={(e) => setYieldQty(parseFloat(e.target.value))} style={{ ...input, width: 80, textAlign: 'right' }} />
-                  {unitSelect(draft.yield_unit_id, setYieldUnit)}
-                </div>
-              )}
-            </div>
+        {/* Details: name · yield */}
+        <div style={{ marginBottom: 24 }}>
+          <label style={{ display: 'block', maxWidth: 640 }}>
+            <span className="n-label">Name</span>
+            <input
+              className="n-input n-keep-size"
+              value={draft.name}
+              onChange={(e) => setName(e.target.value)}
+              readOnly={viewingPast}
+              placeholder="Recipe name"
+              style={{ width: '100%', height: 40, fontSize: 'var(--fs-lg)', fontWeight: 600, ...(viewingPast ? { background: 'var(--surface)', borderColor: 'var(--line)' } : {}) }}
+            />
+          </label>
+          <div style={{ marginTop: 12 }}>
+            <span className="n-label">Yield</span>
+            {viewingPast ? (
+              <div style={{ color: 'var(--text)', ...tabular }}>{+viewYieldQty.toFixed(2)} {viewYieldUnit}</div>
+            ) : (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input type="number" step="0.01" min="0" className="n-input" aria-label="Yield quantity" value={draft.yield_quantity} onChange={(e) => setYieldQty(parseFloat(e.target.value))} style={{ width: 88, ...numInput }} />
+                {unitSelect(draft.yield_unit_id, setYieldUnit, undefined, { width: 160 }, 'Yield unit')}
+              </div>
+            )}
           </div>
         </div>
 
         {/* Ingredients */}
-        <div style={{ ...lbl, marginBottom: '0.35rem' }}>Ingredients</div>
-        <div style={{ border: `1px solid ${colors.border}`, borderRadius: 8 }}>
-          <div style={{ display: 'flex', gap: '0.4rem', padding: '0.5rem 0.7rem', background: colors.selectedBg, fontSize: '0.68rem', color: colors.textMuted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', borderTopLeftRadius: 7, borderTopRightRadius: 7 }}>
-            <span style={{ width: 18 }} /><span style={{ width: 66 }}>Qty</span><span style={{ width: 104 }}>Unit</span><span style={{ flex: 1, paddingLeft: '0.2rem' }}>Ingredient</span><span style={{ width: 88 }}>Stock unit</span><span style={{ width: 92, textAlign: 'right' }}>Stock cost</span><span style={{ width: 84, textAlign: 'right' }}>Recipe cost</span><span style={{ width: 28 }} />
-          </div>
-          <div style={{ padding: '0.6rem 0.7rem' }}>
-            {viewLines.length === 0 && (
-              <div style={{ fontSize: '0.85rem', color: colors.textMuted, padding: '0.15rem 0 0.5rem' }}>No ingredients yet — add one below.</div>
-            )}
-            {viewingPast
-              ? viewLines.map((l) => {
-                  const lc = lineCostOf(l);
-                  const sc = stockCostOf(l);
-                  return (
-                    <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.45rem', background: l.item_deleted ? 'rgba(229,72,77,0.08)' : undefined, borderRadius: 6 }}>
-                      <span style={{ width: 18 }} />
-                      <span style={{ width: 66, fontSize: '0.85rem', color: colors.textPrimary }}>{+l.quantity.toFixed(3)}</span>
-                      <span style={{ width: 104, fontSize: '0.85rem', color: colors.textMuted, paddingLeft: '0.2rem' }}>{l.unit_name || ''}</span>
-                      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.35rem', paddingLeft: '0.2rem' }}>
-                        <span style={{ fontSize: '0.85rem', color: colors.textPrimary }}>{l.name}</span>
-                        {l.item_deleted && <span title="This stock item has been deleted in Loaded" style={{ fontSize: '0.55rem', fontWeight: 700, color: '#e5484d', border: '1px solid #e5484d', padding: '1px 5px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.03em', whiteSpace: 'nowrap' }}>deleted</span>}
-                      </div>
-                      <span style={{ width: 88, fontSize: '0.85rem', color: colors.textMuted }}>{stockUnitOf(l)}</span>
-                      <span style={{ width: 92, textAlign: 'right', fontSize: '0.85rem', color: colors.textMuted }}>{sc != null ? money(sc) : '—'}</span>
-                      <span style={{ width: 84, textAlign: 'right', fontSize: '0.85rem', color: lc?.complete ? colors.textPrimary : colors.textMuted }} title={lc && !lc.complete ? 'No price for this ingredient yet' : undefined}>{lc?.complete ? money(lc.cost) : '—'}</span>
-                      <span style={{ width: 28 }} />
-                    </div>
-                  );
-                })
-              : draft.lines.map((l) => {
-                  const lc = lineCostOf(l);
-                  const sc = stockCostOf(l);
-                  return (
-                    <div key={l.key}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => { e.preventDefault(); const from = e.dataTransfer.getData('text/plain'); if (from) reorderLines(from, l.key); }}
-                      style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.45rem', background: l.item_deleted ? 'rgba(229,72,77,0.08)' : undefined, borderRadius: 6 }}>
-                      <span draggable onDragStart={(e) => { e.dataTransfer.setData('text/plain', l.key); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder" style={{ width: 18, textAlign: 'center', cursor: 'grab', color: colors.textMuted, fontSize: '0.85rem', userSelect: 'none' }}>⠿</span>
-                      <input type="number" step="0.001" min="0" value={l.quantity} onChange={(e) => updateLine(l.key, { quantity: parseFloat(e.target.value) })} style={{ ...input, width: 66, textAlign: 'left', fontSize: '0.85rem' }} />
-                      {unitSelect(l.unit_id, (u) => pickUnit(l.key, u), unitTypeForLine(l), 104)}
-                      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                        <div style={{ flex: 1 }}>
-                          <Combobox
-                            value={l.name}
-                            options={ingredientOptions}
-                            onType={(t) => updateLine(l.key, { name: t, ref_id: null })}
-                            onPick={(o) => pickIngredient(l.key, o)}
-                            placeholder="Search ingredient or sub-recipe"
-                          />
-                        </div>
-                        {l.item_deleted && <span title="This stock item has been deleted in Loaded" style={{ fontSize: '0.55rem', fontWeight: 700, color: '#e5484d', border: '1px solid #e5484d', padding: '1px 5px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.03em', whiteSpace: 'nowrap' }}>deleted</span>}
-                      </div>
-                      <span style={{ width: 88, fontSize: '0.85rem', color: colors.textMuted }}>{stockUnitOf(l)}</span>
-                      <span style={{ width: 92, textAlign: 'right', fontSize: '0.85rem', color: colors.textMuted }} title="Cost per stock unit">{sc != null ? money(sc) : '—'}</span>
-                      <span style={{ width: 84, textAlign: 'right', fontSize: '0.85rem', color: lc?.complete ? colors.textPrimary : colors.textMuted }} title={lc && !lc.complete ? 'No price for this ingredient yet' : undefined}>
-                        {lc?.complete ? money(lc.cost) : '—'}
-                      </span>
-                      <button onClick={() => removeLine(l.key)} style={{ ...ghost, width: 28, padding: '5px 0', textAlign: 'center' }} title="Remove">✕</button>
-                    </div>
-                  );
-                })}
-            {!viewingPast && <button onClick={addLine} style={{ ...ghost, marginTop: 4 }}>+ Add ingredient</button>}
-          </div>
-          {viewTotal && viewLines.some((l) => l.ref_id) && (
-            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'baseline', gap: '1.25rem', padding: '0.6rem 0.75rem', borderTop: `1px solid ${colors.borderLight}`, background: colors.pageBg, borderBottomLeftRadius: 7, borderBottomRightRadius: 7 }}>
-              {viewYieldQty > 0 && (
-                <span style={{ fontSize: '0.8rem', color: colors.textMuted }}>{money(viewTotal.cost / viewYieldQty)} / {viewYieldUnit}</span>
+        <section>
+          <SectionHeading style={sectionTitle}>Ingredients</SectionHeading>
+          {stacked ? ingredientStack : ingredientTable}
+          {(editable || showTotals) && (
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px 16px', padding: stacked ? '12px 0 0' : `12px ${totalEdge}px 0 12px` }}>
+              {editable && <Button size="sm" icon={Plus} onClick={addLine}>Add ingredient</Button>}
+              {viewTotal && showTotals && (
+                <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', justifyContent: 'flex-end', gap: '4px 16px', marginLeft: 'auto', ...tabular }}>
+                  {viewYieldQty > 0 && (
+                    <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{money(viewTotal.cost / viewYieldQty)} / {viewYieldUnit}</span>
+                  )}
+                  <span style={{ fontSize: 'var(--fs-md)', fontWeight: 700, color: 'var(--text)' }}>{viewTotal.complete ? '' : '~'}{money(viewTotal.cost)} total</span>
+                </div>
               )}
-              <span style={{ fontSize: '0.95rem', fontWeight: 700, color: colors.textPrimary }}>{viewTotal.complete ? '' : '~'}{money(viewTotal.cost)} total</span>
             </div>
           )}
-        </div>
-        {viewTotal && !viewTotal.complete && viewLines.some((l) => l.ref_id) && (
-          <div style={{ fontSize: '0.72rem', color: colors.textMuted, marginTop: '0.4rem' }}>~ Some lines have no price yet, so the total is a partial estimate.</div>
-        )}
+          {viewTotal && showTotals && !viewTotal.complete && (
+            <div style={{ marginTop: 6, padding: stacked ? 0 : `0 ${totalEdge}px 0 12px`, textAlign: 'right', fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+              ~ Some lines have no price yet, so the total is a partial estimate.
+            </div>
+          )}
+        </section>
 
         {/* Method — below the ingredients */}
-        <div style={{ marginTop: '1.25rem' }}>
-          <div style={{ ...lbl, marginBottom: '0.35rem' }}>Method / notes</div>
+        <section style={{ marginTop: 24 }}>
+          <SectionHeading style={sectionTitle}>Method / notes</SectionHeading>
           <HtmlField html={draft.notes} resetKey={draft.recipe_id || 'new'} onChange={setNotes} placeholder="Add a method or notes…" />
+        </section>
+      </>
+    );
+
+    if (isPage) {
+      return (
+        <div ref={measureRef}>
+          <PageHeader back={{ label: 'Recipes', onClick: back }} title={title} meta={meta} actions={actions} />
+          {body}
         </div>
+      );
+    }
+    return (
+      <div ref={measureRef} className="n-card" style={{ padding: 16 }}>
+        <div style={{ marginBottom: 16 }}>
+          {!embedded && (
+            <div style={{ marginBottom: 6 }}>
+              <BackLink label="Recipes" onClick={back} />
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <h2 style={{ margin: '0 auto 0 0', fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)' }}>{title}</h2>
+            {actions}
+          </div>
+          {meta && <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{meta}</div>}
+        </div>
+        {body}
       </div>
     );
   }
 
-  return (
-    <div>
-      {/* Header — mirrors OrdersDashboard: title + count + venue + New button */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>Recipes</h2>
-          <span style={{ fontSize: '0.75rem', color: colors.textMuted }}>
-            {loading ? 'Loading…' : `${visibleRecipes.length}${query ? ` of ${recipes.length}` : ''} recipe${recipes.length === 1 ? '' : 's'}`}
-          </span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {notes}
-          {venueSelect}
-          <button onClick={startNew} disabled={!venueId} style={{ ...btn(colors.executive_chef), background: venueId ? colors.executive_chef : '#ccc', cursor: venueId ? 'pointer' : 'default' }}>+ New recipe</button>
-        </div>
-      </div>
-
-      {/* Search box */}
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search recipes…"
-        style={{ ...input, width: '100%', maxWidth: 320, marginBottom: '0.75rem', boxSizing: 'border-box' }}
-      />
-
+  // --- The recipes list ---
+  const countMeta = loading ? 'Loading…' : `${visibleRecipes.length}${query ? ` of ${recipes.length}` : ''} recipe${recipes.length === 1 ? '' : 's'}`;
+  const listActions = (
+    <>
+      {savedOk}
+      {venuePicker}
+      {/* One primary per screen: while an extracted draft is on offer, its
+          "Start a new recipe from this" is the primary. */}
+      <Button variant={extracted ? 'secondary' : 'primary'} icon={Plus} onClick={startNew} disabled={!venueId}>New recipe</Button>
+    </>
+  );
+  const toolbar = (
+    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+      <span style={{ position: 'relative', display: 'inline-flex', flex: '1 1 220px', maxWidth: fit === 'phone' ? undefined : 320 }}>
+        <Icon icon={Search} size={16} tone="muted" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
+        <input
+          className="n-input"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search recipes…"
+          aria-label="Search recipes"
+          style={{ width: '100%', paddingLeft: 34 }}
+        />
+      </span>
       {/* Upload a recipe document → extract a structured draft. Web-only: the
           MCP iframe has no multipart upload. */}
       {!embedded && (
-        <div style={{ margin: '0 0 0.9rem' }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.85rem', border: `1px dashed ${colors.border}`, borderRadius: 8, background: '#fff', cursor: extracting ? 'default' : 'pointer', fontWeight: 600, color: colors.textSecondary, fontSize: '0.8rem', opacity: extracting ? 0.6 : 1 }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <label className="n-btn n-btn--secondary" style={{ cursor: extracting ? 'default' : 'pointer', opacity: extracting ? 0.6 : 1 }}>
+            <Icon icon={extracting ? LoaderCircle : FileUp} size={16} style={extracting ? { animation: 'n-spin 1s linear infinite' } : undefined} />
             {extracting ? 'Reading document…' : 'Extract recipe from document'}
             <input
               type="file"
@@ -930,83 +1114,128 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
               style={{ display: 'none' }}
             />
           </label>
-          <span style={{ marginLeft: '0.6rem', color: colors.textMuted, fontSize: '0.82rem' }}>PDF or image</span>
-        </div>
+          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>PDF or image</span>
+        </span>
       )}
+    </div>
+  );
 
-      {extracted && (
-        <div style={{ margin: '0 0 1rem', padding: '0.9rem 1rem', border: `1px solid ${colors.border}`, borderRadius: 10, background: '#fbf7f4' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '1rem' }}>
-            <strong style={{ color: colors.textPrimary, fontSize: '1.05rem' }}>{extracted.name || 'Untitled recipe'}</strong>
-            <button onClick={() => setExtracted(null)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: '1.1rem', lineHeight: 1 }} aria-label="Dismiss">×</button>
-          </div>
+  const extractedCard = extracted && (
+    <div className="n-card" style={{ padding: 16, marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)', overflowWrap: 'anywhere' }}>{extracted.name || 'Untitled recipe'}</div>
           {(extracted.yield_quantity != null || extracted.yield_unit) && (
-            <div style={{ color: colors.textMuted, fontSize: '0.85rem', marginTop: '0.15rem' }}>
+            <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
               Yields {extracted.yield_quantity ?? ''} {extracted.yield_unit || ''}
             </div>
           )}
-          {!!extracted.ingredients?.length && (
-            <ul style={{ margin: '0.6rem 0 0', paddingLeft: '1.1rem', color: colors.textPrimary }}>
-              {extracted.ingredients.map((ing, i) => (
-                <li key={i} style={{ marginBottom: '0.15rem' }}>
-                  {ing.quantity ?? ''} {ing.unit || ''} {ing.name || ''}
-                </li>
-              ))}
-            </ul>
-          )}
-          {extracted.method && (
-            <p style={{ margin: '0.6rem 0 0', color: colors.textSecondary, fontSize: '0.88rem', whiteSpace: 'pre-wrap' }}>{extracted.method}</p>
-          )}
-          <div style={{ marginTop: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-            <button onClick={() => fromExtracted(extracted)} style={btn(colors.executive_chef)}>Start a new recipe from this</button>
-            <span style={{ color: colors.textMuted, fontSize: '0.78rem', fontStyle: 'italic' }}>
-              You&apos;ll match each ingredient to a Loaded stock item and unit before it saves.
-            </span>
-          </div>
         </div>
+        <IconButton icon={X} label="Dismiss" onClick={() => setExtracted(null)} style={{ margin: '-6px -6px 0 0' }} />
+      </div>
+      {!!extracted.ingredients?.length && (
+        <ul style={{ margin: '10px 0 0', paddingLeft: 18, color: 'var(--text)', ...tabular }}>
+          {extracted.ingredients.map((ing, i) => (
+            <li key={i} style={{ marginBottom: 2 }}>
+              {ing.quantity ?? ''} {ing.unit || ''} {ing.name || ''}
+            </li>
+          ))}
+        </ul>
       )}
+      {extracted.method && (
+        <p style={{ margin: '10px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', whiteSpace: 'pre-wrap' }}>{extracted.method}</p>
+      )}
+      <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <Button variant="primary" onClick={() => fromExtracted(extracted)}>Start a new recipe from this</Button>
+        <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+          You&apos;ll match each ingredient to a Loaded stock item and unit before it saves.
+        </span>
+      </div>
+    </div>
+  );
 
-      {error && !draft && <div style={{ color: colors.error, padding: '0.4rem 0' }}>{error}</div>}
-
-      {loading ? (
-        <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>Loading recipes…</div>
-      ) : visibleRecipes.length === 0 ? (
-        <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted, fontSize: '0.85rem' }}>
-          {recipes.length === 0 ? 'No recipes.' : `No recipes match “${query}”.`}
-        </div>
-      ) : (
-        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 480 }}>
-            <thead>
-              <tr>
-                <th style={thStyle}>Recipe</th>
-                <th style={{ ...thStyle, textAlign: 'right', width: 110 }}>Ingredients</th>
-                <th style={{ ...thStyle, width: 160 }}>Yield</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleRecipes.map((r) => (
-                <tr
-                  key={r.id}
-                  onClick={() => openRecipe(r.id)}
-                  style={{ cursor: 'pointer' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = colors.pageBg; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}
-                >
-                  <td style={{ ...tdStyle, fontWeight: 600 }}>
+  // Phones: one-column rows (name, then count · yield), like the other lists.
+  const phoneRows = (
+    <table className="n-table" style={{ borderTop: '1px solid var(--line)' }}>
+      <tbody>
+        {visibleRecipes.map((r) => (
+          <tr key={r.id} onClick={() => openRecipe(r.id)} style={{ cursor: 'pointer' }}>
+            <td style={{ paddingLeft: 4, paddingRight: 4 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 500, color: 'var(--text)', overflowWrap: 'anywhere' }}>
                     {r.name}
-                    {r.prep && (
-                      <span style={{ marginLeft: '0.5rem', fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: colors.executive_chef, border: `1px solid ${colors.executive_chef}`, borderRadius: 4, padding: '1px 5px', verticalAlign: 'middle' }}>Prep</span>
-                    )}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: 'right', color: r.ingredients ? colors.textPrimary : colors.textMuted }}>{r.ingredients}</td>
-                  <td style={{ ...tdStyle, color: colors.textSecondary }}>{r.yieldText}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    {r.prep && <span style={{ marginLeft: 8 }}><Badge>Prep</Badge></span>}
+                  </div>
+                  <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                    {r.ingredients} ingredient{r.ingredients === 1 ? '' : 's'}{r.yieldText !== '—' ? ` · Yield ${r.yieldText}` : ''}
+                  </div>
+                </div>
+                <Icon icon={ChevronRight} size={16} tone="muted" />
+              </div>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+  const tableRows = (
+    <table className="n-table">
+      <thead>
+        <tr>
+          <th>Recipe</th>
+          <th className="num" style={{ width: 110 }}>Ingredients</th>
+          <th style={{ width: 160 }}>Yield</th>
+        </tr>
+      </thead>
+      <tbody>
+        {visibleRecipes.map((r) => (
+          <tr key={r.id} onClick={() => openRecipe(r.id)} style={{ cursor: 'pointer' }}>
+            <td style={{ fontWeight: 500, color: 'var(--text)' }}>
+              {r.name}
+              {r.prep && <span style={{ marginLeft: 8 }}><Badge>Prep</Badge></span>}
+            </td>
+            <td className="num" style={{ color: r.ingredients ? 'var(--text)' : 'var(--muted)' }}>{r.ingredients}</td>
+            <td style={{ color: 'var(--text-soft)' }}>{r.yieldText}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+  // A failed load reads as the error above, never as "No recipes."
+  const listBody = loading ? (
+    <PageState kind="loading" title="Loading recipes…" />
+  ) : visibleRecipes.length === 0 ? (
+    error && recipes.length === 0 ? null : (
+      <PageState kind="empty" title={recipes.length === 0 ? 'No recipes.' : `No recipes match “${query}”.`} />
+    )
+  ) : fit === 'phone' ? phoneRows : tableRows;
+
+  if (isPage) {
+    return (
+      <div ref={measureRef}>
+        <PageHeader title="Recipes" meta={countMeta} actions={listActions}>
+          {toolbar}
+        </PageHeader>
+        {extractedCard}
+        {errorBlock}
+        {listBody}
+      </div>
+    );
+  }
+  return (
+    <div ref={measureRef} className="n-card" style={{ padding: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)' }}>Recipes</h2>
+          <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{countMeta}</div>
         </div>
-      )}
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>{listActions}</div>
+      </div>
+      <div style={{ marginBottom: 12 }}>{toolbar}</div>
+      {extractedCard}
+      {errorBlock}
+      {listBody}
     </div>
   );
 }

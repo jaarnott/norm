@@ -2,7 +2,12 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../lib/api';
-import { Circle, ExternalLink, Rocket, RotateCcw, X } from 'lucide-react';
+import { ExternalLink, Rocket, RotateCcw, X } from 'lucide-react';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,21 +62,20 @@ function shortSha(sha: string): string {
   return sha.slice(0, 7);
 }
 
-function healthColor(status: string | undefined): string {
-  if (!status) return '#666';
-  if (status === 'success') return '#48bb78';
-  if (status === 'running' || status === 'pending') return '#ecc94b';
-  return '#fc8181';
+// A deploy's status as a badge: done → ok, queued → warn, in progress → info,
+// failed → error; anything unexpected stays neutral.
+function statusTone(status: string): BadgeTone {
+  switch (status) {
+    case 'success': return 'ok';
+    case 'pending': return 'warn';
+    case 'running': return 'info';
+    case 'failed': return 'error';
+    default: return 'neutral';
+  }
 }
 
-function statusBadge(status: string): { bg: string; color: string } {
-  switch (status) {
-    case 'pending': return { bg: 'rgba(236, 201, 75, 0.15)', color: '#ecc94b' };
-    case 'running': return { bg: 'rgba(66, 153, 225, 0.15)', color: '#4299e1' };
-    case 'success': return { bg: 'rgba(72, 187, 120, 0.15)', color: '#48bb78' };
-    case 'failed': return { bg: 'rgba(252, 129, 129, 0.15)', color: '#fc8181' };
-    default: return { bg: 'rgba(160, 174, 192, 0.15)', color: '#a0aec0' };
-  }
+function statusLabel(status: string): string {
+  return status ? status.charAt(0).toUpperCase() + status.slice(1) : status;
 }
 
 
@@ -173,272 +177,200 @@ export default function DeploymentsPanel() {
   );
 
   // --- Styles ---
-  const cardStyle: React.CSSProperties = {
-    flex: 1,
-    padding: '1rem',
-    backgroundColor: '#1a1a2e',
-    border: '1px solid #2a2a4a',
-    borderRadius: 8,
-    minWidth: 0,
-  };
-  const sectionStyle: React.CSSProperties = {
-    marginBottom: '1.25rem',
-    padding: '1rem',
-    backgroundColor: '#0f0f1a',
-    border: '1px solid #2a2a4a',
-    borderRadius: 8,
-  };
-  const headingStyle: React.CSSProperties = {
-    fontSize: '0.82rem',
+  const sectionTitleStyle: React.CSSProperties = {
+    margin: '0 0 12px',
+    fontSize: 'var(--fs-lg)',
     fontWeight: 600,
-    color: '#c4a882',
-    marginBottom: '0.75rem',
-    margin: 0,
+    lineHeight: 1.3,
+    color: 'var(--text)',
   };
+  const overlayStyle: React.CSSProperties = {
+    position: 'fixed',
+    inset: 0,
+    backgroundColor: 'rgba(26, 26, 26, 0.35)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    zIndex: 9999,
+  };
+  const dialogStyle: React.CSSProperties = {
+    backgroundColor: 'var(--bg)',
+    borderRadius: 'var(--radius-lg)',
+    padding: 24,
+    width: '100%',
+    maxWidth: 440,
+    boxShadow: '0 12px 40px rgba(26, 26, 26, 0.18)',
+  };
+  const dialogTitleStyle: React.CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' };
+  const shaStyle: React.CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' };
 
-  if (loading) return <div style={{ padding: '1rem', color: '#888' }}>Loading deployments...</div>;
+  if (loading) return <PageState kind="loading" title="Loading deployments…" />;
 
   return (
-    <div data-testid="deployments-panel">
+    <div data-testid="deployments-panel" style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
       {error && (
-        <div style={{ padding: '0.5rem 0.75rem', backgroundColor: 'rgba(252, 129, 129, 0.1)', border: '1px solid rgba(252, 129, 129, 0.3)', borderRadius: 6, color: '#fc8181', fontSize: '0.8rem', marginBottom: '0.75rem' }}>
-          {error}
-          <button onClick={() => setError(null)} style={{ float: 'right', border: 'none', background: 'none', cursor: 'pointer', color: '#fc8181' }}>&times;</button>
-        </div>
+        <PageState
+          kind="error"
+          title={error}
+          action={<IconButton icon={X} label="Dismiss" iconSize={16} onClick={() => setError(null)} style={{ margin: '-6px -6px -6px 0' }} />}
+        />
       )}
 
       {/* ============ ENVIRONMENT CARDS ============ */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Environments</h3>
-        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+      <section>
+        <h3 style={sectionTitleStyle}>Environments</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
           {['testing', 'staging', 'production'].map(envName => {
             const env = environments.find(e => e.name === envName);
             const deploy = env?.latest_deploy;
             const isProd = envName === 'production';
             return (
-              <div key={envName} style={cardStyle}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '0.5rem' }}>
-                  <Circle
-                    size={10}
-                    fill={healthColor(deploy?.status)}
-                    stroke="none"
-                  />
-                  <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#e2e8f0', textTransform: 'capitalize' }}>
+              <div key={envName} className="n-card" style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: 16, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)', textTransform: 'capitalize' }}>
                     {envName}
                   </span>
+                  {deploy && <Badge tone={statusTone(deploy.status)}>{statusLabel(deploy.status)}</Badge>}
                 </div>
                 {deploy ? (
                   <>
-                    <div style={{ fontSize: '0.78rem', color: '#a0aec0', marginBottom: 2 }}>
-                      <span style={{ fontFamily: 'monospace', color: '#c4a882' }}>{shortSha(deploy.git_sha)}</span>
-                    </div>
-                    <div style={{ fontSize: '0.72rem', color: '#718096', marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ ...shaStyle, color: 'var(--text)' }}>{shortSha(deploy.git_sha)}</div>
+                    <div title={deploy.commit_message} style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {deploy.commit_message}
                     </div>
-                    <div style={{ fontSize: '0.68rem', color: '#4a5568' }}>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
                       {relativeTime(deploy.started_at)}
                     </div>
                   </>
                 ) : (
-                  <div style={{ fontSize: '0.75rem', color: '#4a5568' }}>No deployments yet</div>
+                  <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No deployments yet</div>
                 )}
                 {deploy && (
-                  <div style={{ display: 'flex', gap: 6, marginTop: '0.5rem' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 'auto', paddingTop: 12 }}>
                     {isProd && canPromote && stagingEnv?.latest_deploy && (
-                      <button
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        icon={Rocket}
                         onClick={() => setPromoteTarget({
                           sha: stagingEnv.latest_deploy!.git_sha,
                           imageTag: stagingEnv.latest_deploy!.image_tag,
                           commitMessage: stagingEnv.latest_deploy!.commit_message,
                         })}
-                        style={{
-                          padding: '5px 12px',
-                          fontSize: '0.72rem',
-                          fontWeight: 600,
-                          border: '1px solid #c4a882',
-                          borderRadius: 5,
-                          backgroundColor: 'transparent',
-                          color: '#c4a882',
-                          cursor: 'pointer',
-                          fontFamily: 'inherit',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 4,
-                        }}
                       >
-                        <Rocket size={12} />
                         Promote
-                      </button>
+                      </Button>
                     )}
-                    <button
+                    <Button
+                      size="sm"
+                      icon={RotateCcw}
                       onClick={() => setRollbackTarget({ env: envName, currentImageTag: deploy.image_tag })}
-                      style={{
-                        padding: '5px 12px',
-                        fontSize: '0.72rem',
-                        fontWeight: 600,
-                        border: '1px solid #718096',
-                        borderRadius: 5,
-                        backgroundColor: 'transparent',
-                        color: '#718096',
-                        cursor: 'pointer',
-                        fontFamily: 'inherit',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 4,
-                      }}
                     >
-                      <RotateCcw size={12} />
                       Rollback
-                    </button>
+                    </Button>
                   </div>
                 )}
               </div>
             );
           })}
         </div>
-      </div>
+      </section>
 
       {/* ============ DEPLOY HISTORY ============ */}
-      <div style={sectionStyle}>
-        <h3 style={{ ...headingStyle, marginBottom: '0.75rem' }}>Deploy History</h3>
+      <section>
+        <h3 style={sectionTitleStyle}>Deploy history</h3>
         {deployments.length === 0 ? (
-          <div style={{ fontSize: '0.78rem', color: '#4a5568' }}>No deployments recorded.</div>
+          <div className="n-card">
+            <PageState kind="empty" title="No deployments recorded." />
+          </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', fontSize: '0.75rem', borderCollapse: 'collapse' }}>
+          <div className="n-card" style={{ overflowX: 'auto' }}>
+            <table className="n-table" style={{ minWidth: 720 }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid #2a2a4a', color: '#718096', textAlign: 'left' }}>
-                  <th style={{ padding: '6px 8px', fontWeight: 600 }}>Environment</th>
-                  <th style={{ padding: '6px 8px', fontWeight: 600 }}>Status</th>
-                  <th style={{ padding: '6px 8px', fontWeight: 600 }}>SHA</th>
-                  <th style={{ padding: '6px 8px', fontWeight: 600 }}>Commit Message</th>
-                  <th style={{ padding: '6px 8px', fontWeight: 600 }}>Time</th>
-                  <th style={{ padding: '6px 8px', fontWeight: 600 }}>Logs</th>
+                <tr>
+                  <th>Environment</th>
+                  <th>Status</th>
+                  <th>SHA</th>
+                  <th>Commit message</th>
+                  <th>Time</th>
+                  <th>Logs</th>
                 </tr>
               </thead>
               <tbody>
-                {deployments.map(dep => {
-                  const badge = statusBadge(dep.status);
-                  return (
-                    <tr key={dep.id} style={{ borderBottom: '1px solid #1a1a2e' }}>
-                      <td style={{ padding: '6px 8px', color: '#e2e8f0', textTransform: 'capitalize' }}>{dep.environment}</td>
-                      <td style={{ padding: '6px 8px' }}>
-                        <span style={{
-                          fontSize: '0.65rem',
-                          fontWeight: 600,
-                          padding: '2px 8px',
-                          borderRadius: 3,
-                          backgroundColor: badge.bg,
-                          color: badge.color,
-                        }}>
-                          {dep.status}
-                        </span>
-                      </td>
-                      <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: '#c4a882' }}>{shortSha(dep.git_sha)}</td>
-                      <td style={{ padding: '6px 8px', color: '#a0aec0', maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {dep.commit_message}
-                      </td>
-                      <td style={{ padding: '6px 8px', color: '#4a5568' }}>{relativeTime(dep.started_at)}</td>
-                      <td style={{ padding: '6px 8px' }}>
-                        {dep.logs_url ? (
-                          <a href={dep.logs_url} target="_blank" rel="noreferrer" style={{ color: '#4299e1', display: 'flex', alignItems: 'center', gap: 3 }}>
-                            <ExternalLink size={12} />
-                            Logs
-                          </a>
-                        ) : (
-                          <span style={{ color: '#4a5568' }}>—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {deployments.map(dep => (
+                  <tr key={dep.id}>
+                    <td style={{ color: 'var(--text)', textTransform: 'capitalize', whiteSpace: 'nowrap' }}>{dep.environment}</td>
+                    <td><Badge tone={statusTone(dep.status)}>{statusLabel(dep.status)}</Badge></td>
+                    <td style={{ ...shaStyle, color: 'var(--text-soft)', whiteSpace: 'nowrap' }}>{shortSha(dep.git_sha)}</td>
+                    {/* width 100% + maxWidth 0: the message takes the spare width and truncates. */}
+                    <td title={dep.commit_message} style={{ width: '100%', maxWidth: 0, color: 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {dep.commit_message}
+                    </td>
+                    <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{relativeTime(dep.started_at)}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {dep.logs_url ? (
+                        <a href={dep.logs_url} target="_blank" rel="noreferrer" className="n-btn n-btn--link" style={{ gap: 4, fontSize: 'var(--fs-sm)' }}>
+                          <Icon icon={ExternalLink} size="meta" />
+                          Logs
+                        </a>
+                      ) : (
+                        <span style={{ color: 'var(--muted)' }}>—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
         )}
-      </div>
+      </section>
 
       {/* ============ PROMOTE MODAL ============ */}
       {promoteTarget && (
         <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-          }}
+          style={overlayStyle}
           onClick={() => !promoting && setPromoteTarget(null)}
         >
           <div
-            style={{
-              backgroundColor: '#1a1a2e',
-              border: '1px solid #2a2a4a',
-              borderRadius: 10,
-              padding: '1.5rem',
-              width: '100%',
-              maxWidth: 440,
-            }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="deploy-promote-title"
+            style={dialogStyle}
             onClick={e => e.stopPropagation()}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: '#e2e8f0' }}>
-                Promote to Production
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <h3 id="deploy-promote-title" style={dialogTitleStyle}>
+                Promote to production
               </h3>
-              <button
+              <IconButton
+                icon={X}
+                label="Close"
                 onClick={() => !promoting && setPromoteTarget(null)}
-                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#718096', padding: 2 }}
-              >
-                <X size={16} />
-              </button>
+                style={{ margin: '-6px -8px -6px 0' }}
+              />
             </div>
-            <div style={{ fontSize: '0.8rem', color: '#a0aec0', marginBottom: '0.75rem' }}>
-              Deploy <span style={{ fontFamily: 'monospace', color: '#c4a882', fontWeight: 600 }}>{shortSha(promoteTarget.sha)}</span> to production?
+            <div style={{ fontSize: 'var(--fs-base)', color: 'var(--text-soft)', marginBottom: 12 }}>
+              Deploy <span style={{ ...shaStyle, fontWeight: 600, color: 'var(--text)' }}>{shortSha(promoteTarget.sha)}</span> to production?
             </div>
-            <div style={{ fontSize: '0.75rem', color: '#718096', marginBottom: '1.25rem', padding: '0.5rem 0.75rem', backgroundColor: '#0f0f1a', borderRadius: 6, border: '1px solid #2a2a4a' }}>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginBottom: 20, padding: '8px 12px', backgroundColor: 'var(--surface)', borderRadius: 'var(--radius)', border: '1px solid var(--line)' }}>
               {promoteTarget.commitMessage}
             </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
+              <Button
                 onClick={() => setPromoteTarget(null)}
                 disabled={promoting}
-                style={{
-                  padding: '6px 16px',
-                  fontSize: '0.78rem',
-                  fontWeight: 600,
-                  border: '1px solid #2a2a4a',
-                  borderRadius: 6,
-                  backgroundColor: 'transparent',
-                  color: '#a0aec0',
-                  cursor: promoting ? 'not-allowed' : 'pointer',
-                  fontFamily: 'inherit',
-                }}
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="primary"
+                icon={Rocket}
                 onClick={handlePromote}
                 disabled={promoting}
-                style={{
-                  padding: '6px 16px',
-                  fontSize: '0.78rem',
-                  fontWeight: 600,
-                  border: 'none',
-                  borderRadius: 6,
-                  backgroundColor: '#c4a882',
-                  color: '#0f0f1a',
-                  cursor: promoting ? 'not-allowed' : 'pointer',
-                  fontFamily: 'inherit',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
-                }}
               >
-                <Rocket size={14} />
-                {promoting ? 'Deploying...' : 'Confirm Deploy'}
-              </button>
+                {promoting ? 'Deploying…' : 'Confirm deploy'}
+              </Button>
             </div>
           </div>
         </div>
@@ -446,81 +378,45 @@ export default function DeploymentsPanel() {
       {/* ============ ROLLBACK MODAL ============ */}
       {rollbackTarget && (
         <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-          }}
+          style={overlayStyle}
           onClick={() => !rollingBack && setRollbackTarget(null)}
         >
           <div
-            style={{
-              backgroundColor: '#1a1a2e',
-              border: '1px solid #2a2a4a',
-              borderRadius: 10,
-              padding: '1.5rem',
-              width: '100%',
-              maxWidth: 440,
-            }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="deploy-rollback-title"
+            style={dialogStyle}
             onClick={e => e.stopPropagation()}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: '#e2e8f0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <h3 id="deploy-rollback-title" style={dialogTitleStyle}>
                 Rollback {rollbackTarget.env}
               </h3>
-              <button
+              <IconButton
+                icon={X}
+                label="Close"
                 onClick={() => !rollingBack && setRollbackTarget(null)}
-                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#718096', padding: 2 }}
-              >
-                <X size={16} />
-              </button>
+                style={{ margin: '-6px -8px -6px 0' }}
+              />
             </div>
-            <div style={{ fontSize: '0.8rem', color: '#a0aec0', marginBottom: '1.25rem' }}>
-              This will redeploy the <strong>previous successful version</strong> of <span style={{ color: '#c4a882', textTransform: 'capitalize' }}>{rollbackTarget.env}</span>.
+            <div style={{ fontSize: 'var(--fs-base)', color: 'var(--text-soft)', marginBottom: 20 }}>
+              This will redeploy the <strong style={{ fontWeight: 600, color: 'var(--text)' }}>previous successful version</strong> of <span style={{ fontWeight: 600, color: 'var(--text)', textTransform: 'capitalize' }}>{rollbackTarget.env}</span>.
             </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
+              <Button
                 onClick={() => setRollbackTarget(null)}
                 disabled={rollingBack}
-                style={{
-                  padding: '6px 16px',
-                  fontSize: '0.78rem',
-                  fontWeight: 600,
-                  border: '1px solid #2a2a4a',
-                  borderRadius: 6,
-                  backgroundColor: 'transparent',
-                  color: '#a0aec0',
-                  cursor: rollingBack ? 'not-allowed' : 'pointer',
-                  fontFamily: 'inherit',
-                }}
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="danger"
+                icon={RotateCcw}
                 onClick={handleRollback}
                 disabled={rollingBack}
-                style={{
-                  padding: '6px 16px',
-                  fontSize: '0.78rem',
-                  fontWeight: 600,
-                  border: 'none',
-                  borderRadius: 6,
-                  backgroundColor: '#fc8181',
-                  color: '#0f0f1a',
-                  cursor: rollingBack ? 'not-allowed' : 'pointer',
-                  fontFamily: 'inherit',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
-                }}
               >
-                <RotateCcw size={14} />
-                {rollingBack ? 'Rolling back...' : 'Confirm Rollback'}
-              </button>
+                {rollingBack ? 'Rolling back…' : 'Confirm rollback'}
+              </Button>
             </div>
           </div>
         </div>

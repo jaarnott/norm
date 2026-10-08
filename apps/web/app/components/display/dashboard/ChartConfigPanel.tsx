@@ -1,33 +1,47 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Play, Loader2, ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
+import {
+  X, Play, LoaderCircle, ChevronDown, ChevronRight, ChevronUp, Plus, Trash2, Check, TriangleAlert,
+  CircleCheck, CircleX, Table, ChartColumn, ChartColumnStacked, ChartLine, ChartPie, ChartScatter,
+  Hash, Type, LayoutGrid, TextAlignStart, TextAlignCenter, TextAlignEnd,
+  type LucideIcon,
+} from 'lucide-react';
 import { apiFetch } from '../../../lib/api';
+import { DEFAULT_COLORS, STACK_COLORS } from '../Chart';
 import type { SavedReportChart, ChartType } from '../../../types';
+import Badge from '../../ui/Badge';
+import Button from '../../ui/Button';
+import Icon from '../../ui/Icon';
+import IconButton from '../../ui/IconButton';
+import VenueSelect from '../../ui/VenueSelect';
 
 // --- Constants -----------------------------------------------------------
 
-const CHART_TYPES: { type: ChartType; label: string; icon: string }[] = [
-  { type: 'table', label: 'Table', icon: '\u25A4' },
-  { type: 'bar', label: 'Bar', icon: '\u25AE' },
-  { type: 'stacked_bar', label: 'Stacked', icon: '\u25A6' },
-  { type: 'line', label: 'Line', icon: '\u27CB' },
-  { type: 'pie', label: 'Pie', icon: '\u25D4' },
-  { type: 'scatter', label: 'Scatter', icon: '\u2058' },
-  { type: 'kpi', label: 'KPI', icon: '#' },
-  { type: 'text', label: 'Text', icon: 'T' },
-  { type: 'component' as ChartType, label: 'Component', icon: '\u25A3' },
+const CHART_TYPES: { type: ChartType; label: string; icon: LucideIcon }[] = [
+  { type: 'table', label: 'Table', icon: Table },
+  { type: 'bar', label: 'Bar', icon: ChartColumn },
+  { type: 'stacked_bar', label: 'Stacked', icon: ChartColumnStacked },
+  { type: 'line', label: 'Line', icon: ChartLine },
+  { type: 'pie', label: 'Pie', icon: ChartPie },
+  { type: 'scatter', label: 'Scatter', icon: ChartScatter },
+  { type: 'kpi', label: 'KPI', icon: Hash },
+  { type: 'text', label: 'Text', icon: Type },
+  { type: 'component' as ChartType, label: 'Component', icon: LayoutGrid },
 ];
 
-const DEFAULT_COLORS = ['#d4c4ae', '#a8cfc0', '#b8c8dc', '#e0c8a8', '#c8b8d4', '#a8d0b8', '#d8c0b8', '#b8d0d4'];
+// Chart palette — literal hex on purpose: these are the colours the chart draws with.
+// New series take the chart's own palette (Chart.tsx), so a chart built here
+// saves the same validated colours a chart drawn without config would use.
 
 const EMBEDDABLE_COMPONENTS = [
-  { key: 'hiring_board', label: 'Hiring Pipeline', needsProps: ['connector_name'] },
+  { key: 'hiring_board', label: 'Hiring pipeline', needsProps: ['connector_name'] },
   { key: 'orders_dashboard', label: 'Orders', needsProps: [] },
   { key: 'roster_table', label: 'Roster', needsProps: [] },
   { key: 'automated_task_board', label: 'Tasks', needsProps: ['agent_slug'] },
-  { key: 'generic_table', label: 'Data Table', needsProps: [] },
+  { key: 'generic_table', label: 'Data table', needsProps: [] },
   { key: 'saved_reports_board', label: 'Reports', needsProps: [] },
 ];
 
@@ -221,49 +235,53 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  const visibleParams = Object.keys(draft.script.params).filter(k => !k.startsWith('_') && !/^(venue|venue_name|venue_id)$/.test(k));
+
   return createPortal(
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 9999, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'flex-end' }}>
-      <div onClick={e => e.stopPropagation()} style={{
-        width: '55vw', maxWidth: 700, minWidth: 360, height: '100vh',
-        backgroundColor: '#fff', boxShadow: '-4px 0 20px rgba(0,0,0,0.1)',
-        display: 'flex', flexDirection: 'column', animation: 'slideIn 0.2s ease-out',
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 9999, backgroundColor: 'rgba(26, 26, 26, 0.35)', display: 'flex', justifyContent: 'flex-end' }}>
+      <div role="dialog" aria-modal="true" aria-label="Chart settings" onClick={e => e.stopPropagation()} style={{
+        width: 'clamp(360px, 55vw, 700px)', maxWidth: '100vw', height: '100%',
+        backgroundColor: 'var(--bg)', borderLeft: '1px solid var(--line)', boxShadow: '-8px 0 32px rgba(26, 26, 26, 0.12)',
+        display: 'flex', flexDirection: 'column', animation: 'slideIn 0.2s ease-out', color: 'var(--text)', lineHeight: 1.45,
       }}>
         {/* ---- Header ---- */}
-        <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #f0ebe5', flexShrink: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <div style={{ padding: '14px 16px 12px', borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
             <input
+              className="n-keep-size"
+              aria-label="Chart title"
+              placeholder="Untitled chart"
               value={draft.title}
               onChange={e => setDraft(d => ({ ...d, title: e.target.value }))}
-              style={{ fontSize: '0.9rem', fontWeight: 600, color: '#333', border: 'none', borderBottom: '1px solid transparent', padding: '2px 0', fontFamily: 'inherit', flex: 1, marginRight: 8 }}
-              onFocus={e => (e.currentTarget.style.borderBottomColor = '#c4a882')}
+              style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, color: 'var(--text)', background: 'transparent', border: 'none', borderBottom: '1px solid transparent', borderRadius: 0, padding: '4px 0', fontFamily: 'inherit' }}
+              onFocus={e => (e.currentTarget.style.borderBottomColor = 'var(--brand-soft)')}
               onBlur={e => (e.currentTarget.style.borderBottomColor = 'transparent')}
             />
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={handleSave} disabled={!dirty || saving} style={{
-                padding: '4px 14px', fontSize: '0.72rem', fontWeight: 600, border: 'none', borderRadius: 6,
-                backgroundColor: dirty ? '#c4a882' : '#e8e3dd', color: dirty ? '#fff' : '#bbb',
-                cursor: dirty && !saving ? 'pointer' : 'default', fontFamily: 'inherit',
-              }}>{saving ? 'Saving...' : 'Save'}</button>
-              <button onClick={onClose} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, border: 'none', borderRadius: 6, backgroundColor: '#f5f5f5', cursor: 'pointer' }}>
-                <X size={14} strokeWidth={2} />
-              </button>
-            </div>
+            <Button variant="secondary" size="sm" onClick={handleSave} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save'}</Button>
+            <IconButton icon={X} label="Close" onClick={onClose} />
           </div>
           {/* Chart type selector */}
-          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-            {CHART_TYPES.map(ct => (
-              <button key={ct.type} onClick={() => setDraft(d => ({ ...d, chart_type: ct.type }))} style={{
-                padding: '3px 8px', fontSize: '0.65rem', fontWeight: draft.chart_type === ct.type ? 700 : 500,
-                border: `1px solid ${draft.chart_type === ct.type ? '#c4a882' : '#eee'}`,
-                borderRadius: 4, backgroundColor: draft.chart_type === ct.type ? '#faf6f0' : '#fff',
-                color: draft.chart_type === ct.type ? '#c4a882' : '#999', cursor: 'pointer', fontFamily: 'inherit',
-              }}>{ct.icon} {ct.label}</button>
-            ))}
+          <div role="group" aria-label="Chart type" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {CHART_TYPES.map(ct => {
+              const on = draft.chart_type === ct.type;
+              return (
+                <button key={ct.type} type="button" aria-pressed={on} onClick={() => setDraft(d => ({ ...d, chart_type: ct.type }))} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, height: 30, padding: '0 10px',
+                  fontSize: 'var(--fs-sm)', fontWeight: on ? 600 : 500, fontFamily: 'inherit', whiteSpace: 'nowrap',
+                  border: `1px solid ${on ? 'var(--brand-soft)' : 'var(--line)'}`, borderRadius: 999,
+                  backgroundColor: on ? 'var(--accent-soft)' : 'var(--bg)',
+                  color: on ? 'var(--accent)' : 'var(--text-soft)', cursor: 'pointer',
+                }}>
+                  <Icon icon={ct.icon} size="dense" />
+                  {ct.label}
+                </button>
+              );
+            })}
           </div>
         </div>
 
         {/* ---- Scrollable Content ---- */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '1rem' }}>
+        <div className="scroll-quiet" style={{ flex: 1, minHeight: 0, overflow: 'auto', overscrollBehavior: 'contain', padding: 16 }}>
 
           {/* ==== Component Settings (when chart_type is component) ==== */}
           {draft.chart_type === ('component' as ChartType) && (
@@ -274,10 +292,10 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
           )}
 
           {/* ==== Section 1: Data Source ==== */}
-          {draft.chart_type !== ('component' as ChartType) && <Section title="Data Source">
+          {draft.chart_type !== ('component' as ChartType) && <Section title="Data source">
             <FieldGroup label="Connector">
-              <select value={draft.script.connector} onChange={e => updateScript({ connector: e.target.value })} style={selectStyle}>
-                <option value="">Select connector...</option>
+              <select className="n-select" value={draft.script.connector} onChange={e => updateScript({ connector: e.target.value })} style={fieldStyle}>
+                <option value="">Select connector…</option>
                 {connectorList.map(c => <option key={c} value={c}>{c}</option>)}
                 {draft.script.connector && !connectorList.includes(draft.script.connector) && (
                   <option value={draft.script.connector}>{draft.script.connector}</option>
@@ -287,14 +305,17 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
 
             {/* Endpoint picker */}
             {availableTools.length > 0 && (
-              <div style={{ marginTop: 8, marginBottom: 8 }}>
-                <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', marginBottom: 4 }}>Endpoint</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 180, overflow: 'auto' }}>
+              <div style={{ marginTop: 12 }}>
+                <div className="n-label">Endpoint</div>
+                <div className="scroll-quiet" style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 196, padding: 4, border: '1px solid var(--line)', borderRadius: 'var(--radius)', backgroundColor: 'var(--bg)' }}>
                   {availableTools.map(tool => {
                     const selected = draft.script.action === tool.action;
                     return (
                       <button
                         key={tool.action}
+                        type="button"
+                        aria-pressed={selected}
+                        className="n-option"
                         onClick={() => {
                           // Set action and pre-populate params from field_descriptions
                           const venueKeys = new Set(['venue', 'venue_name', 'venue_id']);
@@ -310,22 +331,16 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
                           updateScript({ action: tool.action, params });
                         }}
                         style={{
-                          display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px',
-                          border: `1px solid ${selected ? '#c4a882' : '#f0ebe5'}`,
-                          borderRadius: 6, backgroundColor: selected ? '#faf6f0' : '#fff',
-                          cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
-                          transition: 'border-color 0.1s',
+                          display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, borderRadius: 'var(--radius-sm)',
+                          ...(selected ? { backgroundColor: 'var(--selected)' } : {}),
                         }}
                       >
-                        <span style={{
-                          padding: '1px 5px', borderRadius: 3, fontSize: '0.58rem', fontWeight: 700, flexShrink: 0,
-                          backgroundColor: tool.method === 'GET' ? '#e6f4ea' : '#fff3e0',
-                          color: tool.method === 'GET' ? '#1b5e20' : '#e65100',
-                        }}>{tool.method}</span>
-                        <span style={{ fontSize: '0.68rem', color: '#555', fontFamily: 'monospace', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <Badge tone={tool.method === 'GET' ? 'ok' : 'warn'}>{tool.method}</Badge>
+                        <span style={{ flex: 1, minWidth: 0, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {tool.path || tool.action}
                         </span>
-                        <span style={{ fontSize: '0.6rem', color: '#bbb', flexShrink: 0 }}>{tool.action}</span>
+                        <span style={{ flexShrink: 1, minWidth: 0, maxWidth: '45%', fontSize: 'var(--fs-xs)', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tool.action}</span>
+                        {selected && <Icon icon={Check} size="dense" tone="accent" />}
                       </button>
                     );
                   })}
@@ -335,119 +350,127 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
 
             {/* Fallback: manual action input when no tools loaded */}
             {availableTools.length === 0 && (
-              <FieldGroup label="Action">
-                <input value={draft.script.action} onChange={e => updateScript({ action: e.target.value })} style={inputStyle} placeholder="e.g. get_pos_sales" />
-              </FieldGroup>
+              <div style={{ marginTop: 12 }}>
+                <FieldGroup label="Action">
+                  <input className="n-input" value={draft.script.action} onChange={e => updateScript({ action: e.target.value })} style={fieldStyle} placeholder="e.g. get_pos_sales" />
+                </FieldGroup>
+              </div>
             )}
 
             {/* Params */}
-            {Object.keys(draft.script.params).filter(k => !k.startsWith('_') && !/^(venue|venue_name|venue_id)$/.test(k)).length > 0 && (
-              <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', marginBottom: 4 }}>Parameters</div>
-                {Object.entries(draft.script.params).filter(([k]) => !k.startsWith('_')).map(([key, val]) => {
-                  const isDateField = /date|time|start|end|from|to|since|until|period/i.test(key);
-                  const strVal = String(val ?? '');
-                  return (
-                    <div key={key} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
-                      <span style={{ fontSize: '0.68rem', color: '#888', minWidth: 100, fontFamily: 'monospace' }}>{key}</span>
-                      {isDateField ? (
-                        <div style={{ display: 'flex', gap: 4, flex: 1 }}>
-                          <select
-                            value={DATE_PRESETS.some(p => p.value === strVal) ? strVal : '__custom__'}
-                            onChange={e => {
-                              if (e.target.value !== '__custom__') {
-                                updateScript({ params: { ...draft.script.params, [key]: e.target.value } });
-                              }
-                            }}
-                            style={{ ...selectStyle, flex: 'none', width: 'auto', minWidth: 160 }}
-                          >
-                            {DATE_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-                            {!DATE_PRESETS.some(p => p.value === strVal) && (
-                              <option value="__custom__">Custom</option>
-                            )}
-                          </select>
+            {visibleParams.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div className="n-label">Parameters</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {Object.entries(draft.script.params).filter(([k]) => !k.startsWith('_')).map(([key, val]) => {
+                    const isDateField = /date|time|start|end|from|to|since|until|period/i.test(key);
+                    const strVal = String(val ?? '');
+                    return (
+                      <div key={key} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span title={key} style={{ flex: '0 0 128px', minWidth: 0, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{key}</span>
+                        {isDateField ? (
+                          <div style={{ display: 'flex', gap: 6, flex: '1 1 260px', minWidth: 0, flexWrap: 'wrap' }}>
+                            <select
+                              className="n-select"
+                              aria-label={`${key} preset`}
+                              value={DATE_PRESETS.some(p => p.value === strVal) ? strVal : '__custom__'}
+                              onChange={e => {
+                                if (e.target.value !== '__custom__') {
+                                  updateScript({ params: { ...draft.script.params, [key]: e.target.value } });
+                                }
+                              }}
+                              style={{ flex: '0 0 auto', maxWidth: '100%' }}
+                            >
+                              {DATE_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                              {!DATE_PRESETS.some(p => p.value === strVal) && (
+                                <option value="__custom__">Custom</option>
+                              )}
+                            </select>
+                            <input
+                              className="n-input"
+                              aria-label={key}
+                              value={strVal}
+                              onChange={e => updateScript({ params: { ...draft.script.params, [key]: e.target.value } })}
+                              style={{ flex: '1 1 120px', minWidth: 0, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}
+                              placeholder="Or type a value"
+                            />
+                          </div>
+                        ) : (
                           <input
+                            className="n-input"
+                            aria-label={key}
                             value={strVal}
                             onChange={e => updateScript({ params: { ...draft.script.params, [key]: e.target.value } })}
-                            style={{ ...inputStyle, flex: 1, fontSize: '0.65rem', color: '#999' }}
-                            placeholder="or enter value..."
+                            style={{ flex: '1 1 260px', minWidth: 0 }}
                           />
-                        </div>
-                      ) : (
-                        <input
-                          value={strVal}
-                          onChange={e => updateScript({ params: { ...draft.script.params, [key]: e.target.value } })}
-                          style={{ ...inputStyle, flex: 1 }}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
             {/* Round to 30m checkbox */}
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: '0.7rem', color: '#888', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', cursor: 'pointer' }}>
               <input
                 type="checkbox"
                 checked={!!draft.script.params._round_30}
                 onChange={e => updateScript({ params: { ...draft.script.params, _round_30: e.target.checked || undefined } })}
+                style={checkboxStyle}
               />
-              Round times to nearest 30 minutes
+              Round times to the nearest 30 minutes
             </label>
           </Section>}
 
           {/* ==== Section 2: Test ==== */}
           {draft.chart_type !== ('component' as ChartType) && <Section title="Test">
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
               {venues.length > 0 && (
-                <select value={selectedVenue} onChange={e => setSelectedVenue(e.target.value)} style={selectStyle}>
-                  <option value="">All venues</option>
-                  {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
+                <VenueSelect
+                  venues={venues}
+                  value={selectedVenue || 'all'}
+                  onChange={v => setSelectedVenue(v === 'all' ? '' : v)}
+                  allowAll
+                  label="Venue to test"
+                />
               )}
-              <button onClick={runTest} disabled={loading} style={{
-                display: 'flex', alignItems: 'center', gap: 4, padding: '4px 12px', fontSize: '0.75rem', fontWeight: 600,
-                border: 'none', borderRadius: 6, backgroundColor: '#c4a882', color: '#fff',
-                cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-              }}>
-                {loading ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={14} />}
-                {loading ? 'Testing...' : 'Run Test'}
-              </button>
+              <Button variant="secondary" icon={loading ? undefined : Play} onClick={runTest} disabled={loading}>
+                {loading && <Icon icon={LoaderCircle} size={16} style={{ animation: 'n-spin 1s linear infinite' }} />}
+                {loading ? 'Testing…' : 'Run test'}
+              </Button>
             </div>
 
             {testResult && (
               <>
                 {/* Status summary */}
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: '0.75rem', marginBottom: 8 }}>
-                  <Badge ok={testResult.success} label={testResult.success ? 'Success' : 'Failed'} />
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginBottom: 10, fontVariantNumeric: 'tabular-nums' }}>
+                  <Badge tone={testResult.success ? 'ok' : 'error'}>{testResult.success ? 'Success' : 'Failed'}</Badge>
                   {testResult.venues_queried !== undefined && testResult.venues_queried > 1 && (
-                    <span style={{ color: '#666' }}>{testResult.venues_queried} venue{testResult.venues_queried !== 1 ? 's' : ''}</span>
+                    <span>{testResult.venues_queried} venue{testResult.venues_queried !== 1 ? 's' : ''}</span>
                   )}
-                  {testResult.row_count !== undefined && <span style={{ color: '#666' }}>{testResult.row_count} row{testResult.row_count !== 1 ? 's' : ''} total</span>}
+                  {testResult.row_count !== undefined && <span>{testResult.row_count} row{testResult.row_count !== 1 ? 's' : ''} total</span>}
                 </div>
 
                 {/* Single error (single venue) */}
                 {testResult.error && (
-                  <div style={{ padding: '6px 10px', backgroundColor: '#fff5f5', border: '1px solid #fed7d7', borderRadius: 6, fontSize: '0.72rem', color: '#c53030', marginBottom: 8 }}>
-                    {testResult.error}
+                  <div role="alert" style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 12px', marginBottom: 10, borderRadius: 'var(--radius)', backgroundColor: 'var(--error-bg)', color: 'var(--error)', fontSize: 'var(--fs-sm)', overflowWrap: 'anywhere' }}>
+                    <Icon icon={TriangleAlert} size="dense" style={{ marginTop: 2 }} />
+                    <span>{testResult.error}</span>
                   </div>
                 )}
 
                 {/* Per-venue results */}
                 {testResult.venue_results && testResult.venue_results.length > 1 && (
-                  <div style={{ marginBottom: 8 }}>
+                  <div style={{ marginBottom: 10, border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
                     {testResult.venue_results.map((vr, i) => (
                       <div key={i} style={{
-                        display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0',
-                        borderBottom: i < testResult.venue_results!.length - 1 ? '1px solid #f8f8f5' : 'none',
-                        fontSize: '0.72rem',
+                        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+                        borderTop: i > 0 ? '1px solid var(--line-soft)' : 'none',
+                        fontSize: 'var(--fs-sm)',
                       }}>
-                        <span style={{
-                          width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-                          backgroundColor: vr.success ? '#4f8a5e' : '#dc3545',
-                        }} />
-                        <span style={{ flex: 1, color: '#555', fontWeight: 500 }}>{vr.venue_name || 'Unknown'}</span>
-                        <span style={{ color: '#999', fontSize: '0.65rem' }}>
+                        <Icon icon={vr.success ? CircleCheck : CircleX} size="dense" label={vr.success ? 'Succeeded' : 'Failed'} style={{ color: vr.success ? 'var(--ok)' : 'var(--error)' }} />
+                        <span style={{ flex: 1, minWidth: 0, color: 'var(--text)', fontWeight: 500 }}>{vr.venue_name || 'Unknown'}</span>
+                        <span style={{ minWidth: 0, textAlign: 'right', fontSize: 'var(--fs-xs)', color: vr.success ? 'var(--muted)' : 'var(--error)', fontVariantNumeric: 'tabular-nums' }}>
                           {vr.success ? `${vr.row_count} row${vr.row_count !== 1 ? 's' : ''}` : vr.error?.slice(0, 60) || 'Failed'}
                         </span>
                       </div>
@@ -457,23 +480,17 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
 
                 {/* Rendered request */}
                 {testResult.rendered_request && (
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
-                      <span style={{
-                        padding: '1px 6px', borderRadius: 3, fontSize: '0.65rem', fontWeight: 700,
-                        backgroundColor: testResult.rendered_request.method === 'GET' ? '#e6f4ea' : '#fff3e0',
-                        color: testResult.rendered_request.method === 'GET' ? '#1b5e20' : '#e65100',
-                      }}>{testResult.rendered_request.method}</span>
-                      <span style={{ fontSize: '0.68rem', color: '#333', wordBreak: 'break-all' }}>{testResult.rendered_request.url}</span>
-                    </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 10 }}>
+                    <Badge tone={testResult.rendered_request.method === 'GET' ? 'ok' : 'warn'}>{testResult.rendered_request.method}</Badge>
+                    <span style={{ minWidth: 0, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--text)', wordBreak: 'break-all', lineHeight: 1.5 }}>{testResult.rendered_request.url}</span>
                   </div>
                 )}
 
                 {/* Execution logs (consolidators) */}
                 {testResult.logs && testResult.logs.length > 0 && (
-                  <div style={{ marginBottom: 8 }}>
+                  <div style={{ marginBottom: 10, padding: '8px 10px', borderRadius: 'var(--radius)', backgroundColor: 'var(--surface)', border: '1px solid var(--line-soft)' }}>
                     {testResult.logs.map((log, i) => (
-                      <div key={i} style={{ fontSize: '0.65rem', color: '#888', fontFamily: 'monospace', padding: '1px 0' }}>
+                      <div key={i} style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-soft)', fontFamily: 'var(--font-mono)', padding: '1px 0', overflowWrap: 'anywhere' }}>
                         {log}
                       </div>
                     ))}
@@ -483,7 +500,7 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
                 {/* Response preview */}
                 {testResult.response_preview && (
                   <details style={{ marginBottom: 4 }}>
-                    <summary style={{ fontSize: '0.65rem', fontWeight: 600, color: '#999', cursor: 'pointer' }}>Response Preview ({testResult.row_count} row{testResult.row_count !== 1 ? 's' : ''})</summary>
+                    <summary style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)', cursor: 'pointer' }}>Response preview ({testResult.row_count} row{testResult.row_count !== 1 ? 's' : ''})</summary>
                     <CodeBlock>{JSON.stringify(testResult.response_preview, null, 2)}</CodeBlock>
                   </details>
                 )}
@@ -492,7 +509,7 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
           </Section>}
 
           {/* ==== Section 3: Chart Settings ==== */}
-          {draft.chart_type !== ('component' as ChartType) && <Section title="Chart Settings">
+          {draft.chart_type !== ('component' as ChartType) && <Section title="Chart settings">
             {draft.chart_type === 'kpi' && (
               <KpiSettings spec={draft.chart_spec} numericFields={numericFields} responseFields={responseFields} onChange={updateSpec} />
             )}
@@ -510,40 +527,41 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
             )}
             {draft.chart_type === 'text' && (
               <div>
-                <FieldGroup label="Text Content">
-                  <textarea value={String(draft.chart_spec.text_content || '')} onChange={e => updateSpec({ text_content: e.target.value })}
-                    style={{ ...inputStyle, minHeight: 80, resize: 'vertical' }} />
+                <FieldGroup label="Text content">
+                  <textarea className="n-input" value={String(draft.chart_spec.text_content || '')} onChange={e => updateSpec({ text_content: e.target.value })}
+                    style={{ ...fieldStyle, minHeight: 96 }} />
                 </FieldGroup>
               </div>
             )}
           </Section>}
 
           {/* ==== Section 4: Advanced ==== */}
-          <div style={{ marginBottom: '1rem' }}>
-            <button onClick={() => setAdvancedOpen(!advancedOpen)} style={{
-              display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.7rem', fontWeight: 600,
-              color: '#888', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit',
-              textTransform: 'uppercase', letterSpacing: '0.04em', padding: 0,
+          <div style={{ marginBottom: 16 }}>
+            <button type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen(!advancedOpen)} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 0', border: 'none', background: 'none',
+              cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)',
             }}>
-              {advancedOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              <Icon icon={advancedOpen ? ChevronDown : ChevronRight} size="dense" tone="muted" />
               Advanced
             </button>
             {advancedOpen && (
-              <div style={{ marginTop: 8 }}>
-                <FieldGroup label="Chart Spec (JSON)">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
+                <FieldGroup label="Chart spec (JSON)">
                   <textarea
+                    className="n-input"
                     value={JSON.stringify(draft.chart_spec, null, 2)}
                     onChange={e => { try { setDraft(d => ({ ...d, chart_spec: JSON.parse(e.target.value) })); } catch { /* invalid json */ } }}
                     spellCheck={false}
-                    style={{ width: '100%', minHeight: 120, padding: '0.5rem', fontSize: '0.68rem', fontFamily: 'monospace', border: '1px solid #e2ddd7', borderRadius: 6, backgroundColor: '#fafafa', resize: 'vertical' }}
+                    style={{ ...fieldStyle, ...jsonFieldStyle, minHeight: 120 }}
                   />
                 </FieldGroup>
                 <FieldGroup label="Script (JSON)">
                   <textarea
+                    className="n-input"
                     value={JSON.stringify(draft.script, null, 2)}
                     onChange={e => { try { const s = JSON.parse(e.target.value); setDraft(d => ({ ...d, script: { connector: s.connector || '', action: s.action || '', params: s.params || {} } })); } catch { /* invalid json */ } }}
                     spellCheck={false}
-                    style={{ width: '100%', minHeight: 100, padding: '0.5rem', fontSize: '0.68rem', fontFamily: 'monospace', border: '1px solid #e2ddd7', borderRadius: 6, backgroundColor: '#fafafa', resize: 'vertical' }}
+                    style={{ ...fieldStyle, ...jsonFieldStyle, minHeight: 100 }}
                   />
                 </FieldGroup>
               </div>
@@ -552,19 +570,17 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
         </div>
 
         {/* ---- Footer ---- */}
-        <div style={{ padding: '0.6rem 1rem', borderTop: '1px solid #f0ebe5', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-          {dirty ? <span style={{ fontSize: '0.65rem', color: '#c4a882', fontWeight: 500 }}>Unsaved changes</span> : <span />}
-          <button onClick={handleSave} disabled={!dirty || saving} style={{
-            padding: '6px 20px', fontSize: '0.75rem', fontWeight: 600, border: 'none', borderRadius: 6,
-            backgroundColor: dirty ? '#c4a882' : '#e8e3dd', color: dirty ? '#fff' : '#bbb',
-            cursor: dirty && !saving ? 'pointer' : 'default', fontFamily: 'inherit',
-          }}>{saving ? 'Saving...' : 'Save Changes'}</button>
+        <div style={{
+          padding: '12px 16px', paddingBottom: 'max(12px, env(safe-area-inset-bottom, 0px))',
+          borderTop: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexShrink: 0,
+        }}>
+          {dirty ? <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--warn)', fontWeight: 500 }}>Unsaved changes</span> : <span />}
+          <Button variant="primary" onClick={handleSave} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save changes'}</Button>
         </div>
       </div>
 
       <style>{`
         @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       `}</style>
     </div>,
     document.body,
@@ -578,39 +594,39 @@ function KpiSettings({ spec, numericFields, responseFields, onChange }: {
   onChange: (patch: Record<string, unknown>) => void;
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <FieldGroup label="Value Field *">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <FieldGroup label="Value field *">
         <FieldSelect value={String(spec.value_key || '')} options={numericFields} allFields={responseFields} onChange={v => onChange({ value_key: v })} />
       </FieldGroup>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={rowStyle}>
         <FieldGroup label="Format" flex={1}>
-          <select value={String(spec.format || 'number')} onChange={e => onChange({ format: e.target.value })} style={selectStyle}>
+          <select className="n-select" value={String(spec.format || 'number')} onChange={e => onChange({ format: e.target.value })} style={fieldStyle}>
             <option value="number">Number</option>
             <option value="currency">Currency</option>
             <option value="percent">Percent</option>
           </select>
         </FieldGroup>
         <FieldGroup label="Prefix" flex={1}>
-          <input value={String(spec.prefix || '')} onChange={e => onChange({ prefix: e.target.value })} style={inputStyle} placeholder="e.g. $" />
+          <input className="n-input" value={String(spec.prefix || '')} onChange={e => onChange({ prefix: e.target.value })} style={fieldStyle} placeholder="e.g. $" />
         </FieldGroup>
         <FieldGroup label="Suffix" flex={1}>
-          <input value={String(spec.suffix || '')} onChange={e => onChange({ suffix: e.target.value })} style={inputStyle} placeholder="e.g. %" />
+          <input className="n-input" value={String(spec.suffix || '')} onChange={e => onChange({ suffix: e.target.value })} style={fieldStyle} placeholder="e.g. %" />
         </FieldGroup>
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <FieldGroup label="Comparison Field" flex={1}>
+      <div style={rowStyle}>
+        <FieldGroup label="Comparison field" flex={1}>
           <FieldSelect value={String(spec.comparison_key || spec.delta_key || '')} options={numericFields} allFields={responseFields}
             onChange={v => onChange({ comparison_key: v, delta_key: undefined })} allowEmpty emptyLabel="None" />
         </FieldGroup>
-        <FieldGroup label="Comparison Label" flex={1}>
-          <input value={String(spec.comparison_label || spec.delta_label || '')} onChange={e => onChange({ comparison_label: e.target.value, delta_label: undefined })} style={inputStyle} placeholder="e.g. vs yesterday" />
+        <FieldGroup label="Comparison label" flex={1}>
+          <input className="n-input" value={String(spec.comparison_label || spec.delta_label || '')} onChange={e => onChange({ comparison_label: e.target.value, delta_label: undefined })} style={fieldStyle} placeholder="e.g. vs yesterday" />
         </FieldGroup>
       </div>
     </div>
   );
 }
 
-const STACK_COLORS = ['#4f8a5e', '#5b8abd', '#c4a882', '#b07d4f', '#8b6caf', '#c75a5a', '#3d9e8f', '#d4a03c', '#7a8b5e', '#a05195'];
+// Series palette — literal hex on purpose (chart colours, and the colour pickers' defaults).
 
 function SeriesSettings({ spec, numericFields, responseFields, chartType, onChange, testPreview }: {
   spec: Record<string, unknown>; numericFields: string[]; responseFields: string[]; chartType: string;
@@ -634,47 +650,49 @@ function SeriesSettings({ spec, numericFields, responseFields, chartType, onChan
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <FieldGroup label="X Axis Field" flex={1}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={rowStyle}>
+        <FieldGroup label="X-axis field" flex={1}>
           <FieldSelect value={xAxis.key || ''} options={responseFields} allFields={responseFields} onChange={v => onChange({ x_axis: { ...xAxis, key: v } })} />
         </FieldGroup>
-        <FieldGroup label="X Axis Label" flex={1}>
-          <input value={xAxis.label || ''} onChange={e => onChange({ x_axis: { ...xAxis, label: e.target.value } })} style={inputStyle} />
+        <FieldGroup label="X-axis label" flex={1}>
+          <input className="n-input" value={xAxis.label || ''} onChange={e => onChange({ x_axis: { ...xAxis, label: e.target.value } })} style={fieldStyle} />
         </FieldGroup>
-        <FieldGroup label="X Format" flex={1}>
-          <select value={String(xAxis.format || '')} onChange={e => onChange({ x_axis: { ...xAxis, format: e.target.value || undefined } })} style={selectStyle}>
+        <FieldGroup label="X-axis format" flex={1}>
+          <select className="n-select" value={String(xAxis.format || '')} onChange={e => onChange({ x_axis: { ...xAxis, format: e.target.value || undefined } })} style={fieldStyle}>
             <option value="">Auto</option>
             <option value="time">Time (09:30)</option>
             <option value="date">Date (Sat, 4 Apr)</option>
-            <option value="datetime">Date + Time</option>
+            <option value="datetime">Date and time</option>
             <option value="currency">Currency ($)</option>
             <option value="percent">Percent (%)</option>
           </select>
         </FieldGroup>
       </div>
-      <FieldGroup label="Y Axis Format">
-        <select value={String((spec.y_axis as Record<string, unknown> || {}).format || '')} onChange={e => onChange({ y_axis: { ...((spec.y_axis as Record<string, unknown>) || {}), format: e.target.value || undefined } })} style={selectStyle}>
-          <option value="">Auto</option>
-          <option value="currency">Currency ($)</option>
-          <option value="percent">Percent (%)</option>
-        </select>
-      </FieldGroup>
-      {chartType === 'bar' && (
-        <FieldGroup label="Orientation">
-          <select value={String(spec.orientation || 'vertical')} onChange={e => onChange({ orientation: e.target.value })} style={selectStyle}>
-            <option value="vertical">Vertical</option>
-            <option value="horizontal">Horizontal</option>
+      <div style={rowStyle}>
+        <FieldGroup label="Y-axis format" flex={1}>
+          <select className="n-select" value={String((spec.y_axis as Record<string, unknown> || {}).format || '')} onChange={e => onChange({ y_axis: { ...((spec.y_axis as Record<string, unknown>) || {}), format: e.target.value || undefined } })} style={fieldStyle}>
+            <option value="">Auto</option>
+            <option value="currency">Currency ($)</option>
+            <option value="percent">Percent (%)</option>
           </select>
         </FieldGroup>
-      )}
+        {chartType === 'bar' && (
+          <FieldGroup label="Orientation" flex={1}>
+            <select className="n-select" value={String(spec.orientation || 'vertical')} onChange={e => onChange({ orientation: e.target.value })} style={fieldStyle}>
+              <option value="vertical">Vertical</option>
+              <option value="horizontal">Horizontal</option>
+            </select>
+          </FieldGroup>
+        )}
+      </div>
 
       {/* Stacked bar: Group By + Value + auto-populate */}
       {chartType === 'stacked_bar' && (
         <>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <FieldGroup label="Group By (stack)" flex={1}>
-              <select value={groupBy} onChange={e => {
+          <div style={rowStyle}>
+            <FieldGroup label="Group by (stack)" flex={1}>
+              <select className="n-select" value={groupBy} onChange={e => {
                 const field = e.target.value;
                 onChange({ group_by: field });
                 // Auto-populate series if we have test data
@@ -682,7 +700,7 @@ function SeriesSettings({ spec, numericFields, responseFields, chartType, onChan
                   const vk = String(spec.value_key || numericFields[0] || '');
                   autoPopulateSeries(field, vk);
                 }
-              }} style={selectStyle}>
+              }} style={fieldStyle}>
                 <option value="">None (manual series)</option>
                 {(groupFields.length > 0 ? groupFields : responseFields.filter(k => !numericFields.includes(k) && k !== xAxis.key)).map(f => (
                   <option key={f} value={f}>{f}</option>
@@ -690,48 +708,51 @@ function SeriesSettings({ spec, numericFields, responseFields, chartType, onChan
               </select>
             </FieldGroup>
             {groupBy && (
-              <FieldGroup label="Value Field" flex={1}>
-                <select value={String(spec.value_key || '')} onChange={e => {
+              <FieldGroup label="Value field" flex={1}>
+                <select className="n-select" value={String(spec.value_key || '')} onChange={e => {
                   onChange({ value_key: e.target.value });
                   if (groupBy && previewRows.length > 0) autoPopulateSeries(groupBy, e.target.value);
-                }} style={selectStyle}>
-                  <option value="">Select...</option>
+                }} style={fieldStyle}>
+                  <option value="">Select…</option>
                   {numericFields.map(f => <option key={f} value={f}>{f}</option>)}
                 </select>
               </FieldGroup>
             )}
           </div>
           {groupBy && previewRows.length === 0 && (
-            <div style={{ fontSize: '0.65rem', color: '#bbb', fontStyle: 'italic' }}>Run test to auto-populate series from data</div>
+            <div style={hintStyle}>Run a test to fill in the series from the data.</div>
           )}
         </>
       )}
 
-      <div style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Series</div>
-      {series.map((s, i) => (
-        <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {groupBy ? (
-            <span style={{ fontSize: '0.72rem', color: '#555', flex: 1 }}>{s.label || s.key}</span>
-          ) : (
-            <>
-              <FieldSelect value={s.key} options={numericFields} allFields={responseFields} onChange={v => {
-                const next = [...series]; next[i] = { ...s, key: v }; onChange({ series: next });
-              }} />
-              <input value={s.label} onChange={e => { const next = [...series]; next[i] = { ...s, label: e.target.value }; onChange({ series: next }); }}
-                style={{ ...inputStyle, flex: 1 }} placeholder="Label" />
-            </>
-          )}
-          <input type="color" value={s.color || STACK_COLORS[i % STACK_COLORS.length]}
-            onChange={e => { const next = [...series]; next[i] = { ...s, color: e.target.value }; onChange({ series: next }); }}
-            style={{ width: 28, height: 24, padding: 0, border: '1px solid #ddd', borderRadius: 4, cursor: 'pointer' }} />
-          <button onClick={() => { const next = series.filter((_, j) => j !== i); onChange({ series: next }); }}
-            style={{ border: 'none', background: 'none', color: '#ccc', cursor: 'pointer', padding: 2 }}><Trash2 size={12} /></button>
-        </div>
-      ))}
-      <button onClick={() => onChange({ series: [...series, { key: '', label: '', color: DEFAULT_COLORS[series.length % DEFAULT_COLORS.length] }] })}
-        style={{ fontSize: '0.65rem', color: '#999', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 3, padding: '2px 0' }}>
-        <Plus size={12} /> Add series
-      </button>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>Series</div>
+        {series.map((s, i) => (
+          <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {groupBy ? (
+              <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-base)', color: 'var(--text)' }}>{s.label || s.key}</span>
+            ) : (
+              <>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <FieldSelect value={s.key} options={numericFields} allFields={responseFields} onChange={v => {
+                    const next = [...series]; next[i] = { ...s, key: v }; onChange({ series: next });
+                  }} />
+                </div>
+                <input className="n-input" value={s.label} onChange={e => { const next = [...series]; next[i] = { ...s, label: e.target.value }; onChange({ series: next }); }}
+                  style={{ flex: 1, minWidth: 0 }} placeholder="Label" aria-label="Series label" />
+              </>
+            )}
+            <input type="color" aria-label="Series colour" value={s.color || STACK_COLORS[i % STACK_COLORS.length]}
+              onChange={e => { const next = [...series]; next[i] = { ...s, color: e.target.value }; onChange({ series: next }); }}
+              style={{ flexShrink: 0, width: 34, height: 34, padding: 2, border: '1px solid var(--line-strong)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg)', cursor: 'pointer' }} />
+            <IconButton icon={Trash2} label="Remove series" iconSize={16} onClick={() => { const next = series.filter((_, j) => j !== i); onChange({ series: next }); }} />
+          </div>
+        ))}
+        <Button variant="quiet" size="sm" icon={Plus} style={{ alignSelf: 'flex-start' }}
+          onClick={() => onChange({ series: [...series, { key: '', label: '', color: DEFAULT_COLORS[series.length % DEFAULT_COLORS.length] }] })}>
+          Add series
+        </Button>
+      </div>
     </div>
   );
 }
@@ -743,11 +764,11 @@ function PieSettings({ spec, numericFields, responseFields, onChange }: {
   const xAxis = (spec.x_axis as { key?: string; label?: string; format?: string }) || {};
   const series = (spec.series as { key: string }[]) || [];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <FieldGroup label="Category Field">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <FieldGroup label="Category field">
         <FieldSelect value={xAxis.key || ''} options={responseFields} allFields={responseFields} onChange={v => onChange({ x_axis: { ...xAxis, key: v } })} />
       </FieldGroup>
-      <FieldGroup label="Value Field">
+      <FieldGroup label="Value field">
         <FieldSelect value={series[0]?.key || ''} options={numericFields} allFields={responseFields}
           onChange={v => onChange({ series: [{ key: v, label: v, color: DEFAULT_COLORS[0] }] })} />
       </FieldGroup>
@@ -769,13 +790,14 @@ function ComponentSettings({ spec, onChange }: {
 
   return (
     <Section title="Component">
-      <FieldGroup label="Component Type">
+      <FieldGroup label="Component type">
         <select
+          className="n-select"
           value={componentKey}
           onChange={e => onChange({ component_key: e.target.value })}
-          style={selectStyle}
+          style={fieldStyle}
         >
-          <option value="">Select component...</option>
+          <option value="">Select component…</option>
           {EMBEDDABLE_COMPONENTS.map(c => (
             <option key={c.key} value={c.key}>{c.label}</option>
           ))}
@@ -783,13 +805,14 @@ function ComponentSettings({ spec, onChange }: {
       </FieldGroup>
 
       {componentKey && (
-        <div style={{ marginTop: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
           {componentDef && componentDef.needsProps.includes('connector_name') && (
             <FieldGroup label="Connector">
               <input
+                className="n-input"
                 value={String(componentProps.connector_name || '')}
                 onChange={e => updateProps({ connector_name: e.target.value })}
-                style={inputStyle}
+                style={fieldStyle}
                 placeholder="e.g. bamboohr"
               />
             </FieldGroup>
@@ -798,11 +821,12 @@ function ComponentSettings({ spec, onChange }: {
           {componentDef && componentDef.needsProps.includes('agent_slug') && (
             <FieldGroup label="Agent">
               <select
+                className="n-select"
                 value={String(componentProps.agent_slug || '')}
                 onChange={e => updateProps({ agent_slug: e.target.value })}
-                style={selectStyle}
+                style={fieldStyle}
               >
-                <option value="">Select agent...</option>
+                <option value="">Select agent…</option>
                 <option value="hr">HR</option>
                 <option value="procurement">Procurement</option>
                 <option value="reports">Reports</option>
@@ -811,7 +835,7 @@ function ComponentSettings({ spec, onChange }: {
           )}
 
           {componentDef && componentDef.needsProps.length === 0 && (
-            <div style={{ fontSize: '0.72rem', color: '#bbb', marginTop: 4 }}>
+            <div style={hintStyle}>
               This component loads its own data — no additional configuration needed.
             </div>
           )}
@@ -828,17 +852,23 @@ function ScatterSettings({ spec, numericFields, onChange }: {
   const xAxis = (spec.x_axis as { key?: string; label?: string; format?: string }) || {};
   const series = (spec.series as { key: string; label: string }[]) || [];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <FieldGroup label="X Axis">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <FieldGroup label="X axis">
         <FieldSelect value={xAxis.key || ''} options={numericFields} allFields={numericFields} onChange={v => onChange({ x_axis: { ...xAxis, key: v } })} />
       </FieldGroup>
-      <FieldGroup label="Y Axis">
+      <FieldGroup label="Y axis">
         <FieldSelect value={series[0]?.key || ''} options={numericFields} allFields={numericFields}
           onChange={v => onChange({ series: [{ key: v, label: v, color: DEFAULT_COLORS[0] }] })} />
       </FieldGroup>
     </div>
   );
 }
+
+const ALIGN_OPTIONS: { value: 'left' | 'center' | 'right'; icon: LucideIcon }[] = [
+  { value: 'left', icon: TextAlignStart },
+  { value: 'center', icon: TextAlignCenter },
+  { value: 'right', icon: TextAlignEnd },
+];
 
 function TableSettings({ spec, responseFields, onChange }: {
   spec: Record<string, unknown>; responseFields: string[];
@@ -889,88 +919,94 @@ function TableSettings({ spec, responseFields, onChange }: {
     onChange({ field_order: next });
   };
 
-  const arrowBtn: React.CSSProperties = {
-    border: 'none', background: 'none', padding: 0, cursor: 'pointer',
-    fontSize: '0.6rem', lineHeight: 1, color: '#ccc', fontFamily: 'inherit',
-  };
+  // Small up/down arrows: the .n-icon-btn hover, at a size that stacks two in one row.
+  const reorderBtn: CSSProperties = { width: 24, height: 17, borderRadius: 4 };
+  const smallLabel: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-xs)', color: 'var(--text-soft)' };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
       {orderedFields.map((f, i) => {
         const ff = getFormat(f);
         const hasFormat = !!(ff.type || ff.decimals !== undefined || ff.prefix || ff.suffix);
         const showDecimals = ff.type === 'number' || ff.type === 'currency' || ff.type === 'percent';
         return (
-          <div key={f} style={{ borderBottom: '1px solid #f8f8f5', paddingBottom: 4, marginBottom: 4 }}>
+          <div key={f} style={{ padding: '8px 0', borderBottom: '1px solid var(--line-soft)' }}>
             {/* Main row: reorder + checkbox + field + label + format type */}
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 0, width: 16, alignItems: 'center' }}>
-                <button onClick={() => moveField(i, i - 1)} disabled={i === 0}
-                  style={{ ...arrowBtn, opacity: i === 0 ? 0.3 : 1 }} title="Move up"
-                  onMouseEnter={e => { if (i > 0) e.currentTarget.style.color = '#888'; }}
-                  onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
-                >&#9650;</button>
-                <button onClick={() => moveField(i, i + 1)} disabled={i === orderedFields.length - 1}
-                  style={{ ...arrowBtn, opacity: i === orderedFields.length - 1 ? 0.3 : 1 }} title="Move down"
-                  onMouseEnter={e => { if (i < orderedFields.length - 1) e.currentTarget.style.color = '#888'; }}
-                  onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
-                >&#9660;</button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 240px', minWidth: 0 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                  <button type="button" className="n-icon-btn" onClick={() => moveField(i, i - 1)} disabled={i === 0}
+                    style={reorderBtn} title="Move up" aria-label={`Move ${f} up`}>
+                    <Icon icon={ChevronUp} size="dense" />
+                  </button>
+                  <button type="button" className="n-icon-btn" onClick={() => moveField(i, i + 1)} disabled={i === orderedFields.length - 1}
+                    style={reorderBtn} title="Move down" aria-label={`Move ${f} down`}>
+                    <Icon icon={ChevronDown} size="dense" />
+                  </button>
+                </div>
+                <input type="checkbox" aria-label={`Show ${f}`} checked={!hidden.has(f)} onChange={e => {
+                  const next = new Set(hidden);
+                  e.target.checked ? next.delete(f) : next.add(f);
+                  onChange({ hidden_fields: Array.from(next) });
+                }} style={checkboxStyle} />
+                <span title={f} style={{ flex: '0 1 auto', minWidth: 60, maxWidth: 150, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--text-soft)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f}</span>
+                <input className="n-input" aria-label={`Heading for ${f}`} value={labels[f] || ''} onChange={e => onChange({ field_labels: { ...labels, [f]: e.target.value } })} style={{ flex: 1, minWidth: 80 }} placeholder="Label" />
               </div>
-              <input type="checkbox" checked={!hidden.has(f)} onChange={e => {
-                const next = new Set(hidden);
-                e.target.checked ? next.delete(f) : next.add(f);
-                onChange({ hidden_fields: Array.from(next) });
-              }} />
-              <span style={{ fontSize: '0.68rem', fontFamily: 'monospace', color: '#888', minWidth: 70 }}>{f}</span>
-              <input value={labels[f] || ''} onChange={e => onChange({ field_labels: { ...labels, [f]: e.target.value } })} style={{ ...inputStyle, flex: 1 }} placeholder="Label" />
-              <select value={ff.type || ''} onChange={e => setFormat(f, { type: e.target.value || undefined })} style={{ ...selectStyle, width: 90, flex: 'none', fontSize: '0.68rem' }}>
-                <option value="">Auto</option>
-                <option value="number">Number</option>
-                <option value="currency">Currency</option>
-                <option value="percent">Percent</option>
-                <option value="time">Time</option>
-                <option value="date">Date</option>
-                <option value="datetime">Date+Time</option>
-              </select>
-              <div style={{ display: 'flex', border: '1px solid #e2ddd7', borderRadius: 4, overflow: 'hidden', flexShrink: 0 }}>
-                {(['left', 'center', 'right'] as const).map(a => (
-                  <button key={a} onClick={() => setFormat(f, { align: a === 'left' ? undefined : a })}
-                    style={{
-                      border: 'none', padding: '2px 5px', fontSize: '0.6rem', cursor: 'pointer', fontFamily: 'inherit',
-                      backgroundColor: (ff.align || 'left') === a ? '#f0ebe5' : '#fff',
-                      color: (ff.align || 'left') === a ? '#a08060' : '#ccc',
-                    }}
-                    title={`Align ${a}`}
-                  >{a === 'left' ? '\u2190' : a === 'center' ? '\u2194' : '\u2192'}</button>
-                ))}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0, marginLeft: 'auto' }}>
+                <select className="n-select" aria-label={`Format for ${f}`} value={ff.type || ''} onChange={e => setFormat(f, { type: e.target.value || undefined })} style={{ width: 140 }}>
+                  <option value="">Auto</option>
+                  <option value="number">Number</option>
+                  <option value="currency">Currency</option>
+                  <option value="percent">Percent</option>
+                  <option value="time">Time</option>
+                  <option value="date">Date</option>
+                  <option value="datetime">Date and time</option>
+                </select>
+                <div role="group" aria-label={`Alignment for ${f}`} style={{ display: 'flex', flexShrink: 0, border: '1px solid var(--line-strong)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+                  {ALIGN_OPTIONS.map(({ value: a, icon }) => {
+                    const on = (ff.align || 'left') === a;
+                    return (
+                      <button key={a} type="button" aria-pressed={on} onClick={() => setFormat(f, { align: a === 'left' ? undefined : a })}
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 32,
+                          border: 'none', padding: 0, cursor: 'pointer',
+                          backgroundColor: on ? 'var(--selected)' : 'var(--bg)',
+                          color: on ? 'var(--accent)' : 'var(--icon)',
+                        }}
+                        title={`Align ${a}`}
+                        aria-label={`Align ${a}`}
+                      ><Icon icon={icon} size="dense" /></button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
             {/* Format details row — shown when format type is set */}
             {hasFormat && (showDecimals || ff.prefix || ff.suffix) && (
-              <div style={{ display: 'flex', gap: 8, marginLeft: 40, marginTop: 3, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', margin: '8px 0 0 56px' }}>
                 {showDecimals && (
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.62rem', color: '#999' }}>
+                  <label style={smallLabel}>
                     Decimals
-                    <input type="number" min="0" max="6" value={ff.decimals ?? ''} onChange={e => setFormat(f, { decimals: e.target.value ? Number(e.target.value) : undefined })}
-                      style={{ ...inputStyle, width: 40, fontSize: '0.65rem', textAlign: 'center' }} placeholder="auto" />
+                    <input className="n-input" type="number" min="0" max="6" value={ff.decimals ?? ''} onChange={e => setFormat(f, { decimals: e.target.value ? Number(e.target.value) : undefined })}
+                      style={{ width: 64, textAlign: 'center' }} placeholder="Auto" />
                   </label>
                 )}
-                <label style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.62rem', color: '#999' }}>
+                <label style={smallLabel}>
                   Prefix
-                  <input value={ff.prefix || ''} onChange={e => setFormat(f, { prefix: e.target.value || undefined })}
-                    style={{ ...inputStyle, width: 44, fontSize: '0.65rem', textAlign: 'center' }} placeholder="e.g. $" />
+                  <input className="n-input" value={ff.prefix || ''} onChange={e => setFormat(f, { prefix: e.target.value || undefined })}
+                    style={{ width: 64, textAlign: 'center' }} placeholder="e.g. $" />
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.62rem', color: '#999' }}>
+                <label style={smallLabel}>
                   Suffix
-                  <input value={ff.suffix || ''} onChange={e => setFormat(f, { suffix: e.target.value || undefined })}
-                    style={{ ...inputStyle, width: 44, fontSize: '0.65rem', textAlign: 'center' }} placeholder="e.g. hrs" />
+                  <input className="n-input" value={ff.suffix || ''} onChange={e => setFormat(f, { suffix: e.target.value || undefined })}
+                    style={{ width: 64, textAlign: 'center' }} placeholder="e.g. hrs" />
                 </label>
               </div>
             )}
           </div>
         );
       })}
-      {orderedFields.length === 0 && <span style={{ fontSize: '0.72rem', color: '#bbb' }}>Run test to see available fields</span>}
+      {orderedFields.length === 0 && <span style={hintStyle}>Run a test to see the available fields.</span>}
     </div>
   );
 }
@@ -985,57 +1021,53 @@ function FieldSelect({ value, options, allFields, onChange, allowEmpty, emptyLab
   const opts = [...new Set([...(value && !allowEmpty ? [value] : []), ...options])];
   const hasOptions = options.length > 0;
   return (
-    <select value={value} onChange={e => onChange(e.target.value)} style={selectStyle}>
+    <select className="n-select" value={value} onChange={e => onChange(e.target.value)} style={fieldStyle}>
       {allowEmpty && <option value="">{emptyLabel || 'None'}</option>}
-      {!hasOptions && !value && <option value="" disabled>(Run test to see fields)</option>}
+      {!hasOptions && !value && <option value="" disabled>Run a test to see fields</option>}
       {opts.map(o => <option key={o} value={o}>{(allFields || options).includes(o) ? o : `${o} (not in data)`}</option>)}
     </select>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div style={{ marginBottom: '1.25rem' }}>
-      <div style={{ fontSize: '0.7rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.5rem' }}>{title}</div>
+    <section style={{ marginBottom: 20, paddingBottom: 20, borderBottom: '1px solid var(--line-soft)' }}>
+      <h3 style={{ margin: '0 0 12px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{title}</h3>
       {children}
-    </div>
+    </section>
   );
 }
 
-function FieldGroup({ label, children, flex }: { label: string; children: React.ReactNode; flex?: number }) {
+/** A label over one control. `flex` lets groups share a row and wrap on narrow screens. */
+function FieldGroup({ label, children, flex }: { label: string; children: ReactNode; flex?: number }) {
   return (
-    <div style={{ flex, minWidth: 0 }}>
-      <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', marginBottom: 2 }}>{label}</div>
+    <label style={{ display: 'block', flex: flex !== undefined ? `${flex} 1 150px` : undefined, minWidth: 0 }}>
+      <span className="n-label">{label}</span>
       {children}
-    </div>
+    </label>
   );
 }
 
 function CodeBlock({ children }: { children: string }) {
   return (
     <pre style={{
-      fontSize: '0.65rem', color: '#e2e8f0', backgroundColor: '#1a1a2e',
-      padding: '0.5rem', borderRadius: 6, overflow: 'auto', maxHeight: 200,
-      whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: '4px 0 0', lineHeight: 1.5,
+      fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--code-text)', backgroundColor: 'var(--code-bg)',
+      padding: '10px 12px', borderRadius: 'var(--radius)', overflow: 'auto', maxHeight: 240,
+      whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: '8px 0 0', lineHeight: 1.5,
     }}>{children}</pre>
-  );
-}
-
-function Badge({ ok, label }: { ok?: boolean; label: string }) {
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 8px', borderRadius: 4,
-      fontSize: '0.68rem', fontWeight: 600, backgroundColor: ok ? '#f0faf2' : '#fff5f5', color: ok ? '#4f8a5e' : '#c53030',
-    }}>{label}</span>
   );
 }
 
 // --- Shared styles --------------------------------------------------------
 
-const inputStyle: React.CSSProperties = {
-  padding: '4px 8px', fontSize: '0.75rem', border: '1px solid #e2ddd7', borderRadius: 5, fontFamily: 'inherit', width: '100%',
-};
+/** Inputs and selects take their look from .n-input / .n-select; this only sizes them. */
+const fieldStyle: CSSProperties = { width: '100%', minWidth: 0 };
 
-const selectStyle: React.CSSProperties = {
-  padding: '4px 8px', fontSize: '0.75rem', border: '1px solid #e2ddd7', borderRadius: 5, fontFamily: 'inherit', width: '100%',
-};
+const jsonFieldStyle: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', backgroundColor: 'var(--surface)' };
+
+/** A row of field groups that wraps onto two lines on a phone. */
+const rowStyle: CSSProperties = { display: 'flex', gap: '12px 8px', flexWrap: 'wrap' };
+
+const checkboxStyle: CSSProperties = { width: 16, height: 16, margin: 0, flexShrink: 0, accentColor: 'var(--accent)', cursor: 'pointer' };
+
+const hintStyle: CSSProperties = { fontSize: 'var(--fs-sm)', color: 'var(--muted)' };

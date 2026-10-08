@@ -1,6 +1,8 @@
 'use client';
 
+import { ChevronRight } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
+import Icon from '../ui/Icon';
 
 interface Candidate {
   id: string;
@@ -14,6 +16,21 @@ interface AmbiguousItem {
   candidates: Candidate[];
 }
 
+/** One choice: a full-width row in the card. Hover comes from .n-option, so no
+ *  inline background here; the focus ring sits inside the card's clipped edge. */
+const rowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  minHeight: 40,
+  padding: '8px 14px',
+  borderTop: '1px solid var(--line-soft)',
+  fontSize: 'var(--fs-base)',
+  fontWeight: 500,
+  lineHeight: 1.35,
+  outlineOffset: -2,
+};
+
 export default function StockPicker({ data, onAction }: DisplayBlockProps) {
   const items = (data?.needs_selection as AmbiguousItem[]) || [];
 
@@ -26,38 +43,24 @@ export default function StockPicker({ data, onAction }: DisplayBlockProps) {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.4rem' }}>
+    <div className="n-card" style={{ maxWidth: 460, marginTop: '0.4rem', overflow: 'hidden' }}>
       {items.map((item, i) => (
-        <div key={i}>
-          <div style={{ fontSize: '0.78rem', color: '#6b7280', marginBottom: '0.3rem' }}>
-            Select <strong>{item.query}</strong> (qty: {item.quantity}):
+        <div key={i} role="group" aria-label={`Select ${item.query}`} style={i > 0 ? { borderTop: '1px solid var(--line)' } : undefined}>
+          <div style={{ padding: '12px 14px 10px' }}>
+            <div style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Select {item.query}</div>
+            <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>Qty {item.quantity}</div>
           </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
-            {item.candidates.map(c => (
-              <button
-                key={c.id}
-                onClick={() => handleSelect(c)}
-                style={{
-                  padding: '5px 12px',
-                  fontSize: '0.78rem',
-                  fontWeight: 500,
-                  border: '1px solid #e5e7eb',
-                  borderRadius: 8,
-                  backgroundColor: '#fff',
-                  color: '#374151',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  transition: 'all 0.15s',
-                  textAlign: 'left',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = '#111'; e.currentTarget.style.backgroundColor = '#f9fafb'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = '#e5e7eb'; e.currentTarget.style.backgroundColor = '#fff'; }}
-              >
-                {c.name}
-                {c.group && <span style={{ color: '#9ca3af', fontSize: '0.7rem', marginLeft: 6 }}>{c.group}</span>}
-              </button>
-            ))}
-          </div>
+          {item.candidates.map(c => (
+            <button key={c.id} type="button" className="n-option" onClick={() => handleSelect(c)} style={rowStyle}>
+              <span style={{ flex: 1, minWidth: 0 }}>{c.name}</span>
+              {c.group && (
+                <span style={{ maxWidth: '45%', textAlign: 'right', fontSize: 'var(--fs-sm)', fontWeight: 400, color: 'var(--muted)' }}>
+                  {c.group}
+                </span>
+              )}
+              <Icon icon={ChevronRight} size="dense" tone="muted" />
+            </button>
+          ))}
         </div>
       ))}
     </div>

@@ -2,6 +2,8 @@
 
 import { useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+import AuthShell, { authInput, authLabel, authSubmit } from '../components/auth/AuthShell';
+import Button from '../components/ui/Button';
 
 function AcceptInviteForm() {
   const searchParams = useSearchParams();
@@ -59,138 +61,85 @@ function AcceptInviteForm() {
 
   if (!token) {
     return (
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        height: '100vh', backgroundColor: '#faf8f5', fontFamily: 'system-ui, sans-serif',
-      }}>
-        <div style={{
-          width: 380, padding: '2.5rem', backgroundColor: '#fff', borderRadius: 12,
-          boxShadow: '0 2px 12px rgba(0,0,0,0.08)', border: '1px solid #e2ddd7', textAlign: 'center',
-        }}>
-          <div style={{ fontSize: '1rem', color: '#e53e3e' }}>Invalid or missing invitation link.</div>
+      <AuthShell subtitle="Set up your account">
+        <div role="alert" style={{ fontSize: 'var(--fs-base)', color: 'var(--error)', textAlign: 'center' }}>
+          Invalid or missing invitation link.
         </div>
-      </div>
+      </AuthShell>
     );
   }
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      height: '100vh', backgroundColor: '#faf8f5', fontFamily: 'system-ui, sans-serif',
-    }}>
-      <div style={{
-        width: 380, padding: '2.5rem', backgroundColor: '#fff', borderRadius: 12,
-        boxShadow: '0 2px 12px rgba(0,0,0,0.08)', border: '1px solid #e2ddd7',
-      }}>
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1a1a1a', marginBottom: 4 }}>Norm</div>
-          <div style={{ fontSize: '0.85rem', color: '#888' }}>Set up your account</div>
-        </div>
-
-        {alreadyUsed ? (
-          <div style={{ textAlign: 'center' }}>
-            <div style={{
-              fontSize: '0.85rem', color: '#856404', backgroundColor: '#fff3cd',
-              padding: '12px 16px', borderRadius: 8, marginBottom: '1.25rem',
-            }}>
-              This invite has already been used. Your account is set up.
-            </div>
-            <a
-              href="/app"
-              style={{
-                display: 'inline-block', padding: '10px 2rem', fontSize: '0.9rem',
-                fontWeight: 600, border: 'none', borderRadius: 8,
-                backgroundColor: '#c4a882', color: '#fff', textDecoration: 'none',
-              }}
-            >
-              Go to Login
-            </a>
-          </div>
-        ) : success ? (
-          <div style={{
-            fontSize: '0.85rem', color: '#28a745', backgroundColor: '#d4edda',
-            padding: '12px 16px', borderRadius: 8, textAlign: 'center',
+    <AuthShell subtitle="Set up your account" titleId="invite-title">
+      {alreadyUsed ? (
+        <div style={{ textAlign: 'center' }}>
+          <div role="status" style={{
+            fontSize: 'var(--fs-base)', color: 'var(--warn)', backgroundColor: 'var(--warn-bg)',
+            padding: '12px 16px', borderRadius: 'var(--radius)', marginBottom: 20,
           }}>
-            Account set up! Redirecting to login...
+            This invite has already been used. Your account is set up.
           </div>
-        ) : (
-          <form onSubmit={handleSubmit}>
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                Full Name
-              </label>
-              <input
-                type="text"
-                value={fullName}
-                onChange={e => setFullName(e.target.value)}
-                required
-                style={{
-                  width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7',
-                  borderRadius: 8, fontSize: '0.9rem', fontFamily: 'inherit',
-                  boxSizing: 'border-box', outline: 'none',
-                }}
-              />
+          <a href="/app" className="n-btn n-btn--primary" style={{ ...authSubmit, marginTop: 0 }}>
+            Go to sign in
+          </a>
+        </div>
+      ) : success ? (
+        <div role="status" style={{
+          fontSize: 'var(--fs-base)', color: 'var(--ok)', backgroundColor: 'var(--ok-bg)',
+          padding: '12px 16px', borderRadius: 'var(--radius)', textAlign: 'center',
+        }}>
+          Account set up! Taking you to sign in…
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} aria-labelledby="invite-title" style={{ margin: 0 }}>
+          <label htmlFor="invite-name" style={authLabel}>Full name</label>
+          <input
+            id="invite-name"
+            type="text"
+            autoComplete="name"
+            value={fullName}
+            onChange={e => setFullName(e.target.value)}
+            required
+            style={authInput}
+          />
+
+          <label htmlFor="invite-password" style={{ ...authLabel, marginTop: 16 }}>Password</label>
+          <input
+            id="invite-password"
+            type="password"
+            autoComplete="new-password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            required
+            style={authInput}
+          />
+
+          <label htmlFor="invite-confirm" style={{ ...authLabel, marginTop: 16 }}>Confirm password</label>
+          <input
+            id="invite-confirm"
+            type="password"
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={e => setConfirmPassword(e.target.value)}
+            required
+            style={authInput}
+          />
+
+          {error && (
+            <div role="alert" style={{
+              fontSize: 'var(--fs-sm)', color: 'var(--error)', backgroundColor: 'var(--error-bg)',
+              padding: '8px 12px', borderRadius: 'var(--radius-sm)', marginTop: 16,
+            }}>
+              {error}
             </div>
+          )}
 
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                style={{
-                  width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7',
-                  borderRadius: 8, fontSize: '0.9rem', fontFamily: 'inherit',
-                  boxSizing: 'border-box', outline: 'none',
-                }}
-              />
-            </div>
-
-            <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                Confirm Password
-              </label>
-              <input
-                type="password"
-                value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-                required
-                style={{
-                  width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7',
-                  borderRadius: 8, fontSize: '0.9rem', fontFamily: 'inherit',
-                  boxSizing: 'border-box', outline: 'none',
-                }}
-              />
-            </div>
-
-            {error && (
-              <div style={{
-                fontSize: '0.82rem', color: '#e53e3e', backgroundColor: '#fef2f2',
-                padding: '8px 12px', borderRadius: 6, marginBottom: '1rem',
-              }}>
-                {error}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                width: '100%', padding: '10px', fontSize: '0.9rem', fontWeight: 600,
-                border: 'none', borderRadius: 8, backgroundColor: '#c4a882', color: '#fff',
-                cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                opacity: loading ? 0.7 : 1,
-              }}
-            >
-              {loading ? 'Please wait...' : 'Set Up Account'}
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
+          <Button type="submit" variant="primary" disabled={loading} style={authSubmit}>
+            {loading ? 'Please wait…' : 'Set up account'}
+          </Button>
+        </form>
+      )}
+    </AuthShell>
   );
 }
 
@@ -199,10 +148,9 @@ export default function AcceptInvitePage() {
     <Suspense fallback={
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        height: '100vh', backgroundColor: '#faf8f5', fontFamily: 'system-ui, sans-serif',
-        color: '#999',
+        height: '100dvh', backgroundColor: 'var(--canvas)', color: 'var(--muted)',
       }}>
-        Loading...
+        Loading…
       </div>
     }>
       <AcceptInviteForm />

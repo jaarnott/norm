@@ -1,7 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { ZoomIn, ZoomOut } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
 
 /**
  * The dojo's invoice-copy pane: renders the sample's PDF (every page,
@@ -73,8 +77,10 @@ export default function InvoicePdfPane({ sampleId }: { sampleId: string }) {
           canvas.height = viewport.height;
           canvas.style.width = '100%';
           canvas.style.display = 'block';
-          canvas.style.background = '#fff';
-          canvas.style.boxShadow = '0 1px 4px rgba(0,0,0,0.15)';
+          canvas.style.background = 'var(--bg)';
+          // A hairline ring (a spread-only shadow, so it takes no layout) sets
+          // the white page off the tinted desk.
+          canvas.style.boxShadow = '0 0 0 1px var(--line)';
           canvas.style.marginBottom = '8px';
           const ctx = canvas.getContext('2d');
           if (!ctx) continue;
@@ -186,29 +192,21 @@ export default function InvoicePdfPane({ sampleId }: { sampleId: string }) {
     }
   };
 
-  const btn: React.CSSProperties = {
-    fontSize: '0.72rem',
-    padding: '2px 10px',
-    border: '1px solid #ccc',
-    borderRadius: 4,
-    background: '#fff',
-    color: '#555',
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-  };
-
+  // A card: a header strip (the same height and look as ReplicaCompareView's,
+  // so the two panes line up side by side), then the pages on a tinted desk.
   return (
-    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#f2f0ec', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0.4rem 0.6rem', background: '#faf9f7', borderBottom: '1px solid #eee' }}>
-        <span style={{ fontSize: '0.66rem', textTransform: 'uppercase', color: '#8a8a8a' }}>
-          Invoice copy{pageCount > 1 ? ` · ${pageCount} pages` : ''}
-        </span>
-        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-          <button type="button" style={btn} onClick={() => zoomCentred(1 / 1.3)} title="zoom out">−</button>
-          <button type="button" style={btn} onClick={() => zoomCentred(1.3)} title="zoom in">+</button>
-          <button type="button" style={btn} onClick={() => commit(1, { x: 0, y: 0 })} title="fit to width">
+    <div className="n-card" style={{ overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 46, boxSizing: 'border-box', padding: '6px 12px 6px 16px', borderBottom: '1px solid var(--line)' }}>
+        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>Invoice copy</span>
+        {pageCount > 1 && (
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{pageCount} pages</span>
+        )}
+        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 2 }}>
+          <IconButton icon={ZoomOut} label="Zoom out" onClick={() => zoomCentred(1 / 1.3)} />
+          <IconButton icon={ZoomIn} label="Zoom in" onClick={() => zoomCentred(1.3)} />
+          <Button size="sm" variant="quiet" onClick={() => commit(1, { x: 0, y: 0 })} title="Fit to width">
             Fit
-          </button>
+          </Button>
         </span>
       </div>
       <div
@@ -228,19 +226,21 @@ export default function InvoicePdfPane({ sampleId }: { sampleId: string }) {
           position: 'relative',
           cursor: drag.current ? 'grabbing' : 'grab',
           touchAction: 'none',
+          background: 'var(--surface-alt)',
         }}
       >
-        {state === 'loading' && (
-          <div style={{ padding: '2rem', fontSize: '0.74rem', color: '#8a8a8a' }}>Loading the invoice copy…</div>
-        )}
+        {state === 'loading' && <PageState kind="loading" title="Loading the invoice copy…" />}
         {state === 'error' && (
-          <div style={{ padding: '2rem', fontSize: '0.74rem', color: '#a02b2b' }}>Could not load the PDF.</div>
+          <div style={{ padding: 12 }}>
+            <PageState kind="error" title="Could not load the PDF." />
+          </div>
         )}
         <div
           ref={pagesRef}
           style={{
             width: '100%',
-            padding: 8,
+            // the same inset as the replica's sheet on its desk
+            padding: 'clamp(8px, 2vw, 12px)',
             boxSizing: 'border-box',
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
             transformOrigin: '0 0',

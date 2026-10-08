@@ -1,43 +1,53 @@
 'use client';
 
 import { useState, useMemo, useEffect, useRef } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import {
+  ArrowRight, Bot, Brain, Check, ChevronRight, CircleCheck, CircleHelp, CircleX, ClipboardList, Copy,
+  Inbox, MessageSquare, MessageSquareText, Pencil, Send, Sparkles, TriangleAlert, UserPlus, Wrench, Zap,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { ConversationMessage, LlmCall, ToolCallRecord } from '../../types';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon, { type IconTone } from '../ui/Icon';
+import Tabs from '../ui/Tabs';
 
 function classifyMessage(msg: ConversationMessage, index: number): {
   label: string;
-  icon: string;
+  icon: LucideIcon;
 } {
   const text = msg.text.toLowerCase();
 
   if (msg.role === 'user' && index === 0) {
-    return { label: 'User request received', icon: '📩' };
+    return { label: 'User request received', icon: Inbox };
   }
   if (msg.role === 'user') {
-    return { label: 'User replied', icon: '💬' };
+    return { label: 'User replied', icon: MessageSquare };
   }
 
   // Assistant messages — classify by content
   if (text.includes('changed from') || text.includes('updated from') || text.includes('updated and ready'))
-    return { label: 'Thread revised', icon: '✏️' };
+    return { label: 'Thread revised', icon: Pencil };
   if (text.includes('which venue') || text.includes('which location') || text.includes('what venue'))
-    return { label: 'Clarification requested: venue', icon: '❓' };
+    return { label: 'Clarification requested: venue', icon: CircleHelp };
   if (text.includes('which product') || text.includes('what product'))
-    return { label: 'Clarification requested: product', icon: '❓' };
+    return { label: 'Clarification requested: product', icon: CircleHelp };
   if (text.includes('how many') || text.includes('quantity'))
-    return { label: 'Clarification requested: quantity', icon: '❓' };
+    return { label: 'Clarification requested: quantity', icon: CircleHelp };
   if (text.includes('?'))
-    return { label: 'Clarification requested', icon: '❓' };
+    return { label: 'Clarification requested', icon: CircleHelp };
   if (text.includes('draft order') || text.includes('order created') || text.includes('ready for review') || text.includes('ready for your approval'))
-    return { label: 'Draft order created', icon: '📋' };
+    return { label: 'Draft order created', icon: ClipboardList };
   if (text.includes('approved'))
-    return { label: 'Order approved', icon: '✅' };
+    return { label: 'Order approved', icon: CircleCheck };
   if (text.includes('submitted'))
-    return { label: 'Order submitted', icon: '🚀' };
+    return { label: 'Order submitted', icon: Send };
   if (text.includes('set up') || text.includes('setup') || text.includes('onboarding'))
-    return { label: 'Employee setup initiated', icon: '👤' };
+    return { label: 'Employee setup initiated', icon: UserPlus };
 
-  return { label: 'Assistant responded', icon: '🤖' };
+  return { label: 'Assistant responded', icon: Bot };
 }
 
 function formatTime(dateStr?: string | null): string {
@@ -57,6 +67,7 @@ export function CopyableThreadId({ threadId }: { threadId: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
+      type="button"
       onClick={() => {
         navigator.clipboard?.writeText(threadId).then(() => {
           setCopied(true);
@@ -65,101 +76,122 @@ export function CopyableThreadId({ threadId }: { threadId: string }) {
       }}
       title="Click to copy the thread ID"
       style={{
-        display: 'inline-flex', alignItems: 'center', gap: 4,
-        padding: '2px 8px', border: '1px solid #e2e2e2', borderRadius: 4,
-        backgroundColor: copied ? '#ecfdf5' : '#f8fafc',
-        color: copied ? '#047857' : '#888',
-        fontSize: '0.65rem', fontFamily: 'ui-monospace, monospace',
+        display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%',
+        padding: '3px 8px', border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)',
+        backgroundColor: copied ? 'var(--ok-bg)' : 'var(--bg)',
+        color: copied ? 'var(--ok)' : 'var(--muted)',
+        fontSize: 'var(--fs-2xs)', fontFamily: 'var(--font-mono)', lineHeight: 1.4,
         cursor: 'pointer', whiteSpace: 'nowrap',
       }}
     >
-      <span style={{ fontFamily: 'inherit' }}>Thread {threadId}</span>
-      <span>{copied ? '✓ copied' : '⧉'}</span>
+      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>Thread {threadId}</span>
+      <Icon icon={copied ? Check : Copy} size="meta" />
+      {copied && <span>Copied</span>}
     </button>
   );
 }
 
-const CODE_STYLE: React.CSSProperties = {
-  backgroundColor: '#f5f5f5',
-  border: '1px solid #e2e2e2',
-  borderRadius: 4,
-  padding: '0.5rem',
+// Prompts, payloads and results: the warm-dark code surface, monospace.
+const CODE_STYLE: CSSProperties = {
+  backgroundColor: 'var(--code-bg)',
+  color: 'var(--code-text)',
+  borderRadius: 'var(--radius-sm)',
+  padding: '10px 12px',
   margin: 0,
-  fontSize: '0.7rem',
-  lineHeight: 1.4,
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--fs-xs)',
+  lineHeight: 1.5,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
 };
 
-const SECTION_LABEL_STYLE: React.CSSProperties = {
-  fontSize: '0.65rem',
-  fontWeight: 600,
-  textTransform: 'uppercase',
-  letterSpacing: '0.04em',
-  color: '#999',
-  marginBottom: '0.25rem',
+// Small figures beside a status: durations, token counts, the model name.
+const META_STYLE: CSSProperties = {
+  fontSize: 'var(--fs-xs)',
+  color: 'var(--muted)',
+  fontVariantNumeric: 'tabular-nums',
 };
 
-function DetailBox({ label, children }: { label: string; children: React.ReactNode }) {
+const TIME_STYLE: CSSProperties = { ...META_STYLE, whiteSpace: 'nowrap' };
+
+// The expanded body of an LLM or tool call: a white card on the cream pane.
+const DETAIL_CARD_STYLE: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+  margin: '8px 0 4px',
+  padding: 14,
+  fontSize: 'var(--fs-sm)',
+  color: 'var(--text-soft)',
+};
+
+const NOTE_STYLE: CSSProperties = { color: 'var(--muted)', fontStyle: 'italic' };
+
+const TOOL_STATUS_TONE: Partial<Record<ToolCallRecord['status'], BadgeTone>> = {
+  executed: 'ok',
+  approved: 'ok',
+  failed: 'error',
+  pending: 'info',
+  pending_approval: 'warn',
+};
+
+function sentenceCase(s: string): string {
+  const t = s.replace(/_/g, ' ');
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function DetailBox({ label, action, children }: { label: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <div style={{ marginBottom: '0.5rem' }}>
-      <div style={SECTION_LABEL_STYLE}>{label}</div>
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+        <div className="n-eyebrow">{label}</div>
+        {action}
+      </div>
       {children}
+    </div>
+  );
+}
+
+function ErrorNote({ children, preserveLines }: { children: ReactNode; preserveLines?: boolean }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'flex-start', gap: 8,
+      padding: '8px 10px', borderRadius: 'var(--radius-sm)',
+      backgroundColor: 'var(--error-bg)', color: 'var(--error)',
+      whiteSpace: preserveLines ? 'pre-wrap' : undefined, wordBreak: 'break-word',
+    }}>
+      <Icon icon={TriangleAlert} size="dense" style={{ marginTop: 2 }} />
+      <div style={{ minWidth: 0 }}>{children}</div>
     </div>
   );
 }
 
 function LlmCallDetail({ call }: { call: LlmCall }) {
   const [showRaw, setShowRaw] = useState(false);
+  const ok = call.status === 'success';
 
   return (
-    <div style={{
-      marginTop: '0.4rem',
-      marginBottom: '0.5rem',
-      marginLeft: '0.25rem',
-      border: '1px solid #e8e8e8',
-      borderRadius: 6,
-      padding: '0.75rem',
-      backgroundColor: '#fafafa',
-      fontSize: '0.75rem',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}>
-        <span style={{
-          width: 8, height: 8, borderRadius: '50%',
-          backgroundColor: call.status === 'success' ? '#48bb78' : '#f56565',
-          display: 'inline-block',
-        }} />
-        <span style={{ fontWeight: 600, color: call.status === 'success' ? '#2f855a' : '#c53030' }}>
-          {call.status === 'success' ? 'Success' : 'Error'}
-        </span>
+    <div className="n-card" style={DETAIL_CARD_STYLE}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <Badge tone={ok ? 'ok' : 'error'}>{ok ? 'Success' : 'Error'}</Badge>
         {call.duration_ms != null && (
-          <span style={{ color: '#999', marginLeft: 'auto' }}>{call.duration_ms}ms</span>
+          <span style={{ ...META_STYLE, marginLeft: 'auto' }}>{call.duration_ms}ms</span>
         )}
         {(call.input_tokens != null || call.output_tokens != null) && (
-          <span style={{ color: '#bbb', fontSize: '0.68rem', marginLeft: '0.5rem' }}>
+          <span style={META_STYLE}>
             {callUsageLine(call)}
           </span>
         )}
       </div>
 
-      {call.error_message && (
-        <div style={{
-          padding: '0.4rem 0.6rem', backgroundColor: '#fff5f5',
-          border: '1px solid #fed7d7', borderRadius: 4, color: '#c53030',
-          marginBottom: '0.5rem', whiteSpace: 'pre-wrap',
-        }}>
-          {call.error_message}
-        </div>
-      )}
+      {call.error_message && <ErrorNote preserveLines>{call.error_message}</ErrorNote>}
 
       {call.system_prompt ? (
-        <DetailBox label="System Prompt">
+        <DetailBox label="System prompt">
           <pre style={CODE_STYLE}>{call.system_prompt}</pre>
         </DetailBox>
       ) : (
-        <div style={{ color: '#bbb', fontSize: '0.7rem', marginBottom: '0.5rem', fontStyle: 'italic' }}>
-          Loading system prompt...
-        </div>
+        <div style={NOTE_STYLE}>Loading system prompt…</div>
       )}
 
       {call.tools_provided && call.tools_provided.length > 0 && (
@@ -173,26 +205,20 @@ function LlmCallDetail({ call }: { call: LlmCall }) {
       )}
 
       {call.user_prompt && (
-        <DetailBox label="User Prompt">
+        <DetailBox label="User prompt">
           <pre style={CODE_STYLE}>{call.user_prompt}</pre>
         </DetailBox>
       )}
 
       {(call.raw_response || call.parsed_response) && (
-        <DetailBox label="Response">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-            {call.raw_response && call.parsed_response && (
-              <button
-                onClick={() => setShowRaw(!showRaw)}
-                style={{
-                  fontSize: '0.6rem', padding: '0.1rem 0.4rem', borderRadius: 3,
-                  border: '1px solid #ddd', backgroundColor: '#fff', cursor: 'pointer', color: '#666',
-                }}
-              >
-                {showRaw ? 'Parsed' : 'Raw'}
-              </button>
-            )}
-          </div>
+        <DetailBox
+          label="Response"
+          action={call.raw_response && call.parsed_response ? (
+            <Button variant="link" size="sm" onClick={() => setShowRaw(!showRaw)}>
+              {showRaw ? 'Show parsed' : 'Show raw'}
+            </Button>
+          ) : undefined}
+        >
           <pre style={CODE_STYLE}>
             {showRaw || !call.parsed_response
               ? call.raw_response
@@ -211,25 +237,13 @@ function ToolCallResult({ tc }: { tc: ToolCallRecord }) {
   return (
     <div>
       {hasSlimmed && (
-        <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
-          <button
-            onClick={() => setShowFull(false)}
-            style={{
-              padding: '2px 8px', fontSize: '0.65rem', fontWeight: !showFull ? 600 : 400,
-              border: 'none', borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit',
-              backgroundColor: !showFull ? '#eef' : 'transparent',
-              color: !showFull ? '#4d65ff' : '#999',
-            }}
-          >What LLM saw</button>
-          <button
-            onClick={() => setShowFull(true)}
-            style={{
-              padding: '2px 8px', fontSize: '0.65rem', fontWeight: showFull ? 600 : 400,
-              border: 'none', borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit',
-              backgroundColor: showFull ? '#eef' : 'transparent',
-              color: showFull ? '#4d65ff' : '#999',
-            }}
-          >Full result</button>
+        <div style={{ marginBottom: 10 }}>
+          <Tabs
+            label="Tool result view"
+            items={[{ id: 'slimmed', label: 'What LLM saw' }, { id: 'full', label: 'Full result' }]}
+            value={showFull ? 'full' : 'slimmed'}
+            onChange={(id) => setShowFull(id === 'full')}
+          />
         </div>
       )}
       <DetailBox label={hasSlimmed && !showFull ? 'Result (slimmed for LLM)' : 'Result'}>
@@ -246,45 +260,16 @@ function ToolCallResult({ tc }: { tc: ToolCallRecord }) {
 
 function ToolCallDetail({ tc }: { tc: ToolCallRecord }) {
   return (
-    <div style={{
-      marginTop: '0.4rem',
-      marginBottom: '0.5rem',
-      marginLeft: '0.25rem',
-      border: '1px solid #e8e8e8',
-      borderRadius: 6,
-      padding: '0.75rem',
-      backgroundColor: '#fafafa',
-      fontSize: '0.75rem',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}>
-        <span style={{
-          width: 8, height: 8, borderRadius: '50%',
-          backgroundColor: tc.status === 'failed' ? '#f56565' : '#48bb78',
-          display: 'inline-block',
-        }} />
-        <span style={{ fontWeight: 600, color: tc.status === 'failed' ? '#c53030' : '#2f855a' }}>
-          {tc.status}
-        </span>
-        <span style={{
-          fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
-          borderRadius: 3, backgroundColor: '#e8f0fe', color: '#1a56db',
-        }}>
-          {tc.method}
-        </span>
+    <div className="n-card" style={DETAIL_CARD_STYLE}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <Badge tone={TOOL_STATUS_TONE[tc.status] ?? 'neutral'}>{sentenceCase(tc.status)}</Badge>
+        {tc.method && <Badge>{tc.method}</Badge>}
         {tc.duration_ms != null && (
-          <span style={{ color: '#999', marginLeft: 'auto' }}>{tc.duration_ms}ms</span>
+          <span style={{ ...META_STYLE, marginLeft: 'auto' }}>{tc.duration_ms}ms</span>
         )}
       </div>
 
-      {tc.error_message && (
-        <div style={{
-          padding: '0.4rem 0.6rem', backgroundColor: '#fff5f5',
-          border: '1px solid #fed7d7', borderRadius: 4, color: '#c53030',
-          marginBottom: '0.5rem',
-        }}>
-          {tc.error_message}
-        </div>
-      )}
+      {tc.error_message && <ErrorNote>{tc.error_message}</ErrorNote>}
 
       {tc.input_params && (
         <DetailBox label="Input">
@@ -295,10 +280,81 @@ function ToolCallDetail({ tc }: { tc: ToolCallRecord }) {
       {tc.result_payload ? (
         <ToolCallResult tc={tc} />
       ) : (
-        <div style={{ color: '#bbb', fontSize: '0.7rem', fontStyle: 'italic' }}>
-          Result not yet available
-        </div>
+        <div style={NOTE_STYLE}>Result not yet available</div>
       )}
+    </div>
+  );
+}
+
+// ── Timeline layout ──
+// The rail runs down the left gutter; each event's dot sits on it. LLM calls
+// made inside another step are indented, and their (smaller) dot still sits
+// on the rail.
+const RAIL_GUTTER = 28;
+const RAIL_CENTRE = 8;
+const NEST_INDENT = 24;
+
+function TimelineDot({ color, small, nested }: { color: string; small?: boolean; nested?: boolean }) {
+  const size = small ? 6 : 8;
+  return (
+    <span aria-hidden style={{
+      position: 'absolute',
+      left: RAIL_CENTRE - size / 2 - RAIL_GUTTER - (nested ? NEST_INDENT : 0),
+      // Centred on the first line of the row (line-height 1.45).
+      top: `calc(0.75em - ${size / 2}px)`,
+      width: size, height: size, borderRadius: '50%',
+      backgroundColor: color,
+      boxShadow: '0 0 0 3px var(--canvas)',
+    }} />
+  );
+}
+
+function EventLabel({ icon, tone = 'muted', style, children }: { icon: LucideIcon; tone?: IconTone; style?: CSSProperties; children: ReactNode }) {
+  return (
+    <span style={style}>
+      <Icon icon={icon} size="dense" tone={tone} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+      {children}
+    </span>
+  );
+}
+
+function TimelineRow({ dotColor, smallDot, nested, secondary, spacing = 8, time, onClick, expanded, after, children }: {
+  dotColor: string;
+  smallDot?: boolean;
+  nested?: boolean;
+  /** Secondary rows (thinking steps) use the smaller text size. */
+  secondary?: boolean;
+  spacing?: number;
+  time?: string;
+  onClick?: () => void;
+  /** Set for rows that open: draws the chevron. */
+  expanded?: boolean;
+  after?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div style={{
+      position: 'relative',
+      marginLeft: nested ? NEST_INDENT : 0,
+      marginBottom: spacing,
+      fontSize: secondary ? 'var(--fs-sm)' : 'var(--fs-base)',
+    }}>
+      <div onClick={onClick} style={{ display: 'flex', alignItems: 'baseline', gap: 8, cursor: onClick ? 'pointer' : undefined }}>
+        <TimelineDot color={dotColor} small={smallDot} nested={nested} />
+        {/* The time is the last item of the wrapping line, pushed right: on a
+            wide pane it ends the first line; on a phone it drops under the
+            label instead of squeezing it into a narrow column. */}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 8, rowGap: 2 }}>
+          {children}
+          {time && <span style={{ ...TIME_STYLE, marginLeft: 'auto' }}>{time}</span>}
+        </div>
+        <span style={{ flex: '0 0 12px', width: 12 }}>
+          {expanded !== undefined && (
+            <Icon icon={ChevronRight} size="meta" tone="muted" style={{ transition: 'transform 0.15s', transform: expanded ? 'rotate(90deg)' : 'none' }} />
+          )}
+        </span>
+      </div>
+      {after}
     </div>
   );
 }
@@ -442,20 +498,20 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
           return [{
             type: 'routing' as const,
             label: `Supervisor: ${action}${reason ? ` (${reason})` : ''}`,
-            icon: '🧠',
+            icon: Brain,
             time: formatTime(rc.created_at),
             sortKey: rc.created_at,
             sortOrder: 0,
           }];
         }
         return [
-          { type: 'routing' as const, label: 'Supervisor analysed request', icon: '🧠', time: formatTime(rc.created_at), sortKey: rc.created_at, sortOrder: 0 },
-          { type: 'routing' as const, label: `Routed to ${domain} agent`, icon: '➡️', time: formatTime(rc.created_at), sortKey: rc.created_at, sortOrder: 1 },
+          { type: 'routing' as const, label: 'Supervisor analysed request', icon: Brain, time: formatTime(rc.created_at), sortKey: rc.created_at, sortOrder: 0 },
+          { type: 'routing' as const, label: `Routed to ${domain} agent`, icon: ArrowRight, time: formatTime(rc.created_at), sortKey: rc.created_at, sortOrder: 1 },
         ];
       })
     : [
-        { type: 'routing' as const, label: 'Supervisor analysed request', icon: '🧠', time: formatTime(firstRoutingKey), sortKey: firstRoutingKey, sortOrder: 0 },
-        { type: 'routing' as const, label: `Routed to ${domain} agent`, icon: '➡️', time: formatTime(firstRoutingKey), sortKey: firstRoutingKey, sortOrder: 1 },
+        { type: 'routing' as const, label: 'Supervisor analysed request', icon: Brain, time: formatTime(firstRoutingKey), sortKey: firstRoutingKey, sortOrder: 0 },
+        { type: 'routing' as const, label: `Routed to ${domain} agent`, icon: ArrowRight, time: formatTime(firstRoutingKey), sortKey: firstRoutingKey, sortOrder: 1 },
       ];
 
   const messageEvents = messages.map((m, i) => {
@@ -470,7 +526,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
       type: 'llm' as const,
       call,
       label: LLM_CALL_TYPE_LABELS[call.call_type] ?? `LLM call (${call.call_type})`,
-      icon: '⚡',
+      icon: Sparkles,
       time: formatTime(call.created_at),
       sortKey: call.created_at,
       sortOrder: 0,
@@ -483,20 +539,20 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
     type: 'tool' as const,
     tc,
     label: `${tc.action} (${tc.connector_name})`,
-    icon: '⚙️',
+    icon: Wrench,
     time: formatTime(tc.created_at),
     sortKey: tc.created_at,
     sortOrder: 0,
     idx,
   }));
 
-  const approvalEvents: { type: 'approval'; label: string; icon: string; detail: string; time: string; sortKey: string; sortOrder: number }[] = [];
+  const approvalEvents: { type: 'approval'; label: string; icon: LucideIcon; detail: string; time: string; sortKey: string; sortOrder: number }[] = [];
   if (approval) {
     const isApproved = approval.action === 'approved';
     approvalEvents.push({
       type: 'approval' as const,
       label: isApproved ? 'Thread approved' : 'Thread rejected',
-      icon: isApproved ? '✅' : '❌',
+      icon: isApproved ? CircleCheck : CircleX,
       detail: `by ${approval.performed_by}`,
       time: formatTime(approval.performed_at),
       sortKey: approval.performed_at,
@@ -504,7 +560,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
     });
   }
 
-  const submissionEvents: { type: 'submission'; label: string; icon: string; detail: string; time: string; sortKey: string; sortOrder: number }[] = [];
+  const submissionEvents: { type: 'submission'; label: string; icon: LucideIcon; detail: string; time: string; sortKey: string; sortOrder: number }[] = [];
   if (integrationRun) {
     const isSuccess = integrationRun.status === 'success';
     const connectorLabel = integrationRun.connector;
@@ -514,7 +570,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
     submissionEvents.push({
       type: 'submission' as const,
       label: isSuccess ? 'Submitted to external system' : 'Submission failed',
-      icon: isSuccess ? '🚀' : '⚠️',
+      icon: isSuccess ? Send : TriangleAlert,
       detail,
       time: formatTime(integrationRun.submitted_at),
       sortKey: integrationRun.submitted_at,
@@ -534,7 +590,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
     return {
       type: 'thinking' as const,
       label: isReasoning ? stepText.slice('[reasoning] '.length) : stepText,
-      icon: isReasoning ? '🗨️' : '💭',
+      icon: isReasoning ? MessageSquareText : Zap,
       isReasoning,
       time: stepTime ? formatTime(stepTime) : '',
       sortKey: stepTime || firstLlmTime,
@@ -567,62 +623,52 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
     return a.sortOrder - b.sortOrder;
   });
 
+  const figure: CSSProperties = { color: 'var(--text)', fontWeight: 600 };
+
   return (
-    <div style={{ marginBottom: '1rem' }}>
+    <div style={{ marginBottom: 16, lineHeight: 1.45 }}>
       <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        gap: 8, marginBottom: '0.6rem',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap',
+        gap: 8, marginBottom: 10,
       }}>
-        <div style={{
-          fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase',
-          letterSpacing: '0.06em', color: '#999',
-        }}>
+        <div className="n-eyebrow">
           Activity
         </div>
         {threadId && <CopyableThreadId threadId={threadId} />}
       </div>
+      {/* Run totals. The bold figure leads each item, so the gap separates
+          them — no dots, which strand at a line end when the strip wraps. */}
       {summary.totalTokens > 0 && (
         <div style={{
-          fontSize: '0.7rem', color: '#888', marginBottom: '0.6rem',
-          padding: '0.4rem 0.6rem', backgroundColor: '#f8fafc', borderRadius: 6,
-          border: '1px solid #e8e8e8', display: 'flex', gap: '0.6rem', flexWrap: 'wrap',
+          display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 18, rowGap: 2,
+          marginBottom: 16, padding: '8px 12px',
+          backgroundColor: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius)',
+          fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', fontVariantNumeric: 'tabular-nums',
         }}>
-          {summary.cost > 0 && (
-            <>
-              <span><strong>${summary.cost.toFixed(2)}</strong></span>
-              <span style={{ color: '#ccc' }}>&middot;</span>
-            </>
-          )}
+          {summary.cost > 0 && <span><strong style={figure}>${summary.cost.toFixed(2)}</strong></span>}
           <span title="Every token the model processed, cache included">
-            <strong>{summary.totalTokens.toLocaleString()}</strong> tokens{' '}
-            <span style={{ color: '#aaa' }}>
+            <strong style={figure}>{summary.totalTokens.toLocaleString()}</strong> tokens{' '}
+            <span style={{ color: 'var(--muted)' }}>
               ({summary.inputTokens.toLocaleString()} full-price in · {summary.cacheRead.toLocaleString()} cache read · {summary.cacheWrite.toLocaleString()} cache write · {summary.outputTokens.toLocaleString()} out)
             </span>
           </span>
-          <span style={{ color: '#ccc' }}>&middot;</span>
           <span title="What plan limits count: cache reads count ~0.05, cache writes 1.25">
-            {summary.billable.toLocaleString()} billable
+            <strong style={figure}>{summary.billable.toLocaleString()}</strong> billable
           </span>
           {summary.cacheWrite > 0 && (
-            <>
-              <span style={{ color: '#ccc' }}>&middot;</span>
-              <span title="Tokens read back from the cache for each token written to it — higher is better">
-                cache {(summary.cacheRead / summary.cacheWrite).toFixed(1)}:1
-              </span>
-            </>
+            <span title="Tokens read back from the cache for each token written to it — higher is better">
+              cache <strong style={figure}>{(summary.cacheRead / summary.cacheWrite).toFixed(1)}:1</strong>
+            </span>
           )}
-          <span style={{ color: '#ccc' }}>&middot;</span>
-          <span>{summary.llmCount} LLM calls</span>
-          <span style={{ color: '#ccc' }}>&middot;</span>
-          <span>{summary.toolCount} tool calls</span>
-          <span style={{ color: '#ccc' }}>&middot;</span>
-          <span>{summary.totalDuration}s</span>
+          <span><strong style={figure}>{summary.llmCount}</strong> LLM calls</span>
+          <span><strong style={figure}>{summary.toolCount}</strong> tool calls</span>
+          <span><strong style={figure}>{summary.totalDuration}s</strong></span>
         </div>
       )}
-      <div style={{ position: 'relative', paddingLeft: '1.5rem' }}>
-        <div style={{
-          position: 'absolute', left: '0.45rem', top: 4, bottom: 4,
-          width: 2, backgroundColor: '#e8e8e8', borderRadius: 1,
+      <div style={{ position: 'relative', paddingLeft: RAIL_GUTTER }}>
+        <div aria-hidden style={{
+          position: 'absolute', left: RAIL_CENTRE - 1, top: 8, bottom: 8,
+          width: 2, backgroundColor: 'var(--line)', borderRadius: 1,
         }} />
 
         {allEvents.map((evt, i) => {
@@ -633,41 +679,28 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
             const enrichedCall = enrichedCalls[evt.call.id];
             const displayCall = enrichedCall ?? evt.call;
             return (
-              <div key={key} style={{ marginBottom: '0.5rem', position: 'relative', marginLeft: evt.nested ? '1.5rem' : 0 }}>
-                <div onClick={() => toggle(key)} style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}>
-                  <div style={{
-                    position: 'absolute', left: '-1.15rem', top: 2,
-                    width: evt.nested ? 6 : 8, height: evt.nested ? 6 : 8, borderRadius: '50%',
-                    backgroundColor: evt.nested ? '#d4c4ae' : '#c4a882',
-                    marginTop: evt.nested ? 1 : 0,
-                  }} />
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: '0.78rem', color: '#333' }}>{evt.icon} {evt.label}</span>
-                    <span style={{ fontSize: '0.65rem', color: '#aaa', marginLeft: '0.35rem' }}>{displayCall.model}</span>
-                    {displayCall.duration_ms != null && (
-                      <span style={{
-                        fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
-                        borderRadius: 8, backgroundColor: '#fefcbf', color: '#975a16', marginLeft: '0.4rem',
-                      }}>
-                        {displayCall.duration_ms}ms
-                      </span>
-                    )}
-                    {displayCall.input_tokens != null && (
-                      <span style={{
-                        fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
-                        borderRadius: 8, backgroundColor: '#f0f0f0', color: '#666', marginLeft: '0.3rem',
-                      }}>
-                        {callTokenTotal(displayCall).toLocaleString()} tokens
-                        {displayCall.cost_usd != null && ` · $${displayCall.cost_usd.toFixed(3)}`}
-                      </span>
-                    )}
-                  </div>
-                  <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>
-                    {evt.time}
-                  </span>
-                </div>
-                {isExpanded && <LlmCallDetail call={displayCall} />}
-              </div>
+              <TimelineRow
+                key={key}
+                nested={evt.nested}
+                smallDot={evt.nested}
+                dotColor={evt.nested ? 'var(--muted-soft)' : 'var(--icon)'}
+                time={evt.time}
+                onClick={() => toggle(key)}
+                expanded={isExpanded}
+                after={isExpanded && <LlmCallDetail call={displayCall} />}
+              >
+                <EventLabel icon={evt.icon} style={{ color: 'var(--text)' }}>{evt.label}</EventLabel>
+                <span style={META_STYLE}>{displayCall.model}</span>
+                {displayCall.duration_ms != null && (
+                  <Badge>{displayCall.duration_ms}ms</Badge>
+                )}
+                {displayCall.input_tokens != null && (
+                  <Badge>
+                    {callTokenTotal(displayCall).toLocaleString()} tokens
+                    {displayCall.cost_usd != null && ` · $${displayCall.cost_usd.toFixed(3)}`}
+                  </Badge>
+                )}
+              </TimelineRow>
             );
           }
 
@@ -676,170 +709,107 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
             const isExpanded = expandedItems.has(key);
             const isFailed = evt.tc.status === 'failed';
             return (
-              <div key={key} style={{ marginBottom: '0.5rem', position: 'relative' }}>
-                <div onClick={() => toggle(key)} style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}>
-                  <div style={{
-                    position: 'absolute', left: '-1.15rem', top: 2,
-                    width: 8, height: 8, borderRadius: '50%',
-                    backgroundColor: isFailed ? '#f56565' : '#4d65ff',
-                  }} />
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: '0.78rem', color: isFailed ? '#c53030' : '#333' }}>
-                      {evt.icon} {evt.label}
-                    </span>
-                    {evt.tc.duration_ms != null && (
-                      <span style={{
-                        fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
-                        borderRadius: 8, backgroundColor: '#e8f0fe', color: '#1a56db', marginLeft: '0.4rem',
-                      }}>
-                        {evt.tc.duration_ms}ms
-                      </span>
-                    )}
-                    {isFailed && (
-                      <span style={{
-                        fontSize: '0.6rem', fontWeight: 600, padding: '0.1rem 0.35rem',
-                        borderRadius: 8, backgroundColor: '#fff5f5', color: '#c53030', marginLeft: '0.4rem',
-                      }}>
-                        FAILED
-                      </span>
-                    )}
-                  </div>
-                  <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>
-                    {evt.time}
-                  </span>
-                </div>
-                {isExpanded && <ToolCallDetail tc={evt.tc} />}
-              </div>
+              <TimelineRow
+                key={key}
+                dotColor={isFailed ? 'var(--error)' : 'var(--icon)'}
+                time={evt.time}
+                onClick={() => toggle(key)}
+                expanded={isExpanded}
+                after={isExpanded && <ToolCallDetail tc={evt.tc} />}
+              >
+                <EventLabel icon={evt.icon} tone={isFailed ? 'inherit' : 'muted'} style={{ color: isFailed ? 'var(--error)' : 'var(--text)' }}>
+                  {evt.label}
+                </EventLabel>
+                {evt.tc.duration_ms != null && (
+                  <Badge>{evt.tc.duration_ms}ms</Badge>
+                )}
+                {isFailed && <Badge tone="error">Failed</Badge>}
+              </TimelineRow>
             );
           }
 
           if (evt.type === 'approval') {
             const isApproved = evt.label === 'Thread approved';
             return (
-              <div key={`approval-${i}`} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '0.5rem', position: 'relative' }}>
-                <div style={{
-                  position: 'absolute', left: '-1.15rem', top: 2,
-                  width: 8, height: 8, borderRadius: '50%',
-                  backgroundColor: isApproved ? '#28a745' : '#dc3545',
-                }} />
-                <div style={{ flex: 1 }}>
-                  <span style={{ fontSize: '0.78rem', color: '#333', fontWeight: 600 }}>{evt.icon} {evt.label}</span>
-                  <span style={{ fontSize: '0.72rem', color: '#888', marginLeft: '0.4rem' }}>{evt.detail}</span>
-                </div>
-                <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>{evt.time}</span>
-              </div>
+              <TimelineRow key={`approval-${i}`} dotColor={isApproved ? 'var(--ok)' : 'var(--error)'} time={evt.time}>
+                <EventLabel icon={evt.icon} style={{ color: 'var(--text)', fontWeight: 600 }}>{evt.label}</EventLabel>
+                <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{evt.detail}</span>
+              </TimelineRow>
             );
           }
 
           if (evt.type === 'submission') {
             const isSuccess = evt.label === 'Submitted to external system';
             return (
-              <div key={`submission-${i}`} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '0.5rem', position: 'relative' }}>
-                <div style={{
-                  position: 'absolute', left: '-1.15rem', top: 2,
-                  width: 8, height: 8, borderRadius: '50%',
-                  backgroundColor: isSuccess ? '#4d65ff' : '#dc3545',
-                }} />
-                <div style={{ flex: 1 }}>
-                  <span style={{ fontSize: '0.78rem', color: '#333', fontWeight: 600 }}>{evt.icon} {evt.label}</span>
-                  <div style={{ fontSize: '0.72rem', color: '#666', marginTop: '0.15rem' }}>{evt.detail}</div>
-                </div>
-                <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>{evt.time}</span>
-              </div>
+              <TimelineRow
+                key={`submission-${i}`}
+                dotColor={isSuccess ? 'var(--ok)' : 'var(--error)'}
+                time={evt.time}
+                after={<div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{evt.detail}</div>}
+              >
+                <EventLabel icon={evt.icon} style={{ color: 'var(--text)', fontWeight: 600 }}>{evt.label}</EventLabel>
+              </TimelineRow>
             );
           }
 
           if (evt.type === 'thinking') {
             return (
-              <div key={`thinking-${evt.idx}`} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '0.35rem', position: 'relative' }}>
-                <div style={{
-                  position: 'absolute', left: '-1.15rem', top: 2,
-                  width: 8, height: 8, borderRadius: '50%', backgroundColor: '#b0b0b0',
-                }} />
-                <div style={{ flex: 1 }}>
-                  <span style={{ fontSize: '0.72rem', color: '#888' }}>{evt.icon} {evt.label}</span>
-                  <span style={{
-                    fontSize: '0.6rem', fontWeight: 600, marginLeft: '0.4rem',
-                    padding: '0.1rem 0.35rem', borderRadius: 8,
-                    backgroundColor: evt.isReasoning ? '#eef6ff' : '#f3f0f8',
-                    color: evt.isReasoning ? '#2563eb' : '#6c3483',
-                  }}>
-                    {evt.isReasoning ? 'reasoning' : 'event'}
-                  </span>
-                </div>
-                {evt.time && (
-                  <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>
-                    {evt.time}
-                  </span>
-                )}
-              </div>
+              <TimelineRow key={`thinking-${evt.idx}`} secondary spacing={6} dotColor="var(--muted-soft)" time={evt.time}>
+                <EventLabel icon={evt.icon} style={{ color: 'var(--muted)' }}>{evt.label}</EventLabel>
+                <Badge tone={evt.isReasoning ? 'info' : 'neutral'}>
+                  {evt.isReasoning ? 'Reasoning' : 'Event'}
+                </Badge>
+              </TimelineRow>
             );
           }
 
           // Routing or message events
           if (evt.type === 'message') {
             const isUser = evt.role === 'user';
-            const dotColor = isUser ? '#c4a882' : '#48bb78';
             const isExpanded = expandedMessages.has(evt.index);
             const preview = evt.text.length > 120 ? evt.text.slice(0, 120) + '…' : evt.text;
             return (
-              <div key={`msg-${i}`} style={{ marginBottom: '0.5rem', position: 'relative' }}>
-                <div
-                  onClick={() => toggleMsg(evt.index)}
-                  style={{ display: 'flex', alignItems: 'flex-start', cursor: 'pointer' }}
-                >
+              <TimelineRow
+                key={`msg-${i}`}
+                dotColor="var(--icon)"
+                time={evt.time}
+                onClick={() => toggleMsg(evt.index)}
+                expanded={evt.text.length > 120 ? isExpanded : undefined}
+                after={
                   <div style={{
-                    position: 'absolute', left: '-1.15rem', top: 2,
-                    width: 8, height: 8, borderRadius: '50%', backgroundColor: dotColor,
-                  }} />
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: '0.78rem', color: '#333' }}>{evt.icon} {evt.label}</span>
-                    <span style={{
-                      fontSize: '0.6rem', fontWeight: 600, marginLeft: '0.4rem',
-                      padding: '0.1rem 0.35rem', borderRadius: 8,
-                      backgroundColor: '#f0faf4', color: '#2f855a',
-                    }}>
-                      conversation
-                    </span>
+                    marginTop: 4,
+                    padding: '8px 10px',
+                    backgroundColor: isUser ? 'var(--surface-alt)' : 'var(--bg)',
+                    border: `1px solid ${isUser ? 'var(--surface-alt)' : 'var(--line)'}`,
+                    borderRadius: 'var(--radius)',
+                    fontSize: 'var(--fs-sm)',
+                    color: 'var(--text-soft)',
+                    lineHeight: 1.45,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}>
+                    {isExpanded ? evt.text : preview}
+                    {evt.text.length > 120 && (
+                      <span style={{ color: 'var(--muted)', marginLeft: '0.25rem', cursor: 'pointer' }}>
+                        {isExpanded ? ' (less)' : ''}
+                      </span>
+                    )}
                   </div>
-                  <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>{evt.time}</span>
-                </div>
-                <div style={{
-                  marginTop: '0.25rem',
-                  marginLeft: '0.1rem',
-                  padding: '0.4rem 0.6rem',
-                  backgroundColor: isUser ? '#faf8f5' : '#f8fff9',
-                  border: `1px solid ${isUser ? '#e8ddd0' : '#c3e6cb'}`,
-                  borderRadius: 6,
-                  fontSize: '0.75rem',
-                  color: '#555',
-                  lineHeight: 1.4,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                }}>
-                  {isExpanded ? evt.text : preview}
-                  {evt.text.length > 120 && (
-                    <span style={{ color: '#999', marginLeft: '0.25rem', cursor: 'pointer' }}>
-                      {isExpanded ? ' (less)' : ''}
-                    </span>
-                  )}
-                </div>
-              </div>
+                }
+              >
+                <EventLabel icon={evt.icon} style={{ color: 'var(--text)' }}>{evt.label}</EventLabel>
+                <Badge>Conversation</Badge>
+              </TimelineRow>
             );
           }
 
-          // Routing events
+          // Routing events. A follow-up's label carries the supervisor's whole
+          // reason: let it fill the line and wrap beside the time on a wide
+          // pane (the time drops under it only when the pane is narrow).
           return (
-            <div key={`routing-${i}`} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '0.5rem', position: 'relative' }}>
-              <div style={{
-                position: 'absolute', left: '-1.15rem', top: 2,
-                width: 8, height: 8, borderRadius: '50%', backgroundColor: '#ccc',
-              }} />
-              <div style={{ flex: 1 }}>
-                <span style={{ fontSize: '0.78rem', color: '#555' }}>{evt.icon} {evt.label}</span>
-              </div>
-              <span style={{ fontSize: '0.65rem', color: '#bbb', marginLeft: '0.5rem', whiteSpace: 'nowrap' }}>{evt.time}</span>
-            </div>
+            <TimelineRow key={`routing-${i}`} dotColor="var(--muted-soft)" time={evt.time}>
+              <EventLabel icon={evt.icon} style={{ color: 'var(--text-soft)', flex: '1 1 0', minWidth: 'min(100%, 260px)' }}>{evt.label}</EventLabel>
+            </TimelineRow>
           );
         })}
       </div>

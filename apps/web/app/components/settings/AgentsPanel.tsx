@@ -1,12 +1,18 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { AgentConfig } from '../../types';
 import type { TeamApp } from '../../hooks/useTeam';
+import Badge from '../ui/Badge';
+import BackLink from '../ui/BackLink';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 
-const labelStyle: React.CSSProperties = { fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' as const, marginBottom: 4, display: 'block' };
-const inputStyle: React.CSSProperties = { width: '100%', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: '0.85rem', fontFamily: 'inherit', boxSizing: 'border-box' as const };
+// The small help line under a field label.
+const helpStyle: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)' };
 
 // In unified mode only these rows carry a real prompt: the Norm prompt (base)
 // and the router's classifier prompt. Everyone else has a personality line.
@@ -87,32 +93,36 @@ export default function AgentsPanel() {
     } catch { /* ignore */ }
   };
 
-  if (loading) return <div style={{ padding: '1rem', color: '#999' }}>Loading...</div>;
+  if (loading) return <PageState kind="loading" title="Loading agents…" />;
 
   // --- Detail/Edit View ---
   if (editing) {
+    // The agent's own Apps, then Norm Core (shared by every agent).
+    const apps = [...appsFor(editing.slug), ...coreApps()];
     return (
-      <div style={{ padding: '1rem', maxWidth: 800 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700 }}>{editing.display_name}</h3>
-            <span style={{ fontSize: '0.72rem', color: '#999' }}>{editing.slug}</span>
-          </div>
-          <button onClick={() => setEditing(null)} style={{ padding: '4px 12px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 6, backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>Back</button>
+      <div style={{ maxWidth: 800, lineHeight: 1.45 }}>
+        <div style={{ marginBottom: 8 }}>
+          <BackLink label="Back to agents" onClick={() => setEditing(null)} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: 10, rowGap: 2, marginBottom: 16 }}>
+          <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{editing.display_name}</h3>
+          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{editing.slug}</span>
         </div>
 
         {/* Description */}
-        <div style={{ marginBottom: 12 }}>
-          <label style={labelStyle}>Description</label>
-          <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} style={inputStyle} placeholder="What this agent does..." />
+        <div style={{ marginBottom: 16 }}>
+          <label className="n-label" htmlFor="agent-description">Description</label>
+          <input id="agent-description" className="n-input" style={{ width: '100%' }}
+            value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="What this agent does..." />
         </div>
 
         {unified && !PROMPT_OWNERS.has(editing.slug) && (
-          <div style={{ marginBottom: 12 }}>
-            <label style={labelStyle}>Personality</label>
-            <input value={form.persona} onChange={e => setForm(f => ({ ...f, persona: e.target.value }))} style={inputStyle}
+          <div style={{ marginBottom: 16 }}>
+            <label className="n-label" htmlFor="agent-persona">Personality</label>
+            <input id="agent-persona" className="n-input" style={{ width: '100%' }}
+              value={form.persona} onChange={e => setForm(f => ({ ...f, persona: e.target.value }))}
               placeholder="In here you're the…" />
-            <div style={{ fontSize: '0.72rem', color: '#8a8a8a', marginTop: 4 }}>
+            <div style={{ ...helpStyle, marginTop: 4 }}>
               Tone only — rules, tools and approvals all come from the Norm prompt and this agent&apos;s Apps.
             </div>
           </div>
@@ -120,83 +130,80 @@ export default function AgentsPanel() {
 
         {/* System Prompt (legacy per-agent mode, or the Norm/router prompt in unified mode) */}
         {(!unified || PROMPT_OWNERS.has(editing.slug)) && (
-        <div style={{ marginBottom: 12 }}>
-          <label style={labelStyle}>{unified && editing.slug === 'base' ? 'Norm prompt (every conversation)' : 'System Prompt'}</label>
+        <div style={{ marginBottom: 16 }}>
+          <label className="n-label" htmlFor="agent-system-prompt">{unified && editing.slug === 'base' ? 'Norm prompt (every conversation)' : 'System prompt'}</label>
           <textarea
+            id="agent-system-prompt"
+            className="n-input"
             value={form.system_prompt}
             onChange={e => setForm(f => ({ ...f, system_prompt: e.target.value }))}
             rows={18}
-            style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.78rem', resize: 'vertical', lineHeight: 1.5 }}
+            style={{ display: 'block', width: '100%', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', lineHeight: 1.5 }}
           />
         </div>
         )}
 
         {/* Apps & tools — derived from the App Map (read-only) */}
-        <div style={{ marginBottom: 16 }}>
-          <label style={labelStyle}>Apps &amp; tools</label>
-          <div style={{ fontSize: '0.74rem', color: '#8a8a8a', marginBottom: 8 }}>
+        <div style={{ marginBottom: 20 }}>
+          <div className="n-label">Apps &amp; tools</div>
+          <div style={{ ...helpStyle, marginBottom: 8 }}>
             What this agent can use comes from the Apps bound to it. Change it in the catalog seed;
-            see everything in Settings → App Map.
+            see everything in Settings → App map.
           </div>
           {mapApps === null ? (
-            <div style={{ fontSize: '0.78rem', color: '#999' }}>Loading…</div>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>Loading…</div>
           ) : (
             <>
-              {[...appsFor(editing.slug), ...coreApps()].map((a) => (
-                <div key={a.slug} style={{ border: '1px solid #edf2f7', borderRadius: 8, padding: '0.6rem 0.75rem', marginBottom: '0.5rem', backgroundColor: '#fafafa' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <span style={{ fontWeight: 600, fontSize: '0.84rem' }}>{a.name}</span>
-                    {a.member === '*' && <span style={{ fontSize: '0.64rem', color: '#8a8a8a' }}>shared by every agent</span>}
-                    {!a.switchable && <span style={{ fontSize: '0.62rem', fontWeight: 700, color: '#2e5a7d', background: '#e8f0f6', borderRadius: 8, padding: '1px 7px' }}>ALWAYS ON</span>}
-                    <span style={{ flex: 1 }} />
-                    <span style={{ fontSize: '0.7rem', color: '#8a8a8a' }}>
-                      {a.required_connections.length ? `uses ${a.required_connections.map((c) => c.display_name).join(', ')}` : 'runs on Norm'}
-                    </span>
-                  </div>
-                  {a.tools.length > 0 ? (
-                    <ul style={{ margin: 0, paddingLeft: 16 }}>
-                      {a.tools.map((t) => (
-                        <li key={t.key} style={{ fontSize: '0.76rem', color: '#444' }}>
-                          <span style={{ fontFamily: 'monospace' }}>{t.key}</span>
-                          <span style={{ color: '#999' }}> · {t.type}{t.writes ? ' · writes' : ''}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div style={{ fontSize: '0.74rem', color: '#999' }}>no chat tools</div>
-                  )}
-                  {a.skills.length > 0 && (
-                    <div style={{ fontSize: '0.72rem', color: '#6b6b6b', marginTop: 4 }}>
-                      Skills: {a.skills.map((sk) => sk.label).join(', ')}
+              {apps.length > 0 && (
+                <div className="n-card" style={{ overflow: 'hidden' }}>
+                  {apps.map((a, i) => (
+                    <div key={a.slug} style={{ padding: '10px 14px', borderTop: i > 0 ? '1px solid var(--line)' : 'none' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 4, marginBottom: 4 }}>
+                        <span style={{ fontWeight: 600, fontSize: 'var(--fs-base)', color: 'var(--text)' }}>{a.name}</span>
+                        {a.member === '*' && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>shared by every agent</span>}
+                        {!a.switchable && <Badge>Always on</Badge>}
+                        <span style={{ flex: 1 }} />
+                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+                          {a.required_connections.length ? `uses ${a.required_connections.map((c) => c.display_name).join(', ')}` : 'runs on Norm'}
+                        </span>
+                      </div>
+                      {a.tools.length > 0 ? (
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                          {a.tools.map((t) => (
+                            <li key={t.key} style={{ overflowWrap: 'anywhere' }}>
+                              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text)' }}>{t.key}</span>
+                              <span style={{ color: 'var(--muted)' }}> · {t.type}{t.writes ? ' · writes' : ''}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No chat tools</div>
+                      )}
+                      {a.skills.length > 0 && (
+                        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-soft)', marginTop: 4 }}>
+                          Skills: {a.skills.map((sk) => sk.label).join(', ')}
+                        </div>
+                      )}
                     </div>
-                  )}
+                  ))}
                 </div>
-              ))}
+              )}
               {appsFor(editing.slug).length === 0 && editing.slug !== 'base' && (
-                <div style={{ fontSize: '0.76rem', color: '#8a8a8a' }}>No Apps are bound to this agent yet — it uses Norm Core only.</div>
+                <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginTop: apps.length > 0 ? 8 : 0 }}>No Apps are bound to this agent yet — it uses Norm Core only.</div>
               )}
             </>
           )}
         </div>
 
         {/* Actions */}
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={handleSave} disabled={saving} style={{
-            padding: '6px 20px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6,
-            backgroundColor: '#c4a882', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-          }}>{saving ? 'Saving...' : 'Save'}</button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <Button variant="primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+          <Button onClick={() => setEditing(null)}>Cancel</Button>
           {/* In unified mode a member's old prompt is the rollback copy — nothing
               reads it, so there's nothing to clear from here. */}
           {editing.has_prompt && (!unified || PROMPT_OWNERS.has(editing.slug)) && (
-            <button onClick={handleReset} style={{
-              padding: '6px 20px', fontSize: '0.8rem', fontWeight: 500, border: '1px solid #ddd', borderRadius: 6,
-              backgroundColor: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit',
-            }}>Clear Prompt</button>
+            <Button variant="danger" onClick={handleReset} style={{ marginLeft: 'auto' }}>Clear prompt</Button>
           )}
-          <button onClick={() => setEditing(null)} style={{
-            padding: '6px 20px', fontSize: '0.8rem', fontWeight: 500, border: '1px solid #ddd', borderRadius: 6,
-            backgroundColor: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit',
-          }}>Cancel</button>
         </div>
       </div>
     );
@@ -204,43 +211,49 @@ export default function AgentsPanel() {
 
   // --- List View ---
   return (
-    <div style={{ padding: '1rem' }}>
-      <h3 style={{ margin: '0 0 1rem', fontSize: '0.95rem', fontWeight: 700 }}>Agents</h3>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        {agents.map(agent => (
-          <div
-            key={agent.slug}
-            onClick={() => openEdit(agent)}
-            style={{
-              border: '1px solid #e2e8f0', borderRadius: 10, padding: '1rem',
-              backgroundColor: '#fff', cursor: 'pointer',
-              transition: 'border-color 0.15s, box-shadow 0.15s',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = '#c4a882'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.06)'; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.boxShadow = 'none'; }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontWeight: 600, fontSize: '0.9rem', color: '#333' }}>{agent.display_name}</span>
-                <span style={{ fontSize: '0.72rem', color: '#bbb' }}>{agent.slug}</span>
-                {!agent.has_prompt && (
-                  <span style={{ fontSize: '0.65rem', backgroundColor: '#fee2e2', color: '#991b1b', padding: '2px 8px', borderRadius: 10, fontWeight: 500 }}>No prompt</span>
-                )}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {mapApps && appsFor(agent.slug).length > 0 && (
-                  <span style={{ fontSize: '0.65rem', color: '#999' }}>{appsFor(agent.slug).length} app{appsFor(agent.slug).length !== 1 ? 's' : ''}</span>
-                )}
-                <span style={{ fontSize: '0.72rem', color: '#c4a882' }}>Edit</span>
-              </div>
-            </div>
-            {agent.description && (
-              <div style={{ fontSize: '0.78rem', color: '#999', marginTop: 4 }}>{agent.description}</div>
-            )}
-          </div>
-        ))}
+    <div style={{ lineHeight: 1.45 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: 10, rowGap: 2, marginBottom: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>Agents</h3>
+        {agents.length > 0 && (
+          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+            {agents.length} {agents.length === 1 ? 'agent' : 'agents'}
+          </span>
+        )}
       </div>
+
+      {agents.length > 0 && (
+        <div className="n-card" style={{ overflow: 'hidden' }}>
+          {agents.map((agent, i) => (
+            <button
+              key={agent.slug}
+              type="button"
+              className="n-row"
+              onClick={() => openEdit(agent)}
+              style={{ borderRadius: 0, padding: '12px 16px', lineHeight: 1.4, borderTop: i > 0 ? '1px solid var(--line)' : 'none' }}
+            >
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 2 }}>
+                  <span style={{ fontWeight: 600, fontSize: 'var(--fs-base)', color: 'var(--text)' }}>{agent.display_name}</span>
+                  <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 400, color: 'var(--muted)' }}>{agent.slug}</span>
+                  {!agent.has_prompt && <Badge tone="error">No prompt</Badge>}
+                </span>
+                {agent.description && (
+                  <span style={{ display: 'block', fontSize: 'var(--fs-sm)', fontWeight: 400, color: 'var(--muted)', marginTop: 2 }}>{agent.description}</span>
+                )}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '0 0 auto' }}>
+                {mapApps && appsFor(agent.slug).length > 0 && (
+                  <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 400, color: 'var(--muted)' }}>{appsFor(agent.slug).length} app{appsFor(agent.slug).length !== 1 ? 's' : ''}</span>
+                )}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>
+                  Edit
+                  <Icon icon={ChevronRight} size="dense" tone="muted" />
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

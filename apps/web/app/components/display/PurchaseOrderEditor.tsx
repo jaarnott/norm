@@ -1,9 +1,14 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Check, ChevronDown, ChevronRight, ChevronUp, LoaderCircle, Search, TriangleAlert, X } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch, callComponentApi, getStoredUser } from '../../lib/api';
-import { formatMoney } from '../../lib/format';
+import { formatMoney, formatNumber } from '../../lib/format';
+import Icon from '../ui/Icon';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import Badge, { type BadgeTone } from '../ui/Badge';
 
 // --- Types ---
 
@@ -124,15 +129,37 @@ function formatCurrency(n: number): string {
   return formatMoney(n);
 }
 
-const STATUS_CONFIG: Record<string, { label: string; bg: string; color: string; border: string }> = {
-  draft: { label: 'Draft', bg: '#fffbeb', color: '#92400e', border: '#fde68a' },
-  processing: { label: 'Processing...', bg: '#fff7ed', color: '#9a3412', border: '#fed7aa' },
-  submitted: { label: 'Submitted', bg: '#ecfdf5', color: '#065f46', border: '#a7f3d0' },
-  failed: { label: 'Failed', bg: '#fef2f2', color: '#991b1b', border: '#fecaca' },
-  pending_submit: { label: 'Pending', bg: '#fff7ed', color: '#9a3412', border: '#fed7aa' },
-  approved: { label: 'Approved', bg: '#ecfdf5', color: '#065f46', border: '#a7f3d0' },
-  rejected: { label: 'Rejected', bg: '#fef2f2', color: '#991b1b', border: '#fecaca' },
+// Status pill tones: a draft is informational, a submit still waiting is warn,
+// done is ok, failed/rejected is error.
+const STATUS_CONFIG: Record<string, { label: string; tone: BadgeTone }> = {
+  draft: { label: 'Draft', tone: 'info' },
+  processing: { label: 'Processing…', tone: 'neutral' },
+  submitted: { label: 'Submitted', tone: 'ok' },
+  failed: { label: 'Failed', tone: 'error' },
+  pending_submit: { label: 'Pending', tone: 'warn' },
+  approved: { label: 'Approved', tone: 'ok' },
+  rejected: { label: 'Rejected', tone: 'error' },
 };
+
+// The working document's sync dot beside the status pill.
+const SYNC_DOT: Record<string, string> = { pending_submit: 'var(--warn)', error: 'var(--error)' };
+
+// Below this card width (a phone, a narrow pane) the unit price folds under
+// the line total so the row fits without scrolling sideways.
+const COMPACT_BELOW = 560;
+
+/** Secondary line under a list choice's main text (search results): meta. */
+const SUB: React.CSSProperties = { marginTop: 2, fontSize: 'var(--fs-xs)', color: 'var(--muted)' };
+
+/** Secondary line under an order line (supplier · unit · code, "@ $19.44"):
+ *  staff check it before placing the order, so it reads at 13px. Its size is
+ *  set per layout (see `lineSubSize`). */
+const LINE_SUB: React.CSSProperties = { marginTop: 2, color: 'var(--muted)' };
+
+/** A list choice (stock search result, supplier variant): .n-option laid out as a row. */
+const CHOICE: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px' };
+
+const SPIN: React.CSSProperties = { animation: 'n-spin 1s linear infinite' };
 
 // --- Component ---
 
@@ -172,6 +199,21 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
   const [userTookOver, setUserTookOver] = useState(false);
   const [pollExhausted, setPollExhausted] = useState(false);
   const lastVersionRef = useRef(0);
+
+  // Layout only: the card's own width picks the compact table (see COMPACT_BELOW).
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [compact, setCompact] = useState(false);
+  const notesId = React.useId();
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setCompact(w < COMPACT_BELOW);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Embedded-only: a raw draft can carry a not-yet-resolved line — a bare
   // {itemId, quantity} the sandbox can't expand, or an ambiguous item parked
@@ -428,12 +470,28 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
     }
   }, [stockItems, isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const title = (props?.title as string) || 'Purchase Order';
+  const title = (props?.title as string) || 'Purchase order';
   const grandTotal = lines.reduce((sum, l) => sum + l.quantity * l.unit_price, 0);
   const hasPrice = lines.some(l => l.unit_price > 0);
   const interactive = !!onAction || !!workingDocId;
   const isSubmitted = status === 'submitted' || status === 'approved';
   const statusCfg = STATUS_CONFIG[status] || STATUS_CONFIG.draft;
+
+  // Header: the supplier names the order when there is exactly one (a generic
+  // title becomes "Purchase order — Bidfood"); the meta line carries the rest.
+  const suppliers = Array.from(new Set(lines.map(l => (l.supplier || '').trim()).filter(Boolean)));
+  const singleSupplier = suppliers.length === 1 ? suppliers[0] : '';
+  const heading = singleSupplier && /^purchase order$/i.test(title.trim())
+    ? `Purchase order — ${singleSupplier}`
+    : title.replace(/^Purchase Order\b/, 'Purchase order');
+  const metaParts = [
+    initial.venue && !heading.includes(initial.venue) ? initial.venue : '',
+    singleSupplier
+      ? (heading.includes(singleSupplier) ? '' : singleSupplier)
+      : suppliers.length > 1 ? `${suppliers.length} suppliers` : '',
+    `${lines.length} line${lines.length !== 1 ? 's' : ''}`,
+    initial.reference ? `Ref ${initial.reference}` : '',
+  ].filter(Boolean);
 
   // PATCH working document helper
   const patchDoc = useCallback(async (ops: Record<string, unknown>[]) => {
@@ -619,351 +677,337 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
     }
   }, [workingDocId, patchDoc]);
 
-  const inputStyle: React.CSSProperties = {
-    padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: 4,
-    fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box',
-    outline: 'none',
-  };
+  // ── Layout ── Columns: Item · Qty · Unit price · Line total · remove. In a
+  // compact card the unit price moves under the line total ("@ $19.44").
+  const editable = interactive && !isSubmitted;
+  const colCount = 2 + (hasPrice ? (compact ? 1 : 2) : 0) + (editable ? 1 : 0);
+  const padX = compact ? 8 : 12;
+  const edge = compact ? 12 : 16; // first and last cell line up with the card's gutter
+  const cell = (first = false, last = false): React.CSSProperties => ({
+    paddingLeft: first ? edge : padX,
+    paddingRight: last ? edge : padX,
+  });
+  const totalRule: React.CSSProperties = { borderTop: '1px solid var(--line-strong)', borderBottom: 'none' };
+  // 13px under a line: --fs-sm, or in a compact card (a phone) --fs-xs, which
+  // is 13px on touch screens and wraps less in the narrow item column.
+  const lineSubSize = compact ? 'var(--fs-xs)' : 'var(--fs-sm)';
 
   return (
-    <div data-testid="po-editor" style={{
-      border: '1px solid #e5e7eb', borderRadius: 10,
-      backgroundColor: '#fff', marginBottom: '0.75rem',
-      boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-    }}>
-      {/* ── Document header ── */}
-      <div style={{
-        padding: '1rem 1.25rem',
-        borderBottom: '1px solid #e5e7eb',
-        background: 'linear-gradient(to bottom, #fafafa, #fff)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.6rem' }}>
-          <span style={{ fontSize: '1rem', fontWeight: 700, color: '#111', letterSpacing: '-0.01em' }}>{title}</span>
-          <span style={{
-            fontSize: '0.68rem', fontWeight: 600,
-            padding: '2px 8px', borderRadius: 10,
-            color: statusCfg.color, backgroundColor: statusCfg.bg,
-            border: `1px solid ${statusCfg.border}`,
-          }}>{statusCfg.label}</span>
-          {workingDocId && syncStatus !== 'synced' && (
-            <span title={`Sync: ${syncStatus}`} style={{
-              width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
-              backgroundColor: syncStatus === 'pending_submit' ? '#f59e0b' : syncStatus === 'error' ? '#ef4444' : '#6b7280',
-            }} />
-          )}
-        </div>
-
-        <div style={{ display: 'flex', gap: '2rem', fontSize: '0.8rem', color: '#555' }}>
-          {initial.reference && (
-            <div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>Reference</div>
-              <div style={{ fontWeight: 600, color: '#111', fontFamily: 'monospace', fontSize: '0.82rem' }}>{initial.reference}</div>
-            </div>
-          )}
-          {initial.venue && (
-            <div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>Deliver to</div>
-              <div style={{ fontWeight: 600, color: '#111' }}>{initial.venue}</div>
-            </div>
-          )}
-          <div>
-            <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>Items</div>
-            <div style={{ fontWeight: 600, color: '#111' }}>{lines.length} line{lines.length !== 1 ? 's' : ''}</div>
+    <div ref={rootRef} data-testid="po-editor" className="n-card" style={{ marginBottom: 12 }}>
+      {/* ── Header: title, venue · supplier · lines, status ── */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: `14px ${edge}px 12px` }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 'var(--fs-md)', fontWeight: 600, lineHeight: 1.35, color: 'var(--text)', overflowWrap: 'anywhere' }}>
+            {heading}
           </div>
+          <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' }}>
+            {metaParts.join(' · ')}
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '0 0 auto', marginTop: 2 }}>
+          {workingDocId && syncStatus !== 'synced' && (
+            <span
+              role="img"
+              aria-label={`Sync: ${syncStatus}`}
+              title={`Sync: ${syncStatus}`}
+              style={{ width: 8, height: 8, borderRadius: '50%', display: 'inline-block', backgroundColor: SYNC_DOT[syncStatus] || 'var(--icon)' }}
+            />
+          )}
+          <Badge tone={statusCfg.tone}>{statusCfg.label}</Badge>
         </div>
       </div>
 
       {/* ── Line items ── */}
-      <div style={{ padding: '0 1.25rem' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', lineHeight: 1.6 }}>
+      <div style={{ overflowX: 'auto' }}>
+        <table className="n-table">
           <thead>
-            <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
-              <th style={{ textAlign: 'left', padding: '0.6rem 0.5rem', fontWeight: 600, color: '#6b7280', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Code</th>
-              <th style={{ textAlign: 'left', padding: '0.6rem 0.5rem', fontWeight: 600, color: '#6b7280', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Product</th>
-              <th style={{ textAlign: 'left', padding: '0.6rem 0.5rem', fontWeight: 600, color: '#6b7280', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Supplier</th>
-              <th style={{ textAlign: 'center', padding: '0.6rem 0.5rem', fontWeight: 600, color: '#6b7280', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Unit</th>
-              <th style={{ textAlign: 'right', padding: '0.6rem 0.5rem', fontWeight: 600, color: '#6b7280', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em', width: 70 }}>Qty</th>
-              {hasPrice && (
-                <>
-                  <th style={{ textAlign: 'right', padding: '0.6rem 0.5rem', fontWeight: 600, color: '#6b7280', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Price</th>
-                  <th style={{ textAlign: 'right', padding: '0.6rem 0.5rem', fontWeight: 600, color: '#6b7280', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Total</th>
-                </>
-              )}
-              {interactive && !isSubmitted && <th style={{ width: 36 }} />}
+            <tr>
+              <th style={cell(true)}>Item</th>
+              <th className="num" style={cell(false, !hasPrice && !editable)}>Qty</th>
+              {hasPrice && !compact && <th className="num" style={cell()}>Unit price</th>}
+              {hasPrice && <th className="num" style={cell(false, !editable)}>{compact ? 'Total' : 'Line total'}</th>}
+              {editable && <th style={{ width: 1, padding: 0 }} />}
             </tr>
           </thead>
           <tbody>
             {lines.map((l, i) => {
               // Resolve variants: use stored variants or look up from reference data
               const variants = l.variants || (l.itemId ? stockItems.find(si => si.id === l.itemId)?.suppliers : undefined) || [];
+              const canPick = variants.length > 1;
+              const open = variantDropdown === i;
+              const variantText = [l.supplier, l.unit, l.stock_code].filter(Boolean).join(' · ');
               return (
-              <tr key={l.id || i} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                <td style={{ padding: '0.5rem 0.5rem', position: 'relative' }}>
-                  {variants.length > 1 ? (
-                    <>
-                      <span
-                        onClick={() => setVariantDropdown(variantDropdown === i ? null : i)}
-                        style={{ color: '#2563eb', fontFamily: 'monospace', fontSize: '0.78rem', cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted' }}
-                        title="Click to change supplier/variant"
-                      >
-                        {l.stock_code || '—'}
-                      </span>
-                      {variantDropdown === i && (
-                        <div style={{
-                          position: 'absolute', top: '100%', left: 0, zIndex: 50, minWidth: 320,
-                          backgroundColor: '#fff', border: '1px solid #e2ddd7', borderRadius: 8,
-                          boxShadow: '0 4px 16px rgba(0,0,0,0.1)', maxHeight: 200, overflowY: 'auto',
-                        }}>
-                          {variants.map(v => (
-                            <div
-                              key={v.id}
-                              onClick={() => handleVariantChange(i, v)}
-                              style={{
-                                padding: '0.4rem 0.6rem', cursor: 'pointer', fontSize: '0.72rem',
-                                borderBottom: '1px solid #f3f4f6',
-                                backgroundColor: v.id === l.variantId ? '#f0f8ff' : '#fff',
-                                display: 'flex', justifyContent: 'space-between', gap: 8,
-                              }}
-                              onMouseEnter={e => (e.currentTarget.style.backgroundColor = v.id === l.variantId ? '#f0f8ff' : '#fafafa')}
-                              onMouseLeave={e => (e.currentTarget.style.backgroundColor = v.id === l.variantId ? '#f0f8ff' : '#fff')}
-                            >
-                              <span style={{ color: '#333' }}>
-                                {v.supplierName} · {v.unitName} · <span style={{ fontFamily: 'monospace' }}>{v.stockCode || '—'}</span>
-                              </span>
-                              <span style={{ fontWeight: 600, color: '#333' }}>${v.unitCost.toFixed(2)}</span>
-                            </div>
-                          ))}
-                        </div>
+                <React.Fragment key={l.id || i}>
+                  <tr>
+                    <td style={cell(true)}>
+                      <div style={{ fontWeight: 500, color: 'var(--text)', overflowWrap: 'anywhere' }}>{l.product || '—'}</div>
+                      {canPick ? (
+                        <button
+                          type="button"
+                          onClick={() => setVariantDropdown(open ? null : i)}
+                          aria-expanded={open}
+                          title="Change supplier or variant"
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 2, padding: 0,
+                            border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left',
+                            fontFamily: 'inherit', fontSize: lineSubSize, fontWeight: 500, color: 'var(--accent)',
+                          }}
+                        >
+                          <span style={{ overflowWrap: 'anywhere' }}>{variantText || 'Choose a supplier'}</span>
+                          <Icon icon={open ? ChevronUp : ChevronDown} size="meta" />
+                        </button>
+                      ) : variantText ? (
+                        <div style={{ ...LINE_SUB, fontSize: lineSubSize, overflowWrap: 'anywhere' }}>{variantText}</div>
+                      ) : null}
+                    </td>
+                    <td className="num" style={cell(false, !hasPrice && !editable)}>
+                      {editable ? (
+                        <input
+                          type="number"
+                          min={0}
+                          value={l.quantity}
+                          onChange={e => handleQtyChange(i, parseInt(e.target.value, 10) || 0)}
+                          aria-label={`Quantity of ${l.product || 'this line'}`}
+                          className="n-input"
+                          style={{ width: compact ? 60 : 72, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+                        />
+                      ) : (
+                        l.quantity
                       )}
-                    </>
-                  ) : (
-                    <span style={{ color: '#6b7280', fontFamily: 'monospace', fontSize: '0.78rem' }}>{l.stock_code || '—'}</span>
-                  )}
-                </td>
-                <td style={{ padding: '0.5rem 0.5rem', color: '#111', fontWeight: 500 }}>{l.product}</td>
-                <td style={{ padding: '0.5rem 0.5rem', color: '#6b7280' }}>{l.supplier}</td>
-                <td style={{ padding: '0.5rem 0.5rem', color: '#6b7280', textAlign: 'center' }}>{l.unit}</td>
-                <td style={{ padding: '0.5rem 0.5rem', textAlign: 'right' }}>
-                  {interactive && !isSubmitted ? (
-                    <input
-                      type="number"
-                      min={0}
-                      value={l.quantity}
-                      onChange={e => handleQtyChange(i, parseInt(e.target.value, 10) || 0)}
-                      style={{ ...inputStyle, width: 56, textAlign: 'right' }}
-                    />
-                  ) : (
-                    <span style={{ fontWeight: 600, color: '#111' }}>{l.quantity}</span>
-                  )}
-                </td>
-                {hasPrice && (
-                  <>
-                    <td style={{ padding: '0.5rem 0.5rem', textAlign: 'right', color: '#6b7280' }}>
-                      {formatCurrency(l.unit_price)}
                     </td>
-                    <td style={{ padding: '0.5rem 0.5rem', textAlign: 'right', fontWeight: 600, color: '#111' }}>
-                      {formatCurrency(l.quantity * l.unit_price)}
-                    </td>
-                  </>
-                )}
-                {interactive && !isSubmitted && (
-                  <td style={{ padding: '0.5rem 0.25rem', textAlign: 'center' }}>
-                    <button onClick={() => handleRemove(i)} title="Remove line" style={{
-                      border: 'none', background: 'none', cursor: 'pointer',
-                      color: '#d1d5db', fontSize: '0.85rem', padding: '0 4px',
-                      transition: 'color 0.15s',
-                    }} onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')} onMouseLeave={e => (e.currentTarget.style.color = '#d1d5db')}>&#10005;</button>
-                  </td>
-                )}
-              </tr>
+                    {hasPrice && !compact && (
+                      <td className="num" style={{ ...cell(), whiteSpace: 'nowrap' }}>{formatCurrency(l.unit_price)}</td>
+                    )}
+                    {hasPrice && (
+                      <td className="num" style={{ ...cell(false, !editable), whiteSpace: 'nowrap' }}>
+                        {formatCurrency(l.quantity * l.unit_price)}
+                        {compact && <div style={{ ...LINE_SUB, fontSize: lineSubSize }}>@ {formatCurrency(l.unit_price)}</div>}
+                      </td>
+                    )}
+                    {editable && (
+                      <td style={{ width: 1, padding: `0 ${edge - 10}px 0 0` }}>
+                        <IconButton icon={X} label="Remove line" iconSize={16} onClick={() => handleRemove(i)} />
+                      </td>
+                    )}
+                  </tr>
+                  {/* Supplier variants: an inline list under the line, so it is
+                      never clipped by the table's scroll box or Claude's frame. */}
+                  {open && canPick && (
+                    <tr>
+                      <td colSpan={colCount} style={{ padding: `0 ${edge}px 12px`, background: 'var(--surface)' }}>
+                        <div style={{ maxWidth: 520, border: '1px solid var(--line)', borderRadius: 'var(--radius)', background: 'var(--bg)', overflow: 'hidden' }}>
+                          {variants.map((v, vi) => {
+                            const current = v.id === l.variantId;
+                            return (
+                              <button
+                                key={v.id}
+                                type="button"
+                                className="n-option"
+                                aria-current={current || undefined}
+                                onClick={() => handleVariantChange(i, v)}
+                                style={{
+                                  ...CHOICE,
+                                  borderTop: vi ? '1px solid var(--line-soft)' : 'none',
+                                  ...(current ? { background: 'var(--selected)' } : {}),
+                                }}
+                              >
+                                <span style={{ display: 'inline-flex', width: 16, flex: '0 0 auto' }}>
+                                  {current && <Icon icon={Check} size={16} tone="accent" />}
+                                </span>
+                                <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+                                  {[v.supplierName, v.unitName, v.stockCode || '—'].filter(Boolean).join(' · ')}
+                                </span>
+                                <span style={{ flex: '0 0 auto', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                                  {formatCurrency(v.unitCost)}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               );
             })}
             {lines.length === 0 && (
               <tr>
-                <td colSpan={hasPrice ? 8 : 6} style={{ padding: '1.5rem', textAlign: 'center', color: '#9ca3af', fontSize: '0.82rem' }}>
+                <td colSpan={colCount} style={{ padding: `20px ${edge}px`, textAlign: 'center', color: 'var(--muted)', fontSize: 'var(--fs-sm)', background: 'var(--bg)' }}>
                   {embedded && !userTookOver && !pollExhausted ? (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ display: 'inline-block', width: 12, height: 12, border: '2px solid #e5e7eb', borderTopColor: '#9ca3af', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                    <span role="status" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <Icon icon={LoaderCircle} size={16} tone="muted" style={SPIN} />
                       Norm is preparing this order&hellip;
                     </span>
                   ) : embedded && pollExhausted ? (
-                    'Still preparing — open in Norm to finish this order.'
+                    <span role="alert" style={{
+                      display: 'inline-flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', textAlign: 'left',
+                      borderRadius: 'var(--radius)', background: 'var(--warn-bg)', color: 'var(--warn)',
+                    }}>
+                      <Icon icon={TriangleAlert} size={16} style={{ marginTop: 1 }} />
+                      Still preparing — open in Norm to finish this order.
+                    </span>
                   ) : 'No items yet'}
                 </td>
               </tr>
             )}
+            {/* ── Add an item: search the venue's stock list ── */}
+            {editable && (
+              <tr>
+                <td colSpan={colCount} style={{ padding: `10px ${edge}px`, background: 'var(--bg)' }}>
+                  <div style={{ maxWidth: 480 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <div style={{ position: 'relative', flex: '1 1 auto', minWidth: 0 }}>
+                        <Icon icon={Search} size={16} tone="muted" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
+                        <input
+                          value={searchQuery}
+                          onChange={e => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+                          onFocus={() => searchQuery.length >= 2 && setSearchOpen(true)}
+                          placeholder={refLoading ? 'Loading stock items…' : `Search ${formatNumber(stockItems.length)} items to add…`}
+                          aria-label="Search stock items to add"
+                          disabled={refLoading}
+                          className="n-input"
+                          style={{ width: '100%', paddingLeft: 34 }}
+                        />
+                      </div>
+                      {searchQuery && (
+                        <IconButton icon={X} label="Clear search" iconSize={16} onClick={() => { setSearchQuery(''); setSearchOpen(false); }} />
+                      )}
+                    </div>
+                    {/* Results sit in the flow (not floating), so a narrow card or
+                        Claude's frame grows to show them instead of clipping. */}
+                    {searchOpen && searchResults.length > 0 && (
+                      <div className="scroll-quiet" style={{ marginTop: 6, maxHeight: 300, border: '1px solid var(--line)', borderRadius: 'var(--radius)', background: 'var(--bg)' }}>
+                        {searchResults.map((item, ri) => {
+                          const defaultVariant = item.suppliers.find(
+                            s => s.supplierId === item.defaultSupplierId && s.defaultForSupplier
+                          ) || item.suppliers.find(s => s.defaultForSupplier) || item.suppliers[0];
+                          const detail = [
+                            item.groupName,
+                            ...(defaultVariant ? [defaultVariant.supplierName, defaultVariant.unitName, defaultVariant.stockCode || 'no code'] : []),
+                          ].filter(Boolean).join(' · ');
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className="n-option"
+                              onClick={() => handleAddFromSearch(item)}
+                              style={{ ...CHOICE, justifyContent: 'space-between', borderTop: ri ? '1px solid var(--line-soft)' : 'none' }}
+                            >
+                              <span style={{ minWidth: 0 }}>
+                                <span style={{ display: 'block', fontSize: 'var(--fs-base)', fontWeight: 500, overflowWrap: 'anywhere' }}>{item.name}</span>
+                                {detail && <span style={{ ...SUB, display: 'block', overflowWrap: 'anywhere' }}>{detail}</span>}
+                              </span>
+                              {defaultVariant && (
+                                <span style={{ flex: '0 0 auto', textAlign: 'right' }}>
+                                  <span style={{ display: 'block', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                                    {formatCurrency(defaultVariant.unitCost)}
+                                  </span>
+                                  <span style={{ ...SUB, display: 'block' }}>{defaultVariant.unitName || item.orderingUnitName}</span>
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {searchOpen && searchQuery.length >= 2 && searchResults.length === 0 && (
+                      <div style={{ marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                        No items found for &ldquo;{searchQuery}&rdquo;
+                      </div>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            )}
           </tbody>
+          {hasPrice && (
+            <tfoot>
+              <tr>
+                <td colSpan={compact ? 2 : 3} style={{ ...cell(true), ...totalRule, fontWeight: 600 }}>Order total</td>
+                <td className="num" style={{ ...cell(false, !editable), ...totalRule, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                  {formatCurrency(grandTotal)}
+                </td>
+                {editable && <td style={{ ...totalRule, padding: 0 }} />}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
-      {/* ── Add item search ── */}
-      {interactive && !isSubmitted && (
-        <div style={{ padding: '0 1.25rem', position: 'relative' }}>
-          <div style={{ margin: '0.5rem 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input
-              value={searchQuery}
-              onChange={e => { setSearchQuery(e.target.value); setSearchOpen(true); }}
-              onFocus={() => searchQuery.length >= 2 && setSearchOpen(true)}
-              placeholder={refLoading ? 'Loading stock items...' : `Search ${stockItems.length} items...`}
-              disabled={refLoading}
-              style={{ ...inputStyle, flex: 1, maxWidth: 400 }}
-            />
-            {searchQuery && (
-              <button onClick={() => { setSearchQuery(''); setSearchOpen(false); }} style={{
-                border: 'none', background: 'none', color: '#aaa', cursor: 'pointer', fontSize: '0.8rem',
-              }}>&#10005;</button>
-            )}
+      {/* ── Notes ── */}
+      <div style={{ padding: `12px ${edge}px`, borderTop: '1px solid var(--line)' }}>
+        <label className="n-label" htmlFor={editable ? notesId : undefined}>Notes to supplier</label>
+        {editable ? (
+          <textarea
+            id={notesId}
+            value={notes}
+            onChange={e => handleNotesChange(e.target.value)}
+            placeholder="Add any special instructions or notes…"
+            rows={2}
+            className="n-input"
+            style={{ display: 'block', width: '100%' }}
+          />
+        ) : (
+          <div style={{ fontSize: 'var(--fs-sm)', color: notes ? 'var(--text)' : 'var(--muted)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+            {notes || 'No notes'}
           </div>
-          {/* Search results dropdown */}
-          {searchOpen && searchResults.length > 0 && (
-            <div style={{
-              position: 'absolute', left: '1.25rem', right: '1.25rem', zIndex: 50,
-              backgroundColor: '#fff', border: '1px solid #e2ddd7', borderRadius: 8,
-              boxShadow: '0 4px 16px rgba(0,0,0,0.1)', maxHeight: 300, overflow: 'auto',
-            }}>
-              {searchResults.map(item => {
-                const defaultVariant = item.suppliers.find(
-                  s => s.supplierId === item.defaultSupplierId && s.defaultForSupplier
-                ) || item.suppliers.find(s => s.defaultForSupplier) || item.suppliers[0];
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => handleAddFromSearch(item)}
-                    style={{
-                      padding: '0.5rem 0.75rem', cursor: 'pointer',
-                      borderBottom: '1px solid #f3f4f6',
-                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    }}
-                    onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f8f8f5')}
-                    onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#fff')}
-                  >
-                    <div>
-                      <div style={{ fontSize: '0.82rem', fontWeight: 500, color: '#333' }}>{item.name}</div>
-                      <div style={{ fontSize: '0.68rem', color: '#999' }}>
-                        {item.groupName}
-                        {defaultVariant && ` · ${defaultVariant.supplierName} · ${defaultVariant.unitName || 'unit'} · ${defaultVariant.stockCode || 'no code'}`}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      {defaultVariant && (
-                        <>
-                          <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#333' }}>
-                            ${defaultVariant.unitCost.toFixed(2)}
-                          </div>
-                          <div style={{ fontSize: '0.62rem', color: '#aaa' }}>
-                            {defaultVariant.unitName || item.orderingUnitName}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {searchOpen && searchQuery.length >= 2 && searchResults.length === 0 && (
-            <div style={{
-              position: 'absolute', left: '1.25rem', right: '1.25rem', zIndex: 50,
-              backgroundColor: '#fff', border: '1px solid #e2ddd7', borderRadius: 8,
-              padding: '0.75rem', textAlign: 'center', color: '#999', fontSize: '0.78rem',
-            }}>
-              No items found for &quot;{searchQuery}&quot;
-            </div>
+        )}
+      </div>
+
+      {/* ── Failed submit ── */}
+      {status === 'failed' && (
+        <div role="alert" style={{
+          display: 'flex', alignItems: 'flex-start', gap: 8, margin: `0 ${edge}px 12px`, padding: '10px 12px',
+          borderRadius: 'var(--radius)', background: 'var(--error-bg)', color: 'var(--error)', fontSize: 'var(--fs-sm)',
+        }}>
+          <Icon icon={TriangleAlert} size={16} style={{ marginTop: 1 }} />
+          <span>This order couldn&rsquo;t be placed. Check the lines and try again.</span>
+        </div>
+      )}
+
+      {/* ── Actions ── */}
+      {interactive && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: `12px ${edge}px`, borderTop: '1px solid var(--line-soft)' }}>
+          {isSubmitted ? (
+            <span role="status" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 34, fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--ok)' }}>
+              <Icon icon={Check} size={16} strokeWidth={2} />
+              Sent
+            </span>
+          ) : (
+            <Button variant="primary" onClick={handleSubmit} disabled={saving || isSubmitted || lines.length === 0}>
+              {saving && <Icon icon={LoaderCircle} size={16} strokeWidth={2} style={SPIN} />}
+              {saving ? 'Sending…' : 'Place Order'}
+            </Button>
           )}
         </div>
       )}
 
-      {/* ── Footer: totals + notes + actions ── */}
-      <div style={{
-        padding: '0.75rem 1.25rem 1rem',
-        borderTop: '1px solid #f3f4f6',
-        marginTop: '0.25rem',
-      }}>
-        {/* Totals */}
-        {hasPrice && (
-          <div style={{
-            display: 'flex', justifyContent: 'flex-end', marginBottom: '0.75rem',
-            paddingBottom: '0.75rem', borderBottom: '1px solid #f3f4f6',
-          }}>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: '0.72rem', color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: 2 }}>Order Total</div>
-              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111' }}>{formatCurrency(grandTotal)}</div>
-            </div>
-          </div>
-        )}
-
-        {/* Notes */}
-        <div style={{ marginBottom: interactive && !isSubmitted ? '0.75rem' : 0 }}>
-          <label style={{ fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 4 }}>Notes to supplier</label>
-          {interactive && !isSubmitted ? (
-            <textarea
-              value={notes}
-              onChange={e => handleNotesChange(e.target.value)}
-              placeholder="Add any special instructions or notes..."
-              rows={2}
-              style={{
-                ...inputStyle, width: '100%', resize: 'vertical',
-                fontSize: '0.82rem', lineHeight: 1.5,
-              }}
-            />
-          ) : notes ? (
-            <div style={{ fontSize: '0.82rem', color: '#6b7280', fontStyle: 'italic' }}>{notes}</div>
-          ) : (
-            <div style={{ fontSize: '0.82rem', color: '#d1d5db' }}>No notes</div>
-          )}
-        </div>
-
-        {/* Submit */}
-        {interactive && (
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button
-              onClick={handleSubmit}
-              disabled={saving || isSubmitted || lines.length === 0}
-              style={{
-                padding: '8px 24px', fontSize: '0.82rem', fontWeight: 600,
-                border: 'none', borderRadius: 8,
-                backgroundColor: isSubmitted ? '#28a745' : lines.length === 0 ? '#e5e7eb' : '#111',
-                color: isSubmitted ? '#fff' : lines.length === 0 ? '#9ca3af' : '#fff',
-                cursor: saving || isSubmitted || lines.length === 0 ? 'not-allowed' : 'pointer',
-                fontFamily: 'inherit',
-                transition: 'background-color 0.15s',
-                display: 'flex', alignItems: 'center', gap: 8,
-              }}
-            >
-              {saving && <span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />}
-              {saving ? 'Sending...' : isSubmitted ? 'Sent \u2713' : 'Place Order'}
-            </button>
-          </div>
-        )}
-        <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
-      </div>
-
       {/* Admin Debug Panel — stock items with variants */}
       {isAdmin && (
-        <div style={{ borderTop: '1px solid #e5e7eb', marginTop: '0.5rem' }}>
+        <div style={{ borderTop: '1px solid var(--line)' }}>
           <button
+            type="button"
             onClick={() => setDebugOpen(!debugOpen)}
+            aria-expanded={debugOpen}
             style={{
-              width: '100%', padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem',
+              width: '100%', padding: `10px ${edge}px`, display: 'flex', alignItems: 'center', gap: 6,
               background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-              fontSize: '0.72rem', fontWeight: 600, color: '#9ca3af', textAlign: 'left',
+              fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--muted)', textAlign: 'left',
             }}
           >
-            <span style={{ fontSize: '0.6rem' }}>{debugOpen ? '▼' : '▶'}</span>
-            Debug: Stock Items ({stockItems.length} loaded)
+            <Icon icon={debugOpen ? ChevronDown : ChevronRight} size="dense" tone="muted" />
+            Debug: stock items ({formatNumber(stockItems.length)} loaded)
           </button>
 
           {debugOpen && (
-            <div style={{ padding: '0 1rem 0.75rem' }}>
+            <div style={{ padding: `0 ${edge}px 14px` }}>
               <input
                 value={debugSearch}
                 onChange={e => setDebugSearch(e.target.value)}
-                placeholder="Search items or stock codes..."
-                style={{
-                  width: '100%', padding: '6px 10px', fontSize: '0.78rem', fontFamily: 'inherit',
-                  border: '1px solid #e5e7eb', borderRadius: 6, marginBottom: '0.5rem',
-                  boxSizing: 'border-box',
-                }}
+                placeholder="Search items or stock codes…"
+                aria-label="Search debug stock items"
+                className="n-input"
+                style={{ width: '100%', marginBottom: 8 }}
               />
 
               {(() => {
@@ -976,27 +1020,30 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
                     )
                   : stockItems;
                 const display = filtered.slice(0, 50);
+                const dc: React.CSSProperties = { padding: '6px 10px' };
+                const sticky: React.CSSProperties = { ...dc, position: 'sticky', top: 0, zIndex: 1 };
 
                 return (
                   <>
-                    <div style={{ fontSize: '0.68rem', color: '#9ca3af', marginBottom: '0.3rem' }}>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 6 }}>
                       Showing {display.length} of {filtered.length}{filtered.length !== stockItems.length ? ` (${stockItems.length} total)` : ''}
                     </div>
-                    <div style={{ maxHeight: 400, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 6, fontSize: '0.72rem' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <div className="scroll-quiet" style={{ maxHeight: 400, border: '1px solid var(--line)', borderRadius: 'var(--radius)' }}>
+                      <table className="n-table" style={{ fontSize: 'var(--fs-xs)' }}>
                         <thead>
-                          <tr style={{ backgroundColor: '#f9fafb', position: 'sticky', top: 0 }}>
-                            <th style={{ padding: '4px 8px', textAlign: 'left', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Item</th>
-                            <th style={{ padding: '4px 8px', textAlign: 'left', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Group</th>
-                            <th style={{ padding: '4px 8px', textAlign: 'left', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Default Supplier</th>
-                            <th style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Price</th>
-                            <th style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 600, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Variants</th>
+                          <tr>
+                            <th style={sticky}>Item</th>
+                            <th style={sticky}>Group</th>
+                            <th style={sticky}>Default supplier</th>
+                            <th className="num" style={sticky}>Price</th>
+                            <th style={{ ...sticky, textAlign: 'center' }}>Variants</th>
                           </tr>
                         </thead>
                         <tbody>
                           {display.map(item => {
                             const isExpanded = debugExpanded.has(item.id);
                             const defaultSupplier = supplierMap[item.defaultSupplierId] || item.defaultSupplierId.slice(0, 8);
+                            const sub: React.CSSProperties = { ...dc, background: 'var(--surface)', color: 'var(--text-soft)' };
                             return (
                               <React.Fragment key={item.id}>
                                 <tr
@@ -1005,40 +1052,42 @@ export default function PurchaseOrderEditor({ data, props, onAction, threadId }:
                                     if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
                                     setDebugExpanded(next);
                                   }}
-                                  style={{ cursor: 'pointer', backgroundColor: isExpanded ? '#f0f9ff' : undefined, borderBottom: '1px solid #f3f4f6' }}
+                                  style={{ cursor: 'pointer' }}
                                 >
-                                  <td style={{ padding: '4px 8px' }}>
-                                    <span style={{ fontSize: '0.6rem', color: '#9ca3af', marginRight: 4 }}>{isExpanded ? '▼' : '▶'}</span>
-                                    {item.name}
+                                  <td style={{ ...dc, ...(isExpanded ? { background: 'var(--selected)' } : {}) }}>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                      <Icon icon={isExpanded ? ChevronDown : ChevronRight} size="meta" tone="muted" />
+                                      {item.name}
+                                    </span>
                                   </td>
-                                  <td style={{ padding: '4px 8px', color: '#6b7280' }}>{item.groupName}</td>
-                                  <td style={{ padding: '4px 8px', color: '#6b7280' }}>{defaultSupplier}</td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'right' }}>
+                                  <td style={{ ...dc, color: 'var(--text-soft)', ...(isExpanded ? { background: 'var(--selected)' } : {}) }}>{item.groupName}</td>
+                                  <td style={{ ...dc, color: 'var(--text-soft)', ...(isExpanded ? { background: 'var(--selected)' } : {}) }}>{defaultSupplier}</td>
+                                  <td className="num" style={{ ...dc, whiteSpace: 'nowrap', ...(isExpanded ? { background: 'var(--selected)' } : {}) }}>
                                     {livePrices[item.id]
-                                      ? <span style={{ color: '#059669', fontWeight: 500 }}>${livePrices[item.id].cost.toFixed(2)}<span style={{ fontSize: '0.6rem', color: '#9ca3af', marginLeft: 3 }}>/{livePrices[item.id].unitName}</span></span>
-                                      : <span style={{ color: '#d1d5db' }}>—</span>
+                                      ? <span style={{ color: 'var(--ok)', fontWeight: 500 }}>{formatCurrency(livePrices[item.id].cost)}<span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 3 }}>/{livePrices[item.id].unitName}</span></span>
+                                      : <span style={{ color: 'var(--muted)' }}>—</span>
                                     }
                                   </td>
-                                  <td style={{ padding: '4px 8px', textAlign: 'center', color: '#9ca3af' }}>{item.suppliers.length}</td>
+                                  <td style={{ ...dc, textAlign: 'center', color: 'var(--muted)', ...(isExpanded ? { background: 'var(--selected)' } : {}) }}>{item.suppliers.length}</td>
                                 </tr>
                                 {isExpanded && item.suppliers.map((v, vi) => (
-                                  <tr key={vi} style={{ backgroundColor: '#f8fafc', fontSize: '0.68rem' }}>
-                                    <td style={{ padding: '2px 8px 2px 28px', color: '#374151' }}>
-                                      <span style={{ fontFamily: 'monospace', color: '#6366f1' }}>{v.stockCode || '—'}</span>
-                                    </td>
-                                    <td style={{ padding: '2px 8px', color: '#374151' }}>{v.supplierName}</td>
-                                    <td style={{ padding: '2px 8px', color: '#374151' }}>
-                                      {v.unitName} {v.unitRatio !== 1 ? `(×${v.unitRatio})` : ''}
-                                    </td>
-                                    <td style={{ padding: '2px 8px', textAlign: 'center' }}>
-                                      <span style={{ color: '#059669', fontWeight: 500 }}>${v.unitCost.toFixed(2)}</span>
-                                      {v.defaultForSupplier && <span style={{ marginLeft: 4, fontSize: '0.6rem', color: '#2563eb' }}>✓ default</span>}
+                                  <tr key={vi}>
+                                    <td style={{ ...sub, paddingLeft: 28 }}>{v.stockCode || '—'}</td>
+                                    <td style={sub}>{v.supplierName}</td>
+                                    <td style={sub}>{v.unitName} {v.unitRatio !== 1 ? `(×${v.unitRatio})` : ''}</td>
+                                    <td className="num" style={{ ...sub, color: 'var(--ok)', fontWeight: 500, whiteSpace: 'nowrap' }}>{formatCurrency(v.unitCost)}</td>
+                                    <td style={{ ...sub, textAlign: 'center' }}>
+                                      {v.defaultForSupplier && (
+                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                          <Icon icon={Check} size="meta" tone="accent" />default
+                                        </span>
+                                      )}
                                     </td>
                                   </tr>
                                 ))}
                                 {isExpanded && (
-                                  <tr style={{ backgroundColor: '#f8fafc', fontSize: '0.62rem' }}>
-                                    <td colSpan={5} style={{ padding: '2px 8px 4px 28px', color: '#9ca3af', fontFamily: 'monospace' }}>
+                                  <tr>
+                                    <td colSpan={5} style={{ ...sub, padding: '4px 10px 8px 28px', color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}>
                                       id: {item.id} | orderingUnit: {item.orderingUnitName} (×{item.orderingUnitRatio}) | tax: {item.globalSalesTaxSortOrder === 1 ? 'yes' : 'no'}
                                     </td>
                                   </tr>

@@ -1,7 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { ChevronDown, ChevronRight, CornerDownRight, Download, Info, TriangleAlert, X } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
 import DojoSampleView, { type DojoDiff, type ExtractionDoc } from './DojoSampleView';
 
 /**
@@ -49,23 +54,33 @@ export interface DojoAnalysis {
   at?: string;
 }
 
-const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
-  pass: { bg: '#d1fae5', fg: '#065f46' },
-  fail: { bg: '#fee2e2', fg: '#991b1b' },
-  error: { bg: '#fee2e2', fg: '#991b1b' },
-  new: { bg: '#fdf6e7', fg: '#8a6d3b' },
+// Dojo check status → badge tone, as on the Supplier specs list. "new" (no
+// baseline yet) is for an admin to settle, so it reads as "needs your input".
+const STATUS_TONES: Record<string, BadgeTone> = {
+  pass: 'ok',
+  fail: 'error',
+  error: 'error',
+  new: 'accent',
 };
 
 function StatusBadge({ status }: { status: string }) {
-  const c = STATUS_COLORS[status] || STATUS_COLORS.new;
-  return (
-    <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '1px 7px', borderRadius: 4, background: c.bg, color: c.fg, whiteSpace: 'nowrap' }}>
-      {status.toUpperCase()}
-    </span>
-  );
+  const tone = STATUS_TONES[status] || STATUS_TONES.new;
+  return <Badge tone={tone}>{status.charAt(0).toUpperCase() + status.slice(1)}</Badge>;
 }
 
-const labelStyle: React.CSSProperties = { fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', marginBottom: 4, display: 'block' };
+// The label over one block of the card (the dojo's "Last run" style).
+const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 4, fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)' };
+
+// A note inside the card: the status colour on its own tint.
+const NOTICE_ICONS = { error: TriangleAlert, info: Info, ok: Info } as const;
+function Notice({ tone, children }: { tone: keyof typeof NOTICE_ICONS; children: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10, padding: '8px 12px', borderRadius: 'var(--radius)', background: `var(--${tone}-bg)`, color: `var(--${tone})`, fontSize: 'var(--fs-sm)' }}>
+      <Icon icon={NOTICE_ICONS[tone]} size={16} style={{ marginTop: 1 }} />
+      <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{children}</div>
+    </div>
+  );
+}
 
 export default function SenseiProposalCard({
   sampleId,
@@ -141,51 +156,49 @@ export default function SenseiProposalCard({
   const own = a.candidate_results?.own;
   const sib = a.candidate_results?.siblings;
   return (
-    <div style={{ border: '1px solid #e6d9b8', borderRadius: 8, background: '#fffdf6', padding: '10px 14px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <strong style={{ fontSize: '0.82rem' }}>Sensei proposal</strong>
+    <div className="n-card" style={{ padding: '12px 16px 14px', lineHeight: 1.45, color: 'var(--text)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+        <strong style={{ fontSize: 'var(--fs-base)', fontWeight: 600 }}>Sensei proposal</strong>
         <StatusBadge status={a.status === 'ready' ? 'pass' : a.status === 'failed' ? 'error' : 'new'} />
         {a.status === 'applied' && a.auto_applied && (
-          <span title="a green sensei proposal for a brand-new supplier (no existing prompt) — applied automatically"
-            style={{ fontSize: '0.62rem', fontWeight: 700, color: '#065f46', background: '#d1fae5', border: '1px solid #a7dcc4', borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>
-            auto-applied
-          </span>
+          <Badge tone="ok" title="a green sensei proposal for a brand-new supplier (no existing prompt) — applied automatically">
+            Auto-applied
+          </Badge>
         )}
-        {a.model && <span style={{ fontSize: '0.62rem', color: '#999' }}>{a.model}</span>}
-        <button type="button" onClick={onClose}
-          style={{ marginLeft: 'auto', fontSize: '0.66rem', border: 'none', background: 'none', color: '#999', cursor: 'pointer' }}>✕</button>
+        {a.model && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{a.model}</span>}
+        <IconButton icon={X} label="Close" iconSize={16} onClick={onClose} style={{ margin: '-6px -8px -6px auto' }} />
       </div>
-      {a.error && <div style={{ fontSize: '0.72rem', color: '#c0392b', marginBottom: 6 }}>{a.error}</div>}
+      {a.error && <div style={{ marginBottom: 8, fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>{a.error}</div>}
       {a.rationale && (
-        <div style={{ fontSize: '0.74rem', color: '#4a4a4a', marginBottom: 8, whiteSpace: 'pre-wrap' }}>{a.rationale}</div>
+        <div style={{ marginBottom: 10, fontSize: 'var(--fs-base)', color: 'var(--text)', whiteSpace: 'pre-wrap' }}>{a.rationale}</div>
       )}
       {(a.ground_truth_violations?.length ?? 0) > 0 && (
-        <div style={{ fontSize: '0.72rem', color: '#991b1b', background: '#fee2e2', border: '1px solid #f5c6c6', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+        <Notice tone="error">
           The sensei&rsquo;s corrected values fail the document&rsquo;s own arithmetic — treat this proposal with suspicion:
           <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
             {a.ground_truth_violations!.map((v, i) => <li key={i}>{v}</li>)}
           </ul>
-        </div>
+        </Notice>
       )}
       {(a.layout_facts?.length ?? 0) > 0 && (
-        <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: '0.7rem', color: '#666' }}>
+        <ul style={{ margin: '0 0 10px', paddingLeft: 18, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
           {a.layout_facts!.map((f, i) => <li key={i}>{f}</li>)}
         </ul>
       )}
       {a.alias_of && (
-        <div style={{ fontSize: '0.72rem', color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+        <Notice tone="info">
           Same layout as existing spec <strong>{a.alias_of}</strong> — Apply adds this supplier as an alias on that spec
           and moves this sample there. No new spec is created.
-        </div>
+        </Notice>
       )}
       {a.canonical_name && (
-        <div style={{ fontSize: '0.72rem', color: '#065f46', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+        <Notice tone="ok">
           Rename this spec to <strong>{a.canonical_name}</strong> — specs are shared by every venue, so they
           are named for the business, not for one account&rsquo;s spelling of it.
-        </div>
+        </Notice>
       )}
       {(a.wrong_aliases?.length ?? 0) > 0 && (
-        <div style={{ fontSize: '0.72rem', color: '#991b1b', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+        <Notice tone="error">
           Misfiled {a.wrong_aliases!.length === 1 ? 'alias' : 'aliases'} to remove — each one routes that
           supplier&rsquo;s invoices through the wrong prompt:
           <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
@@ -193,17 +206,17 @@ export default function SenseiProposalCard({
               <li key={`${w.spec_id}:${w.alias}`}><strong>{w.alias}</strong> on the {w.spec} spec</li>
             ))}
           </ul>
-        </div>
+        </Notice>
       )}
       {(a.proposed_instructions ?? '').trim() ? (
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ ...labelStyle, marginBottom: 2 }}>
+        <div style={{ marginBottom: 10 }}>
+          <div style={labelStyle}>
             {a.alias_of ? `Proposed spec text for '${a.alias_of}' (replaces its current instructions)` : 'Proposed spec text (replaces the current instructions)'}
           </div>
-          <pre style={{ fontSize: '0.7rem', whiteSpace: 'pre-wrap', background: '#fff', border: '1px solid #eee', borderRadius: 6, padding: '8px 10px', margin: 0, fontFamily: 'inherit' }}>{a.proposed_instructions}</pre>
+          <pre style={{ margin: 0, padding: '8px 10px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'inherit', fontSize: 'var(--fs-sm)', color: 'var(--text)', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 'var(--radius)' }}>{a.proposed_instructions}</pre>
         </div>
       ) : (
-        <div style={{ fontSize: '0.7rem', color: '#777', marginBottom: 8 }}>
+        <div style={{ marginBottom: 10, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
           {a.alias_of
             ? `No text change — '${a.alias_of}' already covers this layout as written.`
             : a.spec_not_needed
@@ -212,17 +225,17 @@ export default function SenseiProposalCard({
         </div>
       )}
       {own && (
-        <div style={{ fontSize: '0.7rem', color: '#555', marginBottom: 2, display: 'flex', gap: 6, alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
           <StatusBadge status={own.status || 'new'} />
-          <span>this invoice vs the sensei’s corrected values{own.status === 'fail' ? ` — ${own.diffs?.length ?? 0} mismatch(es)` : ''}</span>
+          <span>This invoice vs the sensei’s corrected values{own.status === 'fail' ? ` — ${own.diffs?.length ?? 0} mismatch(es)` : ''}</span>
         </div>
       )}
       {/* The evidence behind that badge: the sensei's corrected values AND the
           raw extraction the proposed prompt produced — check either against
           the PDF, don't take the sensei's word for it. */}
       {(a.ground_truth || own?.extraction) && (
-        <div style={{ margin: '8px 0' }}>
-          <div style={{ ...labelStyle, marginBottom: 4 }}>Verify the values yourself (against the PDF)</div>
+        <div style={{ margin: '10px 0' }}>
+          <div style={labelStyle}>Verify the values yourself (against the PDF)</div>
           <DojoSampleView
             key={`${sampleId}:${a.at ?? ''}`}
             sampleId={sampleId}
@@ -236,7 +249,7 @@ export default function SenseiProposalCard({
             stored={currentRun ? currentRun.expected : undefined}
             labels={{
               stored: 'Current expected values',
-              expected: 'Values from this Analysis',
+              expected: 'Values from this analysis',
               extracted: 'Extracted with proposed prompt',
               current: 'Current prompt',
               storedHint: 'the baseline stored on the sample today — what regression tests against; the analysis values replace it on Apply only if it isn’t admin-owned',
@@ -261,33 +274,33 @@ export default function SenseiProposalCard({
         <div key={s.id}>
           <button type="button" onClick={() => toggleSibling(s.id)}
             title="show this sample's baseline vs what the proposed prompt extracted from it"
-            style={{ fontSize: '0.7rem', color: '#555', display: 'flex', gap: 6, alignItems: 'center', padding: '2px 0', border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit', width: '100%', textAlign: 'left' }}>
-            <span style={{ fontSize: '0.6rem', color: '#999', width: 10 }}>{openSibling === s.id ? '▾' : '▸'}</span>
+            aria-expanded={openSibling === s.id}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '4px 0', border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+            <Icon icon={openSibling === s.id ? ChevronDown : ChevronRight} size="dense" tone="muted" />
             <StatusBadge status={s.status} />
-            <span>{s.label} (vs its baseline{s.status === 'fail' ? ` — ${s.diffs?.length ?? 0} mismatch${(s.diffs?.length ?? 0) === 1 ? '' : 'es'}` : ''})</span>
+            <span style={{ minWidth: 0 }}>{s.label} (vs its baseline{s.status === 'fail' ? ` — ${s.diffs?.length ?? 0} mismatch${(s.diffs?.length ?? 0) === 1 ? '' : 'es'}` : ''})</span>
           </button>
           {openSibling === s.id && (
-            <div style={{ margin: '4px 0 10px 16px' }}>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
-                <button type="button" onClick={() => downloadSiblingPdf(s.id, s.label)}
-                  title="download this sample's invoice PDF"
-                  style={{ fontSize: '0.64rem', padding: '2px 9px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit' }}>
-                  ⤓ Download PDF
-                </button>
+            <div style={{ margin: '4px 0 10px 22px' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+                <Button size="sm" icon={Download} onClick={() => downloadSiblingPdf(s.id, s.label)}
+                  title="download this sample's invoice PDF">
+                  Download PDF
+                </Button>
               </div>
               {/* Analyses stored before Aug 2026 kept only the diffs, not the
                   candidate extraction — for those, the diffs alone still say
                   exactly which fields broke. New runs carry the extraction
                   and get the full table below instead. */}
               {!s.extraction && (s.diffs?.length ?? 0) > 0 && (
-                <div style={{ border: '1px solid #f0c0ba', borderRadius: 6, background: '#fdf3f2', padding: '6px 10px', marginBottom: 6, fontSize: '0.7rem', color: '#7a2e24' }}>
-                  <div style={{ fontWeight: 700, marginBottom: 2 }}>What the proposed prompt broke (this analysis stored only the diffs — re-run the sensei for the full extraction):</div>
+                <Notice tone="error">
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>What the proposed prompt broke (this analysis stored only the diffs — re-run the sensei for the full extraction):</div>
                   {(s.diffs ?? []).map((d, i) => (
                     <div key={i}>
                       {d.line != null ? `line ${d.line}${d.description ? ` “${d.description}”` : ''} — ` : ''}{d.field}: expected {JSON.stringify(d.expected ?? null)}, got {JSON.stringify(d.actual ?? null)}
                     </div>
                   ))}
-                </div>
+                </Notice>
               )}
               <DojoSampleView
                 key={`sib-${s.id}:${a.at ?? ''}`}
@@ -312,24 +325,27 @@ export default function SenseiProposalCard({
           here — the sensei re-reads the document with the correction as
           authoritative and re-tests before re-proposing. */}
       {(a.thread?.filter((m) => m.role === 'admin').length ?? 0) > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <div style={{ ...labelStyle, marginBottom: 2 }}>Your corrections so far</div>
+        <div style={{ marginTop: 10 }}>
+          <div style={labelStyle}>Your corrections so far</div>
           {a.thread!.filter((m) => m.role === 'admin').map((m, i) => (
-            <div key={i} style={{ fontSize: '0.7rem', color: '#555', padding: '1px 0' }}>↳ {m.text}</div>
+            <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '1px 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+              <Icon icon={CornerDownRight} size="dense" tone="muted" style={{ marginTop: 2 }} />
+              <span style={{ minWidth: 0 }}>{m.text}</span>
+            </div>
           ))}
         </div>
       )}
       {a.status !== 'applied' && (
-        <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'flex-start' }}>
-          <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-start' }}>
+          <textarea className="n-input" value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2}
+            aria-label="Correct the sensei"
             placeholder={'Correct the sensei — e.g. "line 4’s unit must stay ‘2x12 pack’, never flattened to ‘24 pack’" — the sensei re-analyses with your correction as authoritative and re-tests'}
-            style={{ flex: 1, fontSize: '0.7rem', padding: '5px 8px', border: '1px solid #d8d4cc', borderRadius: 6, fontFamily: 'inherit', resize: 'vertical' }} />
-          <button type="button" onClick={() => { onReanalyse(feedback); setFeedback(''); }}
+            style={{ flex: 1, minWidth: 0 }} />
+          <Button size="sm" onClick={() => { onReanalyse(feedback); setFeedback(''); }}
             disabled={!!analysing || !feedback.trim()}
-            title="sends your correction to the sensei as authoritative — it re-analyses and re-tests before re-proposing"
-            style={{ fontSize: '0.72rem', padding: '5px 12px', border: '1px solid #b78a2f', borderRadius: 6, background: '#fff', color: '#8a6d3b', cursor: analysing || !feedback.trim() ? 'default' : 'pointer', whiteSpace: 'nowrap', opacity: feedback.trim() ? 1 : 0.5 }}>
+            title="sends your correction to the sensei as authoritative — it re-analyses and re-tests before re-proposing">
             {analysing ? 'Re-analysing…' : 'Send'}
-          </button>
+          </Button>
         </div>
       )}
       {a.status !== 'applied' && (() => {
@@ -341,22 +357,23 @@ export default function SenseiProposalCard({
         const hasChange = !!(a.proposed_instructions ?? '').trim() || !!a.alias_of
           || !!a.canonical_name || (a.wrong_aliases?.length ?? 0) > 0;
         const applyable = hasChange || a.status !== 'ready';
+        // Dismiss then Apply, on the right — the approval card's order.
         return (
-          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+            <Button onClick={onDismiss}
+              title={applyable ? 'decline this proposal without applying it' : 'nothing to apply — clears the proposal'}>
+              {applyable ? 'Dismiss proposal' : 'Close — no change needed'}
+            </Button>
             {applyable && (
-              <button type="button" onClick={onApply} disabled={!!applying}
+              // A not-green run isn't the obvious next step, so it isn't primary.
+              <Button variant={a.status === 'ready' ? 'primary' : 'secondary'} onClick={onApply} disabled={!!applying}
                 title={a.status === 'ready'
                   ? (a.alias_of ? `add the alias to '${a.alias_of}' and move this sample there` : 'write the proposed spec text and baseline the corrected values')
                   : 'the candidate run was NOT fully green — applying anyway is your call'}
-                style={{ fontSize: '0.72rem', padding: '5px 14px', border: 'none', borderRadius: 6, background: a.status === 'ready' ? '#2e7d4f' : '#b78a2f', color: '#fff', cursor: applying ? 'wait' : 'pointer' }}>
+                style={applying ? { cursor: 'wait' } : undefined}>
                 {applying ? 'Applying…' : a.status === 'ready' ? (a.alias_of ? `Add alias to '${a.alias_of}'` : 'Apply spec update') : 'Apply anyway'}
-              </button>
+              </Button>
             )}
-            <button type="button" onClick={onDismiss}
-              title={applyable ? 'decline this proposal without applying it' : 'nothing to apply — clears the proposal'}
-              style={{ fontSize: '0.72rem', padding: '5px 12px', border: '1px solid #ccc', borderRadius: 6, background: '#fff', color: '#666', cursor: 'pointer' }}>
-              {applyable ? 'Dismiss proposal' : 'Close — no change needed'}
-            </button>
           </div>
         );
       })()}

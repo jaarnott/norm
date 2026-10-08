@@ -1,24 +1,36 @@
 'use client';
 
 import { useState } from 'react';
-import { Package, UserRound, BarChart3, HelpCircle, MessageCircle, Timer, type LucideIcon } from 'lucide-react';
+import { MessageCircle, Timer, X, type LucideIcon } from 'lucide-react';
 import type { Thread, ProcurementThread, HrThread } from '../../types';
-import { colors } from '../../lib/theme';
 import { threadAccent, threadLabel } from '../../lib/threadApps';
+import { memberName } from '../../lib/memberNames';
+import { AGENTS } from '../layout/Sidebar';
+import Icon from '../ui/Icon';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
 
-const DOMAIN_ICONS: Record<string, LucideIcon> = {
-  procurement: Package,
-  hr: UserRound,
-  reports: BarChart3,
-  norm: MessageCircle,
+/** Statuses that need someone — the only ones a card shows. Approval is warn
+ *  (waiting on a person), input is the tan accent (waiting on YOU). */
+const STATUS_BADGES: Record<string, { tone: BadgeTone; label: string }> = {
+  awaiting_approval: { tone: 'warn', label: 'Awaiting approval' },
+  awaiting_tool_approval: { tone: 'warn', label: 'Approval needed' },
+  awaiting_user_input: { tone: 'accent', label: 'Needs input' },
+  needs_clarification: { tone: 'accent', label: 'Needs input' },
 };
 
-const STATUS_STYLES: Record<string, { bg: string; color: string; label: string }> = {
-  awaiting_approval: { bg: '#fff3cd', color: '#856404', label: 'Awaiting approval' },
-  awaiting_tool_approval: { bg: '#e8daef', color: '#6c3483', label: 'Approval needed' },
-  awaiting_user_input: { bg: '#f5f0ea', color: '#8a7356', label: 'Needs input' },
-  needs_clarification: { bg: '#f5f0ea', color: '#8a7356', label: 'Needs input' },
-};
+/** The team member's own icon — a thread without one is Norm's. */
+function memberIcon(member: string): LucideIcon {
+  return AGENTS.find(a => a.id === member)?.icon ?? MessageCircle;
+}
+
+/** "BambooHR · Loaded Reports" from the Apps it used; a thread from before
+ *  Apps names its member in words ("Time & attendance", not the slug). */
+function cardLabel(thread: Thread): string {
+  if (thread.apps && thread.apps.length) return threadLabel(thread);
+  const member = threadAccent(thread);
+  return member === 'norm' ? 'Norm' : memberName(member);
+}
 
 function getThreadTitle(thread: Thread): string {
   return thread.title || '';
@@ -44,20 +56,14 @@ function getThreadSummary(thread: Thread): string {
   return thread.message || '';
 }
 
+/** Short, like a messaging app: now, 5m, 18h, 9d. */
 function timeAgo(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
+  const mins = Math.floor((Date.now() - new Date(dateStr).getTime()) / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-function getDomainColor(domain: string): string {
-  return (colors as unknown as Record<string, string>)[domain] || colors.unknown;
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function formatSchedule(type: string, config: Record<string, unknown>): string {
@@ -83,122 +89,75 @@ interface ThreadCardProps {
 
 export default function ThreadCard({ thread, isSelected, onClick, onRemove, compact, 'data-testid': testId }: ThreadCardProps) {
   const [confirming, setConfirming] = useState(false);
-  // Labelled by the Apps it used; coloured by the first of their members.
-  const accent = threadAccent(thread);
-  const dc = getDomainColor(accent);
-  const DomainIcon = DOMAIN_ICONS[accent] || HelpCircle;
-  const ss = STATUS_STYLES[thread.status] || { bg: '#e2e3e5', color: '#383d41', label: thread.status.replace(/_/g, ' ') };
-  const isWaiting = thread.status === 'awaiting_user_input' || thread.status === 'needs_clarification';
+  const MemberIcon = memberIcon(threadAccent(thread));
+  const badge = STATUS_BADGES[thread.status];
   const isAutomated = !!thread.automated_task;
+  const runWaiting = (thread.automated_task?.waiting_for_approval ?? 0) > 0;
+  // Selected: the selected tile plus a 3px accent bar on the left edge.
+  const rowState = {
+    backgroundColor: isSelected ? 'var(--selected)' : undefined,
+    boxShadow: isSelected ? 'inset 3px 0 0 var(--accent)' : undefined,
+  };
+  const removeButton = (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
+      title="Remove"
+      aria-label="Remove thread"
+      className={compact ? 'n-icon-btn compact-remove' : 'n-icon-btn'}
+      style={{ width: 24, height: 24, flexShrink: 0, ...(compact ? { opacity: 0, transition: 'opacity 0.15s' } : {}) }}
+    >
+      <X size={14} aria-hidden />
+    </button>
+  );
 
   if (confirming) {
     return (
-      <div
-        style={{
-          padding: '0.85rem 1rem',
-          borderBottom: '1px solid #f0f0f0',
-          backgroundColor: '#fef2f2',
-          borderLeft: '3px solid #dc3545',
-        }}
-      >
-        <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333', marginBottom: '0.5rem' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line)', backgroundColor: 'var(--error-bg)' }}>
+        <div style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>
           Remove this thread?
         </div>
-        <div style={{ fontSize: '0.82rem', color: '#666', marginBottom: '0.6rem' }}>
-          {getThreadTitle(thread)} — {getThreadSummary(thread)}
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginBottom: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {getThreadTitle(thread) || getThreadSummary(thread)}
         </div>
-        <div style={{ display: 'flex', gap: '0.4rem' }}>
-          <button
-            onClick={(e) => { e.stopPropagation(); onRemove(); }}
-            style={{
-              padding: '0.3rem 0.8rem',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-              backgroundColor: '#dc3545',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 5,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            Remove
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); setConfirming(false); }}
-            style={{
-              padding: '0.3rem 0.8rem',
-              fontSize: '0.82rem',
-              fontWeight: 500,
-              backgroundColor: '#fff',
-              color: '#555',
-              border: '1px solid #ddd',
-              borderRadius: 5,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            Cancel
-          </button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <Button size="sm" variant="danger" onClick={(e) => { e.stopPropagation(); onRemove(); }}>Remove</Button>
+          <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); setConfirming(false); }}>Cancel</Button>
         </div>
       </div>
     );
   }
 
   if (compact) {
-    const dotColor = dc;
+    // Home's list: one line per thread — icon, title, then when (or a
+    // scheduled run that is waiting on an approval).
     return (
       <div
         onClick={onClick}
-        className="compact-card"
+        className="compact-card n-thread-row"
         data-testid={testId}
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '0.5rem',
-          padding: '0.45rem 1rem',
+          gap: 10,
+          padding: '8px 12px 8px 16px',
           cursor: 'pointer',
-          backgroundColor: isSelected ? '#f5f0ea' : 'transparent',
-          borderLeft: `3px solid ${isSelected ? dc : 'transparent'}`,
-          borderBottom: '1px solid #f8f8f8',
-          transition: 'background-color 0.1s',
+          ...rowState,
         }}
       >
-        {isAutomated ? (
-          <Timer size={12} strokeWidth={2} style={{ color: '#9ca3af', flexShrink: 0 }} />
-        ) : (
-          <span style={{
-            width: 7, height: 7, borderRadius: '50%',
-            backgroundColor: dotColor, flexShrink: 0,
-          }} />
-        )}
+        <Icon icon={isAutomated ? Timer : MemberIcon} size={15} tone="muted" />
         <span style={{
-          flex: 1, fontSize: '0.85rem', color: '#333',
+          flex: 1, minWidth: 0, fontSize: 'var(--fs-base)', color: 'var(--text)',
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         }}>
           {isAutomated ? (thread.automated_task?.title || getThreadTitle(thread)) : (getThreadSummary(thread) || getThreadTitle(thread))}
         </span>
-        {(thread.automated_task?.waiting_for_approval ?? 0) > 0 && (
-          <span title="A run is waiting for your approval" style={{
-            fontSize: '0.62rem', fontWeight: 600, padding: '1px 6px', borderRadius: 10, flexShrink: 0,
-            backgroundColor: STATUS_STYLES.awaiting_tool_approval.bg, color: STATUS_STYLES.awaiting_tool_approval.color,
-          }}>
-            {STATUS_STYLES.awaiting_tool_approval.label}
-          </span>
+        {runWaiting ? (
+          <span title="A run is waiting for your approval"><Badge tone="warn">Approval needed</Badge></span>
+        ) : (
+          <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{timeAgo(thread.created_at)}</span>
         )}
-        <button
-          onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-          title="Remove"
-          className="compact-remove"
-          style={{
-            border: 'none', background: 'none', cursor: 'pointer',
-            fontSize: '0.78rem', color: '#ccc', padding: '0 2px',
-            lineHeight: 1, fontFamily: 'inherit', flexShrink: 0,
-            opacity: 0, transition: 'opacity 0.15s',
-          }}
-        >
-          {'\u2715'}
-        </button>
+        {removeButton}
       </div>
     );
   }
@@ -207,71 +166,40 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
     <div
       onClick={onClick}
       data-testid={testId}
+      className="n-thread-row"
       style={{
-        padding: '0.85rem 1rem',
-        borderBottom: '1px solid #f0f0f0',
+        padding: '12px 12px 12px 16px',
+        borderBottom: '1px solid var(--line)',
         cursor: 'pointer',
-        backgroundColor: isSelected ? '#f5f0ea' : isWaiting ? '#fdf6ee' : 'transparent',
-        borderLeft: `3px solid ${isSelected ? dc : 'transparent'}`,
-        transition: 'background-color 0.15s',
+        ...rowState,
       }}
     >
-      {/* Top row: agent + time */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-          <DomainIcon size={14} strokeWidth={1.75} style={{ color: dc }} />
-          <span style={{
-            fontSize: '0.75rem',
-            fontWeight: 600,
-            color: dc,
-            textTransform: 'uppercase',
-            letterSpacing: '0.03em',
-          }}>
-            {threadLabel(thread)}
-          </span>
-          {isAutomated && (
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: 3,
-              fontSize: '0.65rem', fontWeight: 600, color: '#9ca3af',
-              padding: '1px 6px', borderRadius: 8, backgroundColor: '#f3f4f6',
-            }}>
-              <Timer size={10} strokeWidth={2} /> Saved
-            </span>
-          )}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-          <span style={{ fontSize: '0.72rem', color: '#aaa' }}>
-            {timeAgo(thread.created_at)}
-          </span>
-          <button
-            onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
-            title="Remove"
-            style={{
-              border: 'none',
-              background: 'none',
-              cursor: 'pointer',
-              fontSize: '0.82rem',
-              color: '#ccc',
-              padding: '0 2px',
-              lineHeight: 1,
-              fontFamily: 'inherit',
-            }}
-          >
-            {'\u2715'}
-          </button>
-        </div>
+      {/* Top row: what it used + when */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <Icon icon={MemberIcon} size={14} tone="muted" />
+        <span style={{
+          flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          fontSize: 'var(--fs-xs)', fontWeight: 500, color: 'var(--muted)',
+        }}>
+          {cardLabel(thread)}
+        </span>
+        {isAutomated && <Badge><Timer size={10} strokeWidth={2} aria-hidden /> Saved</Badge>}
+        <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+          {timeAgo(thread.created_at)}
+        </span>
+        {removeButton}
       </div>
 
       {/* Title */}
-      <div style={{ fontSize: '0.95rem', fontWeight: 600, color: '#1a1a1a', marginBottom: '0.2rem' }}>
+      <div style={{ marginTop: 2, fontSize: 'var(--fs-md)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>
         {getThreadTitle(thread)}
       </div>
 
       {/* Summary */}
       <div style={{
-        fontSize: '0.85rem',
-        color: '#666',
-        marginBottom: '0.4rem',
+        marginTop: 2,
+        fontSize: 'var(--fs-sm)',
+        color: 'var(--text-soft)',
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
@@ -282,29 +210,13 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
         }
       </div>
 
-      {/* A scheduled task's run stopped at a change nobody was there to approve */}
-      {(thread.automated_task?.waiting_for_approval ?? 0) > 0 && (
-      <span style={{
-        fontSize: '0.72rem', fontWeight: 600, padding: '0.15rem 0.5rem', borderRadius: 10,
-        backgroundColor: STATUS_STYLES.awaiting_tool_approval.bg, color: STATUS_STYLES.awaiting_tool_approval.color,
-      }}>
-        {STATUS_STYLES.awaiting_tool_approval.label}
-      </span>
-      )}
-
-      {/* Status badge — only show when user action is needed */}
-      {['awaiting_approval', 'awaiting_tool_approval', 'awaiting_user_input', 'needs_clarification'].includes(thread.status) && (
-      <span style={{
-        fontSize: '0.72rem',
-        fontWeight: 600,
-        padding: '0.15rem 0.5rem',
-        borderRadius: 10,
-        backgroundColor: ss.bg,
-        color: ss.color,
-        textTransform: 'capitalize',
-      }}>
-        {ss.label}
-      </span>
+      {/* What needs someone: a scheduled run stopped at an approval, or the
+          thread itself is waiting. */}
+      {(runWaiting || badge) && (
+        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          {runWaiting && <Badge tone="warn">Approval needed</Badge>}
+          {badge && <Badge tone={badge.tone}>{badge.label}</Badge>}
+        </div>
       )}
     </div>
   );

@@ -1,8 +1,14 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type CSSProperties } from 'react';
+import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { OrgMember } from '../../types';
+import Avatar from '../ui/Avatar';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 
 interface Permission {
   key: string;
@@ -28,6 +34,18 @@ interface Role {
 interface RolesPanelProps {
   orgId: string;
 }
+
+// A section: 18px title with a muted count beside it, its action on the right.
+const sectionHead: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 12 };
+const sectionTitle: CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' };
+const metaText: CSSProperties = { fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
+// One row of a list card: a hairline between rows, none after the last. It
+// wraps on a phone, so the actions drop under the name instead of squeezing it.
+const listRow = (last: boolean): CSSProperties => ({
+  display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px 12px',
+  padding: '12px 16px', borderBottom: last ? 'none' : '1px solid var(--line)',
+});
+const permissionGrid: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 };
 
 export default function RolesPanel({ orgId }: RolesPanelProps) {
   const [roles, setRoles] = useState<Role[]>([]);
@@ -164,296 +182,196 @@ export default function RolesPanel({ orgId }: RolesPanelProps) {
   };
 
   if (loading) {
-    return <div style={{ fontSize: '0.85rem', color: '#999', padding: '2rem 0' }}>Loading roles...</div>;
+    return <PageState kind="loading" title="Loading roles…" />;
   }
 
   const isFormOpen = creating || editingRole !== null;
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '0.5rem 0.65rem',
-    fontSize: '0.82rem',
-    border: '1px solid #e2ddd7',
-    borderRadius: 6,
-    backgroundColor: '#fff',
-    fontFamily: 'inherit',
-    color: '#1a1a1a',
-    outline: 'none',
-    boxSizing: 'border-box',
-  };
-
-  const labelStyle: React.CSSProperties = {
-    fontSize: '0.75rem',
-    fontWeight: 600,
-    color: '#555',
-    marginBottom: 4,
-    display: 'block',
+  // One permission as a tile: ticked tiles are tinted with a tan edge, so the
+  // grid reads at a glance as well as by its checkboxes.
+  const renderPermission = (perm: Permission, withDescription: boolean) => {
+    const checked = formPermissions.includes(perm.key);
+    return (
+      <label
+        key={perm.key}
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 10,
+          padding: '10px 12px',
+          border: `1px solid ${checked ? 'var(--brand-soft)' : 'var(--line)'}`,
+          borderRadius: 'var(--radius)',
+          backgroundColor: checked ? 'var(--accent-soft)' : 'var(--bg)',
+          cursor: 'pointer',
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => togglePermission(perm.key)}
+          style={{ flex: '0 0 auto', width: 16, height: 16, margin: '1px 0 0', accentColor: 'var(--accent)', cursor: 'pointer' }}
+        />
+        <span style={{ minWidth: 0 }}>
+          <span style={{ display: 'block', fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>{perm.label}</span>
+          {withDescription && perm.description && (
+            <span style={{ display: 'block', marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{perm.description}</span>
+          )}
+        </span>
+      </label>
+    );
   };
 
   return (
     <div>
       {/* ---- Section 1: Roles List ---- */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Organization Roles
-        </h3>
+      <div style={sectionHead}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
+          <h3 style={sectionTitle}>Organization roles</h3>
+          {roles.length > 0 && <span style={metaText}>{roles.length} {roles.length === 1 ? 'role' : 'roles'}</span>}
+        </div>
         {!isFormOpen && (
-          <button
-            onClick={openCreateForm}
-            style={{
-              padding: '0.4rem 0.85rem',
-              fontSize: '0.78rem',
-              fontWeight: 600,
-              border: 'none',
-              borderRadius: 6,
-              backgroundColor: '#1a1a1a',
-              color: '#fff',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            Create Custom Role
-          </button>
+          <Button variant="primary" icon={Plus} onClick={openCreateForm}>
+            Create custom role
+          </Button>
         )}
       </div>
 
-      {/* Role cards */}
+      {/* Role list */}
       {!isFormOpen && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '2rem' }}>
-          {roles.map(role => (
-            <div
-              key={role.id}
-              style={{
-                padding: '0.75rem 1rem',
-                border: '1px solid #e2ddd7',
-                borderRadius: 8,
-                backgroundColor: '#fff',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.75rem',
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontWeight: 600, fontSize: '0.88rem', color: '#1a1a1a' }}>{role.display_name}</span>
-                  {role.is_system && (
-                    <span style={{
-                      fontSize: '0.6rem',
-                      fontWeight: 600,
-                      padding: '1px 6px',
-                      borderRadius: 8,
-                      backgroundColor: '#f0ebe5',
-                      color: '#8a7356',
-                    }}>
-                      System
-                    </span>
-                  )}
+        <div className="n-card" style={{ marginBottom: 32 }}>
+          {roles.map((role, i) => (
+            <div key={role.id} style={listRow(i === roles.length - 1)}>
+              <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{role.display_name}</span>
+                  <Badge>{role.is_system ? 'System' : 'Custom'}</Badge>
                 </div>
                 {role.description && (
-                  <div style={{ fontSize: '0.75rem', color: '#999', marginTop: 2 }}>{role.description}</div>
+                  <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{role.description}</div>
                 )}
-                <div style={{ fontSize: '0.7rem', color: '#bbb', marginTop: 2 }}>
+                <div style={{ marginTop: 2, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
                   {role.permissions.length} permission{role.permissions.length !== 1 ? 's' : ''}
                 </div>
               </div>
 
               {!role.is_system && (
-                <div style={{ display: 'flex', gap: '0.4rem' }}>
-                  <button
-                    onClick={() => openEditForm(role)}
-                    style={{
-                      padding: '0.3rem 0.6rem',
-                      fontSize: '0.72rem',
-                      border: '1px solid #e2ddd7',
-                      borderRadius: 4,
-                      backgroundColor: '#fff',
-                      color: '#555',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                  >
+                <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
+                  <Button size="sm" onClick={() => openEditForm(role)}>
                     Edit
-                  </button>
-                  <button
-                    onClick={() => handleDelete(role.id)}
-                    style={{
-                      padding: '0.3rem 0.6rem',
-                      fontSize: '0.72rem',
-                      border: '1px solid #f5c6cb',
-                      borderRadius: 4,
-                      backgroundColor: '#fff',
-                      color: '#dc3545',
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                    }}
-                  >
+                  </Button>
+                  <Button size="sm" variant="danger" onClick={() => handleDelete(role.id)}>
                     Delete
-                  </button>
+                  </Button>
                 </div>
               )}
             </div>
           ))}
-          {roles.length === 0 && (
-            <div style={{ fontSize: '0.82rem', color: '#999' }}>No roles defined yet.</div>
-          )}
+          {roles.length === 0 && <PageState kind="empty" title="No roles defined yet." />}
         </div>
       )}
 
       {/* ---- Section 2: Create/Edit Form ---- */}
       {isFormOpen && (
-        <div style={{
-          padding: '1.25rem',
-          border: '1px solid #e2ddd7',
-          borderRadius: 8,
-          backgroundColor: '#fff',
-          marginBottom: '2rem',
-        }}>
-          <h4 style={{ margin: '0 0 1rem', fontSize: '0.9rem', fontWeight: 600, color: '#1a1a1a' }}>
-            {editingRole ? `Edit Role: ${editingRole.display_name}` : 'Create Custom Role'}
+        <div className="n-card" style={{ padding: 20, marginBottom: 32 }}>
+          <h4 style={{ margin: '0 0 16px', fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)' }}>
+            {editingRole ? `Edit role: ${editingRole.display_name}` : 'Create custom role'}
           </h4>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 560, marginBottom: 20 }}>
             <div>
-              <label style={labelStyle}>Name (slug)</label>
+              <label className="n-label" htmlFor="role-form-name">Name (slug)</label>
               <input
+                id="role-form-name"
+                className="n-input"
                 value={formName}
                 onChange={e => setFormName(e.target.value)}
                 placeholder="e.g. venue-manager"
-                style={inputStyle}
+                style={{ width: '100%' }}
                 disabled={!!editingRole}
               />
             </div>
             <div>
-              <label style={labelStyle}>Display Name</label>
+              <label className="n-label" htmlFor="role-form-display-name">Display name</label>
               <input
+                id="role-form-display-name"
+                className="n-input"
                 value={formDisplayName}
                 onChange={e => setFormDisplayName(e.target.value)}
                 placeholder="e.g. Venue Manager"
-                style={inputStyle}
+                style={{ width: '100%' }}
               />
             </div>
             <div>
-              <label style={labelStyle}>Description</label>
+              <label className="n-label" htmlFor="role-form-description">Description</label>
               <input
+                id="role-form-description"
+                className="n-input"
                 value={formDescription}
                 onChange={e => setFormDescription(e.target.value)}
                 placeholder="Optional description"
-                style={inputStyle}
+                style={{ width: '100%' }}
               />
             </div>
           </div>
 
           {/* Permission checkboxes grouped */}
-          <div style={{ marginBottom: '1rem' }}>
-            <label style={{ ...labelStyle, marginBottom: 8 }}>Permissions</label>
-            {Object.entries(permissionGroups).map(([groupKey, group]) => (
-              <div key={groupKey} style={{ marginBottom: '0.5rem', border: '1px solid #f0ebe5', borderRadius: 6, overflow: 'hidden' }}>
-                <button
-                  onClick={() => toggleGroup(groupKey)}
-                  style={{
-                    width: '100%',
-                    padding: '0.5rem 0.65rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    border: 'none',
-                    backgroundColor: '#faf8f5',
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                    fontSize: '0.8rem',
-                    fontWeight: 600,
-                    color: '#555',
-                  }}
-                >
-                  <span>{group.label}</span>
-                  <span style={{
-                    fontSize: '0.6rem',
-                    color: '#bbb',
-                    transform: expandedGroups[groupKey] ? 'rotate(90deg)' : 'rotate(0deg)',
-                    transition: 'transform 0.15s',
-                  }}>&#9654;</span>
-                </button>
-                {expandedGroups[groupKey] && (
-                  <div style={{ padding: '0.5rem 0.65rem', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                    {group.permissions.map(perm => (
-                      <label
-                        key={perm.key}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'flex-start',
-                          gap: '0.5rem',
-                          fontSize: '0.78rem',
-                          color: '#333',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={formPermissions.includes(perm.key)}
-                          onChange={() => togglePermission(perm.key)}
-                          style={{ marginTop: 2 }}
-                        />
-                        <div>
-                          <div style={{ fontWeight: 500 }}>{perm.label}</div>
-                          {perm.description && (
-                            <div style={{ fontSize: '0.7rem', color: '#999' }}>{perm.description}</div>
-                          )}
-                        </div>
-                      </label>
-                    ))}
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Permissions</span>
+              <span style={metaText}>{formPermissions.length} selected</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {Object.entries(permissionGroups).map(([groupKey, group]) => {
+                const isOpen = !!expandedGroups[groupKey];
+                // "2 of 3" so a collapsed group still shows what it grants.
+                // Guarded: only when the group carries its permission list.
+                const ticked = Array.isArray(group.permissions)
+                  ? group.permissions.filter(p => formPermissions.includes(p.key)).length
+                  : null;
+                return (
+                  <div key={groupKey} style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflow: 'hidden', backgroundColor: 'var(--bg)' }}>
+                    <button
+                      type="button"
+                      className="n-row"
+                      aria-expanded={isOpen}
+                      onClick={() => toggleGroup(groupKey)}
+                      style={{ borderRadius: 0, padding: '10px 12px', fontWeight: 600 }}
+                    >
+                      <Icon icon={isOpen ? ChevronDown : ChevronRight} tone="muted" />
+                      <span style={{ flex: 1, minWidth: 0 }}>{group.label}</span>
+                      {ticked !== null && (
+                        <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 500, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                          {ticked} of {group.permissions.length}
+                        </span>
+                      )}
+                    </button>
+                    {isOpen && (
+                      <div style={{ ...permissionGrid, padding: 12, borderTop: '1px solid var(--line-soft)' }}>
+                        {group.permissions.map(perm => renderPermission(perm, true))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
+                );
+              })}
+            </div>
             {allPermissions.length > 0 && Object.keys(permissionGroups).length === 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                {allPermissions.map(perm => (
-                  <label key={perm.key} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.78rem', color: '#333', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={formPermissions.includes(perm.key)}
-                      onChange={() => togglePermission(perm.key)}
-                    />
-                    {perm.label}
-                  </label>
-                ))}
+              <div style={permissionGrid}>
+                {allPermissions.map(perm => renderPermission(perm, false))}
               </div>
             )}
           </div>
 
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button
+              variant="primary"
               onClick={handleSave}
               disabled={saving || !formName || !formDisplayName}
-              style={{
-                padding: '0.45rem 1rem',
-                fontSize: '0.8rem',
-                fontWeight: 600,
-                border: 'none',
-                borderRadius: 6,
-                backgroundColor: saving ? '#999' : '#1a1a1a',
-                color: '#fff',
-                cursor: saving ? 'default' : 'pointer',
-                fontFamily: 'inherit',
-              }}
             >
-              {saving ? 'Saving...' : editingRole ? 'Update Role' : 'Create Role'}
-            </button>
-            <button
-              onClick={closeForm}
-              style={{
-                padding: '0.45rem 1rem',
-                fontSize: '0.8rem',
-                border: '1px solid #e2ddd7',
-                borderRadius: 6,
-                backgroundColor: '#fff',
-                color: '#555',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
+              {saving ? 'Saving…' : editingRole ? 'Update role' : 'Create role'}
+            </Button>
+            <Button onClick={closeForm}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -461,42 +379,24 @@ export default function RolesPanel({ orgId }: RolesPanelProps) {
       {/* ---- Section 3: Members & Role Assignment ---- */}
       {!isFormOpen && (
         <>
-          <h3 style={{ margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Member Role Assignments
-          </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            {members.map(member => (
-              <div
-                key={member.id}
-                style={{
-                  padding: '0.65rem 1rem',
-                  border: '1px solid #e2ddd7',
-                  borderRadius: 8,
-                  backgroundColor: '#fff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.75rem',
-                }}
-              >
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 500, fontSize: '0.85rem', color: '#1a1a1a' }}>{member.full_name}</div>
-                  <div style={{ fontSize: '0.72rem', color: '#999' }}>{member.email}</div>
+          <div style={sectionHead}>
+            <h3 style={sectionTitle}>Member role assignments</h3>
+          </div>
+          <div className="n-card">
+            {members.map((member, i) => (
+              <div key={member.id} style={listRow(i === members.length - 1)}>
+                <Avatar name={member.full_name} size={28} />
+                <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+                  <div style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{member.full_name}</div>
+                  <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflowWrap: 'anywhere' }}>{member.email}</div>
                 </div>
                 <select
+                  className="n-select"
+                  aria-label={`Role for ${member.full_name}`}
                   value={roles.find(r => r.name === member.role)?.id || ''}
                   onChange={e => handleAssignRole(member.user_id, e.target.value)}
                   disabled={assigningUser === member.user_id}
-                  style={{
-                    padding: '0.35rem 0.5rem',
-                    fontSize: '0.78rem',
-                    border: '1px solid #e2ddd7',
-                    borderRadius: 6,
-                    backgroundColor: '#fff',
-                    fontFamily: 'inherit',
-                    color: '#333',
-                    cursor: 'pointer',
-                    outline: 'none',
-                  }}
+                  style={{ marginLeft: 'auto', minWidth: 180 }}
                 >
                   {roles.map(role => (
                     <option key={role.id} value={role.id}>{role.display_name}</option>
@@ -504,9 +404,7 @@ export default function RolesPanel({ orgId }: RolesPanelProps) {
                 </select>
               </div>
             ))}
-            {members.length === 0 && (
-              <div style={{ fontSize: '0.82rem', color: '#999' }}>No members found.</div>
-            )}
+            {members.length === 0 && <PageState kind="empty" title="No members found." />}
           </div>
         </>
       )}

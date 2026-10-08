@@ -1,7 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { Plus, X } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
 
 // The Dojo's own sample view — deliberately NOT the Receive Invoice editor.
 // A sample carries two extraction-shaped value sets and nothing else:
@@ -99,8 +105,40 @@ const LINE_COLS: { key: keyof ExtractionLine; label: string; width?: number; num
   { key: 'line_total_ex_tax', label: 'Line total', width: 85, numeric: true },
 ];
 
-const microLabel: React.CSSProperties = { fontSize: '0.58rem', fontWeight: 600, color: '#999', textTransform: 'uppercase', letterSpacing: '0.04em' };
-const cellInput: React.CSSProperties = { width: '100%', padding: '3px 6px', border: '1px solid #ddd', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'inherit', boxSizing: 'border-box' };
+// A field's label over its value (meta role).
+const microLabel: React.CSSProperties = { fontSize: 'var(--fs-xs)', fontWeight: 500, color: 'var(--muted)' };
+// The line tables are .n-table, a little denser: nine columns share half the
+// toolkit, so headers may wrap and cells align top (a value can carry its
+// "expected" note underneath).
+const thCell: React.CSSProperties = { padding: '8px', whiteSpace: 'normal', verticalAlign: 'bottom' };
+const tdCell: React.CSSProperties = { padding: '8px', verticalAlign: 'top' };
+// Editing: every cell is a field of the same height, so they centre.
+const tdInputCell: React.CSSProperties = { padding: '4px', verticalAlign: 'middle' };
+// Wide tables scroll sideways inside the card instead of spilling out of it.
+const scrollBox: React.CSSProperties = { overflowX: 'auto' };
+// The mismatch mark: the value on the warn tint, edged in warn.
+const mismatchMark: React.CSSProperties = {
+  background: 'var(--warn-bg)',
+  border: '1px solid color-mix(in srgb, var(--warn) 40%, transparent)',
+  borderRadius: 'var(--radius-sm)',
+};
+
+// The value-set toggle: the thread list's filter chip — the pressed one sits
+// on --selected with a tan edge, the rest are outlined.
+const toggle = (on: boolean, enabled = true): React.CSSProperties => ({
+  flex: '0 0 auto',
+  whiteSpace: 'nowrap',
+  padding: '4px 10px',
+  fontFamily: 'inherit',
+  fontSize: 'var(--fs-xs)',
+  fontWeight: on ? 600 : 500,
+  color: on ? 'var(--text)' : 'var(--text-soft)',
+  background: on ? 'var(--selected)' : 'var(--bg)',
+  border: `1px solid ${on ? 'var(--brand-soft)' : 'var(--line)'}`,
+  borderRadius: 999,
+  cursor: enabled ? 'pointer' : 'not-allowed',
+  opacity: enabled ? 1 : 0.45,
+});
 
 function deepCopy<T>(v: T): T {
   return JSON.parse(JSON.stringify(v ?? null)) as T;
@@ -219,126 +257,125 @@ export default function DojoSampleView({
   };
 
   const mismatchStyle = (d: Diff | undefined): React.CSSProperties =>
-    d ? { background: '#fdf6e7', border: '1px solid #e0b95d', borderRadius: 4 } : {};
+    d ? mismatchMark : {};
 
   const statusChip = (() => {
     // The replica is a derived document, not a graded value set — its chip
     // says what it is.
     if (mode === 'replica') {
-      return <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: '#e2ecf5', color: '#2d5a83' }}>REPLICA — the Loaded-ready document this run built</span>;
+      return <Badge tone="info">Replica — the Loaded-ready document this run built</Badge>;
     }
     // The stored baseline is the reference set, not a verdict — its chip
     // says what it is rather than claiming any pass/fail.
     if (mode === 'stored') {
-      return <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: '#e8e6f5', color: '#4c3d8f' }}>STORED BASELINE — what regression tests against today</span>;
+      return <Badge>Stored baseline — what regression tests against today</Badge>;
     }
     // The current-prompt view carries its own verdict — its diffs against the
     // expected values — so the chip must not claim the verification result.
     if (mode === 'current') {
       const n = (currentDiffs || []).length;
-      const p = n === 0
-        ? { bg: '#d1fae5', fg: '#065f46', label: 'CURRENT PROMPT — matches the expected values' }
-        : { bg: '#fee2e2', fg: '#991b1b', label: `CURRENT PROMPT — ${n} mismatch${n === 1 ? '' : 'es'} vs expected` };
-      return <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: p.bg, color: p.fg }}>{p.label}</span>;
+      const p: { tone: BadgeTone; label: string } = n === 0
+        ? { tone: 'ok', label: 'Current prompt — matches the expected values' }
+        : { tone: 'error', label: `Current prompt — ${n} mismatch${n === 1 ? '' : 'es'} vs expected` };
+      return <Badge tone={p.tone}>{p.label}</Badge>;
     }
     // A fail with no field mismatches is a reconciliation failure: the numbers
     // match the baseline but the document's own arithmetic doesn't add up
     // (subtotal/lines/discount/tax vs total), so it must not read as a pass.
     const failLabel = diffs.length > 0
-      ? `FAIL — ${diffs.length} mismatch${diffs.length === 1 ? '' : 'es'}`
-      : "FAIL — totals don't reconcile";
-    const map: Record<string, { bg: string; fg: string; label: string }> = {
-      pass: { bg: '#d1fae5', fg: '#065f46', label: 'PASS — extracted matches expected' },
-      fail: { bg: '#fee2e2', fg: '#991b1b', label: failLabel },
-      error: { bg: '#fee2e2', fg: '#991b1b', label: 'ERROR — last run failed' },
-      new: { bg: '#fdf6e7', fg: '#8a6d3b', label: 'NO BASELINE — set the expected values' },
+      ? `Fail — ${diffs.length} mismatch${diffs.length === 1 ? '' : 'es'}`
+      : "Fail — totals don't reconcile";
+    // "new" = no baseline yet, which an admin has to set: needs your input.
+    const map: Record<string, { tone: BadgeTone; label: string }> = {
+      pass: { tone: 'ok', label: 'Pass — extracted matches expected' },
+      fail: { tone: 'error', label: failLabel },
+      error: { tone: 'error', label: 'Error — last run failed' },
+      new: { tone: 'accent', label: 'No baseline — set the expected values' },
     };
     const p = map[status] || map.new;
-    return <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: p.bg, color: p.fg }}>{p.label}</span>;
+    return <Badge tone={p.tone}>{p.label}</Badge>;
   })();
 
   return (
-    <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', padding: '12px 14px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+    <div className="n-card" style={{ padding: '12px 14px', color: 'var(--text)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px 10px', marginBottom: 12, flexWrap: 'wrap' }}>
         {/* The toggle: which value set the table below shows. Stored baseline
             sits FIRST, then current-prompt (before → after reads left to
             right). */}
-        <div style={{ display: 'inline-flex', border: '1px solid #d8d4cc', borderRadius: 6, overflow: 'hidden' }}>
+        <div role="group" aria-label="Value set" style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6 }}>
           {stored !== undefined && (
-            <button type="button" onClick={() => setMode('stored')} disabled={!stored}
+            <button type="button" onClick={() => setMode('stored')} disabled={!stored} aria-pressed={mode === 'stored'}
               title={stored ? undefined : 'no baseline stored on this sample yet'}
-              style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', cursor: stored ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'stored' ? '#4c3d8f' : '#fff', color: mode === 'stored' ? '#fff' : stored ? '#666' : '#bbb', fontWeight: 600 }}>
+              style={toggle(mode === 'stored', !!stored)}>
               {labels?.stored ?? 'Current expected values'}
             </button>
           )}
           {current !== undefined && (
-            <button type="button" onClick={() => setMode('current')} disabled={!current}
+            <button type="button" onClick={() => setMode('current')} disabled={!current} aria-pressed={mode === 'current'}
               title={current ? undefined : 'no current-prompt run stored yet — press Run on the sample'}
-              style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', ...(stored !== undefined ? { borderLeft: '1px solid #d8d4cc' } : {}), cursor: current ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'current' ? '#8a6d3b' : '#fff', color: mode === 'current' ? '#fff' : current ? '#666' : '#bbb', fontWeight: 600 }}>
+              style={toggle(mode === 'current', !!current)}>
               {labels?.current ?? 'Current prompt'}
             </button>
           )}
-          <button type="button" onClick={() => setMode('expected')}
-            style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', ...(current !== undefined || stored !== undefined ? { borderLeft: '1px solid #d8d4cc' } : {}), cursor: 'pointer', fontFamily: 'inherit', background: mode === 'expected' ? '#2e7d4f' : '#fff', color: mode === 'expected' ? '#fff' : '#666', fontWeight: 600 }}>
+          <button type="button" onClick={() => setMode('expected')} aria-pressed={mode === 'expected'}
+            style={toggle(mode === 'expected')}>
             {labels?.expected ?? (readOnly ? 'Expected' : 'Expected (editable)')}
           </button>
-          <button type="button" onClick={() => setMode('extracted')} disabled={!extraction}
+          <button type="button" onClick={() => setMode('extracted')} disabled={!extraction} aria-pressed={mode === 'extracted'}
             title={extraction ? undefined : 'no extraction run stored yet — press Run'}
-            style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', borderLeft: '1px solid #d8d4cc', cursor: extraction ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'extracted' ? '#4a5568' : '#fff', color: mode === 'extracted' ? '#fff' : extraction ? '#666' : '#bbb', fontWeight: 600 }}>
+            style={toggle(mode === 'extracted', !!extraction)}>
             {labels?.extracted ?? 'Extracted (last run)'}
           </button>
           {replica !== undefined && (
-            <button type="button" onClick={() => setMode('replica')} disabled={!replica}
+            <button type="button" onClick={() => setMode('replica')} disabled={!replica} aria-pressed={mode === 'replica'}
               title={replica ? undefined : 'no invoice view stored for this run — press Run to build it'}
-              style={{ fontSize: '0.7rem', padding: '4px 12px', border: 'none', borderLeft: '1px solid #d8d4cc', cursor: replica ? 'pointer' : 'not-allowed', fontFamily: 'inherit', background: mode === 'replica' ? '#2d5a83' : '#fff', color: mode === 'replica' ? '#fff' : replica ? '#666' : '#bbb', fontWeight: 600 }}>
+              style={toggle(mode === 'replica', !!replica)}>
               Replica
             </button>
           )}
         </div>
         {statusChip}
         {mode === 'expected' && (
-          <span style={{ fontSize: '0.64rem', color: '#8a6d3b' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
             {labels?.expectedHint ?? 'what the LLM SHOULD pull off this document — authored here (or by the analysis agent), never from Loaded'}
           </span>
         )}
         {mode === 'extracted' && (
-          <span style={{ fontSize: '0.64rem', color: '#667' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
             {labels?.extractedHint ?? 'what the last run actually pulled — mismatches vs expected are highlighted'}
           </span>
         )}
         {mode === 'current' && (
-          <span style={{ fontSize: '0.64rem', color: '#667' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
             {labels?.currentHint ?? 'what the CURRENT prompts pull from this document — mismatches vs the expected values are highlighted'}
           </span>
         )}
         {mode === 'stored' && (
-          <span style={{ fontSize: '0.64rem', color: '#667' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
             {labels?.storedHint ?? 'the baseline stored on the sample today — what regression currently tests against'}
           </span>
         )}
         {mode === 'replica' && (
-          <span style={{ fontSize: '0.64rem', color: '#667' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
             the extraction resolved against the Loaded catalogue — each line shows the unit as printed, the interpreted delivered unit, and the unit the replica settled on
           </span>
         )}
       </div>
-      {error && <div style={{ fontSize: '0.72rem', color: '#c0392b', marginBottom: 8 }}>{error}</div>}
+      {error && <div style={{ marginBottom: 10 }}><PageState kind="error" title={error} /></div>}
 
       {mode === 'expected' && !draft && !readOnly && (
         <div style={{ padding: '10px 0' }}>
-          <div style={{ fontSize: '0.74rem', color: '#777', marginBottom: 8 }}>
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginBottom: 8 }}>
             No expected values stored yet.
           </div>
           {extraction ? (
-            <button type="button" onClick={() => { setDraft(deepCopy(extraction)); setDirty(true); }}
-              style={{ fontSize: '0.72rem', padding: '5px 12px', border: '1px solid #2e7d4f', borderRadius: 6, background: '#fff', color: '#2e7d4f', cursor: 'pointer' }}>
+            <Button size="sm" onClick={() => { setDraft(deepCopy(extraction)); setDirty(true); }}>
               Start from the extracted values
-            </button>
+            </Button>
           ) : (
-            <button type="button" onClick={() => { setDraft({ document_type: 'invoice', lines: [{}] }); setDirty(true); }}
-              style={{ fontSize: '0.72rem', padding: '5px 12px', border: '1px solid #2e7d4f', borderRadius: 6, background: '#fff', color: '#2e7d4f', cursor: 'pointer' }}>
+            <Button size="sm" onClick={() => { setDraft({ document_type: 'invoice', lines: [{}] }); setDirty(true); }}>
               Start from scratch
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -346,7 +383,7 @@ export default function DojoSampleView({
       {doc && (
         <>
           {/* Header fields */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '6px 12px', marginBottom: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '10px 12px', marginBottom: 12 }}>
             {HEADER_FIELDS.map(({ key, label }) => {
               const d = mode !== 'expected' ? diffMap.header.get(key as string) : undefined;
               const val = doc[key];
@@ -354,7 +391,7 @@ export default function DojoSampleView({
                 <label key={key as string} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={microLabel}>{label}</span>
                   {editable ? (
-                    <input style={cellInput} value={val == null ? '' : String(val)}
+                    <input className="n-input" style={{ width: '100%' }} value={val == null ? '' : String(val)}
                       onChange={(e) => edit((x) => {
                         (x as Record<string, unknown>)[key as string] =
                           ['subtotal_ex_tax', 'tax_amount', 'total_incl_tax'].includes(key as string)
@@ -362,10 +399,10 @@ export default function DojoSampleView({
                             : (e.target.value || null);
                       })} />
                   ) : (
-                    <span style={{ fontSize: '0.74rem', color: '#333', padding: '3px 6px', minHeight: 18, ...mismatchStyle(d) }}
+                    <span style={{ fontSize: 'var(--fs-base)', color: 'var(--text)', padding: '2px 6px', margin: '0 -6px', minHeight: 18, ...mismatchStyle(d) }}
                       title={d ? `expected: ${JSON.stringify(d.expected ?? null)}` : undefined}>
                       {val == null || val === '' ? '—' : String(val)}
-                      {d && <span style={{ color: '#8a6d3b', marginLeft: 6, fontSize: '0.62rem' }}>expected {JSON.stringify(d.expected ?? null)}</span>}
+                      {d && <span style={{ color: 'var(--warn)', marginLeft: 6, fontSize: 'var(--fs-xs)' }}>expected {JSON.stringify(d.expected ?? null)}</span>}
                     </span>
                   )}
                 </label>
@@ -374,41 +411,42 @@ export default function DojoSampleView({
           </div>
 
           {/* Lines */}
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>
+          <div style={scrollBox}>
+          <table className="n-table">
             <thead>
-              <tr style={{ textAlign: 'left', color: '#999', fontSize: '0.58rem', textTransform: 'uppercase' }}>
-                {LINE_COLS.map((c) => <th key={c.key as string} style={{ padding: '3px 6px', width: c.width }} title={c.hint}>{c.label}</th>)}
-                <th style={{ padding: '3px 6px', width: 86 }} title="the document shows size info that can't be read">Unreadable unit</th>
-                {editable && <th style={{ width: 26 }} />}
+              <tr>
+                {LINE_COLS.map((c) => <th key={c.key as string} className={c.numeric ? 'num' : undefined} style={{ ...thCell, width: c.width }} title={c.hint}>{c.label}</th>)}
+                <th style={{ ...thCell, width: 86 }} title="the document shows size info that can't be read">Unreadable unit</th>
+                {editable && <th style={{ ...thCell, width: 36 }} />}
               </tr>
             </thead>
             <tbody>
               {(doc.lines || []).map((l, i) => (
-                <tr key={i} style={{ borderTop: '1px solid #f3f3f3', ...(mode !== 'expected' && diffMap.line.has(`${i + 1}:line_extra`) ? { background: '#fdf6e7' } : {}) }}
+                <tr key={i} style={mode !== 'expected' && diffMap.line.has(`${i + 1}:line_extra`) ? { background: 'var(--warn-bg)' } : undefined}
                   title={mode !== 'expected' && diffMap.line.has(`${i + 1}:line_extra`) ? 'extracted line not present in the expected values' : undefined}>
                   {LINE_COLS.map((c) => {
                     const d = mode !== 'expected' ? diffMap.line.get(`${i + 1}:${c.key as string}`) : undefined;
                     const val = l[c.key];
                     return (
-                      <td key={c.key as string} style={{ padding: '3px 6px', verticalAlign: 'top' }}>
+                      <td key={c.key as string} className={c.numeric ? 'num' : undefined} style={editable ? tdInputCell : tdCell}>
                         {editable ? (
-                          <input style={{ ...cellInput, textAlign: c.numeric ? 'right' : 'left' }}
+                          <input className="n-input" style={{ width: '100%', minWidth: c.key === 'description' ? 160 : 56, textAlign: c.numeric ? 'right' : 'left' }}
                             value={val == null ? '' : String(val)}
                             onChange={(e) => edit((x) => {
                               const ln = (x.lines || [])[i] as Record<string, unknown>;
                               ln[c.key as string] = c.numeric ? numOrNull(e.target.value) : (e.target.value || null);
                             })} />
                         ) : (
-                          <span style={{ display: 'inline-block', padding: '2px 4px', textAlign: c.numeric ? 'right' : 'left', ...mismatchStyle(d) }}
+                          <span style={{ display: 'inline-block', padding: '1px 4px', margin: '0 -4px', textAlign: c.numeric ? 'right' : 'left', ...mismatchStyle(d) }}
                             title={d ? `expected: ${JSON.stringify(d.expected ?? null)}` : undefined}>
                             {val == null || val === '' ? '—' : String(val)}
-                            {d && <div style={{ color: '#8a6d3b', fontSize: '0.6rem' }}>expected {JSON.stringify(d.expected ?? null)}</div>}
+                            {d && <div style={{ color: 'var(--warn)', fontSize: 'var(--fs-xs)' }}>expected {JSON.stringify(d.expected ?? null)}</div>}
                           </span>
                         )}
                       </td>
                     );
                   })}
-                  <td style={{ padding: '3px 6px', textAlign: 'center' }}>
+                  <td style={{ ...(editable ? tdInputCell : tdCell), textAlign: 'center' }}>
                     {editable ? (
                       <input type="checkbox" checked={!!l.unit_unrecognisable}
                         onChange={(e) => edit((x) => { ((x.lines || [])[i] as Record<string, unknown>).unit_unrecognisable = e.target.checked || null; })} />
@@ -420,10 +458,9 @@ export default function DojoSampleView({
                     )}
                   </td>
                   {editable && (
-                    <td style={{ padding: '3px 2px' }}>
-                      <button type="button" onClick={() => edit((x) => { (x.lines || []).splice(i, 1); })}
-                        title="remove this line from the expected values"
-                        style={{ border: 'none', background: 'none', color: '#c0392b', cursor: 'pointer', fontSize: '0.72rem' }}>✕</button>
+                    <td style={{ ...tdInputCell, padding: '4px 2px' }}>
+                      <IconButton icon={X} iconSize={16} label="Remove this line from the expected values"
+                        onClick={() => edit((x) => { (x.lines || []).splice(i, 1); })} />
                     </td>
                   )}
                 </tr>
@@ -432,40 +469,42 @@ export default function DojoSampleView({
               {mode !== 'expected' && [...diffMap.line.entries()]
                 .filter(([k]) => k.endsWith(':line_missing'))
                 .map(([k, d]) => (
-                  <tr key={k} style={{ borderTop: '1px solid #f3f3f3', color: '#991b1b', fontSize: '0.68rem' }}>
-                    <td colSpan={LINE_COLS.length + 1} style={{ padding: '3px 6px' }}>
-                      ✗ expected line {d.line} “{d.description}” was NOT extracted
+                  <tr key={k}>
+                    <td colSpan={LINE_COLS.length + 1} style={{ ...tdCell, fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <Icon icon={X} size="dense" />
+                        expected line {d.line} “{d.description}” was NOT extracted
+                      </span>
                     </td>
                   </tr>
                 ))}
             </tbody>
           </table>
+          </div>
           {editable && (
-            <button type="button" onClick={() => edit((x) => { x.lines = [...(x.lines || []), {}]; })}
-              style={{ marginTop: 6, fontSize: '0.68rem', padding: '3px 10px', border: '1px dashed #bbb', borderRadius: 4, background: '#fff', color: '#777', cursor: 'pointer' }}>
-              + Add line
-            </button>
+            <Button size="sm" variant="quiet" icon={Plus} style={{ marginTop: 6 }}
+              onClick={() => edit((x) => { x.lines = [...(x.lines || []), {}]; })}>
+              Add line
+            </Button>
           )}
 
 
           {editable && (
-            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              <button type="button" onClick={save} disabled={!dirty || saving}
-                style={{ fontSize: '0.72rem', padding: '5px 14px', border: 'none', borderRadius: 6, background: dirty ? '#2e7d4f' : '#a8c5b4', color: '#fff', cursor: dirty && !saving ? 'pointer' : 'default' }}>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+              <Button size="sm" variant="primary" onClick={save} disabled={!dirty || saving}>
                 {saving ? 'Saving…' : 'Save expected values'}
-              </button>
+              </Button>
               {dirty && (
-                <button type="button" onClick={() => { setDraft(deepCopy(expected)); setDirty(false); }}
-                  style={{ fontSize: '0.72rem', padding: '5px 12px', border: '1px solid #ccc', borderRadius: 6, background: '#fff', color: '#666', cursor: 'pointer' }}>
+                <Button size="sm" onClick={() => { setDraft(deepCopy(expected)); setDirty(false); }}>
                   Revert
-                </button>
+                </Button>
               )}
               {extraction && (
-                <button type="button" onClick={() => { setDraft(deepCopy(extraction)); setDirty(true); }}
+                <Button size="sm" variant="quiet" onClick={() => { setDraft(deepCopy(extraction)); setDirty(true); }}
                   title="overwrite the draft with the last run's extracted values"
-                  style={{ marginLeft: 'auto', fontSize: '0.68rem', padding: '5px 10px', border: '1px solid #d8d4cc', borderRadius: 6, background: '#fff', color: '#888', cursor: 'pointer' }}>
+                  style={{ marginLeft: 'auto' }}>
                   Copy from extracted
-                </button>
+                </Button>
               )}
             </div>
           )}
@@ -475,7 +514,7 @@ export default function DojoSampleView({
       {mode === 'replica' && replica && (
         <>
           {/* Replica header — the document the run would hand to Loaded */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '6px 12px', marginBottom: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '10px 12px', marginBottom: 12 }}>
             {([
               ['Supplier (resolved)', replica.supplier_name],
               ['Invoice number', replica.reference_number],
@@ -485,7 +524,7 @@ export default function DojoSampleView({
             ] as [string, unknown][]).map(([label, val]) => (
               <label key={label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <span style={microLabel}>{label}</span>
-                <span style={{ fontSize: '0.74rem', color: '#333', padding: '3px 6px', minHeight: 18 }}>
+                <span style={{ fontSize: 'var(--fs-base)', color: 'var(--text)', padding: '2px 0', minHeight: 18 }}>
                   {val == null || val === '' ? '—' : String(val)}
                 </span>
               </label>
@@ -495,18 +534,19 @@ export default function DojoSampleView({
           {/* Lines with the unit trail: printed → interpreted → resolved.
               Replica line i is built FROM extraction line i, so the printed
               and interpreted columns read straight from the extraction. */}
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>
+          <div style={scrollBox}>
+          <table className="n-table">
             <thead>
-              <tr style={{ textAlign: 'left', color: '#999', fontSize: '0.58rem', textTransform: 'uppercase' }}>
-                <th style={{ padding: '3px 6px', width: 90 }}>Code</th>
-                <th style={{ padding: '3px 6px' }}>Description</th>
-                <th style={{ padding: '3px 6px', width: 60 }}>Qty</th>
-                <th style={{ padding: '3px 6px', width: 90 }} title="the unit field exactly as printed on the document">Unit (printed)</th>
-                <th style={{ padding: '3px 6px', width: 90 }} title="the interpreted delivered unit of one item — the field the dojo grades">Unit of measure</th>
-                <th style={{ padding: '3px 6px', width: 90 }} title="the Loaded unit the replica settled on">Resolved unit</th>
-                <th style={{ padding: '3px 6px', width: 80, textAlign: 'right' }}>Unit price</th>
-                <th style={{ padding: '3px 6px', width: 80, textAlign: 'right' }}>Line total</th>
-                <th style={{ padding: '3px 6px', width: 140 }}>Stock item</th>
+              <tr>
+                <th style={{ ...thCell, width: 90 }}>Code</th>
+                <th style={thCell}>Description</th>
+                <th className="num" style={{ ...thCell, width: 60 }}>Qty</th>
+                <th style={{ ...thCell, width: 90 }} title="the unit field exactly as printed on the document">Unit (printed)</th>
+                <th style={{ ...thCell, width: 90 }} title="the interpreted delivered unit of one item — the field the dojo grades">Unit of measure</th>
+                <th style={{ ...thCell, width: 90 }} title="the Loaded unit the replica settled on">Resolved unit</th>
+                <th className="num" style={{ ...thCell, width: 80 }}>Unit price</th>
+                <th className="num" style={{ ...thCell, width: 80 }}>Line total</th>
+                <th style={{ ...thCell, width: 140 }}>Stock item</th>
               </tr>
             </thead>
             <tbody>
@@ -519,31 +559,32 @@ export default function DojoSampleView({
                 // resolved value.
                 const resolvedWithoutUom = (el?.unit_of_measure == null || el?.unit_of_measure === '') && l.unit != null && l.unit !== '';
                 return (
-                  <tr key={i} style={{ borderTop: '1px solid #f3f3f3' }}>
-                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>{show(l.code)}</td>
-                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>{show(l.description)}</td>
-                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>{show(l.quantity_received)}</td>
-                    <td style={{ padding: '3px 6px', verticalAlign: 'top', color: '#667' }}>{show(el?.unit)}</td>
-                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>{show(el?.unit_of_measure)}</td>
-                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }}>
-                      <span style={resolvedWithoutUom ? { background: '#fdf6e7', border: '1px solid #e0b95d', borderRadius: 4, padding: '1px 4px' } : {}}
+                  <tr key={i}>
+                    <td style={tdCell}>{show(l.code)}</td>
+                    <td style={tdCell}>{show(l.description)}</td>
+                    <td className="num" style={tdCell}>{show(l.quantity_received)}</td>
+                    <td style={{ ...tdCell, color: 'var(--muted)' }}>{show(el?.unit)}</td>
+                    <td style={tdCell}>{show(el?.unit_of_measure)}</td>
+                    <td style={tdCell}>
+                      <span style={resolvedWithoutUom ? { ...mismatchMark, padding: '1px 4px' } : {}}
                         title={resolvedWithoutUom ? 'the interpreted delivered unit was NOT extracted — this unit was resolved from the printed unit or the linked variant' : undefined}>
                         {show(l.unit)}
                       </span>
                     </td>
-                    <td style={{ padding: '3px 6px', verticalAlign: 'top', textAlign: 'right' }}>{show(l.unit_cost)}</td>
-                    <td style={{ padding: '3px 6px', verticalAlign: 'top', textAlign: 'right' }}>{show(l.total_cost)}</td>
-                    <td style={{ padding: '3px 6px', verticalAlign: 'top' }} title={l.matched_by ? `matched by ${l.matched_by}` : undefined}>
+                    <td className="num" style={tdCell}>{show(l.unit_cost)}</td>
+                    <td className="num" style={tdCell}>{show(l.total_cost)}</td>
+                    <td style={tdCell} title={l.matched_by ? `matched by ${l.matched_by}` : undefined}>
                       {l.linked_item_id
                         ? show(l.item_name)
-                        : <span style={{ color: '#8a6d3b' }}>new item — not in the catalogue</span>}
+                        : <span style={{ color: 'var(--warn)' }}>new item — not in the catalogue</span>}
                     </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-          <div style={{ fontSize: '0.62rem', color: '#999', marginTop: 8 }}>
+          </div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 8 }}>
             Resolved unit precedence: the linked variant&apos;s default unit, else the unit of measure, else the unit as printed — each matched against the venue&apos;s Loaded unit list.
           </div>
         </>

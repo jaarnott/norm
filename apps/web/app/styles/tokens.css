@@ -1,0 +1,385 @@
+/* ── Norm design tokens and shared component classes ─────────────────────
+   The single source of the look. Imported by globals.css for the web app AND
+   by apps/mcp-ui/src/main.tsx, so the display components bundled into Claude
+   (apps/api/app/mcp/ui/display-block.html) get the same variables and classes.
+   Editing this file therefore needs `pnpm --filter @norm/mcp-ui build`.
+
+   Light only for now: no `prefers-color-scheme` block. Inline styles across the
+   app are still literal light colours, so flipping tokens alone produced a dark
+   Roster inside a light page. Text colours are checked against WCAG AA on every
+   fill they sit on (canvas, white, stripe, hover, selected, tan tint).
+
+   Rules here never style bare elements (body, table, button…): this file also
+   runs inside Claude's MCP host. Element defaults live in globals.css. */
+:root {
+  color-scheme: light;
+
+  /* type — the --font-figtree* variables come from next/font in layout.tsx;
+     they are undefined inside Claude, hence the fallbacks. */
+  --font-sans: var(--font-figtree, system-ui), var(--font-figtree-ext, system-ui), system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-2xs: 0.6875rem;  /* 11 badges, eyebrow labels */
+  --fs-xs: 0.75rem;     /* 12 meta, table headers */
+  --fs-sm: 0.8125rem;   /* 13 secondary text, small buttons */
+  --fs-base: 0.875rem;  /* 14 body, table cells, menu items, buttons */
+  --fs-md: 1rem;        /* 16 chat text, composer */
+  --fs-lg: 1.125rem;    /* 18 section titles */
+  --fs-xl: 1.25rem;     /* 20 page titles */
+  --fs-2xl: 1.75rem;    /* 28 Home, KPI figures */
+
+  /* brand */
+  --brand: #a08060;        /* wordmark, large text only */
+  --brand-soft: #c4a882;   /* tab underline, selected borders, duotone fill */
+  --accent: #7d6234;       /* links, selected text, selected-row bar — 5.4:1 */
+  --accent-soft: #f4e8d8;  /* tan tint: "needs you" band, selected chip */
+  --accent-strong: #5c4a26; /* link hover, avatar initial — 6.7:1 on --selected */
+
+  /* surfaces */
+  --canvas: #faf8f5;       /* app background: rail, menu panel and content */
+  --bg: #ffffff;           /* raised: cards, inputs, composer, tiles, modals */
+  --surface: #fbf9f6;      /* stripe inside white cards */
+  --surface-alt: #f4efe8;  /* hover, table-header fill, code */
+  --selected: #ebe3d8;     /* active rail/menu tile, selected row, user bubble */
+
+  /* lines */
+  --line: #e2ddd7;         /* hairlines */
+  --line-soft: #f0ebe5;
+  --line-strong: #d6cec3;  /* header rules, button outlines */
+  --field: #998e7f;        /* text inputs and switches: 3.0:1 on canvas, 3.2:1 on white */
+
+  /* text and icons */
+  --text: #1a1a1a;         /* 16.4:1 on canvas */
+  --text-soft: #5c554d;    /* 6.9:1 */
+  --muted: #69615a;        /* 5.7:1; 4.8:1 on --selected */
+  --muted-soft: #b0aca4;   /* disabled and decoration only — never text */
+  --icon: #878076;         /* inactive icons: 3.7:1 on canvas, 3.1:1 on --selected */
+
+  /* code blocks: a warm dark, 13:1 */
+  --code-bg: #2b2724;
+  --code-text: #eee8df;
+
+  /* actions */
+  --primary: #1a1a1a;
+  --primary-hover: #33302b;
+  --on-primary: #ffffff;
+  --focus: #7d6234;
+
+  /* status — text on its tint, all ≥5.2:1 */
+  --ok: #2f6b40;      --ok-bg: #e8f2ea;
+  --warn: #8a5a1f;    --warn-bg: #fbf1de;
+  --error: #a93a2a;   --error-bg: #fbe9e5;
+  --info: #3f5f80;    --info-bg: #ecf1f6;
+  --published: #2f6b40; --published-bg: #e8f2ea;
+  --draft: #3f5f80;     --draft-bg: #ecf1f6;
+  --open: #5c554d;      --open-bg: #f0ebe5;
+  --locked: #9a9184;
+
+  /* shape */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+}
+
+/* Touch screens: the small sizes step up so venue staff can read them on an
+   iPad or phone. (Inputs get their own 16px floor in globals.css.) */
+@media (pointer: coarse) {
+  :root {
+    --fs-2xs: 0.75rem;
+    --fs-xs: 0.8125rem;
+    --fs-sm: 0.875rem;
+    --fs-base: 0.9375rem;
+  }
+}
+
+/* ── Scrolling ── */
+/* A thumb that appears only while the pointer is over the list (as in Claude).
+   The gutter is reserved, so nothing shifts when it appears. Chromium ignores
+   ::-webkit-scrollbar once scrollbar-color is set, hence the @supports split. */
+.scroll-quiet {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.scroll-quiet:hover,
+.scroll-quiet:focus-within {
+  scrollbar-color: var(--line-strong) transparent;
+}
+@supports not (scrollbar-color: auto) {
+  .scroll-quiet::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroll-quiet::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+  .scroll-quiet:hover::-webkit-scrollbar-thumb { background: var(--line-strong); }
+}
+/* Sideways strips (mobile member row, tab strips): swipe, no bar at all. */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+@keyframes n-spin { to { transform: rotate(360deg); } }
+
+/* ── Icons ── */
+/* Duotone under-layer: the same lucide icon drawn first with its closed
+   shapes filled tan and no strokes; the normal icon is drawn on top. */
+.duo-fill * { stroke: none; }
+.duo-fill :is(rect, circle, ellipse, polygon, path[d$="z" i]) {
+  fill: var(--brand-soft);
+  fill-opacity: 0.45;
+}
+
+/* ── Buttons ── */
+.n-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: var(--fs-base);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+}
+.n-btn:disabled { opacity: 0.45; cursor: default; }
+.n-btn--sm { height: 30px; padding: 0 12px; font-size: var(--fs-sm); }
+.n-btn--primary { background: var(--primary); color: var(--on-primary); font-weight: 600; }
+.n-btn--primary:hover:not(:disabled) { background: var(--primary-hover); }
+.n-btn--secondary { background: var(--bg); color: var(--text); border-color: var(--line-strong); }
+.n-btn--secondary:hover:not(:disabled) { background: var(--surface-alt); }
+.n-btn--quiet { background: transparent; color: var(--text-soft); }
+.n-btn--quiet:hover:not(:disabled) { background: var(--surface-alt); color: var(--text); }
+.n-btn--danger { background: var(--bg); color: var(--error); border-color: #e8c5bd; }
+.n-btn--danger:hover:not(:disabled) { background: var(--error-bg); }
+.n-btn--link:hover:not(:disabled) { color: var(--accent-strong); }
+.n-btn--link {
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+@media (pointer: coarse) {
+  .n-btn:not(.n-btn--link) { min-height: 40px; }
+}
+
+.n-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--icon);
+  cursor: pointer;
+}
+.n-icon-btn:hover:not(:disabled) { background: var(--surface-alt); color: var(--text); }
+.n-icon-btn:disabled { opacity: 0.45; cursor: default; }
+@media (pointer: coarse) {
+  .n-icon-btn { width: 40px; height: 40px; }
+}
+
+.n-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.n-back:hover:not(:disabled) { color: var(--text); }
+.n-back:disabled { opacity: 0.45; cursor: default; }
+
+/* ── Badges ── */
+.n-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  background: var(--line-soft);
+  color: var(--text-soft);
+}
+.n-badge--ok { background: var(--ok-bg); color: var(--ok); }
+.n-badge--warn { background: var(--warn-bg); color: var(--warn); }
+.n-badge--error { background: var(--error-bg); color: var(--error); }
+.n-badge--info { background: var(--info-bg); color: var(--info); }
+.n-badge--accent { background: var(--accent-soft); color: var(--accent); }
+
+/* ── Tabs ── */
+/* The rule under the strip and the active underline are inset shadows, not
+   borders: the strip scrolls sideways (overflow), which would clip a border
+   hanging 1px below it — and the keyboard focus ring — at the edges. */
+.n-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 22px;
+  overflow-x: auto;
+  white-space: nowrap;
+  box-shadow: inset 0 -1px 0 var(--line);
+  scrollbar-width: none;
+}
+.n-tabs::-webkit-scrollbar { display: none; }
+.n-tab {
+  flex: 0 0 auto;
+  padding: 10px 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.n-tab:hover { color: var(--text); }
+.n-tab[aria-selected="true"] { color: var(--text); font-weight: 600; box-shadow: inset 0 -2px 0 var(--brand-soft); }
+.n-tab:focus-visible { outline-offset: -2px; }
+.n-tabs-divider { flex: 0 0 auto; align-self: center; width: 1px; height: 16px; background: var(--line); }
+
+/* ── Form controls ── */
+.n-select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 34px;
+  padding: 0 32px 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background-color: var(--bg);
+  /* chevron-down, stroke #878076 (--icon) */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23878076' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  font-family: inherit;
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+}
+.n-select:hover { background-color: var(--surface-alt); }
+.n-select--with-icon { padding-left: 34px; }
+@media (pointer: coarse) {
+  .n-select { height: 40px; }
+}
+
+/* Text fields: the edge is --field (3:1), so a field reads as a field. */
+.n-input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--field);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-base);
+  box-sizing: border-box;
+}
+textarea.n-input { height: auto; padding: 8px 10px; line-height: 1.45; resize: vertical; }
+.n-input::placeholder { color: var(--muted); }
+.n-input:disabled { background: var(--surface); color: var(--muted); }
+@media (pointer: coarse) {
+  .n-input:not(textarea) { height: 40px; }
+}
+.n-label { display: block; margin-bottom: 4px; font-size: var(--fs-sm); font-weight: 500; color: var(--text-soft); }
+
+/* A choice in a dropdown list or menu. */
+.n-option {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  text-align: left;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+.n-option:hover, .n-option[aria-selected="true"] { background: var(--surface-alt); }
+
+/* ── Surfaces ── */
+.n-card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+/* Page frame for every menu page: same gutters everywhere, no max-width. */
+/* Converted pages get the comfortable line height; unconverted screens keep
+   the browser default so their density doesn't shift underneath them. */
+.n-page { padding: 20px 24px 0; line-height: 1.45; }
+@media (max-width: 767px) {
+  .n-page { padding: 14px 16px 0; }
+}
+
+/* The one uppercase style: a small label over a group (Details, Status). */
+.n-eyebrow {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── Tables ── */
+.n-table { width: 100%; border-collapse: collapse; font-size: var(--fs-base); font-variant-numeric: tabular-nums; }
+.n-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-strong);
+  text-align: left;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-soft);
+  white-space: nowrap;
+  background: var(--surface-alt);
+  /* Claude's injected _base.css uppercases bare th — keep sentence case. */
+  text-transform: none;
+  letter-spacing: normal;
+}
+.n-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.n-table tbody tr:hover > td { background: var(--surface-alt); }
+.n-table .num { text-align: right; }
+/* Inside a card the card's own edge closes the table. */
+.n-card .n-table tbody tr:last-child > td { border-bottom: none; }
+
+/* ── Menu rows (menu panel, settings nav) ── */
+.n-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  font-family: inherit;
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.n-row:hover { background: var(--surface-alt); }
+.n-row[aria-current="page"] { background: var(--selected); font-weight: 600; }
+/* Rows sit inside scrolling lists: keep the focus ring inside the row. */
+.n-row:focus-visible { outline-offset: -2px; }
+@media (pointer: coarse) {
+  .n-row { min-height: 44px; }
+}

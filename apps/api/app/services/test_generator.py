@@ -8,16 +8,23 @@ from app.services.models import agent_model
 
 logger = logging.getLogger(__name__)
 
-# Available data-testid selectors in the frontend
+# Available data-testid selectors in the frontend. Keep this list to ids that
+# exist: a generated test that targets a renamed id fails on every run.
 AVAILABLE_SELECTORS = {
     "sidebar": [
         "sidebar-home",
         "sidebar-procurement",
         "sidebar-hr",
+        "sidebar-time_attendance",
+        "sidebar-marketing",
         "sidebar-reports",
+        "sidebar-executive_chef",
+        "sidebar-app_builder",
+        "sidebar-team",
         "sidebar-settings",
         "sidebar-logout",
     ],
+    "mobile": ["mobile-menu-btn", "sidebar-team-mobile"],
     "auth": [
         "login-email",
         "login-password",
@@ -25,13 +32,13 @@ AVAILABLE_SELECTORS = {
         "login-submit",
         "login-toggle-mode",
     ],
-    "home": ["home-message-input", "home-send-btn"],
+    "home": ["home-message-input", "home-send-btn", "attach-btn"],
     "tasks": [
         "new-chat-btn",
         "search-btn",
         "filter-all",
-        "filter-awaiting",
-        "filter-needs-input",
+        "filter-awaiting_approval",
+        "filter-awaiting_user_input",
         "filter-completed",
     ],
     "task_detail": [
@@ -44,9 +51,19 @@ AVAILABLE_SELECTORS = {
         "reject-btn",
     ],
     "settings": [
-        "settings-tab-connectors",
+        "settings-tab-preferences",
+        "settings-tab-venues",
+        "settings-tab-members",
+        "settings-tab-roles",
+        "settings-tab-billing",
         "settings-tab-agents",
-        "settings-tab-specs",
+        "settings-tab-connections",
+        "settings-tab-app-map",
+        "settings-tab-connectors",
+        "settings-tab-components",
+        "settings-tab-playbooks",
+        "settings-tab-supplier-specs",
+        "settings-tab-templates",
         "settings-tab-deployments",
         "settings-tab-tests",
     ],

@@ -1,7 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
+import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import BackLink from '../ui/BackLink';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 
 /**
  * Would autopilot have got these invoices right?
@@ -66,61 +72,63 @@ interface Report {
   recent: Row[];
 }
 
-const OUTCOME_STYLE: Record<string, { bg: string; fg: string; label: string }> = {
-  clean: { bg: '#d1fae5', fg: '#065f46', label: 'CLEAN' },
-  no_suggestions: { bg: '#e8f0fb', fg: '#1d4ed8', label: 'NO CHANGES' },
-  edited: { bg: '#fdf6e7', fg: '#8a6d3b', label: 'EDITED' },
-  dojo: { bg: '#fee2e2', fg: '#991b1b', label: 'FILED' },
-  not_reviewed: { bg: '#f3f4f6', fg: '#6b7280', label: 'NOT REVIEWED' },
+const OUTCOME_STYLE: Record<string, { tone: BadgeTone; label: string }> = {
+  clean: { tone: 'ok', label: 'Clean' },
+  no_suggestions: { tone: 'info', label: 'No changes' },
+  edited: { tone: 'warn', label: 'Edited' },
+  dojo: { tone: 'error', label: 'Filed' },
+  not_reviewed: { tone: 'neutral', label: 'Not reviewed' },
 };
 
 function Pill({ outcome }: { outcome: string }) {
   const s = OUTCOME_STYLE[outcome] || OUTCOME_STYLE.not_reviewed;
-  return (
-    <span style={{ fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: s.bg, color: s.fg, whiteSpace: 'nowrap' }}>
-      {s.label}
-    </span>
-  );
+  return <Badge tone={s.tone}>{s.label}</Badge>;
 }
 
 const pct = (v: number | null | undefined) => (v == null ? '—' : `${Math.round(v * 100)}%`);
 
-const VERDICT_STYLE: Record<string, { bg: string; fg: string; label: string }> = {
-  matched: { bg: '#d1fae5', fg: '#065f46', label: 'WOULD MATCH' },
-  differed: { bg: '#fdf6e7', fg: '#8a6d3b', label: 'WOULD DIFFER' },
-  never_auto: { bg: '#fee2e2', fg: '#991b1b', label: 'NEEDS A PERSON' },
-  unscored: { bg: '#f3f4f6', fg: '#6b7280', label: 'UNSCORED' },
+const VERDICT_STYLE: Record<string, { tone: BadgeTone; label: string }> = {
+  matched: { tone: 'ok', label: 'Would match' },
+  differed: { tone: 'warn', label: 'Would differ' },
+  never_auto: { tone: 'error', label: 'Needs a person' },
+  unscored: { tone: 'neutral', label: 'Unscored' },
 };
 
 function VerdictPill({ verdict }: { verdict?: string | null }) {
   const s = verdict ? VERDICT_STYLE[verdict] : null;
   if (!s) return null;
-  return (
-    <span style={{ fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: s.bg, color: s.fg, whiteSpace: 'nowrap' }}>
-      {s.label}
-    </span>
-  );
+  return <Badge tone={s.tone}>{s.label}</Badge>;
 }
 
 const fmtVal = (v: unknown) => (v == null || v === '' ? '—' : String(v));
 
 function Tile({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
-    <div style={{ flex: 1, minWidth: 190, border: '1px solid #eee', borderRadius: 8, padding: '10px 12px', background: '#fff' }}>
-      <div style={{ fontSize: '0.66rem', color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
-      <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#3a3a3a', lineHeight: 1.3 }}>{value}</div>
-      <div style={{ fontSize: '0.66rem', color: '#999' }}>{hint}</div>
+    <div className="n-card" style={{ flex: 1, minWidth: 190, padding: '12px 16px' }}>
+      <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-soft)' }}>{label}</div>
+      <div style={{ fontSize: 'var(--fs-2xl)', fontWeight: 700, lineHeight: 1.25, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{hint}</div>
     </div>
   );
 }
 
-const rowStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
-  borderBottom: '1px solid #f4f4f4', fontSize: '0.78rem',
-};
-const sectionLabel: React.CSSProperties = {
-  fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase', marginBottom: 6,
-};
+const sectionTitle: React.CSSProperties = { marginBottom: 8, fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' };
+const sectionHint: React.CSSProperties = { marginBottom: 8, fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
+
+// The filter chip from the thread list: the pressed one sits on --selected
+// with a tan edge, the rest are outlined.
+const chip = (on: boolean): React.CSSProperties => ({
+  flex: '0 0 auto',
+  whiteSpace: 'nowrap',
+  padding: '4px 8px',
+  fontSize: 'var(--fs-xs)',
+  fontWeight: on ? 600 : 500,
+  color: on ? 'var(--text)' : 'var(--text-soft)',
+  backgroundColor: on ? 'var(--selected)' : 'transparent',
+  border: `1px solid ${on ? 'var(--brand-soft)' : 'var(--line)'}`,
+  borderRadius: 999,
+  cursor: 'pointer',
+});
 
 export default function AutopilotReportPanel({ onBack }: { onBack: () => void }) {
   const [report, setReport] = useState<Report | null>(null);
@@ -153,13 +161,17 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
   const attempts = t.attempts || 0;
 
   return (
-    <div>
-      <button type="button" onClick={onBack}
-        style={{ border: 'none', background: 'none', padding: 0, marginBottom: 8, fontSize: '0.74rem', color: '#8a6d3b', cursor: 'pointer', fontFamily: 'inherit' }}>
-        ← Back to supplier specs
-      </button>
-      <h3 style={{ margin: '0 0 4px', fontSize: '1rem' }}>Autopilot readiness</h3>
-      <div style={{ fontSize: '0.74rem', color: '#777', marginBottom: 12, maxWidth: 760 }}>
+    <div style={{ lineHeight: 1.45, color: 'var(--text)' }}>
+      <div style={{ marginBottom: 8 }}>
+        <BackLink label="Back to supplier specs" onClick={onBack} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+        <h3 style={{ flex: 1, minWidth: 0, margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>Autopilot readiness</h3>
+        <Button size="sm" icon={RefreshCw} onClick={load} disabled={loading}>
+          {loading ? 'Loading…' : 'Refresh'}
+        </Button>
+      </div>
+      <div style={{ maxWidth: 760, marginBottom: 14, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
         Every invoice a person receives is a test of what autopilot would have done. An invoice is
         <strong> clean</strong> only when they accepted all of Norm&rsquo;s suggestions and changed nothing by hand —
         accepting everything but also retyping a value means autopilot would have produced a different invoice.
@@ -167,85 +179,94 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
         prove nothing) and reported separately.
       </div>
 
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 12 }}>
-        {[7, 30, 90].map((d) => (
-          <button key={d} type="button" onClick={() => setDays(d)}
-            style={{ fontSize: '0.7rem', padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit', border: '1px solid #d8d4cc', background: days === d ? '#8a6d3b' : '#fff', color: days === d ? '#fff' : '#666' }}>
-            {d} days
-          </button>
-        ))}
-        <span style={{ width: 10 }} />
-        {([['user', 'Received by people'], ['norm', 'Received by Norm']] as const).map(([a, label]) => (
-          <button key={a} type="button" onClick={() => setActor(a)}
-            title={a === 'user'
-              ? 'Every invoice a person received — the only honest test of what autopilot would have done'
-              : 'What autopilot has actually received. Volume, not correctness: it accepted its own suggestions a moment earlier.'}
-            style={{ fontSize: '0.7rem', padding: '3px 10px', borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit', border: '1px solid #d8d4cc', background: actor === a ? '#8a6d3b' : '#fff', color: actor === a ? '#fff' : '#666' }}>
-            {label}
-          </button>
-        ))}
-        <button type="button" onClick={load} disabled={loading}
-          style={{ fontSize: '0.7rem', padding: '3px 10px', borderRadius: 4, border: '1px solid #d8d4cc', background: '#fff', color: '#666', cursor: loading ? 'default' : 'pointer', fontFamily: 'inherit' }}>
-          {loading ? 'Loading…' : 'Refresh'}
-        </button>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 16, rowGap: 8, marginBottom: 16 }}>
+        <div role="group" aria-label="Window" style={{ display: 'flex', gap: 4 }}>
+          {[7, 30, 90].map((d) => (
+            <button key={d} type="button" aria-pressed={days === d} onClick={() => setDays(d)} style={chip(days === d)}>
+              {d} days
+            </button>
+          ))}
+        </div>
+        <div role="group" aria-label="Received by" style={{ display: 'flex', gap: 4 }}>
+          {([['user', 'Received by people'], ['norm', 'Received by Norm']] as const).map(([a, label]) => (
+            <button key={a} type="button" aria-pressed={actor === a} onClick={() => setActor(a)}
+              title={a === 'user'
+                ? 'Every invoice a person received — the only honest test of what autopilot would have done'
+                : 'What autopilot has actually received. Volume, not correctness: it accepted its own suggestions a moment earlier.'}
+              style={chip(actor === a)}>
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {error && <div style={{ color: '#c0392b', fontSize: '0.78rem', marginBottom: 10 }}>{error}</div>}
+      {error && <div style={{ marginBottom: 12 }}><PageState kind="error" title={error} /></div>}
 
-      {!loading && attempts === 0 && (
-        <div style={{ fontSize: '0.78rem', color: '#777', border: '1px dashed #ddd', borderRadius: 8, padding: '14px 16px', maxWidth: 720 }}>
-          {actor === 'user'
-            ? 'No invoices received by a person in this window. If Norm is receiving them, switch to “Received by Norm”.'
-            : 'Norm hasn’t received anything itself in this window — that starts once a venue is moved off “Approve all”.'}
-        </div>
-      )}
+      {loading && !report && !error && <PageState kind="loading" title="Loading the report…" />}
+
+      {/* A failed load reads as the error above, never as an empty window. */}
+      {!loading && !error && attempts === 0 && (actor === 'user' ? (
+        <PageState kind="empty" title="No invoices received by a person in this window."
+          detail="If Norm is receiving them, switch to “Received by Norm”." />
+      ) : (
+        <PageState kind="empty" title="Norm hasn’t received anything itself in this window."
+          detail="That starts once a venue is moved off “Approve all”." />
+      ))}
 
       {report && attempts > 0 && (
         <>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
             <Tile label="Autopilot ready" value={pct(report.rates.autopilot_ready)}
               hint={`${(t.clean || 0) + (t.no_suggestions || 0)} of ${attempts} needed no human change`} />
             <Tile label="Suggestion quality" value={pct(report.rates.suggestion_quality)}
-              hint="when Norm proposed changes, they were enough" />
+              hint="When Norm proposed changes, they were enough" />
             <Tile label="Filed for training" value={pct(report.rates.dojo)}
               hint={`${t.dojo || 0} invoice(s) Norm couldn't do`} />
           </div>
 
-          <div style={{ ...sectionLabel }}>Outcomes</div>
-          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.78rem', marginBottom: 18 }}>
+          <div style={sectionTitle}>Outcomes</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, rowGap: 8, flexWrap: 'wrap', marginBottom: 20, fontSize: 'var(--fs-sm)' }}>
             {(['clean', 'no_suggestions', 'edited', 'dojo', 'not_reviewed'] as const).map((k) => (
-              <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                <Pill outcome={k} /> <strong>{t[k] || 0}</strong>
+              <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Pill outcome={k} /> <strong style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{t[k] || 0}</strong>
               </span>
             ))}
             {(report.autopilot?.attempts || 0) > 0 && (
-              <span style={{ color: '#999', marginLeft: 'auto' }}>
+              <span style={{ marginLeft: 'auto', color: 'var(--muted)' }}>
                 Norm received {report.autopilot.attempts} unattended (not counted above)
               </span>
             )}
           </div>
 
           {(report.flags || []).length > 0 && (
-            <div style={{ marginBottom: 18 }}>
-              <div style={sectionLabel}>What the flags would unlock</div>
-              <div style={{ fontSize: '0.72rem', color: '#777', marginBottom: 6 }}>
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ ...sectionTitle, marginBottom: 2 }}>What the flags would unlock</div>
+              <div style={sectionHint}>
                 Receives where autopilot would have sent <strong>exactly what you sent</strong> — counted
                 against the flag it was waiting on. &ldquo;Alone&rdquo; means that flag was the only one missing.
               </div>
-              <div style={{ ...rowStyle, fontWeight: 600, color: '#888', fontSize: '0.7rem', textTransform: 'uppercase' }}>
-                <span style={{ flex: 1 }}>Flag</span>
-                <span style={{ width: 90, textAlign: 'right' }}>Alone</span>
-                <span style={{ width: 130, textAlign: 'right' }}>With other flags</span>
+              <div className="n-card" style={{ overflowX: 'auto' }}>
+                <table className="n-table">
+                  <thead>
+                    <tr>
+                      <th>Flag</th>
+                      <th className="num" style={{ width: 90 }}>Alone</th>
+                      <th className="num" style={{ width: 140 }}>With other flags</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(report.flags || []).map((f) => (
+                      <tr key={f.gate}>
+                        <td>{f.label}</td>
+                        <td className="num" style={{ fontWeight: 600, color: 'var(--ok)' }}>{f.sole_unlock}</td>
+                        <td className="num" style={{ color: 'var(--muted)' }}>{f.with_others}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              {(report.flags || []).map((f) => (
-                <div key={f.gate} style={rowStyle}>
-                  <span style={{ flex: 1 }}>{f.label}</span>
-                  <span style={{ width: 90, textAlign: 'right', fontWeight: 700, color: '#065f46' }}>{f.sole_unlock}</span>
-                  <span style={{ width: 130, textAlign: 'right', color: '#777' }}>{f.with_others}</span>
-                </div>
-              ))}
               {report.auto && (
-                <div style={{ fontSize: '0.72rem', color: '#777', marginTop: 6 }}>
+                <div style={{ marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
                   With every flag on: <strong>{report.auto.matched || 0}</strong> of{' '}
                   {(report.auto.matched || 0) + (report.auto.differed || 0) + (report.auto.never_auto || 0)}{' '}
                   scored receives identical · {report.auto.differed || 0} would differ ·{' '}
@@ -257,116 +278,149 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
           )}
 
           {report.suppliers.length > 0 && (
-            <div style={{ marginBottom: 18 }}>
-              <div style={sectionLabel}>By supplier — who is ready</div>
-              <div style={{ ...rowStyle, fontWeight: 600, color: '#888', fontSize: '0.7rem', textTransform: 'uppercase' }}>
-                <span style={{ flex: 1 }}>Supplier</span>
-                <span style={{ width: 70, textAlign: 'right' }}>Invoices</span>
-                <span style={{ width: 70, textAlign: 'right' }}>Clean</span>
-                <span style={{ width: 70, textAlign: 'right' }}>Edited</span>
-                <span style={{ width: 60, textAlign: 'right' }}>Filed</span>
-                <span style={{ width: 70, textAlign: 'right' }}>Ready</span>
+            <div style={{ marginBottom: 20 }}>
+              <div style={sectionTitle}>By supplier — who is ready</div>
+              <div className="n-card" style={{ overflowX: 'auto' }}>
+                <table className="n-table">
+                  <thead>
+                    <tr>
+                      <th>Supplier</th>
+                      <th className="num" style={{ width: 80 }}>Invoices</th>
+                      <th className="num" style={{ width: 80 }}>Clean</th>
+                      <th className="num" style={{ width: 80 }}>Edited</th>
+                      <th className="num" style={{ width: 70 }}>Filed</th>
+                      <th className="num" style={{ width: 80 }}>Ready</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.suppliers.map((s) => (
+                      <tr key={s.supplier_name}>
+                        <td style={{ whiteSpace: 'nowrap' }}>{s.supplier_name}</td>
+                        <td className="num">{s.attempts}</td>
+                        <td className="num">{s.clean + s.no_suggestions}</td>
+                        <td className="num">{s.edited}</td>
+                        <td className="num">{s.dojo}</td>
+                        <td className="num" style={{ fontWeight: 600, color: (s.autopilot_ready ?? 0) >= 0.9 ? 'var(--ok)' : (s.autopilot_ready ?? 0) >= 0.7 ? 'var(--warn)' : 'var(--error)' }}>
+                          {pct(s.autopilot_ready)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              {report.suppliers.map((s) => (
-                <div key={s.supplier_name} style={rowStyle}>
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.supplier_name}</span>
-                  <span style={{ width: 70, textAlign: 'right' }}>{s.attempts}</span>
-                  <span style={{ width: 70, textAlign: 'right' }}>{s.clean + s.no_suggestions}</span>
-                  <span style={{ width: 70, textAlign: 'right' }}>{s.edited}</span>
-                  <span style={{ width: 60, textAlign: 'right' }}>{s.dojo}</span>
-                  <span style={{ width: 70, textAlign: 'right', fontWeight: 700, color: (s.autopilot_ready ?? 0) >= 0.9 ? '#065f46' : (s.autopilot_ready ?? 0) >= 0.7 ? '#8a6d3b' : '#991b1b' }}>
-                    {pct(s.autopilot_ready)}
-                  </span>
-                </div>
-              ))}
             </div>
           )}
 
           {report.top_missed_fields.length > 0 && (
-            <div style={{ marginBottom: 18 }}>
-              <div style={sectionLabel}>What Norm keeps missing</div>
-              <div style={{ fontSize: '0.72rem', color: '#777', marginBottom: 6 }}>
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ ...sectionTitle, marginBottom: 2 }}>What Norm keeps missing</div>
+              <div style={sectionHint}>
                 Fields people had to fix by hand — the training backlog, most common first.
               </div>
-              {report.top_missed_fields.map((f) => (
-                <div key={f.field} style={rowStyle}>
-                  <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.72rem' }}>{f.field}</span>
-                  <span style={{ width: 60, textAlign: 'right' }}>{f.count}</span>
-                </div>
-              ))}
+              <div className="n-card" style={{ overflowX: 'auto' }}>
+                <table className="n-table">
+                  <tbody>
+                    {report.top_missed_fields.map((f) => (
+                      <tr key={f.field}>
+                        <td style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' }}>{f.field}</td>
+                        <td className="num" style={{ width: 80 }}>{f.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
-          <div style={sectionLabel}>Recent receives</div>
-          <div style={{ fontSize: '0.72rem', color: '#777', marginBottom: 6 }}>
+          <div style={{ ...sectionTitle, marginBottom: 2 }}>Recent receives</div>
+          <div style={sectionHint}>
             Click a row to see what was sent vs what autopilot would have sent.
           </div>
-          {report.recent.map((r) => (
-            <div key={r.id}>
-              <div
-                style={{ ...rowStyle, cursor: 'pointer' }}
-                onClick={() => setOpenRow(openRow === r.id ? null : r.id)}
-              >
-                <Pill outcome={r.outcome} />
-                <VerdictPill verdict={r.auto?.verdict} />
-                <span style={{ width: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.supplier_name || '—'}</span>
-                <span style={{ width: 110, color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.reference_number || '—'}</span>
-                <span style={{ flex: 1, color: '#999', fontSize: '0.72rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {r.suggestion_count > 0
-                    ? `${r.accepted_count}/${r.suggestion_count} accepted${r.dismissed_count ? `, ${r.dismissed_count} dismissed` : ''}${r.pending_count ? `, ${r.pending_count} ignored` : ''}`
-                    : 'no suggestions'}
-                  {(r.auto?.gates_needed || []).length > 0 && ` · waiting on ${(r.auto?.gates_needed || []).length} flag(s)`}
-                </span>
-                <span style={{ width: 140, color: '#aaa', fontSize: '0.7rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  {r.created_at
-                    ? `${new Date(r.created_at).toLocaleDateString()} ${new Date(r.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-                    : ''}
-                </span>
-              </div>
-              {openRow === r.id && (
-                <div style={{ padding: '8px 12px 12px 34px', borderBottom: '1px solid #f4f4f4', background: '#fbfaf8', fontSize: '0.74rem', color: '#555' }}>
-                  {(r.auto?.gates_needed || []).length > 0 && (
-                    <div style={{ marginBottom: 6 }}>
-                      Flags autopilot was waiting on:{' '}
-                      <strong>
-                        {(r.auto?.gates_needed || [])
-                          .map((g) => (report.flags || []).find((f) => f.gate === g)?.label || g)
-                          .join(', ')}
-                      </strong>
-                    </div>
-                  )}
-                  {(r.auto?.ungated || []).length > 0 && (
-                    <div style={{ marginBottom: 6, color: '#991b1b' }}>
-                      Needed a person regardless: {(r.auto?.ungated || []).join(', ')}
-                    </div>
-                  )}
-                  {(r.auto?.diffs || []).length > 0 ? (
-                    <>
-                      <div style={{ fontWeight: 600, marginBottom: 4 }}>Where autopilot would have differed</div>
-                      {(r.auto?.diffs || []).map((d, i) => (
-                        <div key={i} style={{ display: 'flex', gap: 10, padding: '2px 0', fontFamily: 'monospace', fontSize: '0.7rem' }}>
-                          <span style={{ width: 240, color: '#888', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.path}</span>
-                          <span>you sent <strong>{fmtVal(d.sent)}</strong></span>
-                          <span style={{ color: '#8a6d3b' }}>autopilot: <strong>{fmtVal(d.auto)}</strong></span>
-                        </div>
-                      ))}
-                    </>
-                  ) : r.auto?.verdict === 'matched' ? (
-                    <div style={{ color: '#065f46' }}>Autopilot would have sent exactly this receive.</div>
-                  ) : (
-                    <div style={{ color: '#999' }}>
-                      {r.auto ? 'No field-level differences recorded.' : 'Received before end-state scoring existed — no comparison stored.'}
-                    </div>
-                  )}
-                  {r.manual_fields.length > 0 && (
-                    <div style={{ marginTop: 6, color: '#999' }}>
-                      Action-log view (secondary): hand-edited {r.manual_fields.join(', ')}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
+          <div className="n-card" style={{ overflowX: 'auto' }}>
+            <table className="n-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 1, paddingRight: 0 }} />
+                  <th>Outcome</th>
+                  <th>Autopilot</th>
+                  <th>Supplier</th>
+                  <th>Reference</th>
+                  <th>Suggestions</th>
+                  <th className="num">Received</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.recent.map((r) => (
+                  <Fragment key={r.id}>
+                    <tr onClick={() => setOpenRow(openRow === r.id ? null : r.id)} style={{ cursor: 'pointer' }}>
+                      <td style={{ paddingRight: 0 }}>
+                        <Icon icon={openRow === r.id ? ChevronDown : ChevronRight} size="dense" tone="muted" style={{ display: 'block' }} />
+                      </td>
+                      <td><Pill outcome={r.outcome} /></td>
+                      <td><VerdictPill verdict={r.auto?.verdict} /></td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{r.supplier_name || '—'}</td>
+                      <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{r.reference_number || '—'}</td>
+                      <td style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                        {r.suggestion_count > 0
+                          ? `${r.accepted_count}/${r.suggestion_count} accepted${r.dismissed_count ? `, ${r.dismissed_count} dismissed` : ''}${r.pending_count ? `, ${r.pending_count} ignored` : ''}`
+                          : 'no suggestions'}
+                        {(r.auto?.gates_needed || []).length > 0 && ` · waiting on ${(r.auto?.gates_needed || []).length} flag(s)`}
+                      </td>
+                      <td className="num" style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                        {r.created_at
+                          ? `${new Date(r.created_at).toLocaleDateString()} ${new Date(r.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                          : ''}
+                      </td>
+                    </tr>
+                    {openRow === r.id && (
+                      <tr>
+                        <td colSpan={7} style={{ padding: '10px 12px 12px 38px', background: 'var(--surface)', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                          {(r.auto?.gates_needed || []).length > 0 && (
+                            <div style={{ marginBottom: 6 }}>
+                              Flags autopilot was waiting on:{' '}
+                              <strong>
+                                {(r.auto?.gates_needed || [])
+                                  .map((g) => (report.flags || []).find((f) => f.gate === g)?.label || g)
+                                  .join(', ')}
+                              </strong>
+                            </div>
+                          )}
+                          {(r.auto?.ungated || []).length > 0 && (
+                            <div style={{ marginBottom: 6, color: 'var(--error)' }}>
+                              Needed a person regardless: {(r.auto?.ungated || []).join(', ')}
+                            </div>
+                          )}
+                          {(r.auto?.diffs || []).length > 0 ? (
+                            <>
+                              <div style={{ marginBottom: 4, fontWeight: 600, color: 'var(--text)' }}>Where autopilot would have differed</div>
+                              {(r.auto?.diffs || []).map((d, i) => (
+                                <div key={i} style={{ display: 'flex', flexWrap: 'wrap', columnGap: 12, rowGap: 2, padding: '2px 0', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)' }}>
+                                  <span style={{ flex: '0 1 240px', minWidth: 0, color: 'var(--muted)', overflowWrap: 'anywhere' }}>{d.path}</span>
+                                  <span>you sent <strong>{fmtVal(d.sent)}</strong></span>
+                                  <span style={{ color: 'var(--warn)' }}>autopilot: <strong>{fmtVal(d.auto)}</strong></span>
+                                </div>
+                              ))}
+                            </>
+                          ) : r.auto?.verdict === 'matched' ? (
+                            <div style={{ color: 'var(--ok)' }}>Autopilot would have sent exactly this receive.</div>
+                          ) : (
+                            <div style={{ color: 'var(--muted)' }}>
+                              {r.auto ? 'No field-level differences recorded.' : 'Received before end-state scoring existed — no comparison stored.'}
+                            </div>
+                          )}
+                          {r.manual_fields.length > 0 && (
+                            <div style={{ marginTop: 6, color: 'var(--muted)' }}>
+                              Action-log view (secondary): hand-edited {r.manual_fields.join(', ')}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </div>

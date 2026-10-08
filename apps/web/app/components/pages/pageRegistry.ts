@@ -1,4 +1,5 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, Clock, Blocks, LayoutGrid, Grid2x2, Gavel, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, LayoutGrid, Grid2x2, Gavel, type LucideIcon } from 'lucide-react';
+import { resolveAppIcon } from '../ui/appIcons';
 import { tradingMonday, tradingWeekRange } from '../../lib/rosterTime';
 
 export interface FunctionalPageConfig {
@@ -314,8 +315,10 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
 export function appPageConfig(app: { slug: string; name: string; icon?: string | null; agent?: string | null }): FunctionalPageConfig {
   return {
     id: `app:${app.slug}`,
-    label: app.icon ? `${app.icon} ${app.name}` : app.name,
-    icon: Blocks,
+    // One icon per menu item, and it is the app's own — never the generic
+    // app icon beside an emoji in the label.
+    label: app.name,
+    icon: resolveAppIcon({ slug: app.slug, icon: app.icon }),
     // The app says which menu it belongs to — an HR app's pages sit beside
     // Hiring and Tasks, not off in a separate destination. Falling back to the
     // App Builder keeps every app that predates the choice exactly where it was.

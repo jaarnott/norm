@@ -8,15 +8,40 @@ import {
 } from 'recharts';
 import type { ChartType, ChartSpec } from '../../types';
 import { apiFetch } from '../../lib/api';
-import { Maximize2 } from 'lucide-react';
+import { Maximize2, Plus, X } from 'lucide-react';
 import KpiCard from './KpiCard';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
 
-const DEFAULT_COLORS = ['#d4c4ae', '#a8cfc0', '#b8c8dc', '#e0c8a8', '#c8b8d4', '#a8d0b8', '#d8c0b8', '#b8d0d4'];
+// Series colours: one categorical palette, assigned in this order. Literal hex
+// on purpose (chart palettes are the one place tokens don't apply). Warm-led to
+// sit with the brand, and checked with the data-viz palette validator on the
+// white chart surface: every colour >= 3:1 against white, OKLCH lightness and
+// chroma in band, neighbours (including last -> first, for pie slices) apart by
+// CVD dE >= 13 and normal-vision dE >= 18, and the first three apart from each
+// other for 2–3-series charts. Re-run the validator before changing any value.
+export const DEFAULT_COLORS = ['#b77f39', '#437eb9', '#246e3a', '#ab6595', '#846305', '#725195', '#179a8e', '#903f4f'];
 
-// More distinct palette for stacked/multi-series charts (venue breakdowns etc.)
-const STACK_COLORS = ['#4f8a5e', '#5b8abd', '#c4a882', '#b07d4f', '#8b6caf', '#c75a5a', '#3d9e8f', '#d4a03c', '#7a8b5e', '#a05195'];
+// Stacked / venue breakdowns: the same palette, plus two more (also validated
+// as neighbours) so a large group still gets a colour per venue.
+export const STACK_COLORS = [...DEFAULT_COLORS, '#788a32', '#20609b'];
+
+// Chart chrome in tokens. Recharts writes these into SVG attributes and inline
+// styles, where CSS variables resolve.
+const AXIS_STROKE = 'var(--line-strong)';
+const AXIS_TICK = { fontSize: 'var(--fs-xs)', fill: 'var(--muted)' };
+const GRID_STROKE = 'var(--line)';
+const TOOLTIP_STYLE = {
+  backgroundColor: 'var(--bg)', border: '1px solid var(--line-strong)', borderRadius: 'var(--radius)',
+  padding: '8px 10px', fontSize: 'var(--fs-sm)', color: 'var(--text)',
+};
+const TOOLTIP_LABEL_STYLE = { color: 'var(--text)', fontWeight: 600, marginBottom: 2 };
+// Item text stays in text colour (series colours are for marks, not words).
+const TOOLTIP_ITEM_STYLE = { color: 'var(--text-soft)', paddingTop: 2, paddingBottom: 2 };
+const LEGEND_STYLE = { fontSize: 'var(--fs-xs)' };
+const legendLabel = (value: string) => <span style={{ color: 'var(--text-soft)' }}>{value}</span>;
 
 /** Auto-format values for display — detects ISO dates, formats numbers. */
 interface FieldFormat {
@@ -266,8 +291,8 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
 
   return (
     <div className={className} style={{
-      border: hideBorder ? '1px solid transparent' : '1px solid #e2e8f0',
-      borderRadius: 10, overflow: 'hidden', backgroundColor: '#fff',
+      border: hideBorder ? '1px solid transparent' : '1px solid var(--line)',
+      borderRadius: 'var(--radius-lg)', overflow: 'hidden', backgroundColor: 'var(--bg)',
       transition: 'border-color 0.15s',
       ...(fillContainer
         ? { height: '100%', display: 'flex', flexDirection: 'column' as const }
@@ -276,55 +301,30 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
     }}>
       {/* Header — hidden for KPI (KpiCard has its own title) */}
       {chartType !== 'kpi' && <div style={{
-        display: 'flex', alignItems: 'center', padding: '0.5rem 0.75rem',
+        display: 'flex', alignItems: 'center', gap: 8, minHeight: 32, padding: fillContainer ? '6px 14px 0' : '6px 8px 0 14px',
         justifyContent: fillContainer ? 'center' : 'space-between',
         position: fillContainer ? 'relative' : undefined,
       }}>
-        <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333' }}>{title}</span>
+        <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)', lineHeight: 1.3, minWidth: 0 }}>{title}</span>
         <div className={fillContainer ? 'cell-chart-actions' : undefined} style={{
-          display: 'flex', gap: 3, alignItems: 'center',
+          display: 'flex', gap: 2, alignItems: 'center', flex: '0 0 auto',
           ...(fillContainer ? { position: 'absolute', right: '0.75rem' } : {}),
         }}>
           {!hideAddToReport && (
-            <button
+            <Button
+              variant="quiet"
+              size="sm"
+              icon={addingToReport ? undefined : Plus}
               onClick={handleAddToReport}
               disabled={addingToReport}
-              onMouseEnter={e => (e.currentTarget.style.color = '#999')}
-              onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
-              style={{
-                padding: '3px 10px', fontSize: '0.72rem', fontWeight: 600,
-                border: 'none', borderRadius: 4, backgroundColor: 'transparent',
-                color: '#ccc', cursor: addingToReport ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                transition: 'color 0.15s',
-              }}
-            >{addingToReport ? 'Adding...' : '+ Report'}</button>
+              title="Add this chart to a report"
+            >{addingToReport ? 'Adding…' : 'Report'}</Button>
           )}
           {onExpand && fillContainer && (
-            <button
-              onClick={onExpand}
-              onMouseEnter={e => (e.currentTarget.style.color = '#999')}
-              onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
-              style={{
-                padding: '3px 6px', border: 'none', borderRadius: 4, backgroundColor: 'transparent',
-                color: '#ccc', cursor: 'pointer', lineHeight: 1, display: 'flex', alignItems: 'center',
-                transition: 'color 0.15s',
-              }}
-              title="Full screen"
-            ><Maximize2 size={14} strokeWidth={1.75} /></button>
+            <IconButton icon={Maximize2} label="Full screen" iconSize={16} onClick={onExpand} />
           )}
           {onRemove && (
-            <button
-              onClick={onRemove}
-              onMouseEnter={e => (e.currentTarget.style.color = '#e53e3e')}
-              onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
-              style={{
-                padding: '3px 6px', fontSize: '0.85rem',
-                border: 'none', borderRadius: 4, backgroundColor: 'transparent',
-                color: '#ccc', cursor: 'pointer', lineHeight: 1,
-                transition: 'color 0.15s',
-              }}
-              title="Remove from report"
-            >&times;</button>
+            <IconButton icon={X} label="Remove from report" iconSize={16} onClick={onRemove} />
           )}
         </div>
       </div>}
@@ -336,8 +336,19 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
         ...(fillContainer ? { flex: 1, minHeight: 0, overflow: 'hidden' } : {}),
       }}>
         {rows.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '2rem', color: '#999', fontSize: '0.85rem' }}>
-            No data to display. Open the inspector <span style={{ fontFamily: 'monospace' }}>{'{}'}</span> to debug.
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
+            textAlign: 'center', padding: fillContainer ? '0.5rem' : '2rem 1rem', height: fillContainer ? '100%' : undefined,
+            fontSize: 'var(--fs-base)', color: 'var(--text-soft)',
+          }}>
+            {/* A KPI tile has no header, so name the figure here. */}
+            {chartType === 'kpi' && title && <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--muted)' }}>{title}</div>}
+            <div>No data to show.</div>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+              {fillContainer
+                ? 'The data source returned no rows — check the chart’s settings.'
+                : 'The data source returned no rows — check the tool call in this conversation.'}
+            </div>
           </div>
         ) : (
           <>
@@ -359,7 +370,7 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
               return { ...(nested || {}), ...cp } as Parameters<typeof KpiCard>[0]['spec'];
             })()} title={title} />}
             {chartType === 'text' && (
-              <div className="markdown-message" style={{ padding: '0.5rem', fontSize: '0.85rem', lineHeight: 1.6 }}>
+              <div className="markdown-message" style={{ padding: '0.5rem', fontSize: 'var(--fs-base)', lineHeight: 1.6, color: 'var(--text)' }}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{String((chartProps as Record<string, unknown>)?.text_content || rows[0]?.text || '')}</ReactMarkdown>
               </div>
             )}
@@ -381,7 +392,7 @@ function TableView({ rows, series, xKey, fieldLabels, hiddenFields, fieldFormats
   fieldLabels?: Record<string, string>; hiddenFields?: Set<string>;
   fieldFormats?: Record<string, string | FieldFormat>; fieldOrder?: string[];
 }) {
-  if (rows.length === 0) return <div style={{ color: '#999', fontSize: '0.8rem' }}>No data</div>;
+  if (rows.length === 0) return <div style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)' }}>No data</div>;
   // Use all data keys, filtering out hidden ones, respecting field_order
   const allKeys = rows.length > 0 ? Object.keys(rows[0]) : [];
   const visible = allKeys.filter(k => !k.startsWith('_') && !(hiddenFields?.has(k)));
@@ -395,17 +406,18 @@ function TableView({ rows, series, xKey, fieldLabels, hiddenFields, fieldFormats
   const getAlign = (c: string): 'left' | 'center' | 'right' => {
     const ff = fieldFormats?.[c];
     if (ff && typeof ff === 'object' && ff.align) return ff.align;
-    return 'left';
+    // Numbers line up on the right unless the field says otherwise.
+    return typeof rows[0]?.[c] === 'number' ? 'right' : 'left';
   };
   return (
     <div style={{ overflow: 'auto', maxHeight: 300 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+      <table className="n-table">
         <thead>
-          <tr>{columns.map(c => <th key={c} style={{ textAlign: getAlign(c), padding: '4px 8px', borderBottom: '1px solid #eee', fontWeight: 600, color: '#555' }}>{labels[c]}</th>)}</tr>
+          <tr>{columns.map(c => <th key={c} style={{ textAlign: getAlign(c) }}>{labels[c]}</th>)}</tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i}>{columns.map(c => <td key={c} style={{ textAlign: getAlign(c), padding: '4px 8px', borderBottom: '1px solid #f5f5f5', color: '#333' }}>{formatValue(row[c], fieldFormats?.[c])}</td>)}</tr>
+            <tr key={i}>{columns.map(c => <td key={c} style={{ textAlign: getAlign(c) }}>{formatValue(row[c], fieldFormats?.[c])}</td>)}</tr>
           ))}
         </tbody>
       </table>
@@ -419,13 +431,13 @@ function BarView({ rows, series, xKey, xLabel, xFormat, yFormat, stacked, chartH
   return (
     <ResponsiveContainer width="100%" height={chartHeight as number}>
       <BarChart data={rows}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-        <XAxis dataKey={xKey} tickFormatter={v => formatValue(v, xFormat)} tick={{ fontSize: 11 }} />
-        <YAxis tickFormatter={v => formatValue(v, yFormat)} tick={{ fontSize: 11 }} />
-        <Tooltip formatter={(v) => formatValue(v as number, yFormat)} labelFormatter={v => formatValue(v, xFormat)} contentStyle={{ fontSize: '0.78rem' }} />
-        <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+        <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+        <XAxis dataKey={xKey} tickFormatter={v => formatValue(v, xFormat)} stroke={AXIS_STROKE} tick={AXIS_TICK} />
+        <YAxis tickFormatter={v => formatValue(v, yFormat)} stroke={AXIS_STROKE} tick={AXIS_TICK} width="auto" />
+        <Tooltip formatter={(v) => formatValue(v as number, yFormat)} labelFormatter={v => formatValue(v, xFormat)} contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} cursor={{ fill: 'var(--surface-alt)' }} />
+        <Legend wrapperStyle={LEGEND_STYLE} formatter={legendLabel} />
         {series.map(s => (
-          <Bar key={s.key} dataKey={s.key} name={s.label} fill={s.color} stackId={stacked ? 'stack' : undefined} radius={stacked ? 0 : [3, 3, 0, 0]}
+          <Bar key={s.key} dataKey={s.key} name={s.label} fill={s.color} stackId={stacked ? 'stack' : undefined} radius={stacked ? 0 : [4, 4, 0, 0]}
             cursor={onBarClick ? 'pointer' : undefined}
             onClick={onBarClick ? (data: unknown) => onBarClick(data as Record<string, unknown>, s.key) : undefined}
           />
@@ -448,11 +460,11 @@ function LineView({ rows, series, xKey, xLabel, xFormat, yFormat, chartHeight = 
         } : undefined}
         style={onDotClick ? { cursor: 'pointer' } : undefined}
       >
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-        <XAxis dataKey={xKey} tickFormatter={v => formatValue(v, xFormat)} tick={{ fontSize: 11 }} />
-        <YAxis tickFormatter={v => formatValue(v, yFormat)} tick={{ fontSize: 11 }} />
-        <Tooltip formatter={(v) => formatValue(v as number, yFormat)} labelFormatter={v => formatValue(v, xFormat)} contentStyle={{ fontSize: '0.78rem' }} />
-        <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+        <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+        <XAxis dataKey={xKey} tickFormatter={v => formatValue(v, xFormat)} stroke={AXIS_STROKE} tick={AXIS_TICK} />
+        <YAxis tickFormatter={v => formatValue(v, yFormat)} stroke={AXIS_STROKE} tick={AXIS_TICK} width="auto" />
+        <Tooltip formatter={(v) => formatValue(v as number, yFormat)} labelFormatter={v => formatValue(v, xFormat)} contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} cursor={{ stroke: AXIS_STROKE }} />
+        <Legend wrapperStyle={LEGEND_STYLE} formatter={legendLabel} />
         {series.map(s => (
           <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2} dot={{ r: 3 }} activeDot={onDotClick ? { r: 5, cursor: 'pointer' } : { r: 4 }} />
         ))}
@@ -475,7 +487,13 @@ function PieView({ rows, series, xKey, chartHeight = 280, onSliceClick }: { rows
       <PieChart>
         <Pie
           data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius="70%"
-          label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false}
+          label={({ x, y, textAnchor, name, percent }) => (
+            // Slice labels in text colour, not the slice's own colour.
+            <text x={x} y={y} textAnchor={textAnchor} dominantBaseline="central" style={{ fill: 'var(--text-soft)', fontSize: 'var(--fs-xs)' }}>
+              {`${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
+            </text>
+          )}
+          labelLine={false} stroke="var(--bg)"
           style={onSliceClick ? { cursor: 'pointer' } : undefined}
           onClick={onSliceClick ? (entry) => {
             if (entry?.name != null) {
@@ -485,7 +503,7 @@ function PieView({ rows, series, xKey, chartHeight = 280, onSliceClick }: { rows
         >
           {pieData.map((_, i) => <Cell key={i} fill={DEFAULT_COLORS[i % DEFAULT_COLORS.length]} />)}
         </Pie>
-        <Tooltip contentStyle={{ fontSize: '0.78rem' }} />
+        <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} />
       </PieChart>
     </ResponsiveContainer>
   );
@@ -496,10 +514,10 @@ function ScatterView({ rows, series, xKey, xLabel, chartHeight = 280 }: { rows: 
   return (
     <ResponsiveContainer width="100%" height={chartHeight as number}>
       <ScatterChart>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-        <XAxis dataKey={xKey} name={xLabel} tick={{ fontSize: 11 }} />
-        <YAxis dataKey={yKey} name={series[0]?.label || yKey} tick={{ fontSize: 11 }} />
-        <Tooltip contentStyle={{ fontSize: '0.78rem' }} />
+        <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} />
+        <XAxis dataKey={xKey} name={xLabel} stroke={AXIS_STROKE} tick={AXIS_TICK} />
+        <YAxis dataKey={yKey} name={series[0]?.label || yKey} stroke={AXIS_STROKE} tick={AXIS_TICK} width="auto" />
+        <Tooltip contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL_STYLE} itemStyle={TOOLTIP_ITEM_STYLE} cursor={{ stroke: AXIS_STROKE, strokeDasharray: '3 3' }} />
         <Scatter data={rows} fill={series[0]?.color || DEFAULT_COLORS[0]} />
       </ScatterChart>
     </ResponsiveContainer>

@@ -14,7 +14,12 @@
  */
 
 import { useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Lock } from 'lucide-react';
 import { apiFetch, getStoredUser } from '../../lib/api';
+import Badge from '../ui/Badge';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 
 interface Level { id: string; label: string; description?: string }
 interface Switch { id: string; label: string }
@@ -50,7 +55,48 @@ const SWITCH_NOTE: Record<string, string> = {
     'The riskiest delete: a draft with no readable copy could be a real delivery behind a bad scan. Off means a person decides each one.',
 };
 
-const box = { border: '1px solid #eee', borderRadius: 10, padding: '0.9rem 1rem', marginBottom: '0.85rem' };
+/** Each group is a white .n-card block, stacked. */
+const card: CSSProperties = { padding: '14px 16px', marginBottom: 12 };
+const cardTitle: CSSProperties = { margin: 0, fontSize: 'var(--fs-base)', fontWeight: 600, lineHeight: 1.35, color: 'var(--text)' };
+
+/** The one switch look: on = --primary track with a white knob, off = a
+ *  --field outline with a --field knob. It is the native checkbox drawn as a
+ *  switch (the knob is a background gradient), so the label, keyboard, focus
+ *  ring and onChange are exactly a checkbox's. */
+function switchStyle(on: boolean, disabled: boolean): CSSProperties {
+  const knob = on ? 'var(--on-primary)' : 'var(--field)';
+  const r = on ? 7 : 5;
+  return {
+    appearance: 'none',
+    WebkitAppearance: 'none',
+    flex: '0 0 auto',
+    width: 36,
+    height: 20,
+    margin: '1px 0 0',
+    borderRadius: 999,
+    border: `1px solid ${on ? 'var(--primary)' : 'var(--field)'}`,
+    backgroundColor: on ? 'var(--primary)' : 'var(--bg)',
+    backgroundImage: `radial-gradient(circle, ${knob} ${r}px, transparent ${r + 0.75}px)`,
+    backgroundSize: '18px 18px',
+    backgroundRepeat: 'no-repeat',
+    backgroundPosition: on ? 'right center' : 'left center',
+    cursor: disabled ? 'default' : 'pointer',
+    opacity: disabled ? 0.45 : 1,
+    transition: 'background-position 0.12s, background-color 0.12s, border-color 0.12s',
+  };
+}
+
+/** A segment's label, with a hidden 600-weight copy underneath reserving its
+ *  width: the chosen side is bolder, and without the reserve each row's
+ *  control would shift by a few pixels depending on which side is chosen. */
+function segmentLabel(text: string) {
+  return (
+    <span style={{ display: 'inline-grid' }}>
+      <span aria-hidden="true" style={{ gridArea: '1 / 1', fontWeight: 600, visibility: 'hidden' }}>{text}</span>
+      <span style={{ gridArea: '1 / 1', textAlign: 'center' }}>{text}</span>
+    </span>
+  );
+}
 
 export default function ApprovalPreferences() {
   const [tools, setTools] = useState<ToolPref[]>([]);
@@ -93,71 +139,95 @@ export default function ApprovalPreferences() {
     }
   };
 
-  if (!loaded) return <div style={{ color: '#999', fontSize: '0.85rem' }}>Loading…</div>;
+  // Section header: 18px/600 title and its muted line, as on every settings tab.
+  const header = (
+    <>
+      <h2 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>
+        What Norm may do without asking
+      </h2>
+      <p style={{ margin: '4px 0 16px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+        Norm asks before it changes anything, with a card that shows exactly what will change. Choose
+        where it needn&apos;t ask. These settings are yours alone — you can also change them from an
+        approval card, or by asking Norm.
+      </p>
+    </>
+  );
+
+  if (!loaded) return <div style={{ maxWidth: 720, lineHeight: 1.45 }}>{header}<PageState kind="loading" title="Loading…" /></div>;
 
   const levelled = tools.filter(t => t.kind === 'levels');
   const others = tools.filter(t => t.kind !== 'levels');
 
   return (
-    <div style={{ maxWidth: 720 }}>
-      <h3 style={{ margin: '0 0 0.35rem', fontSize: '0.95rem', fontWeight: 600 }}>What Norm may do without asking</h3>
-      <p style={{ margin: '0 0 1.25rem', fontSize: '0.8rem', color: '#777' }}>
-        Norm asks before it changes anything, with a card that shows exactly what will change. Choose
-        where it needn&apos;t ask. These settings are yours alone — you can also change them from an
-        approval card, or by asking Norm.
-      </p>
-      {error && <div style={{ fontSize: '0.78rem', color: '#c0392b', marginBottom: '0.8rem' }}>{error}</div>}
+    <div style={{ maxWidth: 720, lineHeight: 1.45 }}>
+      {header}
+      {error && <div style={{ marginBottom: 12 }}><PageState kind="error" title={error} /></div>}
 
       {levelled.map(t => {
         const options = t.options || {};
         const top = t.levels?.[t.levels.length - 1]?.id;
+        const busy = saving === t.key;
         return (
-          <div key={t.key} style={box}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '0.5rem' }}>
-              <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{t.label}</span>
-              {saving === t.key && <span style={{ fontSize: '0.65rem', color: '#999' }}>saving…</span>}
+          <div key={t.key} className="n-card" style={card}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+              <h3 style={cardTitle}>{t.label}</h3>
+              {busy && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>Saving…</span>}
             </div>
             {t.key === RECEIVE && readiness && readiness.attempts > 0 && (
-              <div style={{ fontSize: '0.74rem', color: '#555', background: '#f7f5f1', border: '1px solid #e8e3da', borderRadius: 6, padding: '6px 10px', margin: '0.5rem 0' }}>
+              <div style={{ margin: '10px 0 0', padding: '8px 12px', borderRadius: 'var(--radius)', background: 'var(--surface-alt)', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
                 Over the last 30 days, autopilot would have been right on{' '}
-                <strong>{Math.round(readiness.rate * 100)}%</strong> of the {readiness.attempts} invoices a person received.
+                <strong style={{ fontWeight: 600, color: 'var(--text)' }}>{Math.round(readiness.rate * 100)}%</strong> of the {readiness.attempts} invoices a person received.
               </div>
             )}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.6rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
               {(t.levels || []).map(lv => {
                 const on = t.level === lv.id;
+                // The chosen level reads as a selected tile: --selected fill, tan edge.
                 return (
                   <label key={lv.id} style={{
-                    display: 'flex', gap: '0.6rem', alignItems: 'flex-start', cursor: 'pointer',
-                    border: `1px solid ${on ? '#a08060' : '#eee'}`, borderRadius: 8, padding: '0.5rem 0.65rem',
-                    background: on ? '#faf8f5' : '#fff',
+                    display: 'flex', gap: 10, alignItems: 'flex-start', cursor: busy ? 'default' : 'pointer',
+                    padding: '10px 12px', borderRadius: 'var(--radius)',
+                    border: `1px solid ${on ? 'var(--brand-soft)' : 'var(--line)'}`,
+                    background: on ? 'var(--selected)' : 'var(--bg)',
                   }}>
-                    <input type="radio" name={t.key} checked={on} disabled={saving === t.key}
-                      onChange={() => void save(t.key, { level: lv.id, options })} style={{ marginTop: 2 }} />
-                    <span>
-                      <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>{lv.label}</span>
-                      {lv.description && <span style={{ display: 'block', fontSize: '0.72rem', color: '#888', marginTop: 1 }}>{lv.description}</span>}
+                    <input type="radio" name={t.key} checked={on} disabled={busy}
+                      onChange={() => void save(t.key, { level: lv.id, options })}
+                      style={{ flex: '0 0 auto', width: 16, height: 16, margin: '2px 0 0', accentColor: 'var(--accent)', cursor: 'inherit' }} />
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: 'var(--fs-base)', fontWeight: on ? 600 : 500, color: 'var(--text)' }}>{lv.label}</span>
+                      {lv.description && <span style={{ display: 'block', marginTop: 2, fontSize: 'var(--fs-sm)', color: on ? 'var(--text-soft)' : 'var(--muted)' }}>{lv.description}</span>}
                     </span>
                   </label>
                 );
               })}
             </div>
             {t.level === top && (t.switches || []).length > 0 && (
-              <div style={{ marginTop: 12, paddingLeft: 10, borderLeft: '2px solid #e8e3da' }}>
-                <div style={{ fontSize: '0.74rem', color: '#777', marginBottom: 8 }}>
-                  What Norm may also do on its own. Everything here writes to Loaded and can&apos;t be undone
-                  from Norm — leave a switch off and invoices needing it wait for you instead, saying so.
-                </div>
-                {(t.switches || []).map(sw => (
-                  <label key={sw.id} style={{ display: 'block', marginBottom: 8, cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
-                      <input type="checkbox" checked={!!options[sw.id]} disabled={saving === t.key}
-                        onChange={e => void save(t.key, { level: t.level, options: { ...options, [sw.id]: e.target.checked } })} />
-                      <span style={{ fontSize: '0.78rem' }}>{sw.label[0].toUpperCase() + sw.label.slice(1)}</span>
-                    </div>
-                    {SWITCH_NOTE[sw.id] && <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginLeft: 22 }}>{SWITCH_NOTE[sw.id]}</div>}
-                  </label>
-                ))}
+              <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+                <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>What Norm may also do on its own</div>
+                <p style={{ margin: '2px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                  Everything here writes to Loaded and can&apos;t be undone from Norm — leave a switch off
+                  and invoices needing it wait for you instead, saying so.
+                </p>
+                {(t.switches || []).map((sw, i) => {
+                  const on = !!options[sw.id];
+                  return (
+                    <label key={sw.id} style={{
+                      display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16,
+                      padding: '10px 0', borderTop: i ? '1px solid var(--line-soft)' : 'none',
+                      cursor: busy ? 'default' : 'pointer',
+                    }}>
+                      <span style={{ minWidth: 0 }}>
+                        <span style={{ display: 'block', fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>
+                          {sw.label[0].toUpperCase() + sw.label.slice(1)}
+                        </span>
+                        {SWITCH_NOTE[sw.id] && <span style={{ display: 'block', marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{SWITCH_NOTE[sw.id]}</span>}
+                      </span>
+                      <input type="checkbox" role="switch" checked={on} disabled={busy}
+                        onChange={e => void save(t.key, { level: t.level, options: { ...options, [sw.id]: e.target.checked } })}
+                        style={switchStyle(on, busy)} />
+                    </label>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -165,43 +235,51 @@ export default function ApprovalPreferences() {
       })}
 
       {others.length > 0 && (
-        <div style={box}>
-          <div style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem' }}>Everything else Norm can change</div>
-          {others.map(t => (
-            <div key={t.key} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem',
-              flexWrap: 'wrap', padding: '0.5rem 0', borderTop: '1px solid #f3f0eb',
-            }}>
-              <span style={{ fontSize: '0.8rem', color: '#333', minWidth: 0 }}>
-                {t.label}
-                {t.kind === 'locked' && (
-                  <span style={{ display: 'block', fontSize: '0.7rem', color: '#999' }}>
-                    Always asks — Norm can&apos;t give itself more freedom without you saying yes.
+        <div className="n-card" style={{ ...card, paddingBottom: 4 }}>
+          <h3 style={{ ...cardTitle, marginBottom: 8 }}>Everything else Norm can change</h3>
+          {others.map(t => {
+            const busy = saving === t.key;
+            return (
+              <div key={t.key} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px 16px',
+                flexWrap: 'wrap', padding: '10px 0', borderTop: '1px solid var(--line)',
+              }}>
+                <span style={{ flex: '1 1 220px', minWidth: 0, fontSize: 'var(--fs-base)', color: 'var(--text)' }}>
+                  {t.label}
+                  {t.kind === 'locked' && (
+                    <span style={{ display: 'block', marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                      Always asks — Norm can&apos;t give itself more freedom without you saying yes.
+                    </span>
+                  )}
+                </span>
+                {t.kind === 'locked' ? (
+                  <Badge><Icon icon={Lock} size={12} />Asks first</Badge>
+                ) : (
+                  // Ask me | Always allow: the chosen side is a selected chip
+                  // (--selected fill, tan edge); the other is a quiet button.
+                  <span role="radiogroup" aria-label={t.label} style={{
+                    display: 'inline-flex', flex: '0 0 auto', gap: 2, padding: 2,
+                    border: '1px solid var(--line-strong)', borderRadius: 'var(--radius)', background: 'var(--bg)',
+                  }}>
+                    {(['ask', 'always'] as const).map(v => {
+                      const on = (t.value || 'ask') === v;
+                      return (
+                        <button key={v} role="radio" aria-checked={on} disabled={busy || on}
+                          onClick={() => void save(t.key, v)}
+                          className="n-btn n-btn--quiet n-btn--sm"
+                          style={{
+                            height: 28, padding: '0 10px', borderRadius: 'var(--radius-sm)',
+                            ...(on ? { background: 'var(--selected)', borderColor: 'var(--brand-soft)', color: 'var(--text)', fontWeight: 600, opacity: 1 } : {}),
+                          }}>
+                          {segmentLabel(v === 'ask' ? 'Ask me' : 'Always allow')}
+                        </button>
+                      );
+                    })}
                   </span>
                 )}
-              </span>
-              {t.kind === 'locked' ? (
-                <span style={{ fontSize: '0.72rem', color: '#999' }}>Asks first</span>
-              ) : (
-                <span role="radiogroup" aria-label={t.label} style={{ display: 'inline-flex', border: '1px solid #e2ddd7', borderRadius: 6, overflow: 'hidden' }}>
-                  {(['ask', 'always'] as const).map(v => {
-                    const on = (t.value || 'ask') === v;
-                    return (
-                      <button key={v} role="radio" aria-checked={on} disabled={saving === t.key || on}
-                        onClick={() => void save(t.key, v)}
-                        style={{
-                          fontFamily: 'inherit', fontSize: '0.72rem', padding: '0.3rem 0.7rem', border: 'none',
-                          background: on ? '#a08060' : '#fff', color: on ? '#fff' : '#777',
-                          cursor: on ? 'default' : 'pointer',
-                        }}>
-                        {v === 'ask' ? 'Ask me' : 'Always allow'}
-                      </button>
-                    );
-                  })}
-                </span>
-              )}
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

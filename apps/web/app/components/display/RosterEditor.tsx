@@ -1,8 +1,15 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from 'react';
 import { DndContext, DragOverlay, PointerSensor, TouchSensor, useSensor, useSensors, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core';
+import { CalendarDays, ChevronLeft, ChevronRight, Plus, TriangleAlert } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
+import PageHeader from '../ui/PageHeader';
+import VenueSelect from '../ui/VenueSelect';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import Icon from '../ui/Icon';
+import Badge from '../ui/Badge';
 import type { Shift, ShiftFormData, RosterMeta, DragData } from './roster/shared';
 import { extractShifts, extractRosterMeta, venueWeekDays, dateKey, buildStaffRows, DAY_NAMES, calcHours, roleColor, OPEN_ROW_ID } from './roster/shared';
 import { apiFetch, callComponentApi } from '../../lib/api';
@@ -689,132 +696,166 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
   // button are how you start a roster from nothing. Returning null here meant
   // an empty week had no UI at all, so a new week could never be begun.
 
-  // --- Toggle button style ---
-  const toggleBtn = (mode: ViewMode, label: string) => (
-    <button
-      onClick={() => setViewMode(mode)}
+  // --- Header ---
+  // A PAGE gets the shared page header: the title with the roster's state
+  // beside it, the week as its meta line, and the venue, week and view
+  // controls on the right with the one primary. In a conversation, or inside
+  // Claude, the same pieces sit in one compact row.
+  const isPage = persistVenue;
+  const weekLabel = loadingWeek ? 'Loading…' : (dateRange || 'Select week');
+  const stats = [
+    `${activeShifts.length} ${activeShifts.length === 1 ? 'shift' : 'shifts'}`,
+    rosteredHours > 0 ? `${rosteredHours.toFixed(1)}h` : null,
+    openShiftCount > 0 ? `${openShiftCount} open` : null,
+  ].filter(Boolean).join(' · ');
+
+  const statusBadge = (
+    <Badge
+      tone={meta.lockedAt ? 'neutral' : meta.publishedAt ? 'ok' : 'info'}
+      title={meta.lockedAt
+        ? 'This roster is locked — edits may be rejected upstream.'
+        : meta.publishedAt
+          ? `Published ${new Date(meta.publishedAt).toLocaleDateString('en-NZ')} — staff can see it`
+          : 'Draft — staff cannot see this yet'}
+    >
+      {meta.lockedAt ? 'Locked' : meta.publishedAt ? 'Published' : 'Draft'}
+    </Badge>
+  );
+  // The full list is in the tooltip; the pill only counts.
+  const warningsBadge = warnings.length > 0 && (
+    <span style={{ display: 'inline-flex', cursor: 'help' }}>
+      <Badge
+        tone={warnings.some(w => w.severity === 'error') ? 'error' : 'warn'}
+        title={warnings.map(w => `• ${w.message}`).join('\n')}
+      >
+        <Icon icon={TriangleAlert} size={12} />
+        {summarise(warnings)}
+      </Badge>
+    </span>
+  );
+  const syncDot = workingDocId && (
+    <span title={syncError || syncStatus} style={{
+      width: 8, height: 8, borderRadius: '50%', display: 'inline-block', flex: '0 0 auto',
+      backgroundColor: syncStatus === 'synced' ? 'var(--ok)' : syncStatus === 'syncing' || syncStatus === 'dirty' ? 'var(--warn)' : syncStatus === 'error' ? 'var(--error)' : 'var(--muted)',
+    }} />
+  );
+
+  // Shows the venue whose roster is on screen — the page's venue until you
+  // pick another here.
+  const venuePicker = venues.length > 1 && (
+    <VenueSelect venues={venues} value={venues.some(v => v.id === activeVenueId) ? activeVenueId : null} onChange={handleVenueChange} />
+  );
+
+  // A date field laid invisibly over its trigger: picking a date loads that
+  // date's week. A click on an invisible field only focuses it in desktop
+  // browsers, so it opens the picker itself (not allowed in a cross-origin
+  // frame such as Claude's — there the field behaves as before).
+  const weekPicker = (
+    <input
+      type="date"
+      aria-label="Go to the week of a date"
+      onClick={e => { try { e.currentTarget.showPicker(); } catch { /* unsupported or blocked */ } }}
+      onChange={e => { if (e.target.value) goToDate(e.target.value); }}
       style={{
-        padding: '3px 10px', fontSize: '0.72rem', fontWeight: viewMode === mode ? 600 : 400,
-        border: '1px solid var(--line)',
-        backgroundColor: viewMode === mode ? 'var(--text)' : 'var(--bg)',
-        color: viewMode === mode ? 'var(--bg)' : 'var(--text-soft)',
-        cursor: 'pointer', fontFamily: 'inherit',
-        ...(mode === 'week' ? { borderRadius: '4px 0 0 4px' } : { borderRadius: '0 4px 4px 0', borderLeft: 'none' }),
+        position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+        margin: 0, padding: 0, border: 0, opacity: 0, cursor: 'pointer',
       }}
-    >{label}</button>
+    />
+  );
+  const weekNav = (
+    <div role="group" aria-label="Week" style={{ display: 'inline-flex', alignItems: 'center' }}>
+      <IconButton icon={ChevronLeft} label="Previous week" onClick={() => goWeek(-1)} disabled={loadingWeek} />
+      {isPage ? (
+        // The page's meta line already names the week, so here it is an icon.
+        <label className="n-icon-btn" title="Go to the week of a date" style={{ position: 'relative' }}>
+          <Icon icon={CalendarDays} size={18} />
+          {weekPicker}
+        </label>
+      ) : (
+        <label style={{
+          position: 'relative', padding: '0 4px', cursor: 'pointer', whiteSpace: 'nowrap',
+          fontSize: 'var(--fs-sm)', fontWeight: 500, color: loadingWeek ? 'var(--muted)' : 'var(--text)',
+        }}>
+          {weekLabel}
+          {weekPicker}
+        </label>
+      )}
+      <IconButton icon={ChevronRight} label="Next week" onClick={() => goWeek(1)} disabled={loadingWeek} />
+    </div>
+  );
+  const dayNav = (
+    <div role="group" aria-label="Day" style={{ display: 'inline-flex', alignItems: 'center' }}>
+      <IconButton icon={ChevronLeft} label="Previous day" onClick={() => goDay(-1)} disabled={!canPrev} />
+      <span style={{
+        minWidth: 90, padding: '0 4px', textAlign: 'center', whiteSpace: 'nowrap',
+        fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text)',
+      }}>
+        {DAY_NAMES[effectiveDate.getDay()]} {effectiveDate.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}
+      </span>
+      <IconButton icon={ChevronRight} label="Next day" onClick={() => goDay(1)} disabled={!canNext} />
+    </div>
+  );
+
+  // Week | Day: two joined secondary buttons; the chosen one takes the
+  // selected fill and tan edge.
+  const viewButton = (mode: ViewMode, label: string) => {
+    const on = viewMode === mode;
+    const style: CSSProperties = {
+      ...(mode === 'week'
+        ? { borderTopRightRadius: 0, borderBottomRightRadius: 0 }
+        : { borderTopLeftRadius: 0, borderBottomLeftRadius: 0, marginLeft: -1 }),
+      ...(on
+        ? { position: 'relative', zIndex: 1, background: 'var(--selected)', borderColor: 'var(--brand-soft)', fontWeight: 600 }
+        : { color: 'var(--text-soft)' }),
+    };
+    return (
+      <Button size={isPage ? 'md' : 'sm'} aria-pressed={on} onClick={() => setViewMode(mode)} style={style}>
+        {label}
+      </Button>
+    );
+  };
+  const viewToggle = (
+    <div data-testid="roster-view-toggle" role="group" aria-label="View" style={{ display: 'inline-flex' }}>
+      {viewButton('week', 'Week')}{viewButton('day', 'Day')}
+    </div>
+  );
+
+  const addButton = onAction && (
+    <Button
+      variant="primary"
+      size={isPage ? 'md' : 'sm'}
+      icon={Plus}
+      onClick={() => { setAddingNew(true); setEditingShift(null); }}
+      disabled={saving}
+    >
+      Add shift
+    </Button>
   );
 
   return (
     <div>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text)' }}>Roster</span>
-        {venues.length > 1 && (
-          <select
-            value={selectedVenue || ''}
-            onChange={e => handleVenueChange(e.target.value)}
-            style={{
-              padding: '3px 8px', fontSize: '0.75rem', border: '1px solid var(--line)',
-              borderRadius: 6, fontFamily: 'inherit', color: 'var(--text-soft)', backgroundColor: 'var(--bg)',
-            }}
-          >
-            {!selectedVenue && <option value="">Select venue</option>}
-            {venues.map(v => (
-              <option key={v.id} value={v.id}>{v.name}</option>
-            ))}
-          </select>
-        )}
-
-        {viewMode === 'week' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-            <button onClick={() => goWeek(-1)} disabled={loadingWeek} style={{
-              border: 'none', background: 'none', cursor: loadingWeek ? 'default' : 'pointer',
-              fontSize: '1rem', color: loadingWeek ? 'var(--line)' : 'var(--text-soft)', padding: '0 4px', fontFamily: 'inherit',
-            }}>&lsaquo;</button>
-            <label style={{ cursor: 'pointer', position: 'relative' }}>
-              <span style={{ fontSize: '0.82rem', color: loadingWeek ? 'var(--muted-soft)' : 'var(--text-soft)', fontWeight: 500 }}>
-                {loadingWeek ? 'Loading...' : dateRange || 'Select week'}
-              </span>
-              <input
-                type="date"
-                onChange={e => { if (e.target.value) goToDate(e.target.value); }}
-                style={{
-                  position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
-                  opacity: 0, cursor: 'pointer',
-                }}
-              />
-            </label>
-            <button onClick={() => goWeek(1)} disabled={loadingWeek} style={{
-              border: 'none', background: 'none', cursor: loadingWeek ? 'default' : 'pointer',
-              fontSize: '1rem', color: loadingWeek ? 'var(--line)' : 'var(--text-soft)', padding: '0 4px', fontFamily: 'inherit',
-            }}>&rsaquo;</button>
+      {isPage ? (
+        <PageHeader
+          title="Roster"
+          status={<>{statusBadge}{warningsBadge}{syncDot}</>}
+          meta={`${weekLabel} · ${stats}`}
+          actions={<>{venuePicker}{viewMode === 'week' ? weekNav : dayNav}{viewToggle}{addButton}</>}
+        />
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)', marginRight: 4 }}>Roster</span>
+          {venuePicker}
+          {viewMode === 'week' ? weekNav : dayNav}
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{stats}</span>
+          {warningsBadge}
+          {statusBadge}
+          {syncDot}
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            {viewToggle}
+            {addButton}
           </div>
-        )}
-
-        {viewMode === 'day' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-            <button onClick={() => goDay(-1)} disabled={!canPrev} style={{
-              border: 'none', background: 'none', cursor: canPrev ? 'pointer' : 'default',
-              fontSize: '0.9rem', color: canPrev ? 'var(--text-soft)' : 'var(--line)', padding: '0 4px', fontFamily: 'inherit',
-            }}>&lsaquo;</button>
-            <span style={{ fontSize: '0.82rem', color: 'var(--text-soft)', fontWeight: 500, minWidth: 90, textAlign: 'center' }}>
-              {DAY_NAMES[effectiveDate.getDay()]} {effectiveDate.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}
-            </span>
-            <button onClick={() => goDay(1)} disabled={!canNext} style={{
-              border: 'none', background: 'none', cursor: canNext ? 'pointer' : 'default',
-              fontSize: '0.9rem', color: canNext ? 'var(--text-soft)' : 'var(--line)', padding: '0 4px', fontFamily: 'inherit',
-            }}>&rsaquo;</button>
-          </div>
-        )}
-
-        <span style={{ fontSize: '0.75rem', color: 'var(--muted-soft)' }}>
-          {activeShifts.length} shifts
-          {rosteredHours > 0 && ` · ${rosteredHours.toFixed(1)}h`}
-          {openShiftCount > 0 && ` · ${openShiftCount} open`}
-        </span>
-        {warnings.length > 0 && (
-          <span
-            title={warnings.map(w => `• ${w.message}`).join('\n')}
-            style={{
-              fontSize: '0.68rem', fontWeight: 600, padding: '1px 7px', borderRadius: 10,
-              cursor: 'help',
-              color: warnings.some(w => w.severity === 'error') ? 'var(--error)' : 'var(--warn)',
-              backgroundColor: warnings.some(w => w.severity === 'error') ? 'var(--error-bg)' : 'var(--warn-bg)',
-            }}>
-            {summarise(warnings)}
-          </span>
-        )}
-        <span
-          title={meta.lockedAt
-            ? 'This roster is locked — edits may be rejected upstream.'
-            : meta.publishedAt
-              ? `Published ${new Date(meta.publishedAt).toLocaleDateString('en-NZ')} — staff can see it`
-              : 'Draft — staff cannot see this yet'}
-          style={{
-            fontSize: '0.68rem', fontWeight: 600, padding: '1px 7px', borderRadius: 10,
-            color: meta.lockedAt ? 'var(--locked)' : meta.publishedAt ? 'var(--published)' : 'var(--draft)',
-            backgroundColor: meta.lockedAt ? 'var(--surface-alt)' : meta.publishedAt ? 'var(--published-bg)' : 'var(--draft-bg)',
-          }}>
-          {meta.lockedAt ? 'Locked' : meta.publishedAt ? 'Published' : 'Draft'}
-        </span>
-        {workingDocId && (
-          <span title={syncError || syncStatus} style={{
-            width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
-            backgroundColor: syncStatus === 'synced' ? 'var(--ok)' : syncStatus === 'syncing' || syncStatus === 'dirty' ? 'var(--warn)' : syncStatus === 'error' ? 'var(--error)' : 'var(--muted)',
-          }} />
-        )}
-
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <div data-testid="roster-view-toggle">{toggleBtn('week', 'Week')}{toggleBtn('day', 'Day')}</div>
-          {onAction && (
-            <button onClick={() => { setAddingNew(true); setEditingShift(null); }} disabled={saving} style={{
-              padding: '4px 12px', fontSize: '0.75rem', fontWeight: 500,
-              border: '1px solid var(--ok)', borderRadius: 4, backgroundColor: 'var(--bg)',
-              color: 'var(--ok)', cursor: 'pointer', fontFamily: 'inherit',
-            }}>+ Add Shift</button>
-          )}
         </div>
-      </div>
+      )}
 
       {/* Views — wrapped in DndContext */}
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
@@ -852,20 +893,20 @@ export default function RosterEditor({ data, props, onAction, threadId }: Displa
             return (
               <div style={{
                 display: 'flex', alignItems: 'stretch', gap: 0,
-                borderRadius: 4, overflow: 'hidden',
+                borderRadius: 'var(--radius-sm)', overflow: 'hidden',
                 border: '1px solid var(--focus)',
                 backgroundColor: 'var(--bg)',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                fontSize: '0.78rem',
+                boxShadow: '0 6px 18px rgba(26, 26, 26, 0.16)',
+                fontSize: 'var(--fs-xs)',
                 width: 'max-content',
-                opacity: 0.9,
+                opacity: 0.95,
               }}>
                 <div style={{ width: 3, backgroundColor: color, flexShrink: 0 }} />
                 <div style={{ padding: '3px 8px' }}>
-                  <div style={{ fontWeight: 500, color: 'var(--text)', whiteSpace: 'nowrap' }}>
+                  <div style={{ fontWeight: 500, color: 'var(--text)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
                     {formatClock(activeShift.clockinTime as string, timePrefs)}–{formatClock(activeShift.clockoutTime as string, timePrefs)}
                   </div>
-                  {hrs > 0 && <div style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>{hrs.toFixed(1)}h</div>}
+                  {hrs > 0 && <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--muted)' }}>{hrs.toFixed(1)}h</div>}
                 </div>
               </div>
             );

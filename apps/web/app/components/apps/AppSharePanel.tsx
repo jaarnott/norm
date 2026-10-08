@@ -11,7 +11,11 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { TriangleAlert } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
 
 interface ShareRow {
   id: string;
@@ -100,37 +104,37 @@ export default function AppSharePanel({ slug, onChanged }: { slug: string; onCha
   if (forbidden) return null; // not the author — sharing is not theirs to see
 
   return (
-    <div style={{ border: '1px solid #e5e2dc', borderRadius: 10, padding: '0.9rem 1.1rem', marginTop: 14, background: '#fbfaf8' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-        <strong style={{ fontSize: '0.8rem' }}>Sharing</strong>
-        <span style={{ fontSize: '0.64rem', color: '#8a8a8a' }}>
-          {visibility === 'private' ? 'private — only you' : `visible: ${visibility}`}
+    <div className="n-card" style={{ padding: '14px 16px' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+        <h2 style={{ margin: 0, fontSize: 'var(--fs-base)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>Sharing</h2>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+          {visibility === 'private' ? 'Private — only you' : `Visible: ${visibility}`}
         </span>
       </div>
 
       {shares.length > 0 && (
-        <div style={{ marginBottom: 10 }}>
+        <ul style={{ listStyle: 'none', margin: '0 0 12px', padding: 0 }}>
           {shares.map((s) => (
-            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.74rem', padding: '3px 0' }}>
-              <span>{s.label}</span>
+            <li key={s.id} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, padding: '6px 0', borderTop: '1px solid var(--line-soft)' }}>
+              <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text)', minWidth: 0, overflowWrap: 'anywhere' }}>{s.label}</span>
+              <Badge>{`Can ${s.access}`}</Badge>
               {writes.length > 0 && (
-                <span style={{ fontSize: '0.6rem', color: s.write_actions_approved ? '#2e7d4f' : '#8a8a8a' }}>
-                  {s.write_actions_approved ? '· writes approved' : '· read-only for them'}
-                </span>
+                s.write_actions_approved
+                  ? <Badge tone="ok">Writes approved</Badge>
+                  : <Badge>Read-only for them</Badge>
               )}
-              <button type="button" onClick={() => revoke(s.id)} disabled={busy}
-                style={{ marginLeft: 'auto', fontSize: '0.62rem', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#8a2f2f', cursor: 'pointer', padding: '1px 8px', fontFamily: 'inherit' }}>
-                revoke
-              </button>
-            </div>
+              <Button size="sm" variant="quiet" onClick={() => revoke(s.id)} disabled={busy} style={{ marginLeft: 'auto' }}>
+                Revoke
+              </Button>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
 
       {candidates && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select value={pick} onChange={(e) => setPick(e.target.value)}
-            style={{ font: 'inherit', fontSize: '0.74rem', padding: '3px 8px', maxWidth: 260 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select className="n-select" aria-label="Share with" value={pick} onChange={(e) => setPick(e.target.value)}
+            style={{ maxWidth: '100%', minWidth: 0, width: 260 }}>
             <option value="">Share with…</option>
             {candidates.users.length > 0 && (
               <optgroup label="People">
@@ -153,19 +157,24 @@ export default function AppSharePanel({ slug, onChanged }: { slug: string; onCha
             </optgroup>
           </select>
           {writes.length > 0 && (
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.68rem', color: '#6b5626' }}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', cursor: 'pointer' }}
               title={`This app can perform: ${writes.join(', ')}. Unapproved, those actions are refused when they run it.`}>
-              <input type="checkbox" checked={approveWrites} onChange={(e) => setApproveWrites(e.target.checked)} />
-              approve its writes ({writes.join(', ')})
+              <input type="checkbox" checked={approveWrites} onChange={(e) => setApproveWrites(e.target.checked)}
+                style={{ width: 16, height: 16, margin: 0, accentColor: 'var(--accent)', cursor: 'pointer' }} />
+              Approve its writes ({writes.join(', ')})
             </label>
           )}
-          <button type="button" onClick={grant} disabled={!pick || busy}
-            style={{ fontSize: '0.72rem', border: 'none', borderRadius: 5, background: '#2e7d4f', color: '#fff', cursor: !pick || busy ? 'not-allowed' : 'pointer', padding: '4px 12px', fontFamily: 'inherit', opacity: !pick || busy ? 0.5 : 1 }}>
+          <Button size="sm" variant="primary" onClick={grant} disabled={!pick || busy}>
             Share
-          </button>
+          </Button>
         </div>
       )}
-      {error && <div style={{ color: '#c0392b', fontSize: '0.7rem', marginTop: 6 }}>✗ {error}</div>}
+      {error && (
+        <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>
+          <Icon icon={TriangleAlert} size={14} />
+          {error}
+        </div>
+      )}
     </div>
   );
 }

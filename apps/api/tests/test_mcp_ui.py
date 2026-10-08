@@ -375,11 +375,23 @@ class TestBundleFreshness:
         "apps/web/app/lib/rosterTime.ts",
         "apps/web/app/components/display/roster/grid.ts",
         "apps/web/app/components/display/roster/warnings.ts",
+        "apps/web/app/lib/theme.ts",
+        "apps/web/app/lib/format.ts",
+        "apps/web/app/styles/tokens.css",
+        "apps/web/app/components/ui/Icon.tsx",
+        "apps/web/app/components/ui/Button.tsx",
+        "apps/web/app/components/ui/IconButton.tsx",
+        "apps/web/app/components/ui/BackLink.tsx",
+        "apps/web/app/components/ui/Badge.tsx",
+        "apps/web/app/components/ui/PageHeader.tsx",
+        "apps/web/app/components/ui/PageState.tsx",
+        "apps/web/app/components/ui/VenueSelect.tsx",
         "apps/mcp-ui/src/registry.ts",
         "apps/mcp-ui/src/main.tsx",
         "apps/mcp-ui/src/sandbox-api.ts",
         "apps/mcp-ui/src/WorkflowResult.tsx",
         "apps/mcp-ui/vite.config.ts",
+        "apps/mcp-ui/index.html",
         "apps/api/app/mcp/ui/_bridge.js",
     ]
 
@@ -403,6 +415,50 @@ class TestBundleFreshness:
             "display-block.html is STALE: a source component changed since it "
             "was built. Run: pnpm --filter @norm/mcp-ui build"
         )
+
+
+class TestSharedTokens:
+    """display-block bundles the web's apps/web/app/styles/tokens.css AND gets
+    _base.css injected. _base.css's `:root[data-theme="light"]` block (which the
+    pinned-light display block always matches) outranks tokens.css's `:root`,
+    and the bundle hash above doesn't cover _base.css — so a colour changed in
+    tokens.css alone would silently keep its old value inside Claude while the
+    web app moved on. Every token both files define must agree.
+    """
+
+    @staticmethod
+    def _vars(css: str, selector: str) -> dict[str, str]:
+        import re
+
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        start = css.index(selector)
+        body = css[css.index("{", start) + 1 : css.index("}", start)]
+
+        def norm(v: str) -> str:
+            v = v.strip().lower()
+            if re.fullmatch(r"#[0-9a-f]{3}", v):  # #fff -> #ffffff
+                v = "#" + "".join(c * 2 for c in v[1:])
+            return v
+
+        return {k: norm(v) for k, v in re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", body)}
+
+    def test_base_css_light_values_match_tokens(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[3]
+        tokens = (root / "apps/web/app/styles/tokens.css").read_text(encoding="utf-8")
+        web = self._vars(tokens, ":root {")
+        # _base.css (MCP apps) and the roster artifact's own copy of the palette.
+        for rel in ("apps/api/app/mcp/ui/_base.css", "apps/mcp-ui/artifact.html"):
+            css = (root / rel).read_text(encoding="utf-8")
+            for selector in (":root {", ':root[data-theme="light"] {'):
+                light = self._vars(css, selector)
+                shared = sorted(set(web) & set(light))
+                assert len(shared) >= 10, f"expected the shared palette in {rel} {selector}, got {shared}"
+                mismatched = {k: (light[k], web[k]) for k in shared if light[k] != web[k]}
+                assert not mismatched, (
+                    f"{rel} {selector} disagrees with tokens.css (theirs, web): {mismatched}"
+                )
 
 
 class TestConsolidatorEnvelopeUnwrapping:

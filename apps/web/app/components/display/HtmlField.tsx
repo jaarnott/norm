@@ -11,7 +11,6 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { colors } from '../../lib/theme';
 
 interface HtmlFieldProps {
   html: string;
@@ -33,12 +32,21 @@ export default function HtmlField({ html, resetKey, onChange, placeholder, minHe
 
   return (
     <>
+      {/* It draws its own edge like a text field's: --field at rest, --focus
+          with the same soft ring the inputs get when focused (globals.css
+          leaves contenteditable areas to do this themselves). The look lives
+          here, not inline: an inline border would beat the :focus rule. */}
       <style>{`
-        .norm-html-field:empty:before { content: attr(data-placeholder); color: ${colors.textMuted}; }
-        .norm-html-field:focus { outline: none; border-color: ${colors.primary}; }
-        .norm-html-field ol, .norm-html-field ul { margin: 0.2rem 0 0.2rem 1.1rem; padding: 0; }
-        .norm-html-field li { margin: 0.1rem 0; }
-        .norm-html-field p { margin: 0.25rem 0; }
+        .norm-html-field {
+          overflow-y: auto; box-sizing: border-box; padding: 8px 10px;
+          border: 1px solid var(--field); border-radius: var(--radius); background: var(--bg);
+          font-family: inherit; font-size: var(--fs-base); line-height: 1.45; color: var(--text);
+        }
+        .norm-html-field:empty:before { content: attr(data-placeholder); color: var(--muted); }
+        .norm-html-field:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 35%, transparent); }
+        .norm-html-field ol, .norm-html-field ul { margin: 4px 0 4px 18px; padding: 0; }
+        .norm-html-field li { margin: 2px 0; }
+        .norm-html-field p { margin: 4px 0; }
       `}</style>
       <div
         ref={ref}
@@ -47,20 +55,7 @@ export default function HtmlField({ html, resetKey, onChange, placeholder, minHe
         suppressContentEditableWarning
         data-placeholder={placeholder}
         onInput={(e) => onChange((e.currentTarget as HTMLDivElement).innerHTML)}
-        style={{
-          minHeight,
-          maxHeight: 260,
-          overflowY: 'auto',
-          padding: '8px 10px',
-          fontSize: '0.85rem',
-          lineHeight: 1.45,
-          color: colors.textPrimary,
-          border: `1px solid ${colors.border}`,
-          borderRadius: 6,
-          background: '#fff',
-          fontFamily: 'inherit',
-          boxSizing: 'border-box',
-        }}
+        style={{ minHeight, maxHeight: 260 }}
       />
     </>
   );

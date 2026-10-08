@@ -6,8 +6,12 @@ import type { SavedReport, SavedReportChart, ReportGridItem } from '../../types'
 import Chart from './Chart';
 import DateRangePicker from './DateRangePicker';
 import ChartConfigPanel from './dashboard/ChartConfigPanel';
-import { Settings } from 'lucide-react';
+import { RefreshCw, Settings } from 'lucide-react';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
 
 const ROW_HEIGHT = 40; // px per grid row
 const GRID_COLS = 24;
@@ -192,41 +196,45 @@ export default function ReportBuilder({ data }: Props) {
     document.addEventListener('mouseup', onUp);
   };
 
-  if (loading) return <div style={{ padding: '1rem', color: '#888' }}>Loading report...</div>;
-  if (!report) return <div style={{ padding: '1rem', color: '#888' }}>Report not found.</div>;
+  if (loading) return <PageState kind="loading" title="Loading report…" />;
+  if (!report) return <div style={{ padding: '0 24px' }}><PageState kind="error" title="Report not found" detail="It may have been deleted." /></div>;
 
   return (
     <div data-testid="report-builder" style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* Header */}
+      {/* Header — the report's title and meta on the left, the toolbar on the
+          right (it wraps under the title on narrow screens). It sits on the
+          page's own background: no band, no rule. */}
       <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem',
-        padding: '0.5rem 1rem', borderBottom: '1px solid #e2e8f0', backgroundColor: '#fafafa', flexShrink: 0,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12,
+        padding: '4px 24px 16px', flexShrink: 0,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {editingTitle ? (
-            <input
-              value={titleDraft}
-              onChange={e => setTitleDraft(e.target.value)}
-              onBlur={() => setEditingTitle(false)}
-              onKeyDown={e => { if (e.key === 'Enter') setEditingTitle(false); }}
-              autoFocus
-              style={{ fontSize: '0.95rem', fontWeight: 700, border: '1px solid #ccc', borderRadius: 4, padding: '2px 6px', fontFamily: 'inherit' }}
-            />
-          ) : (
-            <h2
-              onClick={() => setEditingTitle(true)}
-              style={{ fontSize: '0.95rem', fontWeight: 700, color: '#333', margin: 0, cursor: 'pointer' }}
-              title="Click to rename"
-            >{report.title}</h2>
-          )}
-          <span style={{ fontSize: '0.7rem', color: '#aaa' }}>{report.charts.length} chart{report.charts.length !== 1 ? 's' : ''}</span>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {editingTitle ? (
+              <input
+                className="n-input"
+                aria-label="Report title"
+                value={titleDraft}
+                onChange={e => setTitleDraft(e.target.value)}
+                onBlur={() => setEditingTitle(false)}
+                onKeyDown={e => { if (e.key === 'Enter') setEditingTitle(false); }}
+                autoFocus
+                style={{ height: 'auto', maxWidth: '100%', padding: '2px 8px', fontSize: 'var(--fs-xl)', fontWeight: 700, letterSpacing: '-0.01em', lineHeight: 1.25 }}
+              />
+            ) : (
+              <h2
+                onClick={() => setEditingTitle(true)}
+                style={{ margin: 0, fontSize: 'var(--fs-xl)', fontWeight: 700, letterSpacing: '-0.01em', lineHeight: 1.25, color: 'var(--text)', cursor: 'pointer', overflowWrap: 'anywhere' }}
+                title="Click to rename"
+              >{report.title}</h2>
+            )}
+            {report.is_dashboard && <Badge>Dashboard</Badge>}
+          </div>
+          <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+            {report.charts.length} chart{report.charts.length !== 1 ? 's' : ''}
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-          {report.is_dashboard && (
-            <span style={{ fontSize: '0.65rem', fontWeight: 600, color: '#4f8a5e', backgroundColor: '#f0faf2', padding: '2px 8px', borderRadius: 4 }}>
-              Dashboard
-            </span>
-          )}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <DateRangePicker
             value={dateRange}
             onChange={(range) => {
@@ -241,32 +249,28 @@ export default function ReportBuilder({ data }: Props) {
               }
             }}
           />
-          <button
+          <Button
+            icon={RefreshCw}
             onClick={() => refreshAll()}
             disabled={refreshing}
-            style={{
-              padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600,
-              border: '1px solid #cbd5e1', borderRadius: 5, backgroundColor: '#fff',
-              color: '#555', cursor: refreshing ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-            }}
-          >{refreshing ? 'Refreshing...' : 'Refresh All'}</button>
+          >{refreshing ? 'Refreshing…' : 'Refresh all'}</Button>
           {!report.is_dashboard && (
-            <div style={{ display: 'flex', gap: 0 }}>
+            // One control: pick who the dashboard is for, then set it.
+            <div style={{ display: 'flex' }}>
               <select
                 id="promote-agent-select"
+                className="n-select"
+                aria-label="Dashboard for"
                 defaultValue=""
-                style={{
-                  padding: '4px 6px', fontSize: '0.72rem', fontWeight: 600,
-                  border: '1px solid #cbd5e1', borderRadius: '5px 0 0 5px', backgroundColor: '#fff',
-                  color: '#555', fontFamily: 'inherit', cursor: 'pointer',
-                }}
+                style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
               >
-                <option value="" disabled>Agent...</option>
+                <option value="" disabled>Agent…</option>
                 <option value="reports">Reports</option>
                 <option value="hr">HR</option>
                 <option value="procurement">Procurement</option>
               </select>
-              <button
+              <Button
+                style={{ marginLeft: -1, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }}
                 onClick={async () => {
                   const select = document.getElementById('promote-agent-select') as HTMLSelectElement;
                   const slug = select?.value;
@@ -280,31 +284,23 @@ export default function ReportBuilder({ data }: Props) {
                     setReport(updated);
                   }
                 }}
-                style={{
-                  padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600,
-                  border: '1px solid #cbd5e1', borderLeft: 'none', borderRadius: '0 5px 5px 0', backgroundColor: '#fff',
-                  color: '#555', cursor: 'pointer', fontFamily: 'inherit',
-                }}
-              >Set as Dashboard</button>
+              >Set as dashboard</Button>
             </div>
           )}
-          <button
-            onClick={saveReport}
-            style={{
-              padding: '4px 10px', fontSize: '0.72rem', fontWeight: 600,
-              border: 'none', borderRadius: 5, backgroundColor: '#c4a882',
-              color: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >{report.status === 'saved' ? 'Saved' : 'Save Report'}</button>
+          <Button variant="primary" onClick={saveReport}>
+            {report.status === 'saved' ? 'Saved' : 'Save report'}
+          </Button>
         </div>
       </div>
 
-      {/* Grid */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '0.75rem' }}>
+      {/* Grid — each chart is a white card on the page's background */}
+      <div style={{ flex: 1, overflow: 'auto', padding: '0 24px 24px' }}>
         {layout.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '3rem', color: '#999', fontSize: '0.85rem' }}>
-            No charts yet. Ask Norm for data in the conversation below, then click &ldquo;+ Report&rdquo; on a chart to add it here.
-          </div>
+          <PageState
+            kind="empty"
+            title="No charts yet"
+            detail={<>Ask Norm for data in the conversation below, then click &ldquo;Report&rdquo; on a chart to add it here.</>}
+          />
         ) : (
           <div style={isMobile ? {} : { overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
           <div
@@ -345,9 +341,9 @@ export default function ReportBuilder({ data }: Props) {
               ref={ghostRef}
               style={{
                 display: 'none',
-                backgroundColor: 'rgba(196, 168, 130, 0.15)',
-                border: '2px dashed #c4a882',
-                borderRadius: 8,
+                backgroundColor: 'var(--accent-soft)',
+                border: '2px dashed var(--brand-soft)',
+                borderRadius: 'var(--radius-lg)',
                 pointerEvents: 'none',
               }}
             />
@@ -360,34 +356,19 @@ export default function ReportBuilder({ data }: Props) {
           <div style={{
             position: 'fixed', inset: 0, zIndex: 9999,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            backgroundColor: 'rgba(0,0,0,0.3)',
+            backgroundColor: 'rgba(26, 26, 26, 0.35)', padding: 16,
           }}>
-            <div style={{
-              backgroundColor: '#fff', borderRadius: 12, padding: '1.5rem', maxWidth: 360, width: '90%',
-              boxShadow: '0 10px 40px rgba(0,0,0,0.15)', textAlign: 'center',
+            <div role="alertdialog" aria-modal="true" aria-labelledby="remove-chart-title" style={{
+              backgroundColor: 'var(--bg)', borderRadius: 'var(--radius-lg)', padding: 24, maxWidth: 400, width: '100%',
+              boxShadow: '0 12px 40px rgba(26, 26, 26, 0.18)',
             }}>
-              <div style={{ fontSize: '1.5rem', marginBottom: '0.75rem' }}>&#128465;</div>
-              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, color: '#333', margin: '0 0 0.5rem' }}>Remove chart?</h3>
-              <p style={{ fontSize: '0.82rem', color: '#888', margin: '0 0 1.25rem' }}>
+              <h3 id="remove-chart-title" style={{ margin: '0 0 8px', fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>Remove chart?</h3>
+              <p style={{ margin: '0 0 20px', fontSize: 'var(--fs-base)', color: 'var(--text-soft)' }}>
                 This will remove the chart from your report. The underlying data is not affected.
               </p>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-                <button
-                  onClick={() => setConfirmDelete(null)}
-                  style={{
-                    padding: '8px 20px', fontSize: '0.82rem', fontWeight: 500,
-                    border: '1px solid #ddd', borderRadius: 8, backgroundColor: '#fff',
-                    color: '#666', cursor: 'pointer', fontFamily: 'inherit',
-                  }}
-                >Cancel</button>
-                <button
-                  onClick={() => deleteChart(confirmDelete)}
-                  style={{
-                    padding: '8px 20px', fontSize: '0.82rem', fontWeight: 600,
-                    border: 'none', borderRadius: 8, backgroundColor: '#e53e3e',
-                    color: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-                  }}
-                >Remove</button>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
+                <Button onClick={() => setConfirmDelete(null)}>Cancel</Button>
+                <Button variant="danger" onClick={() => deleteChart(confirmDelete)}>Remove</Button>
               </div>
             </div>
           </div>
@@ -407,7 +388,16 @@ export default function ReportBuilder({ data }: Props) {
           ) : null;
         })()}
 
-        <style>{`.cell-chart-border:hover .chart-inspect-btn { opacity: 1 !important; }`}</style>
+        {/* Cell chrome (globals.css has the handles): the card edge firms up
+            on hover, and the settings button shows with it. Touch screens
+            have no hover, so there the settings and remove buttons always show. */}
+        <style>{`
+          .grid-chart-cell.n-card:hover { border-color: var(--line-strong); }
+          .grid-chart-cell:hover .chart-inspect-btn, .grid-chart-cell .chart-inspect-btn:focus-visible { opacity: 1 !important; }
+          @media (pointer: coarse) {
+            .grid-chart-cell .chart-inspect-btn, .grid-chart-cell .cell-chart-actions { opacity: 1 !important; }
+          }
+        `}</style>
       </div>
     </div>
   );
@@ -478,7 +468,7 @@ function GridChartCell({
   return (
     <div
       ref={cellRef}
-      className="grid-chart-cell"
+      className="grid-chart-cell n-card"
       onMouseDown={isMobile ? undefined : (e) => {
         const tag = (e.target as HTMLElement).tagName;
         const isInteractive = tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' || tag === 'LABEL';
@@ -499,21 +489,22 @@ function GridChartCell({
         position: 'relative',
       }}
     >
-      {/* Settings icon — visible on hover */}
-      <button
+      {/* Settings — shows on hover. A chart's own header carries its actions
+          (full screen, remove) at the right and centres its title, so settings
+          takes the free left corner; a KPI has no header, so it takes the right. */}
+      <IconButton
+        icon={Settings}
+        label="Chart settings"
+        iconSize={16}
         onClick={onInspect}
         className="chart-inspect-btn"
-        title="Chart settings"
         style={{
-          position: 'absolute', top: 4, right: 4, zIndex: 10,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: 24, height: 24, border: 'none', borderRadius: 4,
-          backgroundColor: 'rgba(255,255,255,0.9)', cursor: 'pointer',
-          opacity: 0, transition: 'opacity 0.15s', color: '#999',
+          position: 'absolute', top: 4, zIndex: 10,
+          ...(chart.chart_type === 'kpi' ? { right: 4 } : { left: 4 }),
+          opacity: 0, transition: 'opacity 0.15s',
         }}
-      >
-        <Settings size={13} strokeWidth={1.75} />
-      </button>
+      />
+      {/* The cell is the card; the chart draws no edge of its own. */}
       <MemoChart
         data={{ rows: chart.data as Record<string, unknown>[], script: chart.script as unknown as Record<string, unknown> }}
         props={{ ...chart.chart_spec, chart_type: chart.chart_type, title: chart.title }}
@@ -521,26 +512,25 @@ function GridChartCell({
         onRemove={onDelete}
         fillContainer
         hideBorder
-        className="cell-chart-border"
       />
 
       {/* Resize handles — hidden on mobile */}
       {!isMobile && <div className="cell-resize-handles">
         <div data-resize-handle onMouseDown={handleResize({ right: true })}
           style={{ position: 'absolute', top: 0, right: 0, width: 6, bottom: 0, cursor: 'col-resize', zIndex: 1 }}>
-          <div style={{ position: 'absolute', top: '50%', right: 0, transform: 'translateY(-50%)', width: 3, height: 24, backgroundColor: '#ccc', borderRadius: 2 }} />
+          <div style={{ position: 'absolute', top: '50%', right: 0, transform: 'translateY(-50%)', width: 3, height: 24, backgroundColor: 'var(--muted-soft)', borderRadius: 2 }} />
         </div>
         <div data-resize-handle onMouseDown={handleResize({ left: true })}
           style={{ position: 'absolute', top: 0, left: 0, width: 6, bottom: 0, cursor: 'col-resize', zIndex: 1 }}>
-          <div style={{ position: 'absolute', top: '50%', left: 0, transform: 'translateY(-50%)', width: 3, height: 24, backgroundColor: '#ccc', borderRadius: 2 }} />
+          <div style={{ position: 'absolute', top: '50%', left: 0, transform: 'translateY(-50%)', width: 3, height: 24, backgroundColor: 'var(--muted-soft)', borderRadius: 2 }} />
         </div>
         <div data-resize-handle onMouseDown={handleResize({ bottom: true })}
           style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 6, cursor: 'row-resize', zIndex: 1 }}>
-          <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: 24, height: 3, backgroundColor: '#ccc', borderRadius: 2 }} />
+          <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: 24, height: 3, backgroundColor: 'var(--muted-soft)', borderRadius: 2 }} />
         </div>
         <div data-resize-handle onMouseDown={handleResize({ top: true })}
           style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 6, cursor: 'row-resize', zIndex: 1 }}>
-          <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: 24, height: 3, backgroundColor: '#ccc', borderRadius: 2 }} />
+          <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: 24, height: 3, backgroundColor: 'var(--muted-soft)', borderRadius: 2 }} />
         </div>
         <div data-resize-handle onMouseDown={handleResize({ right: true, bottom: true })}
           style={{ position: 'absolute', bottom: 0, right: 0, width: 10, height: 10, cursor: 'nwse-resize', zIndex: 2 }} />

@@ -1,7 +1,11 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { Check, Play } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Button from '../ui/Button';
+import Badge from '../ui/Badge';
+import Icon from '../ui/Icon';
 
 interface Props {
   functionCode: string;
@@ -10,15 +14,19 @@ interface Props {
   connectorName: string;
 }
 
-const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '4px 8px', fontSize: '0.78rem', fontFamily: 'inherit',
-  border: '1px solid #e2e8f0', borderRadius: 4, boxSizing: 'border-box' as const,
+// The editor, the run log and the data preview all sit on the warm dark.
+const codeSurface: React.CSSProperties = {
+  backgroundColor: 'var(--code-bg)', color: 'var(--code-text)', fontFamily: 'var(--font-mono)',
 };
 
-const btnSmall: React.CSSProperties = {
-  padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600, border: 'none',
-  borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
-};
+// Log lines keep their status colour, mixed half-way toward the code text so
+// each stays readable on --code-bg (5.6:1 and up; the pure tokens are ~2.3:1).
+const onCode = (token: string) => `color-mix(in srgb, var(${token}) 50%, var(--code-text))`;
+const logColor = (log: string) =>
+  log.startsWith('ERROR') ? onCode('--error')
+  : log.startsWith('API:') ? onCode('--info')
+  : log.startsWith('Completed') ? onCode('--ok')
+  : 'var(--code-text)';
 
 export default function FunctionEditor({ functionCode, onChange, requiredFields, connectorName }: Props) {
   const [testParams, setTestParams] = useState<Record<string, string>>({});
@@ -63,8 +71,8 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
   return (
     <div>
       {/* Code editor */}
-      <div style={{ marginBottom: '0.5rem' }}>
-        <div style={{ fontSize: '0.68rem', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: 4 }}>
+      <div style={{ marginBottom: 8 }}>
+        <div className="n-eyebrow" style={{ marginBottom: 4 }}>
           Function
         </div>
         <textarea
@@ -72,12 +80,10 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
           onChange={e => onChange(e.target.value)}
           spellCheck={false}
           style={{
-            width: '100%', minHeight: 250, padding: '0.75rem', fontSize: '0.78rem',
-            fontFamily: "'Fira Code', 'Cascadia Code', 'Consolas', monospace",
-            lineHeight: 1.5, border: '1px solid #e2e8f0', borderRadius: 8,
-            backgroundColor: '#1e1e2e', color: '#cdd6f4', resize: 'vertical',
-            boxSizing: 'border-box', tabSize: 4,
-            outline: 'none',
+            ...codeSurface,
+            width: '100%', minHeight: 250, padding: 12, fontSize: 'var(--fs-sm)',
+            lineHeight: 1.5, border: '1px solid var(--code-bg)', borderRadius: 'var(--radius)',
+            resize: 'vertical', boxSizing: 'border-box', tabSize: 4,
           }}
           onKeyDown={e => {
             // Tab key inserts spaces instead of switching focus
@@ -97,43 +103,34 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
       </div>
 
       {/* Test panel */}
-      <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '0.6rem', backgroundColor: '#fafbfc' }}>
-        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '0.4rem' }}>
+      <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: 10, backgroundColor: 'var(--surface)' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
           {requiredFields.map(f => (
-            <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <label style={{ fontSize: '0.68rem', color: '#6b7280', fontWeight: 500 }}>{f}:</label>
+            <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <label className="n-label" style={{ marginBottom: 0 }}>{f}:</label>
               <input
+                className="n-input"
                 value={testParams[f] || ''}
                 onChange={e => setTestParams(p => ({ ...p, [f]: e.target.value }))}
                 placeholder={f}
-                style={{ ...inputStyle, width: 140, fontSize: '0.72rem' }}
+                style={{ width: 140 }}
               />
             </div>
           ))}
-          <button
-            onClick={handleTest}
-            disabled={testing}
-            style={{ ...btnSmall, backgroundColor: '#111', color: '#fff', opacity: testing ? 0.6 : 1 }}
-          >
-            {testing ? 'Running...' : 'Run Test'}
-          </button>
+          <Button size="sm" icon={Play} onClick={handleTest} disabled={testing}>
+            {testing ? 'Running...' : 'Run test'}
+          </Button>
         </div>
 
         {/* Logs */}
         {testResult?._logs && testResult._logs.length > 0 && (
           <div style={{
-            backgroundColor: '#1e1e2e', borderRadius: 6, padding: '0.5rem',
-            marginBottom: '0.4rem', maxHeight: 200, overflowY: 'auto',
+            ...codeSurface, borderRadius: 'var(--radius-sm)', padding: '8px 10px',
+            marginBottom: 8, maxHeight: 200, overflowY: 'auto',
           }}>
             {testResult._logs.map((log, i) => (
-              <div key={i} style={{
-                fontSize: '0.72rem', fontFamily: 'monospace', lineHeight: 1.6,
-                color: log.startsWith('ERROR') ? '#f87171'
-                  : log.startsWith('API:') ? '#93c5fd'
-                  : log.startsWith('Completed') ? '#86efac'
-                  : '#cdd6f4',
-              }}>
-                <span style={{ color: '#6b7280', marginRight: 6 }}>{'>'}</span>
+              <div key={i} style={{ fontSize: 'var(--fs-xs)', lineHeight: 1.6, color: logColor(log) }}>
+                <span aria-hidden="true" style={{ color: 'var(--icon)', marginRight: 6 }}>{'>'}</span>
                 {log}
               </div>
             ))}
@@ -142,10 +139,10 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
 
         {/* Error */}
         {testResult?.error && (
-          <div style={{
-            padding: '0.4rem 0.6rem', borderRadius: 6, fontSize: '0.72rem',
-            backgroundColor: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b',
-            marginBottom: '0.4rem',
+          <div role="alert" style={{
+            padding: '8px 10px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--fs-sm)',
+            backgroundColor: 'var(--error-bg)', color: 'var(--error)',
+            marginBottom: 8,
           }}>
             {testResult.error}
           </div>
@@ -153,28 +150,22 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
 
         {/* Result summary */}
         {testResult?.success && testResult.data != null && (
-          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-            <span style={{
-              fontSize: '0.72rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-              backgroundColor: '#d1fae5', color: '#065f46',
-            }}>
-              ✓ {Array.isArray(testResult.data) ? `${dataCount} items` : typeof testResult.data === 'object' ? `${dataCount} keys` : String(testResult.data)}
-            </span>
-            <button
-              onClick={() => setShowData(!showData)}
-              style={{ ...btnSmall, border: '1px solid #d1d5db', backgroundColor: '#fff', color: '#555', fontWeight: 500, padding: '2px 8px' }}
-            >
-              {showData ? 'Hide Data' : 'Show Data'}
-            </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Badge tone="ok">
+              <Icon icon={Check} size={12} />
+              {Array.isArray(testResult.data) ? `${dataCount} items` : typeof testResult.data === 'object' ? `${dataCount} keys` : String(testResult.data)}
+            </Badge>
+            <Button variant="secondary" size="sm" onClick={() => setShowData(!showData)}>
+              {showData ? 'Hide data' : 'Show data'}
+            </Button>
           </div>
         )}
 
         {/* Data preview */}
         {showData && testResult?.data != null && (
           <pre style={{
-            fontSize: '0.7rem', fontFamily: 'monospace', backgroundColor: '#1e1e2e',
-            color: '#cdd6f4', padding: '0.5rem', borderRadius: 6, maxHeight: 300,
-            overflow: 'auto', marginTop: '0.4rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+            ...codeSurface, fontSize: 'var(--fs-xs)', padding: '8px 10px', borderRadius: 'var(--radius-sm)', maxHeight: 300,
+            overflow: 'auto', margin: '8px 0 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
           }}>
             {JSON.stringify(testResult.data, null, 2)}
           </pre>

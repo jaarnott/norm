@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react';
 import tzlookup from '@photostructure/tz-lookup';
+import { LoaderCircle } from 'lucide-react';
+import Icon from '../ui/Icon';
 
 interface NominatimResult {
   place_id: number;
@@ -93,43 +95,44 @@ export default function AddressSearch({
     onSelect({ address: r.display_name, lat, lon, timezone });
   };
 
+  // The field is an .n-input; a caller's inputStyle still layers on top.
+  // Suggestions: a white panel of .n-option rows (hover comes from the class).
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <input
+        className="n-input"
         value={value}
         onChange={e => onChange(e.target.value)}
         onFocus={() => { if (results.length > 0) setOpen(true); }}
         placeholder={placeholder || 'Search address…'}
-        style={inputStyle}
+        style={{ width: '100%', ...inputStyle }}
       />
       {searching && (
         <span style={{
-          position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
-          fontSize: '0.65rem', color: '#aaa', pointerEvents: 'none',
-        }}>…</span>
+          position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+          display: 'inline-flex', pointerEvents: 'none',
+        }}>
+          <Icon icon={LoaderCircle} size="dense" tone="muted" style={{ animation: 'n-spin 1s linear infinite' }} />
+        </span>
       )}
       {open && results.length > 0 && (
-        <div style={{
+        <div className="scroll-quiet" style={{
           position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50,
-          marginTop: 2, backgroundColor: '#fff', border: '1px solid #ddd',
-          borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
-          maxHeight: 220, overflowY: 'auto',
+          marginTop: 4, padding: '4px 0', maxHeight: 240,
+          background: 'var(--bg)', border: '1px solid var(--line)',
+          borderRadius: 'var(--radius)', boxShadow: '0 6px 18px rgba(26,26,26,0.12)',
         }}>
           {results.map(r => (
             <div
               key={r.place_id}
+              className="n-option"
               onClick={() => handlePick(r)}
-              style={{
-                padding: '6px 10px', fontSize: '0.78rem', color: '#333',
-                cursor: 'pointer', borderBottom: '1px solid #f3f4f6',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.backgroundColor = '#f8fafc'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.backgroundColor = '#fff'; }}
+              style={{ padding: '8px 12px', lineHeight: 1.35 }}
             >
               {r.display_name}
             </div>
           ))}
-          <div style={{ padding: '3px 10px', fontSize: '0.62rem', color: '#bbb' }}>
+          <div style={{ margin: '4px 0 0', padding: '6px 12px 2px', borderTop: '1px solid var(--line-soft)', fontSize: 'var(--fs-2xs)', color: 'var(--muted)' }}>
             © OpenStreetMap
           </div>
         </div>

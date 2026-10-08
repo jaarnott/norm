@@ -1,8 +1,14 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import DashboardView from '../display/DashboardView';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import BackLink from '../ui/BackLink';
+import Badge from '../ui/Badge';
+import PageState from '../ui/PageState';
 
 interface DashboardTemplate {
   id: string;
@@ -22,10 +28,11 @@ const EMPTY: DashboardTemplate = {
   charts: [], chart_count: 0, enabled: true, created_at: null, updated_at: null,
 };
 
-const labelStyle: React.CSSProperties = { fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' as const, marginBottom: 4, display: 'block' };
-const inputStyle: React.CSSProperties = { width: '100%', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: '0.85rem', fontFamily: 'inherit', boxSizing: 'border-box' as const };
+const sectionTitle: React.CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' };
+const fieldRow: React.CSSProperties = { marginBottom: 12 };
 
-const AGENT_COLORS: Record<string, string> = { hr: '#5b8abd', procurement: '#b07d4f', reports: '#4f8a5e' };
+// How an agent slug reads on a template card (the same names as the Agent picker).
+const AGENT_LABELS: Record<string, string> = { hr: 'HR', procurement: 'Procurement', reports: 'Reports' };
 
 export default function TemplatesPanel() {
   const [templates, setTemplates] = useState<DashboardTemplate[]>([]);
@@ -129,7 +136,7 @@ export default function TemplatesPanel() {
     setEditingSlug('');
   };
 
-  if (loading) return <div style={{ padding: '1rem', color: '#999' }}>Loading...</div>;
+  if (loading) return <PageState kind="loading" title="Loading templates…" />;
 
   // Live edit mode — full DashboardView with save toolbar
   if (view === 'live-edit' && editReportId) {
@@ -137,24 +144,18 @@ export default function TemplatesPanel() {
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
         {/* Toolbar */}
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '0.5rem 1rem', borderBottom: '1px solid #f0ebe5', backgroundColor: '#faf8f5', flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8,
+          padding: '0 8px 12px', marginBottom: 4, borderBottom: '1px solid var(--line)', flexShrink: 0,
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#c4a882', backgroundColor: '#faf6f0', padding: '2px 8px', borderRadius: 4, border: '1px solid #e8e0d4' }}>
-              Template Editor
-            </span>
-            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#555' }}>{editingSlug}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <Badge tone="info">Template editor</Badge>
+            <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)', overflowWrap: 'anywhere' }}>{editingSlug}</span>
           </div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button onClick={handleDiscardEdit} style={{
-              padding: '5px 14px', fontSize: '0.75rem', fontWeight: 500, border: '1px solid #ddd', borderRadius: 6,
-              backgroundColor: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit',
-            }}>Discard</button>
-            <button onClick={handleSaveToTemplate} disabled={savingTemplate} style={{
-              padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600, border: 'none', borderRadius: 6,
-              backgroundColor: '#c4a882', color: '#fff', cursor: savingTemplate ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-            }}>{savingTemplate ? 'Saving...' : 'Save to Template'}</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button size="sm" onClick={handleDiscardEdit}>Discard</Button>
+            <Button size="sm" variant="primary" onClick={handleSaveToTemplate} disabled={savingTemplate}>
+              {savingTemplate ? 'Saving…' : 'Save to template'}
+            </Button>
           </div>
         </div>
         {/* Dashboard view — same as user sees */}
@@ -171,22 +172,22 @@ export default function TemplatesPanel() {
   // Create form
   if (view === 'create') {
     return (
-      <div style={{ padding: '1rem', maxWidth: 800 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700 }}>New Template</h3>
-          <button onClick={() => setView('list')} style={{ padding: '4px 12px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 6, backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>Back</button>
+      <div style={{ maxWidth: 800 }}>
+        <div style={{ marginBottom: 8 }}>
+          <BackLink label="Back to templates" onClick={() => setView('list')} />
         </div>
+        <h3 style={{ ...sectionTitle, marginBottom: 16 }}>New template</h3>
 
-        {error && <div style={{ padding: '6px 10px', backgroundColor: '#fff5f5', border: '1px solid #fed7d7', borderRadius: 6, fontSize: '0.75rem', color: '#c53030', marginBottom: '0.75rem' }}>{error}</div>}
+        {error && <div style={{ marginBottom: 12 }}><PageState kind="error" title={error} /></div>}
 
-        <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>Slug</label>
-            <input value={draft.slug} onChange={e => setDraft(d => ({ ...d, slug: e.target.value }))} style={inputStyle} placeholder="e.g. sales-overview" />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
+          <div>
+            <label className="n-label" htmlFor="tpl-slug">Slug</label>
+            <input id="tpl-slug" className="n-input" value={draft.slug} onChange={e => setDraft(d => ({ ...d, slug: e.target.value }))} style={{ width: '100%' }} placeholder="e.g. sales-overview" />
           </div>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>Agent</label>
-            <select value={draft.agent_slug} onChange={e => setDraft(d => ({ ...d, agent_slug: e.target.value }))} style={inputStyle}>
+          <div>
+            <label className="n-label" htmlFor="tpl-agent">Agent</label>
+            <select id="tpl-agent" className="n-select" value={draft.agent_slug} onChange={e => setDraft(d => ({ ...d, agent_slug: e.target.value }))} style={{ width: '100%' }}>
               <option value="reports">Reports</option>
               <option value="hr">HR</option>
               <option value="procurement">Procurement</option>
@@ -194,35 +195,31 @@ export default function TemplatesPanel() {
           </div>
         </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <label style={labelStyle}>Title</label>
-          <input value={draft.title} onChange={e => setDraft(d => ({ ...d, title: e.target.value }))} style={inputStyle} />
+        <div style={fieldRow}>
+          <label className="n-label" htmlFor="tpl-title">Title</label>
+          <input id="tpl-title" className="n-input" value={draft.title} onChange={e => setDraft(d => ({ ...d, title: e.target.value }))} style={{ width: '100%' }} />
         </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <label style={labelStyle}>Description</label>
-          <input value={draft.description || ''} onChange={e => setDraft(d => ({ ...d, description: e.target.value }))} style={inputStyle} />
+        <div style={fieldRow}>
+          <label className="n-label" htmlFor="tpl-description">Description</label>
+          <input id="tpl-description" className="n-input" value={draft.description || ''} onChange={e => setDraft(d => ({ ...d, description: e.target.value }))} style={{ width: '100%' }} />
         </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <label style={labelStyle}>Charts (JSON)</label>
+        <div style={{ marginBottom: 16 }}>
+          <label className="n-label" htmlFor="tpl-charts">Charts (JSON)</label>
           <textarea
+            id="tpl-charts"
+            className="n-input"
             value={chartsDraft}
             onChange={e => setChartsDraft(e.target.value)}
             spellCheck={false}
-            style={{ ...inputStyle, minHeight: 200, fontFamily: 'monospace', fontSize: '0.72rem', resize: 'vertical', whiteSpace: 'pre', lineHeight: 1.5 }}
+            style={{ display: 'block', width: '100%', minHeight: 200, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', whiteSpace: 'pre', lineHeight: 1.5 }}
           />
         </div>
 
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={handleCreateSave} disabled={saving} style={{
-            padding: '6px 20px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6,
-            backgroundColor: '#c4a882', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-          }}>{saving ? 'Saving...' : 'Create'}</button>
-          <button onClick={() => setView('list')} style={{
-            padding: '6px 20px', fontSize: '0.8rem', fontWeight: 600, border: '1px solid #ddd', borderRadius: 6,
-            backgroundColor: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit',
-          }}>Cancel</button>
+          <Button variant="primary" onClick={handleCreateSave} disabled={saving}>{saving ? 'Saving…' : 'Create'}</Button>
+          <Button onClick={() => setView('list')}>Cancel</Button>
         </div>
       </div>
     );
@@ -230,56 +227,62 @@ export default function TemplatesPanel() {
 
   // List view
   return (
-    <div style={{ padding: '1rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700 }}>Dashboard Templates</h3>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={handleSeed} style={{
-            padding: '4px 12px', fontSize: '0.72rem', fontWeight: 500, border: '1px solid #ddd', borderRadius: 6,
-            backgroundColor: '#fff', color: '#888', cursor: 'pointer', fontFamily: 'inherit',
-          }}>Seed defaults</button>
-          <button onClick={() => { setDraft(EMPTY); setChartsDraft('[]'); setView('create'); setError(''); }} style={{
-            padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600, border: 'none', borderRadius: 6,
-            backgroundColor: '#c4a882', color: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-          }}>+ New</button>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
+          <h3 style={sectionTitle}>Dashboard templates</h3>
+          {templates.length > 0 && (
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+              {templates.length} {templates.length === 1 ? 'template' : 'templates'}
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button onClick={handleSeed}>Seed defaults</Button>
+          <Button variant="primary" icon={Plus} onClick={() => { setDraft(EMPTY); setChartsDraft('[]'); setView('create'); setError(''); }}>
+            New template
+          </Button>
         </div>
       </div>
 
-      {error && <div style={{ padding: '6px 10px', backgroundColor: '#f0faf2', border: '1px solid #c6f6d5', borderRadius: 6, fontSize: '0.75rem', color: '#2f855a', marginBottom: '0.75rem' }}>{error}</div>}
+      {/* Here `error` carries the seed result ("Seeded 3 template(s)"). */}
+      {error && (
+        <div role="status" style={{ padding: '8px 12px', marginBottom: 12, borderRadius: 'var(--radius)', backgroundColor: 'var(--ok-bg)', color: 'var(--ok)', fontSize: 'var(--fs-sm)', fontWeight: 500 }}>
+          {error}
+        </div>
+      )}
 
       {templates.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '2rem', color: '#999', fontSize: '0.85rem' }}>
-          No templates yet. Click &ldquo;Seed defaults&rdquo; to add the built-in templates, or create a new one.
-        </div>
+        <PageState kind="empty" title="No templates yet." detail={<>Click &ldquo;Seed defaults&rdquo; to add the built-in templates, or create a new one.</>} />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {templates.map(t => (
-            <div key={t.slug} style={{
-              border: '1px solid #f0ebe5', borderRadius: 10, padding: '1rem',
-              backgroundColor: '#fff', display: 'flex', flexDirection: 'column', gap: 8,
-              cursor: 'pointer', transition: 'box-shadow 0.15s',
+            <div key={t.slug} className="n-card" style={{
+              padding: 16, display: 'flex', flexDirection: 'column', gap: 8,
+              cursor: 'pointer', transition: 'border-color 0.12s',
             }}
               onClick={() => openLiveEdit(t)}
-              onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 2px 12px rgba(0,0,0,0.06)')}
-              onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}
+              onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--line-strong)')}
+              onMouseLeave={e => (e.currentTarget.style.borderColor = '')}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                <div>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#333' }}>{t.title}</div>
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
-                    <span style={{
-                      fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px', borderRadius: 3,
-                      backgroundColor: `${AGENT_COLORS[t.agent_slug] || '#888'}18`,
-                      color: AGENT_COLORS[t.agent_slug] || '#888',
-                    }}>{t.agent_slug}</span>
-                    <span style={{ fontSize: '0.65rem', color: '#bbb' }}>{t.chart_count} chart{t.chart_count !== 1 ? 's' : ''}</span>
-                    {!t.enabled && <span style={{ fontSize: '0.6rem', color: '#dc3545', fontWeight: 600 }}>disabled</span>}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{t.title}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 4 }}>
+                    <Badge>{AGENT_LABELS[t.agent_slug] || t.agent_slug}</Badge>
+                    <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{t.chart_count} chart{t.chart_count !== 1 ? 's' : ''}</span>
+                    {!t.enabled && <Badge tone="warn">Disabled</Badge>}
                   </div>
                 </div>
-                <button onClick={(e) => { e.stopPropagation(); setConfirmDelete(t.slug); }}
-                  style={{ border: 'none', background: 'none', color: '#ccc', cursor: 'pointer', fontSize: '0.8rem' }}>&times;</button>
+                <IconButton
+                  icon={Trash2}
+                  label={`Delete ${t.title}`}
+                  iconSize={16}
+                  onClick={(e) => { e.stopPropagation(); setConfirmDelete(t.slug); }}
+                  style={{ margin: '-6px -6px 0 0' }}
+                />
               </div>
-              {t.description && <div style={{ fontSize: '0.72rem', color: '#999' }}>{t.description}</div>}
+              {t.description && <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{t.description}</div>}
             </div>
           ))}
         </div>
@@ -287,12 +290,12 @@ export default function TemplatesPanel() {
 
       {/* Delete confirmation */}
       {confirmDelete && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, backgroundColor: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ backgroundColor: '#fff', borderRadius: 12, padding: '1.5rem', maxWidth: 400, boxShadow: '0 4px 20px rgba(0,0,0,0.15)' }}>
-            <div style={{ fontSize: '0.9rem', fontWeight: 600, marginBottom: 12 }}>Delete template &ldquo;{confirmDelete}&rdquo;?</div>
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, backgroundColor: 'rgba(26, 26, 26, 0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="tpl-delete-title" style={{ backgroundColor: 'var(--bg)', borderRadius: 'var(--radius-lg)', padding: 24, width: '100%', maxWidth: 400, boxShadow: '0 12px 40px rgba(26, 26, 26, 0.18)' }}>
+            <h3 id="tpl-delete-title" style={{ ...sectionTitle, marginBottom: 16, overflowWrap: 'anywhere' }}>Delete template &ldquo;{confirmDelete}&rdquo;?</h3>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => setConfirmDelete(null)} style={{ padding: '6px 16px', fontSize: '0.8rem', border: '1px solid #ddd', borderRadius: 6, backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
-              <button onClick={() => handleDelete(confirmDelete)} style={{ padding: '6px 16px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6, backgroundColor: '#dc3545', color: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>Delete</button>
+              <Button onClick={() => setConfirmDelete(null)}>Cancel</Button>
+              <Button variant="danger" onClick={() => handleDelete(confirmDelete)}>Delete</Button>
             </div>
           </div>
         </div>

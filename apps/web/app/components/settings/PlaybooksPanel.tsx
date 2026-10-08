@@ -1,7 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Plus, Sparkles } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Button from '../ui/Button';
+import BackLink from '../ui/BackLink';
+import Badge from '../ui/Badge';
+import PageState from '../ui/PageState';
 
 interface Playbook {
   id: string;
@@ -25,8 +30,13 @@ const EMPTY: Playbook = {
   instructions: '', enabled: true, created_at: null, updated_at: null,
 };
 
-const labelStyle: React.CSSProperties = { fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' as const, marginBottom: 4, display: 'block' };
-const inputStyle: React.CSSProperties = { width: '100%', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: '0.85rem', fontFamily: 'inherit', boxSizing: 'border-box' as const };
+const sectionTitle: React.CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' };
+const fieldRow: React.CSSProperties = { marginBottom: 12 };
+// The explanation after a field's name: lighter than the name itself.
+const hint: React.CSSProperties = { fontWeight: 400, color: 'var(--muted)' };
+// A read-only select (slug and agent are fixed once a playbook exists).
+// backgroundColor, not background: the shorthand would drop .n-select's chevron.
+const lockedSelect: React.CSSProperties = { backgroundColor: 'var(--surface)', color: 'var(--muted)', cursor: 'default' };
 
 export default function PlaybooksPanel() {
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
@@ -147,133 +157,134 @@ export default function PlaybooksPanel() {
   }
 
   if (editing) {
+    const close = () => { setEditing(null); setIsNew(false); setError(null); };
     return (
-      <div style={{ padding: '1rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>{isNew ? 'New Playbook' : `Edit: ${editing.display_name}`}</h3>
-          <button onClick={() => { setEditing(null); setIsNew(false); setError(null); }} style={{ border: '1px solid #ddd', borderRadius: 6, padding: '4px 12px', fontSize: '0.8rem', cursor: 'pointer', fontFamily: 'inherit', backgroundColor: '#fff' }}>Cancel</button>
+      <div style={{ maxWidth: 860 }}>
+        <div style={{ marginBottom: 8 }}>
+          <BackLink label="Back to playbooks" onClick={close} />
         </div>
+        <h3 style={{ ...sectionTitle, marginBottom: 16, overflowWrap: 'anywhere' }}>{isNew ? 'New playbook' : `Edit: ${editing.display_name}`}</h3>
 
-        {error && <div style={{ padding: '0.5rem', backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#dc2626', fontSize: '0.8rem', marginBottom: '0.75rem' }}>{error}</div>}
+        {error && <div style={{ marginBottom: 12 }}><PageState kind="error" title={error} /></div>}
 
-        <div style={{
-          marginBottom: '0.75rem', padding: '0.75rem', border: '1px solid #d4e5f7',
-          borderRadius: 8, backgroundColor: '#f8fbff',
-        }}>
-          <label style={{ ...labelStyle, color: '#2563eb' }}>AI Assistant</label>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+        <div className="n-card" style={{ padding: 14, marginBottom: 16 }}>
+          <label className="n-label" htmlFor="pb-ai">AI assistant</label>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
             <input
+              id="pb-ai"
+              className="n-input"
               value={aiPrompt}
               onChange={e => setAiPrompt(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleGenerate(); } }}
               placeholder={editing.instructions ? 'Describe what to change...' : 'Describe the workflow you want to create...'}
               disabled={aiGenerating}
-              style={{ ...inputStyle, flex: 1 }}
+              style={{ flex: 1, minWidth: 0 }}
             />
-            <button
-              onClick={handleGenerate}
-              disabled={aiGenerating || !aiPrompt.trim()}
-              style={{
-                padding: '6px 14px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6,
-                backgroundColor: '#2563eb', color: '#fff', cursor: aiGenerating ? 'not-allowed' : 'pointer',
-                fontFamily: 'inherit', opacity: aiGenerating ? 0.6 : 1, whiteSpace: 'nowrap',
-              }}
-            >
-              {aiGenerating ? 'Generating...' : editing.instructions ? 'Update' : 'Generate'}
-            </button>
+            <Button icon={Sparkles} onClick={handleGenerate} disabled={aiGenerating || !aiPrompt.trim()}>
+              {aiGenerating ? 'Generating…' : editing.instructions ? 'Update' : 'Generate'}
+            </Button>
           </div>
-          <p style={{ fontSize: '0.72rem', color: '#888', margin: 0, lineHeight: 1.4 }}>
+          <p style={{ margin: 0, fontSize: 'var(--fs-xs)', color: 'var(--muted)', lineHeight: 1.4 }}>
             AI will {editing.instructions ? 'update' : 'generate'} the slug, name, description and instructions.
           </p>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
           <div>
-            <label style={labelStyle}>Slug</label>
-            <input value={editing.slug} onChange={e => update('slug', e.target.value)} disabled={!isNew} style={{ ...inputStyle, backgroundColor: isNew ? '#fff' : '#f5f5f5' }} placeholder="weekly_sales_report" />
+            <label className="n-label" htmlFor="pb-slug">Slug</label>
+            <input id="pb-slug" className="n-input" value={editing.slug} onChange={e => update('slug', e.target.value)} disabled={!isNew} style={{ width: '100%' }} placeholder="weekly_sales_report" />
           </div>
           <div>
-            <label style={labelStyle}>Agent</label>
-            <select value={editing.agent_slug} onChange={e => update('agent_slug', e.target.value)} disabled={!isNew} style={{ ...inputStyle, backgroundColor: isNew ? '#fff' : '#f5f5f5' }}>
+            <label className="n-label" htmlFor="pb-agent">Agent</label>
+            <select id="pb-agent" className="n-select" value={editing.agent_slug} onChange={e => update('agent_slug', e.target.value)} disabled={!isNew} style={{ width: '100%', ...(isNew ? {} : lockedSelect) }}>
               <option value="">Select agent...</option>
               {agents.map((a, i) => <option key={`${a.slug}-${i}`} value={a.slug}>{a.display_name}</option>)}
             </select>
           </div>
         </div>
 
-        <div style={{ marginBottom: '0.75rem' }}>
-          <label style={labelStyle}>Display Name</label>
-          <input value={editing.display_name} onChange={e => update('display_name', e.target.value)} style={inputStyle} placeholder="Weekly Sales Report" />
+        <div style={fieldRow}>
+          <label className="n-label" htmlFor="pb-name">Display name</label>
+          <input id="pb-name" className="n-input" value={editing.display_name} onChange={e => update('display_name', e.target.value)} style={{ width: '100%' }} placeholder="Weekly Sales Report" />
         </div>
 
-        <div style={{ marginBottom: '0.75rem' }}>
-          <label style={labelStyle}>When to use (the agent reads this to decide whether to open the playbook)</label>
-          <input value={editing.description} onChange={e => update('description', e.target.value)} style={inputStyle} placeholder="A standard weekly sales summary for one or more venues" />
+        <div style={fieldRow}>
+          <label className="n-label" htmlFor="pb-when">When to use <span style={hint}>(the agent reads this to decide whether to open the playbook)</span></label>
+          <input id="pb-when" className="n-input" value={editing.description} onChange={e => update('description', e.target.value)} style={{ width: '100%' }} placeholder="A standard weekly sales summary for one or more venues" />
         </div>
 
-        <div style={{ marginBottom: '0.75rem' }}>
-          <label style={labelStyle}>Instructions (step-by-step guide the agent follows)</label>
-          <textarea ref={instructionsRef} value={editing.instructions} onChange={e => update('instructions', e.target.value)} style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical', minHeight: 200, overflow: 'hidden' }} placeholder="Step-by-step workflow instructions for the agent..." />
+        <div style={fieldRow}>
+          <label className="n-label" htmlFor="pb-instructions">Instructions <span style={hint}>(step-by-step guide the agent follows)</span></label>
+          <textarea id="pb-instructions" ref={instructionsRef} className="n-input" value={editing.instructions} onChange={e => update('instructions', e.target.value)} style={{ display: 'block', width: '100%', minHeight: 200, overflow: 'hidden', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', lineHeight: 1.5 }} placeholder="Step-by-step workflow instructions for the agent..." />
         </div>
 
-        <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={editing.enabled} onChange={e => update('enabled', e.target.checked)} id="pb-enabled" />
-          <label htmlFor="pb-enabled" style={{ fontSize: '0.85rem', cursor: 'pointer' }}>Enabled</label>
+        <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" checked={editing.enabled} onChange={e => update('enabled', e.target.checked)} id="pb-enabled" style={{ width: 16, height: 16, margin: 0, accentColor: 'var(--accent)', cursor: 'pointer' }} />
+          <label htmlFor="pb-enabled" style={{ fontSize: 'var(--fs-base)', color: 'var(--text)', cursor: 'pointer' }}>Enabled</label>
         </div>
 
-        <button onClick={handleSave} disabled={saving || !editing.slug || !editing.agent_slug || !editing.display_name} style={{
-          padding: '8px 20px', fontSize: '0.85rem', fontWeight: 600, border: 'none', borderRadius: 6,
-          backgroundColor: '#1a1a1a', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit', opacity: saving ? 0.6 : 1,
-        }}>
-          {saving ? 'Saving...' : isNew ? 'Create Playbook' : 'Save Changes'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button variant="primary" onClick={handleSave} disabled={saving || !editing.slug || !editing.agent_slug || !editing.display_name}>
+            {saving ? 'Saving…' : isNew ? 'Create playbook' : 'Save changes'}
+          </Button>
+          <Button onClick={close}>Cancel</Button>
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ padding: '1rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>Playbooks</h3>
-        <button onClick={() => { setEditing({ ...EMPTY }); setIsNew(true); }} style={{
-          padding: '4px 12px', fontSize: '0.8rem', border: '1px solid #1a1a1a', borderRadius: 6,
-          backgroundColor: '#1a1a1a', color: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-        }}>
-          + New Playbook
-        </button>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
+          <h3 style={sectionTitle}>Playbooks</h3>
+          {playbooks.length > 0 && (
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+              {playbooks.length} {playbooks.length === 1 ? 'playbook' : 'playbooks'}
+            </span>
+          )}
+        </div>
+        <Button variant="primary" icon={Plus} onClick={() => { setEditing({ ...EMPTY }); setIsNew(true); }}>
+          New playbook
+        </Button>
       </div>
 
-      <p style={{ color: '#888', fontSize: '0.8rem', margin: '0 0 1rem', lineHeight: 1.5 }}>
-        Playbooks are step-by-step guides for specific jobs. The agent sees each playbook's name and when to use it, and opens the full instructions when a request matches. A playbook guides the agent — it never limits which tools it can use.
+      <p style={{ margin: '0 0 20px', maxWidth: 760, fontSize: 'var(--fs-sm)', color: 'var(--muted)', lineHeight: 1.5 }}>
+        Playbooks are step-by-step guides for specific jobs. The agent sees each playbook&rsquo;s name and when to use it, and opens the full instructions when a request matches. A playbook guides the agent — it never limits which tools it can use.
       </p>
 
       {playbooks.length === 0 ? (
-        <p style={{ color: '#bbb', fontSize: '0.85rem', fontStyle: 'italic' }}>No playbooks yet. Create one to give your agents focused workflow instructions.</p>
+        <PageState kind="empty" title="No playbooks yet." detail="Create one to give your agents focused workflow instructions." />
       ) : (
         Object.entries(grouped).map(([agentSlug, pbs]) => {
-          const agentName = agents.find(a => a.slug === agentSlug)?.display_name || agentSlug;
+          // Fallback reads "time attendance", not "time_attendance" (the eyebrow uppercases it).
+          const agentName = agents.find(a => a.slug === agentSlug)?.display_name || agentSlug.replace(/_/g, ' ');
           return (
-            <div key={agentSlug} style={{ marginBottom: '1rem' }}>
-              <h4 style={{ margin: '0 0 0.5rem', fontSize: '0.82rem', fontWeight: 600, color: '#666' }}>{agentName}</h4>
-              {pbs.map(pb => (
-                <div key={pb.slug} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '0.6rem 0.75rem', border: '1px solid #e8e4de', borderRadius: 8,
-                  marginBottom: '0.4rem', backgroundColor: pb.enabled ? '#fff' : '#f9f9f9',
-                }}>
-                  <div>
-                    <span style={{ fontWeight: 500, fontSize: '0.85rem', color: pb.enabled ? '#333' : '#999' }}>{pb.display_name}</span>
-                    <span style={{ fontSize: '0.72rem', color: '#aaa', marginLeft: 8 }}>{pb.slug}</span>
-                    {!pb.enabled && <span style={{ fontSize: '0.65rem', color: '#e53e3e', marginLeft: 6, fontWeight: 600 }}>DISABLED</span>}
-                    <div style={{ fontSize: '0.75rem', color: '#888', marginTop: 2 }}>{pb.description}</div>
+            <section key={agentSlug} style={{ marginBottom: 20 }}>
+              <h4 className="n-eyebrow" style={{ margin: '0 0 6px' }}>{agentName}</h4>
+              <div className="n-card" style={{ overflow: 'hidden' }}>
+                {pbs.map((pb, i) => (
+                  <div key={pb.slug} style={{
+                    display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, rowGap: 8,
+                    padding: '10px 14px', borderTop: i > 0 ? '1px solid var(--line)' : 'none',
+                    backgroundColor: pb.enabled ? 'var(--bg)' : 'var(--surface)',
+                  }}>
+                    <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 2 }}>
+                        <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: pb.enabled ? 'var(--text)' : 'var(--muted)' }}>{pb.display_name}</span>
+                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', overflowWrap: 'anywhere' }}>{pb.slug}</span>
+                        {!pb.enabled && <Badge tone="warn">Disabled</Badge>}
+                      </div>
+                      {pb.description && <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 2 }}>{pb.description}</div>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                      <Button size="sm" onClick={() => { setEditing(pb); setIsNew(false); }}>Edit</Button>
+                      <Button size="sm" variant="danger" onClick={() => handleDelete(pb.slug)}>Delete</Button>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button onClick={() => { setEditing(pb); setIsNew(false); }} style={{ padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4, backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>Edit</button>
-                    <button onClick={() => handleDelete(pb.slug)} style={{ padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #e53e3e', borderRadius: 4, backgroundColor: '#fff', color: '#e53e3e', cursor: 'pointer', fontFamily: 'inherit' }}>Delete</button>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </section>
           );
         })
       )}

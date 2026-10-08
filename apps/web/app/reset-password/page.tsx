@@ -2,6 +2,8 @@
 
 import { useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+import AuthShell, { authInput, authLabel, authSubmit } from '../components/auth/AuthShell';
+import Button from '../components/ui/Button';
 
 function ResetPasswordForm() {
   const searchParams = useSearchParams();
@@ -52,102 +54,62 @@ function ResetPasswordForm() {
 
   if (!token) {
     return (
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        height: '100vh', backgroundColor: '#faf8f5', fontFamily: 'system-ui, sans-serif',
-      }}>
-        <div style={{
-          width: 380, padding: '2.5rem', backgroundColor: '#fff', borderRadius: 12,
-          boxShadow: '0 2px 12px rgba(0,0,0,0.08)', border: '1px solid #e2ddd7', textAlign: 'center',
-        }}>
-          <div style={{ fontSize: '1rem', color: '#e53e3e' }}>Invalid or missing reset link.</div>
+      <AuthShell subtitle="Reset your password">
+        <div role="alert" style={{ fontSize: 'var(--fs-base)', color: 'var(--error)', textAlign: 'center' }}>
+          Invalid or missing reset link.
         </div>
-      </div>
+      </AuthShell>
     );
   }
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      height: '100vh', backgroundColor: '#faf8f5', fontFamily: 'system-ui, sans-serif',
-    }}>
-      <div style={{
-        width: 380, padding: '2.5rem', backgroundColor: '#fff', borderRadius: 12,
-        boxShadow: '0 2px 12px rgba(0,0,0,0.08)', border: '1px solid #e2ddd7',
-      }}>
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1a1a1a', marginBottom: 4 }}>Norm</div>
-          <div style={{ fontSize: '0.85rem', color: '#888' }}>Reset your password</div>
+    <AuthShell subtitle="Reset your password" titleId="reset-title">
+      {success ? (
+        <div role="status" style={{
+          fontSize: 'var(--fs-base)', color: 'var(--ok)', backgroundColor: 'var(--ok-bg)',
+          padding: '12px 16px', borderRadius: 'var(--radius)', textAlign: 'center',
+        }}>
+          Password updated! Taking you to sign in…
         </div>
+      ) : (
+        <form onSubmit={handleSubmit} aria-labelledby="reset-title" style={{ margin: 0 }}>
+          <label htmlFor="reset-password" style={authLabel}>New password</label>
+          <input
+            id="reset-password"
+            type="password"
+            autoComplete="new-password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            required
+            style={authInput}
+          />
 
-        {success ? (
-          <div style={{
-            fontSize: '0.85rem', color: '#28a745', backgroundColor: '#d4edda',
-            padding: '12px 16px', borderRadius: 8, textAlign: 'center',
-          }}>
-            Password updated! Redirecting to login...
-          </div>
-        ) : (
-          <form onSubmit={handleSubmit}>
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                New Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                style={{
-                  width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7',
-                  borderRadius: 8, fontSize: '0.9rem', fontFamily: 'inherit',
-                  boxSizing: 'border-box', outline: 'none',
-                }}
-              />
+          <label htmlFor="reset-confirm" style={{ ...authLabel, marginTop: 16 }}>Confirm password</label>
+          <input
+            id="reset-confirm"
+            type="password"
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={e => setConfirmPassword(e.target.value)}
+            required
+            style={authInput}
+          />
+
+          {error && (
+            <div role="alert" style={{
+              fontSize: 'var(--fs-sm)', color: 'var(--error)', backgroundColor: 'var(--error-bg)',
+              padding: '8px 12px', borderRadius: 'var(--radius-sm)', marginTop: 16,
+            }}>
+              {error}
             </div>
+          )}
 
-            <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
-                Confirm Password
-              </label>
-              <input
-                type="password"
-                value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-                required
-                style={{
-                  width: '100%', padding: '0.65rem', border: '1px solid #e2ddd7',
-                  borderRadius: 8, fontSize: '0.9rem', fontFamily: 'inherit',
-                  boxSizing: 'border-box', outline: 'none',
-                }}
-              />
-            </div>
-
-            {error && (
-              <div style={{
-                fontSize: '0.82rem', color: '#e53e3e', backgroundColor: '#fef2f2',
-                padding: '8px 12px', borderRadius: 6, marginBottom: '1rem',
-              }}>
-                {error}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                width: '100%', padding: '10px', fontSize: '0.9rem', fontWeight: 600,
-                border: 'none', borderRadius: 8, backgroundColor: '#c4a882', color: '#fff',
-                cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                opacity: loading ? 0.7 : 1,
-              }}
-            >
-              {loading ? 'Please wait...' : 'Reset Password'}
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
+          <Button type="submit" variant="primary" disabled={loading} style={authSubmit}>
+            {loading ? 'Please wait…' : 'Reset password'}
+          </Button>
+        </form>
+      )}
+    </AuthShell>
   );
 }
 
@@ -156,10 +118,9 @@ export default function ResetPasswordPage() {
     <Suspense fallback={
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        height: '100vh', backgroundColor: '#faf8f5', fontFamily: 'system-ui, sans-serif',
-        color: '#999',
+        height: '100dvh', backgroundColor: 'var(--canvas)', color: 'var(--muted)',
       }}>
-        Loading...
+        Loading…
       </div>
     }>
       <ResetPasswordForm />

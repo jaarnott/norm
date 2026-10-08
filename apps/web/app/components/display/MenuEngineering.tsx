@@ -1,24 +1,43 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { ArrowUpRight } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
-import { colors } from '../../lib/theme';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
+import VenueSelect from '../ui/VenueSelect';
+import Icon from '../ui/Icon';
 import {
   ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, ZAxis,
   ReferenceArea, ReferenceLine, Tooltip,
 } from 'recharts';
 
-// --- Menu-engineering categories (colours validated colourblind-safe via the
-// dataviz skill's validator; position in the grid is the primary encoding). ---
+// --- Menu-engineering categories. The hexes are a CHART palette (the one place
+// literal colours stay): validated colourblind-safe with the dataviz skill's
+// validator, all pairs, on the white chart card. Position in the grid is the
+// primary encoding. They colour MARKS only (dots, quadrant tints, keys) — text
+// beside them wears text tokens, since #1baf7a is 2.8:1 on white. ---
 type CatKey = 'star' | 'plow' | 'puzzle' | 'dog';
 const CATS: Record<CatKey, { label: string; color: string }> = {
   star: { label: 'Stars', color: '#4a3aa7' },      // hi popularity, hi profit
-  plow: { label: 'Plow Horses', color: '#eb6834' }, // hi popularity, lo profit
+  plow: { label: 'Plow horses', color: '#eb6834' }, // hi popularity, lo profit
   puzzle: { label: 'Puzzles', color: '#1baf7a' },   // lo popularity, hi profit
   dog: { label: 'Dogs', color: '#2a78d6' },         // lo popularity, lo profit
 };
+
+// The colour key beside a category name (legend, table, tooltip).
+function CatDot({ cat, size = 8 }: { cat: CatKey; size?: number }) {
+  return <span aria-hidden style={{ flex: '0 0 auto', width: size, height: size, borderRadius: 999, background: CATS[cat].color }} />;
+}
+
+// Quadrant names inside the chart: the one uppercase style (.n-eyebrow) drawn
+// as SVG text — muted ink on the faint quadrant tint, never the series colour.
+const quadrantLabel = (value: string, position: 'insideTopLeft' | 'insideTopRight' | 'insideBottomLeft' | 'insideBottomRight') => ({
+  value, position, fill: 'var(--muted)', fontSize: 'var(--fs-2xs)', fontWeight: 600, letterSpacing: '0.06em',
+});
+const axisTick = { fontSize: 'var(--fs-xs)', fill: 'var(--text-soft)', fontWeight: 600 };
 
 interface VenueOption { id: string; name: string }
 interface CogsRow {
@@ -225,74 +244,143 @@ export default function MenuEngineering({ props, onAction }: DisplayBlockProps) 
   const openRecipe = (p: Product) => { if (p.recipeId && onAction) onAction({ connector_name: 'norm', action: 'open_recipe', params: { recipe_id: p.recipeId } }); };
 
   // --- styles ---
+  // Filter chips: neutral; the selected one takes the tan tint (as a selected chip does everywhere).
   const chip = (active: boolean): React.CSSProperties => ({
-    padding: '4px 12px', fontSize: '0.78rem', fontWeight: 600, borderRadius: 999,
-    border: `1px solid ${active ? colors.executive_chef : colors.border}`, cursor: 'pointer',
-    background: active ? colors.executive_chef : '#fff', color: active ? '#fff' : colors.textSecondary,
+    flex: '0 0 auto', padding: '4px 12px', fontFamily: 'inherit', fontSize: 'var(--fs-sm)', fontWeight: active ? 600 : 500,
+    lineHeight: 1.4, whiteSpace: 'nowrap', borderRadius: 999, cursor: 'pointer',
+    border: `1px solid ${active ? 'var(--brand-soft)' : 'var(--line-strong)'}`,
+    background: active ? 'var(--accent-soft)' : 'var(--bg)', color: active ? 'var(--accent)' : 'var(--text-soft)',
   });
-  const th: React.CSSProperties = { padding: '8px 10px', textAlign: 'left', fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: colors.textMuted, borderBottom: `1px solid ${colors.border}`, whiteSpace: 'nowrap' };
-  const td: React.CSSProperties = { padding: '8px 10px', fontSize: '0.82rem', color: colors.textPrimary, borderBottom: `1px solid ${colors.borderLight}`, whiteSpace: 'nowrap' };
-  const numTd: React.CSSProperties = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+  const nowrap: React.CSSProperties = { whiteSpace: 'nowrap' };
+
+  const periodLabel = PERIODS.find(p => p.days === periodDays)?.label || '';
+  const venuePicker = venues.length > 1
+    ? <VenueSelect venues={venues} value={venueId} onChange={changeVenue} />
+    : null;
+
+  // Period first, then product group: one filter row above everything it scopes.
+  const filters = (
+    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px 20px' }}>
+      <div role="group" aria-label="Period" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {PERIODS.map(p => <button key={p.days} type="button" aria-pressed={periodDays === p.days} onClick={() => setPeriodDays(p.days)} style={chip(periodDays === p.days)}>{p.label}</button>)}
+      </div>
+      <div role="group" aria-label="Product group" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {groupOptions.map(g => <button key={g} type="button" aria-pressed={group === g} onClick={() => setGroup(g)} style={chip(group === g)}>{g}</button>)}
+      </div>
+    </div>
+  );
+
+  const renderTable = () => (
+    <table className="n-table">
+      <thead>
+        <tr>
+          <th>Product</th>
+          <th>Category</th>
+          <th className="num">Units</th>
+          <th className="num">Sales</th>
+          <th className="num">Cost</th>
+          <th className="num">Gross profit</th>
+          <th className="num">Margin</th>
+        </tr>
+      </thead>
+      <tbody>
+        {[...products].sort((a, b) => b.units - a.units).map((p) => (
+          <tr key={p.id}
+            onClick={() => openRecipe(p)}
+            title={p.recipeId ? 'Open recipe' : 'No linked recipe'}
+            style={{ cursor: p.recipeId ? 'pointer' : 'default' }}>
+            <td style={nowrap}>
+              {p.recipeId ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--accent)', fontWeight: 500 }}>
+                  {p.name}
+                  <Icon icon={ArrowUpRight} size="dense" tone="muted" />
+                </span>
+              ) : p.name}
+            </td>
+            <td style={nowrap}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-soft)' }}>
+                <CatDot cat={p.cat} />
+                {CATS[p.cat].label}
+              </span>
+            </td>
+            <td className="num" style={nowrap}>{qty(p.units)}</td>
+            <td className="num" style={nowrap}>{money(p.revenue)}</td>
+            <td className="num" style={nowrap}>{money(p.cost)}</td>
+            <td className="num" style={nowrap}>{money(p.gp)}</td>
+            <td className="num" style={nowrap}>{pct(p.marginPct)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 
   return (
     <div style={{ width: '100%' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.9rem', flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: colors.textPrimary }}>Menu Engineering</h2>
-        {venues.length > 1 && (
-          <select value={venueId || ''} onChange={(e) => changeVenue(e.target.value)} style={{ padding: '4px 8px', fontSize: '0.8rem', border: `1px solid ${colors.border}`, borderRadius: 6, background: '#fff', color: colors.textSecondary }}>
-            {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-          </select>
-        )}
-        <span style={{ flex: 1 }} />
-        <div style={{ display: 'flex', gap: '0.35rem' }}>
-          {PERIODS.map(p => <button key={p.days} onClick={() => setPeriodDays(p.days)} style={chip(periodDays === p.days)}>{p.label}</button>)}
-        </div>
-      </div>
+      {/* Header: the page header on a page; a compact title row in a conversation. */}
+      {persistVenue ? (
+        <PageHeader
+          title="Menu Engineering"
+          meta={!loading && !error && products.length > 0 ? `${qty(products.length)} products · ${periodLabel.toLowerCase()}` : periodLabel}
+          actions={venuePicker}
+        >
+          {filters}
+        </PageHeader>
+      ) : (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+            <h2 style={{ margin: 0, fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)' }}>Menu Engineering</h2>
+            <span style={{ flex: 1 }} />
+            {venuePicker}
+          </div>
+          <div style={{ marginBottom: 16 }}>{filters}</div>
+        </>
+      )}
 
-      {/* Group filter */}
-      <div style={{ display: 'flex', gap: '0.35rem', marginBottom: '0.9rem', flexWrap: 'wrap' }}>
-        {groupOptions.map(g => <button key={g} onClick={() => setGroup(g)} style={chip(group === g)}>{g}</button>)}
-      </div>
-
-      {loading && <div style={{ fontSize: '0.85rem', color: colors.textMuted, padding: '2rem 0' }}>Loading product report…</div>}
-      {error && <div style={{ fontSize: '0.85rem', color: colors.error, padding: '1rem 0' }}>{error}</div>}
-      {!loading && !error && products.length === 0 && <div style={{ fontSize: '0.85rem', color: colors.textMuted, padding: '2rem 0' }}>No product sales in this period.</div>}
+      {loading && <PageState kind="loading" title="Loading product report…" />}
+      {error && <PageState kind="error" title="Couldn’t load the product report" detail={error} />}
+      {!loading && !error && products.length === 0 && <PageState kind="empty" title="No product sales in this period" />}
 
       {!loading && products.length > 0 && (
         <>
-          {/* Scatter */}
-          <div style={{ border: `1px solid ${colors.border}`, borderRadius: 10, background: '#fff', padding: '0.75rem 0.5rem 0.25rem' }}>
+          {/* Scatter: the quadrant matrix on a white card */}
+          <div className="n-card" style={{ padding: '12px 8px 4px' }}>
             <div style={{ height: 420 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <ScatterChart margin={{ top: 18, right: 24, bottom: 40, left: 18 }}>
                   {/* four equal quadrants (drawn first, behind the dots) */}
-                  <ReferenceArea x1={0} x2={1} y1={1} y2={2} fill={CATS.plow.color} fillOpacity={0.07} stroke="none" label={{ value: 'PLOW HORSES', position: 'insideTopLeft', fill: CATS.plow.color, fontSize: 11, fontWeight: 700 }} />
-                  <ReferenceArea x1={1} x2={2} y1={1} y2={2} fill={CATS.star.color} fillOpacity={0.07} stroke="none" label={{ value: 'STARS', position: 'insideTopRight', fill: CATS.star.color, fontSize: 11, fontWeight: 700 }} />
-                  <ReferenceArea x1={0} x2={1} y1={0} y2={1} fill={CATS.dog.color} fillOpacity={0.07} stroke="none" label={{ value: 'DOGS', position: 'insideBottomLeft', fill: CATS.dog.color, fontSize: 11, fontWeight: 700 }} />
-                  <ReferenceArea x1={1} x2={2} y1={0} y2={1} fill={CATS.puzzle.color} fillOpacity={0.07} stroke="none" label={{ value: 'PUZZLES', position: 'insideBottomRight', fill: CATS.puzzle.color, fontSize: 11, fontWeight: 700 }} />
-                  <ReferenceLine x={1} stroke={colors.border} />
-                  <ReferenceLine y={1} stroke={colors.border} />
-                  <XAxis type="number" dataKey="plotX" domain={[0, 2]} ticks={[0.5, 1.5]} tickFormatter={(v) => (v < 1 ? 'Low' : 'High')} tick={{ fontSize: 12, fill: colors.textSecondary, fontWeight: 600 }} axisLine={{ stroke: colors.border }} tickLine={false}
-                    label={{ value: 'Profitability  (margin)', position: 'bottom', offset: 8, fontSize: 12, fill: colors.textSecondary }} />
-                  <YAxis type="number" dataKey="plotY" domain={[0, 2]} ticks={[0.5, 1.5]} tickFormatter={(v) => (v < 1 ? 'Low' : 'High')} tick={{ fontSize: 12, fill: colors.textSecondary, fontWeight: 600 }} axisLine={{ stroke: colors.border }} tickLine={false}
-                    label={{ value: 'Popularity  (units sold)', angle: -90, position: 'insideLeft', offset: 10, fontSize: 12, fill: colors.textSecondary }} />
-                  <ZAxis range={[80, 80]} />
-                  <Tooltip cursor={{ strokeDasharray: '3 3' }} content={({ active, payload }) => {
+                  <ReferenceArea x1={0} x2={1} y1={1} y2={2} fill={CATS.plow.color} fillOpacity={0.07} stroke="none" label={quadrantLabel('PLOW HORSES', 'insideTopLeft')} />
+                  <ReferenceArea x1={1} x2={2} y1={1} y2={2} fill={CATS.star.color} fillOpacity={0.07} stroke="none" label={quadrantLabel('STARS', 'insideTopRight')} />
+                  <ReferenceArea x1={0} x2={1} y1={0} y2={1} fill={CATS.dog.color} fillOpacity={0.07} stroke="none" label={quadrantLabel('DOGS', 'insideBottomLeft')} />
+                  <ReferenceArea x1={1} x2={2} y1={0} y2={1} fill={CATS.puzzle.color} fillOpacity={0.07} stroke="none" label={quadrantLabel('PUZZLES', 'insideBottomRight')} />
+                  <ReferenceLine x={1} stroke="var(--line-strong)" />
+                  <ReferenceLine y={1} stroke="var(--line-strong)" />
+                  <XAxis type="number" dataKey="plotX" domain={[0, 2]} ticks={[0.5, 1.5]} tickFormatter={(v) => (v < 1 ? 'Low' : 'High')} tick={axisTick} axisLine={{ stroke: 'var(--line)' }} tickLine={false}
+                    label={{ value: 'Profitability  (margin)', position: 'bottom', offset: 8, fontSize: 'var(--fs-xs)', fill: 'var(--muted)' }} />
+                  <YAxis type="number" dataKey="plotY" domain={[0, 2]} ticks={[0.5, 1.5]} tickFormatter={(v) => (v < 1 ? 'Low' : 'High')} tick={axisTick} axisLine={{ stroke: 'var(--line)' }} tickLine={false}
+                    label={{ value: 'Popularity  (units sold)', angle: -90, position: 'insideLeft', offset: 10, fontSize: 'var(--fs-xs)', fill: 'var(--muted)' }} />
+                  {/* r≈5.9 with a 2px white ring (the stroke), so overlapping dots stay distinct */}
+                  <ZAxis range={[110, 110]} />
+                  {/* No crosshair: a dot's spot inside its quadrant is jitter, not a value to read off the axes. */}
+                  <Tooltip cursor={false} content={({ active, payload }) => {
                     if (!active || !payload?.length) return null;
                     const p = payload[0].payload as Product;
                     return (
-                      <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 8, padding: '0.5rem 0.7rem', fontSize: '0.78rem', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
-                        <div style={{ fontWeight: 700, color: colors.textPrimary, marginBottom: 2 }}>{p.name}</div>
-                        <div style={{ color: CATS[p.cat].color, fontWeight: 600, marginBottom: 4 }}>{CATS[p.cat].label}</div>
-                        <div style={{ color: colors.textSecondary }}>{qty(p.units)} sold · {pct(p.marginPct)} margin</div>
-                        <div style={{ color: colors.textSecondary }}>{money(p.revenue)} sales · {money(p.gp)} profit</div>
-                        {p.recipeId && <div style={{ color: colors.executive_chef, marginTop: 3 }}>Click to open recipe →</div>}
+                      <div style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '8px 10px', fontSize: 'var(--fs-xs)', lineHeight: 1.45, color: 'var(--text-soft)', fontVariantNumeric: 'tabular-nums', boxShadow: '0 4px 12px rgba(26, 26, 26, 0.08)' }}>
+                        <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)', marginBottom: 2 }}>{p.name}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 500, marginBottom: 4 }}><CatDot cat={p.cat} />{CATS[p.cat].label}</div>
+                        <div>{qty(p.units)} sold · {pct(p.marginPct)} margin</div>
+                        <div>{money(p.revenue)} sales · {money(p.gp)} profit</div>
+                        {p.recipeId && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, color: 'var(--accent)', fontWeight: 500 }}>
+                            Click to open recipe <Icon icon={ArrowUpRight} size="meta" />
+                          </div>
+                        )}
                       </div>
                     );
                   }} />
                   {(Object.keys(CATS) as CatKey[]).map(k => (
                     <Scatter key={k} name={CATS[k].label} data={byCat[k]} fill={CATS[k].color} fillOpacity={0.9}
+                      stroke="var(--bg)" strokeWidth={2}
                       cursor="pointer"
                       onClick={(pt) => { const p = (pt as { payload?: Product })?.payload; if (p?.recipeId) openRecipe(p); }} />
                   ))}
@@ -300,58 +388,21 @@ export default function MenuEngineering({ props, onAction }: DisplayBlockProps) 
               </ResponsiveContainer>
             </div>
             {/* Legend */}
-            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', justifyContent: 'center', padding: '0.4rem 0 0.6rem' }}>
+            <div style={{ display: 'flex', gap: '6px 16px', flexWrap: 'wrap', justifyContent: 'center', padding: '4px 8px 10px' }}>
               {(Object.keys(CATS) as CatKey[]).map(k => (
-                <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem', color: colors.textSecondary }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 999, background: CATS[k].color, display: 'inline-block' }} />
-                  {CATS[k].label} <span style={{ color: colors.textMuted }}>({byCat[k].length})</span>
+                <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                  <CatDot cat={k} size={10} />
+                  {CATS[k].label} <span style={{ color: 'var(--muted)', fontVariantNumeric: 'tabular-nums' }}>({byCat[k].length})</span>
                 </span>
               ))}
             </div>
           </div>
 
-          {/* Table */}
-          <div style={{ border: `1px solid ${colors.border}`, borderRadius: 10, marginTop: '1rem', overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={th}>Product</th>
-                  <th style={th}>Category</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Units</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Sales</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Cost</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Gross profit</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Margin</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...products].sort((a, b) => b.units - a.units).map((p) => (
-                  <tr key={p.id}
-                    onClick={() => openRecipe(p)}
-                    title={p.recipeId ? 'Open recipe' : 'No linked recipe'}
-                    style={{ cursor: p.recipeId ? 'pointer' : 'default' }}
-                    onMouseEnter={(e) => { if (p.recipeId) e.currentTarget.style.background = colors.selectedBg; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}>
-                    <td style={td}>
-                      <span style={{ color: p.recipeId ? colors.executive_chef : colors.textPrimary, fontWeight: p.recipeId ? 600 : 400 }}>{p.name}</span>
-                      {p.recipeId && <span style={{ color: colors.textMuted, fontSize: '0.72rem' }}> ↗</span>}
-                    </td>
-                    <td style={td}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
-                        <span style={{ width: 8, height: 8, borderRadius: 999, background: CATS[p.cat].color }} />
-                        {CATS[p.cat].label}
-                      </span>
-                    </td>
-                    <td style={numTd}>{qty(p.units)}</td>
-                    <td style={numTd}>{money(p.revenue)}</td>
-                    <td style={numTd}>{money(p.cost)}</td>
-                    <td style={numTd}>{money(p.gp)}</td>
-                    <td style={numTd}>{pct(p.marginPct)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {/* Table: straight on the page; in a card in a conversation. Scrolls
+              sideways on its own when the columns don't fit (phones). */}
+          {persistVenue
+            ? <div style={{ marginTop: 20, overflowX: 'auto' }}>{renderTable()}</div>
+            : <div className="n-card" style={{ marginTop: 16, overflowX: 'auto' }}>{renderTable()}</div>}
         </>
       )}
     </div>

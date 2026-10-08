@@ -103,76 +103,29 @@ export default function RosterTable({ data, props }: DisplayBlockProps) {
 
   return (
     <div style={{ marginBottom: '0.75rem' }}>
-      <div style={{
-        display: 'flex',
-        alignItems: 'baseline',
-        gap: '0.5rem',
-        marginBottom: '0.4rem',
-      }}>
-        <span style={{
-          fontSize: '0.72rem',
-          fontWeight: 600,
-          textTransform: 'uppercase',
-          letterSpacing: '0.06em',
-          color: '#888',
-        }}>
-          {title}
-        </span>
-        {rosterDate && (
-          <span style={{ fontSize: '0.75rem', color: '#aaa' }}>
-            {rosterDate}
-          </span>
-        )}
-        <span style={{ fontSize: '0.72rem', color: '#aaa' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', marginBottom: 6 }}>
+        <span className="n-eyebrow">{title}</span>
+        {rosterDate && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{rosterDate}</span>}
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
           {shifts.length} shift{shifts.length !== 1 ? 's' : ''}
         </span>
       </div>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{
-          width: '100%',
-          borderCollapse: 'collapse',
-          fontSize: '0.82rem',
-          lineHeight: 1.5,
-        }}>
+      <div className="n-card" style={{ overflowX: 'auto' }}>
+        <table className="n-table">
           <thead>
             <tr>
-              {['Staff', 'Role', 'In', 'Out', 'Hrs', 'Breaks'].map(h => (
-                <th key={h} style={{
-                  textAlign: 'left',
-                  padding: '0.5rem 0.75rem',
-                  borderBottom: '2px solid #e2e8f0',
-                  fontWeight: 600,
-                  color: '#555',
-                  whiteSpace: 'nowrap',
-                }}>
-                  {h}
-                </th>
-              ))}
+              {['Staff', 'Role', 'In', 'Out', 'Hrs', 'Breaks'].map(h => <th key={h} scope="col">{h}</th>)}
             </tr>
           </thead>
           <tbody>
             {shifts.map((s, i) => (
-              <tr key={i} style={{ backgroundColor: i % 2 === 1 ? '#f8f9fa' : 'transparent' }}>
-                <td style={{ padding: '0.45rem 0.75rem', borderBottom: '1px solid #eee', color: '#333', fontWeight: 500 }}>{s.name}</td>
-                <td style={{ padding: '0.45rem 0.75rem', borderBottom: '1px solid #eee', color: '#666' }}>{s.role}</td>
-                <td style={{ padding: '0.45rem 0.75rem', borderBottom: '1px solid #eee', color: '#333', fontFamily: 'monospace', fontSize: '0.8rem' }}>{s.clockIn}</td>
-                <td style={{ padding: '0.45rem 0.75rem', borderBottom: '1px solid #eee', color: '#333', fontFamily: 'monospace', fontSize: '0.8rem' }}>{s.clockOut}</td>
-                <td style={{ padding: '0.45rem 0.75rem', borderBottom: '1px solid #eee', color: '#555' }}>
-                  {s.duration && (
-                    <span style={{
-                      display: 'inline-block',
-                      backgroundColor: '#e8f4fd',
-                      color: '#0c5460',
-                      padding: '1px 6px',
-                      borderRadius: 3,
-                      fontSize: '0.75rem',
-                      fontWeight: 500,
-                    }}>
-                      {s.duration}
-                    </span>
-                  )}
-                </td>
-                <td style={{ padding: '0.45rem 0.75rem', borderBottom: '1px solid #eee', color: '#888', fontSize: '0.78rem' }}>{s.breaks}</td>
+              <tr key={i}>
+                <td style={{ color: 'var(--text)', fontWeight: 500 }}>{s.name}</td>
+                <td style={{ color: 'var(--text-soft)' }}>{s.role}</td>
+                <td style={{ color: 'var(--text)' }}>{s.clockIn}</td>
+                <td style={{ color: 'var(--text)' }}>{s.clockOut}</td>
+                <td style={{ color: 'var(--text)' }}>{s.duration}</td>
+                <td style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)' }}>{s.breaks}</td>
               </tr>
             ))}
           </tbody>

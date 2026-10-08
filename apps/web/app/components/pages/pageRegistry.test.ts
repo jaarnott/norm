@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { GraduationCap } from 'lucide-react';
 import { FUNCTIONAL_PAGES, appPageConfig } from './pageRegistry';
 import { AGENTS } from '../layout/Sidebar';
 
@@ -25,6 +26,12 @@ describe('appPageConfig', () => {
     const config = appPageConfig({ ...app, agent: 'hr' });
     expect(config.id).toBe('app:hiring');
     expect(FUNCTIONAL_PAGES.some((p) => p.id === config.id)).toBe(false);
+  });
+
+  it('shows the app by its name and one line icon — no emoji in the label', () => {
+    const config = appPageConfig({ slug: 'training', name: 'Norm Training', icon: '🎓', agent: 'hr' });
+    expect(config.label).toBe('Norm Training');
+    expect(config.icon).toBe(GraduationCap);
   });
 
   it('renders through the app runner, carrying its slug', () => {

@@ -1,7 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { ChevronDown, ChevronRight, LoaderCircle, Play, Sparkles, Trash2, TriangleAlert } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
 
 interface TestStep {
   step: number;
@@ -32,6 +38,26 @@ interface TestRun {
   stdout: string | null;
   triggered_by: string | null;
 }
+
+// Run status → badge tone. A queued run is waiting on the runner, not on a
+// person, so it stays neutral; a run in progress is informational.
+const STATUS_TONES: Record<string, BadgeTone> = {
+  passed: 'ok',
+  failed: 'error',
+  error: 'error',
+  pending: 'neutral',
+  running: 'info',
+};
+
+const sectionTitle: React.CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' };
+const subTitle: React.CSSProperties = { fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)', marginBottom: 6 };
+// Error text and logs from the runner read as code: the warm dark block.
+const codeBlock: React.CSSProperties = {
+  margin: 0, padding: '10px 12px', borderRadius: 'var(--radius)',
+  background: 'var(--code-bg)', color: 'var(--code-text)',
+  fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', lineHeight: 1.5,
+  overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+};
 
 export default function TestsPanel() {
   // Test Builder state
@@ -204,91 +230,66 @@ export default function TestsPanel() {
   const failedCount = tests.filter(t => t.last_run_status === 'failed' || t.last_run_status === 'error').length;
 
   const statusBadge = (status: string | null) => {
-    if (!status) return <span style={{ color: '#888', fontSize: '0.75rem' }}>--</span>;
-    const colors: Record<string, { bg: string; fg: string }> = {
-      passed: { bg: '#d1fae5', fg: '#065f46' },
-      failed: { bg: '#fee2e2', fg: '#991b1b' },
-      error: { bg: '#fee2e2', fg: '#991b1b' },
-      pending: { bg: '#fef3c7', fg: '#92400e' },
-      running: { bg: '#dbeafe', fg: '#1e40af' },
-    };
-    const c = colors[status] || { bg: '#f3f4f6', fg: '#666' };
+    if (!status) return <span style={{ color: 'var(--muted)', fontSize: 'var(--fs-xs)' }}>—</span>;
     return (
-      <span style={{
-        fontSize: '0.68rem', fontWeight: 600, padding: '2px 8px', borderRadius: 8,
-        backgroundColor: c.bg, color: c.fg,
-      }}>
-        {status}
-      </span>
+      <Badge tone={STATUS_TONES[status] || 'neutral'}>
+        {status.charAt(0).toUpperCase() + status.slice(1)}
+      </Badge>
     );
   };
 
   return (
-    <div>
-      {/* ── Test Builder ────────────────────────────────── */}
-      <h3 style={{
-        margin: '0 0 1rem', fontSize: '0.85rem', fontWeight: 600,
-        color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em',
-      }}>
-        Test Builder
-      </h3>
+    <div style={{ lineHeight: 1.45 }}>
+      {/* ── Test builder ────────────────────────────────── */}
+      <h3 style={{ ...sectionTitle, marginBottom: 12 }}>Test builder</h3>
 
-      <div style={{
-        backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
-        padding: '1rem', marginBottom: '1.5rem',
-      }}>
+      <div className="n-card" style={{ padding: 16, marginBottom: 32 }}>
         <textarea
+          className="n-input"
+          aria-label="Test description"
           value={description}
           onChange={e => setDescription(e.target.value)}
           placeholder="Describe a user flow in natural language, e.g. 'Log in, navigate to settings, and verify the connectors tab loads'"
-          style={{
-            width: '100%', minHeight: 80, padding: '0.6rem', fontSize: '0.82rem',
-            border: '1px solid #ddd', borderRadius: 6, fontFamily: 'inherit',
-            resize: 'vertical', boxSizing: 'border-box',
-          }}
+          style={{ display: 'block', width: '100%', minHeight: 80 }}
         />
-        <div style={{ marginTop: '0.5rem', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button
+        <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          {/* Once steps exist, saving them is the card's main action. */}
+          <Button
+            variant={generatedSteps.length > 0 ? 'secondary' : 'primary'}
+            icon={Sparkles}
             onClick={handleGenerate}
             disabled={generating || !description.trim()}
-            style={{
-              padding: '6px 16px', fontSize: '0.78rem', fontWeight: 600,
-              border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
-              backgroundColor: generating || !description.trim() ? '#ccc' : '#111',
-              color: '#fff',
-            }}
           >
-            {generating ? 'Generating...' : 'Generate Test'}
-          </button>
-          {saveError && <span style={{ fontSize: '0.75rem', color: '#dc2626' }}>{saveError}</span>}
+            {generating ? 'Generating…' : 'Generate test'}
+          </Button>
+          {saveError && <span role="alert" style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>{saveError}</span>}
         </div>
 
         {/* Generated output */}
         {generatedSteps.length > 0 && (
-          <div style={{ marginTop: '1rem' }}>
-            <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#333', marginBottom: '0.5rem' }}>
-              Generated Steps
-            </div>
+          <div style={{ marginTop: 16 }}>
+            <div style={subTitle}>Generated steps</div>
             <div style={{
-              backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6,
-              padding: '0.75rem',
+              background: 'var(--surface)', border: '1px solid var(--line)',
+              borderRadius: 'var(--radius)', padding: '6px 12px',
             }}>
               {generatedSteps.map((s, i) => (
                 <div key={i} style={{
-                  display: 'flex', alignItems: 'flex-start', gap: 8,
-                  padding: '4px 0', fontSize: '0.78rem', color: '#333',
+                  display: 'flex', alignItems: 'flex-start', gap: 10,
+                  padding: '6px 0', fontSize: 'var(--fs-base)', color: 'var(--text)',
                 }}>
                   <span style={{
-                    width: 20, height: 20, borderRadius: '50%', backgroundColor: '#e5e7eb',
+                    width: 22, height: 22, borderRadius: '50%', background: 'var(--selected)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: '0.65rem', fontWeight: 600, color: '#666', flexShrink: 0,
+                    fontSize: 'var(--fs-2xs)', fontWeight: 600, color: 'var(--text-soft)', flexShrink: 0,
+                    fontVariantNumeric: 'tabular-nums',
                   }}>
                     {s.step}
                   </span>
-                  <div>
+                  <div style={{ minWidth: 0, paddingTop: 1 }}>
                     <div>{s.description}</div>
                     {s.selector && (
-                      <div style={{ fontSize: '0.68rem', color: '#999', fontFamily: 'monospace' }}>
+                      <div style={{ marginTop: 2, fontSize: 'var(--fs-xs)', color: 'var(--muted)', fontFamily: 'var(--font-mono)', overflowWrap: 'anywhere' }}>
                         {s.selector}
                       </div>
                     )}
@@ -298,98 +299,76 @@ export default function TestsPanel() {
             </div>
 
             {/* Save controls */}
-            <div style={{ marginTop: '0.75rem', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ marginTop: 12, maxWidth: 560, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
               <input
                 type="text"
+                className="n-input"
+                aria-label="Test name"
                 value={saveName}
                 onChange={e => setSaveName(e.target.value)}
                 placeholder="Test name"
-                style={{
-                  flex: 1, padding: '6px 10px', fontSize: '0.78rem',
-                  border: '1px solid #ddd', borderRadius: 6, fontFamily: 'inherit',
-                }}
+                style={{ flex: '1 1 160px', minWidth: 0 }}
               />
-              <button
-                onClick={handleSave}
-                disabled={!saveName.trim()}
-                style={{
-                  padding: '6px 16px', fontSize: '0.78rem', fontWeight: 600,
-                  border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
-                  backgroundColor: !saveName.trim() ? '#ccc' : '#065f46',
-                  color: '#fff',
-                }}
-              >
-                Save to Suite
-              </button>
+              <Button variant="primary" onClick={handleSave} disabled={!saveName.trim()}>
+                Save to suite
+              </Button>
             </div>
           </div>
         )}
       </div>
 
-      {/* ── Test Suite ──────────────────────────────────── */}
+      {/* ── Test suite ──────────────────────────────────── */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        marginBottom: '0.75rem',
+        flexWrap: 'wrap', gap: 12, marginBottom: 12,
       }}>
-        <h3 style={{
-          margin: 0, fontSize: '0.85rem', fontWeight: 600,
-          color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em',
-        }}>
-          Test Suite
-        </h3>
+        <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', columnGap: 10, minWidth: 0 }}>
+          <h3 style={sectionTitle}>Test suite</h3>
+          {!loading && tests.length > 0 && (
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+              {tests.length} test{tests.length !== 1 ? 's' : ''}
+              {passedCount > 0 && <> · <span style={{ color: 'var(--ok)' }}>{passedCount} passed</span></>}
+              {failedCount > 0 && <> · <span style={{ color: 'var(--error)' }}>{failedCount} failed</span></>}
+            </span>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <select
+            className="n-select"
+            aria-label="Environment"
+            title="Environment"
             value={environment}
             onChange={e => setEnvironment(e.target.value)}
-            style={{
-              padding: '4px 8px', fontSize: '0.75rem', border: '1px solid #ddd',
-              borderRadius: 6, fontFamily: 'inherit', backgroundColor: '#fff',
-            }}
           >
             <option value="local">local</option>
             <option value="testing">testing</option>
             <option value="staging">staging</option>
           </select>
-          <button
+          <Button
+            icon={Play}
             onClick={handleRunAll}
             disabled={runningAll || tests.length === 0}
-            style={{
-              padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
-              border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
-              backgroundColor: runningAll || tests.length === 0 ? '#ccc' : '#111',
-              color: '#fff',
-            }}
           >
-            {runningAll ? 'Running...' : 'Run All'}
-          </button>
+            {runningAll ? 'Running…' : 'Run all'}
+          </Button>
         </div>
       </div>
 
       {loading ? (
-        <div style={{ fontSize: '0.8rem', color: '#999', padding: '1rem 0' }}>Loading tests...</div>
+        <PageState kind="loading" title="Loading tests…" />
       ) : tests.length === 0 ? (
-        <div style={{
-          fontSize: '0.8rem', color: '#999', padding: '2rem',
-          textAlign: 'center', border: '1px dashed #ddd', borderRadius: 8,
-        }}>
-          No tests yet. Use the Test Builder above to generate and save tests.
+        <div className="n-card">
+          <PageState kind="empty" title="No tests yet." detail="Use the test builder above to generate and save tests." />
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {tests.map(t => {
+        <div className="n-card" style={{ overflow: 'hidden' }}>
+          {tests.map((t, index) => {
             const isExpanded = expandedId === t.id;
             const runs = runsByTest[t.id] || [];
             const latestRun = runs[0];
+            const isRunning = runningTest === t.id;
             return (
-              <div
-                key={t.id}
-                style={{
-                  backgroundColor: '#fff',
-                  border: '1px solid #e5e7eb',
-                  borderRadius: 6,
-                  overflow: 'hidden',
-                }}
-              >
+              <div key={t.id} style={{ borderTop: index > 0 ? '1px solid var(--line)' : 'none' }}>
                 <div
                   onClick={() => {
                     const next = isExpanded ? null : t.id;
@@ -397,80 +376,84 @@ export default function TestsPanel() {
                     if (next) fetchRunsForTest(next);
                   }}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: '0.75rem',
-                    padding: '0.6rem 0.75rem', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '10px 12px 10px 16px', cursor: 'pointer',
                   }}
                 >
-                  <span style={{ fontSize: '0.7rem', color: '#999', width: 10 }}>{isExpanded ? '▾' : '▸'}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: '0.82rem', fontWeight: 500, color: '#111' }}>{t.name}</div>
-                    <div style={{ fontSize: '0.7rem', color: '#999', marginTop: 2 }}>
+                  <Icon icon={isExpanded ? ChevronDown : ChevronRight} size="inline" tone="muted" />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>{t.name}</div>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 2 }}>
                       {t.last_run_at
                         ? `Last run: ${new Date(t.last_run_at).toLocaleString()}`
                         : 'Never run'}
                     </div>
                   </div>
                   {statusBadge(t.last_run_status)}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleRunSingle(t.id); }}
-                    disabled={runningTest === t.id}
-                    title="Run test"
-                    style={{
-                      width: 28, height: 28, border: '1px solid #ddd', borderRadius: 6,
-                      backgroundColor: '#fff', cursor: 'pointer', display: 'flex',
-                      alignItems: 'center', justifyContent: 'center', fontSize: '0.82rem',
-                      color: runningTest === t.id ? '#ccc' : '#333',
-                    }}
-                  >
-                    {runningTest === t.id ? '...' : '\u25B6'}
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}
-                    title="Delete test"
-                    style={{
-                      width: 28, height: 28, border: '1px solid #ddd', borderRadius: 6,
-                      backgroundColor: '#fff', cursor: 'pointer', display: 'flex',
-                      alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem',
-                      color: '#999',
-                    }}
-                  >
-                    &times;
-                  </button>
+                  <div style={{ display: 'flex', gap: 2 }}>
+                    <button
+                      type="button"
+                      className="n-icon-btn"
+                      onClick={(e) => { e.stopPropagation(); handleRunSingle(t.id); }}
+                      disabled={isRunning}
+                      aria-label={isRunning ? 'Running test' : 'Run test'}
+                      title="Run test"
+                    >
+                      {isRunning
+                        ? <Icon icon={LoaderCircle} size={16} style={{ animation: 'n-spin 1s linear infinite' }} />
+                        : <Icon icon={Play} size={16} />}
+                    </button>
+                    <IconButton
+                      icon={Trash2}
+                      label="Delete test"
+                      iconSize={16}
+                      onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}
+                    />
+                  </div>
                 </div>
                 {isExpanded && (
-                  <div style={{ borderTop: '1px solid #e5e7eb', padding: '0.75rem', backgroundColor: '#fafafa', fontSize: '0.75rem' }}>
+                  <div style={{
+                    borderTop: '1px solid var(--line-soft)', padding: '12px 16px 16px',
+                    background: 'var(--surface)', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)',
+                  }}>
                     {latestRun ? (
                       <>
-                        <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.5rem', color: '#666' }}>
-                          <span>Duration: <strong>{latestRun.duration_ms ? (latestRun.duration_ms / 1000).toFixed(2) + 's' : '—'}</strong></span>
-                          <span>Environment: <strong>{latestRun.environment}</strong></span>
-                          <span>Triggered by: <strong>{latestRun.triggered_by || 'unknown'}</strong></span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', marginBottom: 10, fontVariantNumeric: 'tabular-nums' }}>
+                          <span>Duration: <strong style={{ fontWeight: 600, color: 'var(--text)' }}>{latestRun.duration_ms ? (latestRun.duration_ms / 1000).toFixed(2) + 's' : '—'}</strong></span>
+                          <span>Environment: <strong style={{ fontWeight: 600, color: 'var(--text)' }}>{latestRun.environment}</strong></span>
+                          <span>Triggered by: <strong style={{ fontWeight: 600, color: 'var(--text)' }}>{latestRun.triggered_by || 'unknown'}</strong></span>
                         </div>
                         {latestRun.error_message && (
-                          <div style={{ marginBottom: '0.5rem' }}>
-                            <div style={{ fontWeight: 600, color: '#991b1b', marginBottom: 2 }}>Error</div>
-                            <pre style={{ margin: 0, padding: '0.5rem', backgroundColor: '#fff', border: '1px solid #fecaca', borderRadius: 4, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: '0.7rem' }}>{latestRun.error_message}</pre>
+                          <div style={{ marginBottom: 10 }}>
+                            <div style={{ ...subTitle, color: 'var(--error)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <Icon icon={TriangleAlert} size="dense" />
+                              Error
+                            </div>
+                            <pre style={codeBlock}>{latestRun.error_message}</pre>
                           </div>
                         )}
                         {latestRun.stdout && (
-                          <div style={{ marginBottom: '0.5rem' }}>
-                            <div style={{ fontWeight: 600, color: '#333', marginBottom: 2 }}>Logs</div>
-                            <pre style={{ margin: 0, padding: '0.5rem', backgroundColor: '#fff', border: '1px solid #ddd', borderRadius: 4, overflow: 'auto', maxHeight: 300, whiteSpace: 'pre-wrap', fontSize: '0.7rem' }}>{latestRun.stdout}</pre>
+                          <div style={{ marginBottom: 10 }}>
+                            <div style={subTitle}>Logs</div>
+                            <pre style={{ ...codeBlock, maxHeight: 300 }}>{latestRun.stdout}</pre>
                           </div>
                         )}
                         {!latestRun.error_message && !latestRun.stdout && (
-                          <div style={{ color: '#999', fontStyle: 'italic' }}>No output captured.</div>
+                          <div style={{ color: 'var(--muted)' }}>No output captured.</div>
                         )}
                         {runs.length > 1 && (
-                          <div style={{ marginTop: '0.75rem' }}>
-                            <div style={{ fontWeight: 600, color: '#333', marginBottom: 4 }}>Recent runs</div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <div style={{ marginTop: 12 }}>
+                            <div style={subTitle}>Recent runs</div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                               {runs.slice(1, 6).map(r => (
-                                <div key={r.id} style={{ display: 'flex', gap: '0.75rem', fontSize: '0.7rem', color: '#666' }}>
-                                  <span style={{ width: 60 }}>{statusBadge(r.status)}</span>
+                                <div key={r.id} style={{
+                                  display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '2px 12px',
+                                  fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', fontVariantNumeric: 'tabular-nums',
+                                }}>
+                                  <span style={{ minWidth: 64 }}>{statusBadge(r.status)}</span>
                                   <span>{r.started_at ? new Date(r.started_at).toLocaleString() : '—'}</span>
                                   <span>{r.duration_ms ? (r.duration_ms / 1000).toFixed(2) + 's' : '—'}</span>
-                                  <span style={{ color: '#999' }}>{r.environment}</span>
+                                  <span style={{ color: 'var(--muted)' }}>{r.environment}</span>
                                 </div>
                               ))}
                             </div>
@@ -478,23 +461,13 @@ export default function TestsPanel() {
                         )}
                       </>
                     ) : (
-                      <div style={{ color: '#999', fontStyle: 'italic' }}>No runs yet. Click the play button to run this test.</div>
+                      <div style={{ color: 'var(--muted)' }}>No runs yet. Click the play button to run this test.</div>
                     )}
                   </div>
                 )}
               </div>
             );
           })}
-
-          {/* Summary */}
-          <div style={{
-            marginTop: '0.5rem', fontSize: '0.72rem', color: '#888',
-            display: 'flex', gap: '1rem',
-          }}>
-            <span>{tests.length} test{tests.length !== 1 ? 's' : ''}</span>
-            {passedCount > 0 && <span style={{ color: '#065f46' }}>{passedCount} passed</span>}
-            {failedCount > 0 && <span style={{ color: '#991b1b' }}>{failedCount} failed</span>}
-          </div>
         </div>
       )}
     </div>

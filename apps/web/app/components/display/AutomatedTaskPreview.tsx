@@ -1,8 +1,13 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { Check, ChevronRight } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch } from '../../lib/api';
+import { memberName } from '../../lib/memberNames';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
 
 const SCHEDULE_LABELS: Record<string, string> = {
   manual: 'Manual trigger only',
@@ -25,11 +30,14 @@ function formatSchedule(type: string, config: Record<string, unknown>): string {
   return base;
 }
 
-const AGENT_COLORS: Record<string, { bg: string; color: string }> = {
-  hr: { bg: '#dbeafe', color: '#1e40af' },
-  procurement: { bg: '#fef3c7', color: '#92400e' },
-  reports: { bg: '#d1fae5', color: '#065f46' },
+// active → ok · paused → warn · draft (a newly proposed task) → neutral.
+const STATUS_TONES: Record<string, BadgeTone> = {
+  active: 'ok',
+  paused: 'warn',
+  draft: 'neutral',
 };
+
+const DIVIDER = '1px solid var(--line-soft)';
 
 export default function AutomatedTaskPreview({ data, props, onAction }: DisplayBlockProps) {
   const [testResult, setTestResult] = useState<Record<string, unknown> | null>(null);
@@ -46,7 +54,9 @@ export default function AutomatedTaskPreview({ data, props, onAction }: DisplayB
   const scheduleType = String(taskData.schedule_type || 'manual');
   const scheduleConfig = (taskData.schedule_config || {}) as Record<string, unknown>;
   const taskId = String(taskData.id || '');
-  const agentColor = AGENT_COLORS[agentSlug] || { bg: '#f3f4f6', color: '#374151' };
+  // Saving activates the task; until then it is whatever it was proposed as.
+  const status = saved ? 'active' : String(taskData.status || 'draft');
+  const meta = [agentSlug ? memberName(agentSlug) : '', formatSchedule(scheduleType, scheduleConfig)].filter(Boolean).join(' · ');
 
   const handleTest = useCallback(async () => {
     if (!taskId) return;
@@ -83,69 +93,72 @@ export default function AutomatedTaskPreview({ data, props, onAction }: DisplayB
   }, [taskId]);
 
   return (
-    <div style={{
-      border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden',
-      backgroundColor: '#fff', marginBottom: '0.75rem',
-      boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-    }}>
+    <div className="n-card" style={{ overflow: 'hidden', lineHeight: 1.45 }}>
       {/* Header */}
-      <div style={{
-        padding: '1rem 1.25rem',
-        borderBottom: '1px solid #e5e7eb',
-        background: 'linear-gradient(to bottom, #fafafa, #fff)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.4rem' }}>
-          <span style={{ fontSize: '1rem', fontWeight: 700, color: '#111' }}>{title}</span>
-          <span style={{
-            fontSize: '0.68rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-            backgroundColor: agentColor.bg, color: agentColor.color,
-          }}>{agentSlug}</span>
-          <span style={{
-            fontSize: '0.68rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-            backgroundColor: '#f3f4f6', color: '#6b7280',
-          }}>{formatSchedule(scheduleType, scheduleConfig)}</span>
+      <div style={{ padding: '14px 16px' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{title}</div>
+            {meta && <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{meta}</div>}
+          </div>
+          {status && (
+            <Badge tone={STATUS_TONES[status] ?? 'neutral'}>{status.charAt(0).toUpperCase() + status.slice(1)}</Badge>
+          )}
         </div>
         {description && (
-          <div style={{ fontSize: '0.82rem', color: '#6b7280' }}>{description}</div>
+          <p style={{ margin: '10px 0 0', fontSize: 'var(--fs-base)', color: 'var(--text-soft)' }}>{description}</p>
         )}
-      </div>
 
-      {/* Prompt */}
-      <div style={{ padding: '0.75rem 1.25rem', borderBottom: '1px solid #f3f4f6' }}>
-        <button onClick={() => setShowPrompt(!showPrompt)} style={{
-          background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.72rem',
-          fontWeight: 600, color: '#9ca3af', fontFamily: 'inherit', padding: 0,
-          display: 'flex', alignItems: 'center', gap: 4,
-        }}>
-          <span style={{ transform: showPrompt ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s', fontSize: '0.6rem' }}>&#9654;</span>
-          Prompt
-        </button>
-        {showPrompt && (
-          <pre style={{
-            marginTop: '0.4rem', padding: '0.5rem', backgroundColor: '#f9fafb',
-            border: '1px solid #e5e7eb', borderRadius: 6,
-            fontSize: '0.78rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            color: '#374151', lineHeight: 1.5, margin: 0,
-          }}>{prompt}</pre>
+        {/* What the task will be asked to do — anyone activating it can read
+            it before they do. */}
+        {prompt && (
+          <div style={{ marginTop: 10 }}>
+            <button
+              type="button"
+              onClick={() => setShowPrompt(!showPrompt)}
+              aria-expanded={showPrompt}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 0',
+                border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                fontSize: 'var(--fs-xs)', fontWeight: 500, color: 'var(--muted)',
+              }}
+            >
+              <Icon
+                icon={ChevronRight}
+                size={14}
+                style={{ transform: showPrompt ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}
+              />
+              {showPrompt ? 'Hide instructions' : 'Show instructions'}
+            </button>
+            {showPrompt && (
+              <div style={{ marginTop: 6 }}>
+                <div className="n-eyebrow" style={{ marginBottom: 4 }}>Prompt</div>
+                <pre style={{
+                  margin: 0, padding: '8px 10px', maxHeight: 280, overflow: 'auto',
+                  backgroundColor: 'var(--surface)', border: DIVIDER, borderRadius: 'var(--radius-sm)',
+                  fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', lineHeight: 1.5,
+                  color: 'var(--text-soft)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                }}>{prompt}</pre>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
       {/* Test result */}
       {testResult && (
         <div style={{
-          padding: '0.75rem 1.25rem', borderBottom: '1px solid #f3f4f6',
-          backgroundColor: (testResult as Record<string, unknown>).success ? '#f0fdf4' : '#fef2f2',
+          padding: '10px 16px', borderTop: DIVIDER,
+          backgroundColor: (testResult as Record<string, unknown>).success ? 'var(--ok-bg)' : 'var(--error-bg)',
         }}>
-          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#6b7280', marginBottom: '0.3rem', textTransform: 'uppercase' }}>
-            Test Result
-          </div>
+          <div className="n-eyebrow" style={{ marginBottom: 2 }}>Test result</div>
           {testResult.data ? (
-            <div style={{ fontSize: '0.82rem', color: '#374151' }}>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)' }}>
               {String((testResult.data as Record<string, unknown>)?.result_summary || 'Task completed successfully').slice(0, 500)}
             </div>
           ) : null}
           {testResult.error ? (
-            <div style={{ fontSize: '0.82rem', color: '#dc2626' }}>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>
               {String(testResult.error)}
             </div>
           ) : null}
@@ -153,20 +166,21 @@ export default function AutomatedTaskPreview({ data, props, onAction }: DisplayB
       )}
 
       {/* Actions */}
-      <div style={{ padding: '0.75rem 1.25rem', display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-        <button onClick={handleTest} disabled={testing || !taskId} style={{
-          padding: '8px 20px', fontSize: '0.82rem', fontWeight: 600,
-          border: '1px solid #d1d5db', borderRadius: 8,
-          backgroundColor: '#fff', color: '#374151',
-          cursor: testing ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-        }}>{testing ? 'Testing...' : 'Test'}</button>
-        <button onClick={handleSave} disabled={saving || saved || !taskId} style={{
-          padding: '8px 20px', fontSize: '0.82rem', fontWeight: 600,
-          border: 'none', borderRadius: 8,
-          backgroundColor: saved ? '#d1fae5' : '#111',
-          color: saved ? '#065f46' : '#fff',
-          cursor: saving || saved ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-        }}>{saving ? 'Saving...' : saved ? 'Saved & Active' : 'Save & Activate'}</button>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8,
+        padding: '12px 16px', borderTop: DIVIDER,
+      }}>
+        <Button onClick={handleTest} disabled={testing || !taskId}>{testing ? 'Testing…' : 'Test'}</Button>
+        {saved ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--ok)' }}>
+            <Icon icon={Check} size={16} />
+            Saved &amp; active
+          </span>
+        ) : (
+          <Button variant="primary" onClick={handleSave} disabled={saving || !taskId}>
+            {saving ? 'Saving…' : 'Save & activate'}
+          </Button>
+        )}
       </div>
     </div>
   );

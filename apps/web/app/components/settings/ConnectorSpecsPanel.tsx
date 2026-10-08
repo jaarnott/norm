@@ -1,9 +1,14 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { Plus, Sparkles, X } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { ConnectorSpecSummary, ConnectorSpecFull } from '../../types';
 import ConnectorSpecEditor from './ConnectorSpecEditor';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import PageState from '../ui/PageState';
 
 type ViewMode = 'list' | 'create' | 'edit';
 
@@ -53,7 +58,9 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
     }
   }, []);
 
-  useEffect(() => { fetchSpecs(); }, [fetchSpecs]);
+  // Display only: until the first fetch settles, show "Loading", not "No specs".
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => { fetchSpecs().finally(() => setLoaded(true)); }, [fetchSpecs]);
 
   const handleDelete = async (name: string) => {
     if (!confirm(`Delete connection spec "${name}"?`)) return;
@@ -205,128 +212,71 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
   }
 
   // --- List view ---
-  const badgeStyle = (bg: string, color: string): React.CSSProperties => ({
-    fontSize: '0.7rem',
-    backgroundColor: bg,
-    color,
-    padding: '2px 8px',
-    borderRadius: 10,
-    fontWeight: 500,
-    marginLeft: 6,
-  });
-
   return (
     <>
       {errorBanner && (
-        <div style={{
-          padding: '0.6rem 1rem',
-          marginBottom: '1rem',
-          backgroundColor: '#fff5f5',
-          border: '1px solid #f5c6cb',
-          borderRadius: 8,
-          fontSize: '0.82rem',
-          color: '#721c24',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-        }}>
-          <span>{errorBanner}</span>
-          <button onClick={() => setErrorBanner(null)} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '1rem', color: '#721c24' }}>
-            &#10005;
-          </button>
+        <div style={{ marginBottom: 16 }}>
+          <PageState
+            kind="error"
+            title={errorBanner}
+            action={<IconButton icon={X} label="Dismiss" iconSize={16} onClick={() => setErrorBanner(null)} style={{ margin: '-6px -6px -6px 0' }} />}
+          />
         </div>
       )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          Connection Specs
-        </h3>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={() => setGenerateOpen(true)}
-            style={{
-              padding: '6px 14px',
-              fontSize: '0.8rem',
-              fontWeight: 500,
-              border: '1px solid #ddd',
-              borderRadius: 6,
-              backgroundColor: '#fff',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            AI Generate
-          </button>
-          <button
-            onClick={() => { setEditingSpec(null); setViewMode('create'); }}
-            style={{
-              padding: '6px 14px',
-              fontSize: '0.8rem',
-              fontWeight: 500,
-              border: 'none',
-              borderRadius: 6,
-              backgroundColor: '#c4a882',
-              color: '#fff',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            New Spec
-          </button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
+          <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>
+            Connection specs
+          </h3>
+          {specs.length > 0 && (
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+              {specs.length} {specs.length === 1 ? 'spec' : 'specs'}
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button icon={Sparkles} onClick={() => setGenerateOpen(true)}>
+            AI generate
+          </Button>
+          <Button variant="primary" icon={Plus} onClick={() => { setEditingSpec(null); setViewMode('create'); }}>
+            New spec
+          </Button>
         </div>
       </div>
 
       {/* AI Generate Modal */}
       {generateOpen && (
-        <div style={{
-          border: '1px solid #e2e8f0',
-          borderRadius: 10,
-          padding: '1.25rem',
-          marginBottom: '1rem',
-          backgroundColor: '#fefcf9',
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>Generate from API Docs</span>
-            <button onClick={() => { setGenerateOpen(false); setGenerateTarget(''); setGenerateError(null); }} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '1rem', color: '#999' }}>
-              &#10005;
-            </button>
+        <div className="n-card" style={{ padding: 16, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <span style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)' }}>Generate from API docs</span>
+            <IconButton icon={X} label="Close" onClick={() => { setGenerateOpen(false); setGenerateTarget(''); setGenerateError(null); }} />
           </div>
           <textarea
+            className="n-input"
+            aria-label="API documentation"
             value={generateDocs}
             onChange={e => setGenerateDocs(e.target.value)}
             rows={10}
             placeholder="Paste API documentation here..."
             style={{
+              display: 'block',
               width: '100%',
-              padding: '8px 10px',
-              border: '1px solid #ddd',
-              borderRadius: 6,
-              fontSize: '0.82rem',
-              fontFamily: 'monospace',
-              boxSizing: 'border-box',
-              outline: 'none',
-              resize: 'vertical',
+              fontSize: 'var(--fs-sm)',
+              fontFamily: 'var(--font-mono)',
               lineHeight: 1.5,
-              marginBottom: '0.75rem',
+              marginBottom: 12,
             }}
           />
-          <div style={{ marginBottom: '0.75rem' }}>
-            <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 500, color: '#555', marginBottom: 4 }}>
+          <div style={{ marginBottom: 12 }}>
+            <label className="n-label" htmlFor="connector-generate-target">
               Target
             </label>
             <select
+              id="connector-generate-target"
+              className="n-select"
               value={generateTarget}
               onChange={e => setGenerateTarget(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '6px 8px',
-                border: '1px solid #ddd',
-                borderRadius: 6,
-                fontSize: '0.82rem',
-                fontFamily: 'inherit',
-                boxSizing: 'border-box',
-                outline: 'none',
-                backgroundColor: '#fff',
-              }}
+              style={{ width: '100%' }}
             >
               <option value="">New connector</option>
               {specs.map(s => (
@@ -336,72 +286,49 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
               ))}
             </select>
           </div>
-          <button
+          <Button
+            variant="primary"
             onClick={handleGenerate}
             disabled={generating || !generateDocs.trim()}
-            style={{
-              padding: '6px 14px',
-              fontSize: '0.8rem',
-              fontWeight: 500,
-              border: 'none',
-              borderRadius: 6,
-              backgroundColor: '#c4a882',
-              color: '#fff',
-              cursor: generating ? 'not-allowed' : 'pointer',
-              fontFamily: 'inherit',
-            }}
           >
             {generating ? 'Generating...' : 'Generate'}
-          </button>
+          </Button>
           {generateError && (
-            <p style={{ color: '#e53e3e', fontSize: '0.82rem', marginTop: '0.5rem', marginBottom: 0 }}>
+            <p role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', marginTop: 8, marginBottom: 0 }}>
               {generateError}
             </p>
           )}
         </div>
       )}
 
-      {specs.length === 0 && (
-        <p style={{ color: '#999', fontSize: '0.85rem' }}>No connection specs defined yet.</p>
+      {/* A failed load shows the error above, never "no specs". */}
+      {specs.length === 0 && !errorBanner && (
+        loaded
+          ? <PageState kind="empty" title="No connection specs defined yet." />
+          : <PageState kind="loading" title="Loading connection specs…" />
       )}
 
       {specs.map(spec => (
-        <div key={spec.connector_name} style={{
-          border: '1px solid #e2e8f0',
-          borderRadius: 10,
-          padding: '1.25rem',
-          marginBottom: '1rem',
-          backgroundColor: '#fff',
-        }}>
+        <div key={spec.connector_name} className="n-card" style={{ padding: 16, marginBottom: 12 }}>
           {/* Header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{spec.display_name}</span>
-              <span style={{ fontSize: '0.75rem', color: '#999', marginLeft: 8 }}>{spec.connector_name}</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, minWidth: 0 }}>
+              <span style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)', marginRight: 2 }}>{spec.display_name}</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginRight: 2 }}>{spec.connector_name}</span>
               {(usedBy[spec.connector_name] ?? []).length > 0 && (
-                <span title="marketplace Apps that use this connection"
-                  style={badgeStyle('#eef4ee', '#2e7d4f')}>
-                  used by {usedBy[spec.connector_name].join(', ')}
-                </span>
+                <Badge title="marketplace Apps that use this connection">
+                  Used by {usedBy[spec.connector_name].join(', ')}
+                </Badge>
               )}
-              {spec.category && (
-                <span style={badgeStyle('#e6fffa', '#234e52')}>{spec.category}</span>
-              )}
-              <span style={badgeStyle(
-                spec.execution_mode === 'agent' ? '#fef3c7' : '#ebf4ff',
-                spec.execution_mode === 'agent' ? '#92400e' : '#2b6cb0',
-              )}>
-                {spec.execution_mode}
-              </span>
-              {!spec.enabled && (
-                <span style={badgeStyle('#fed7d7', '#c53030')}>disabled</span>
-              )}
+              {spec.category && <Badge>{spec.category}</Badge>}
+              <Badge>{spec.execution_mode}</Badge>
+              {!spec.enabled && <Badge tone="warn">Disabled</Badge>}
             </div>
-            <span style={{ fontSize: '0.75rem', color: '#999' }}>v{spec.version}</span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>v{spec.version}</span>
           </div>
 
           {/* Info */}
-          <div style={{ fontSize: '0.82rem', color: '#555', marginBottom: '0.75rem' }}>
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginBottom: 12 }}>
             Auth: {spec.auth_type}
           </div>
 
@@ -410,19 +337,20 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
             const oauth = (spec as unknown as Record<string, unknown>).oauth_config as Record<string, string>;
             return (
               <div style={{
-                fontSize: '0.78rem',
-                color: '#555',
-                marginBottom: '0.75rem',
-                padding: '0.6rem 0.75rem',
-                backgroundColor: '#fafafa',
-                border: '1px solid #edf2f7',
-                borderRadius: 6,
+                fontSize: 'var(--fs-sm)',
+                color: 'var(--text)',
+                marginBottom: 12,
+                padding: '10px 12px',
+                backgroundColor: 'var(--surface)',
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--radius)',
+                overflowWrap: 'anywhere',
               }}>
-                <div style={{ fontWeight: 500, marginBottom: 4, color: '#444' }}>OAuth Config</div>
-                {oauth.authorize_url && <div><span style={{ color: '#888' }}>Authorize URL:</span> {oauth.authorize_url}</div>}
-                {oauth.token_url && <div><span style={{ color: '#888' }}>Token URL:</span> {oauth.token_url}</div>}
-                {oauth.client_id && <div><span style={{ color: '#888' }}>Client ID:</span> {oauth.client_id}</div>}
-                {oauth.scopes && <div><span style={{ color: '#888' }}>Scopes:</span> {oauth.scopes}</div>}
+                <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>OAuth config</div>
+                {oauth.authorize_url && <div><span style={{ color: 'var(--muted)' }}>Authorize URL:</span> {oauth.authorize_url}</div>}
+                {oauth.token_url && <div><span style={{ color: 'var(--muted)' }}>Token URL:</span> {oauth.token_url}</div>}
+                {oauth.client_id && <div><span style={{ color: 'var(--muted)' }}>Client ID:</span> {oauth.client_id}</div>}
+                {oauth.scopes && <div><span style={{ color: 'var(--muted)' }}>Scopes:</span> {oauth.scopes}</div>}
               </div>
             );
           })()}
@@ -434,38 +362,17 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
 
           {/* Actions */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              onClick={() => handleEdit(spec.connector_name)}
-              style={{
-                padding: '5px 12px',
-                fontSize: '0.78rem',
-                fontWeight: 500,
-                border: '1px solid #ddd',
-                borderRadius: 6,
-                backgroundColor: '#fff',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
+            <Button size="sm" onClick={() => handleEdit(spec.connector_name)}>
               Edit
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
               onClick={() => handleDelete(spec.connector_name)}
               disabled={deleting === spec.connector_name}
-              style={{
-                padding: '5px 12px',
-                fontSize: '0.78rem',
-                fontWeight: 500,
-                border: '1px solid #e53e3e',
-                borderRadius: 6,
-                backgroundColor: '#fff',
-                color: '#e53e3e',
-                cursor: deleting === spec.connector_name ? 'not-allowed' : 'pointer',
-                fontFamily: 'inherit',
-              }}
             >
               {deleting === spec.connector_name ? 'Deleting...' : 'Delete'}
-            </button>
+            </Button>
           </div>
 
         </div>
@@ -579,7 +486,7 @@ function VenueOAuthSection({ connectorName }: { connectorName: string }) {
 
   if (loading) {
     return (
-      <div style={{ fontSize: '0.78rem', color: '#888', marginBottom: '0.75rem' }}>
+      <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginBottom: 12 }}>
         Loading venue connections...
       </div>
     );
@@ -587,62 +494,64 @@ function VenueOAuthSection({ connectorName }: { connectorName: string }) {
 
   return (
     <div style={{
-      fontSize: '0.78rem',
-      marginBottom: '0.75rem',
-      padding: '0.6rem 0.75rem',
-      backgroundColor: '#fafafa',
-      border: '1px solid #edf2f7',
-      borderRadius: 6,
+      fontSize: 'var(--fs-sm)',
+      color: 'var(--text-soft)',
+      marginBottom: 12,
+      padding: '10px 12px',
+      backgroundColor: 'var(--surface)',
+      border: '1px solid var(--line)',
+      borderRadius: 'var(--radius)',
     }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <div style={{ fontWeight: 500, color: '#444' }}>
-          Per-venue OAuth Connections
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+        <div style={{ fontWeight: 600, color: 'var(--text)' }}>
+          Per-venue OAuth connections
         </div>
-        <button
+        <Button
+          size="sm"
           onClick={handleConnect}
           disabled={busy === '__connecting__'}
-          style={oauthBtnStyle('primary', busy === '__connecting__')}
           title="Open the OAuth flow. The venue is selected inside LoadedHub during authorization."
         >
           {busy === '__connecting__' ? 'Opening OAuth...' : 'Connect a venue'}
-        </button>
+        </Button>
       </div>
       {error && (
-        <div style={{ color: '#c53030', marginBottom: 6, fontSize: '0.75rem' }}>{error}</div>
+        <div role="alert" style={{ color: 'var(--error)', marginBottom: 6 }}>{error}</div>
       )}
-      <div style={{ fontSize: '0.72rem', color: '#888', marginBottom: 8 }}>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 8 }}>
         Click <strong>Connect a venue</strong> to start the OAuth flow.
         The venue is selected inside LoadedHub; tokens are stored against the matching
         Norm venue using the x_loaded_company_id mapping.
       </div>
       {rows.length === 0 ? (
-        <div style={{ color: '#888' }}>No venues found.</div>
+        <div style={{ color: 'var(--muted)' }}>No venues found.</div>
       ) : (
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <tbody>
             {rows.map(r => {
-              const status = !r.connected
-                ? { label: 'Not connected', color: '#888' }
+              const status: { label: string; tone: BadgeTone } = !r.connected
+                ? { label: 'Not connected', tone: 'neutral' }
                 : r.expired && !r.has_refresh_token
-                ? { label: 'Expired', color: '#c53030' }
+                ? { label: 'Expired', tone: 'error' }
                 : r.expired && r.has_refresh_token
-                ? { label: 'Connected (auto-refresh)', color: '#92400e' }
-                : { label: 'Connected', color: '#38a169' };
+                ? { label: 'Connected (auto-refresh)', tone: 'warn' }
+                : { label: 'Connected', tone: 'ok' };
               return (
-                <tr key={r.venue_id} style={{ borderTop: '1px solid #edf2f7' }}>
-                  <td style={{ padding: '6px 4px', fontWeight: 500 }}>{r.venue_name}</td>
-                  <td style={{ padding: '6px 4px', color: status.color, fontSize: '0.75rem' }}>
-                    {status.label}
+                <tr key={r.venue_id} style={{ borderTop: '1px solid var(--line)' }}>
+                  <td style={{ padding: '6px 4px', fontWeight: 500, color: 'var(--text)' }}>{r.venue_name}</td>
+                  <td style={{ padding: '6px 4px' }}>
+                    <Badge tone={status.tone}>{status.label}</Badge>
                   </td>
                   <td style={{ padding: '6px 4px', textAlign: 'right' }}>
                     {r.connected && (
-                      <button
+                      <Button
+                        variant="danger"
+                        size="sm"
                         onClick={() => handleDisconnect(r.venue_id, r.venue_name)}
                         disabled={busy === r.venue_id}
-                        style={oauthBtnStyle('danger', busy === r.venue_id)}
                       >
                         Disconnect
-                      </button>
+                      </Button>
                     )}
                   </td>
                 </tr>
@@ -653,20 +562,4 @@ function VenueOAuthSection({ connectorName }: { connectorName: string }) {
       )}
     </div>
   );
-}
-
-function oauthBtnStyle(variant: 'primary' | 'secondary' | 'danger', disabled: boolean): React.CSSProperties {
-  const base: React.CSSProperties = {
-    padding: '4px 10px',
-    fontSize: '0.72rem',
-    fontWeight: 500,
-    border: '1px solid',
-    borderRadius: 5,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    fontFamily: 'inherit',
-    opacity: disabled ? 0.6 : 1,
-  };
-  if (variant === 'primary') return { ...base, borderColor: '#2b6cb0', backgroundColor: '#2b6cb0', color: '#fff' };
-  if (variant === 'danger') return { ...base, borderColor: '#e53e3e', backgroundColor: '#fff', color: '#e53e3e' };
-  return { ...base, borderColor: '#ddd', backgroundColor: '#fff', color: '#333' };
 }

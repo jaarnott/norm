@@ -24,7 +24,16 @@
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowUp, Ban, Check, ChevronDown, ChevronRight, Circle, CircleDot, ExternalLink,
+  FileText, Hourglass, Info, LoaderCircle, Plus, RefreshCw, TriangleAlert, X,
+} from 'lucide-react';
 import { apiFetch, getStoredUser } from '../../lib/api';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 
 interface Line {
@@ -361,33 +370,45 @@ function fetchReferenceData(venueId: string): Promise<ReferenceData> {
   return p;
 }
 
-const inputStyle: React.CSSProperties = {
-  padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: 4,
-  fontSize: '0.8rem', fontFamily: 'inherit', boxSizing: 'border-box', outline: 'none',
+// ---- Looks (tokens.css classes do most of the work: .n-card, .n-table,
+// .n-input, .n-select, .n-label, .n-option). Bundled into Claude too, so
+// nothing here may rely on the web app's globals.
+const fieldCol: React.CSSProperties = { display: 'flex', flexDirection: 'column', minWidth: 0 };
+// One section of the card: a hairline above, the card's gutters.
+const section: React.CSSProperties = { padding: '12px 16px', borderTop: '1px solid var(--line)' };
+const sectionTitle: React.CSSProperties = { fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' };
+// Field states. backgroundColor, never `background`: the .n-select chevron is
+// a background-image. Suggested = Norm proposes a change here (accent, "needs
+// your input"); missing = a value Loaded can't receive as it stands (warn).
+const fieldSuggested: React.CSSProperties = { borderColor: 'var(--brand-soft)', backgroundColor: 'var(--accent-soft)' };
+const fieldMissing: React.CSSProperties = { borderColor: 'var(--warn)', backgroundColor: 'var(--warn-bg)' };
+// Numbers in inputs line up like the columns they sit in.
+const numInput: React.CSSProperties = { textAlign: 'right', fontVariantNumeric: 'tabular-nums', padding: '0 8px' };
+// X-ray modes show a field's VALUE as read-only text in the field's place.
+const readonlyField: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', minHeight: 34, padding: '4px 10px', boxSizing: 'border-box',
+  border: '1px solid var(--line)', borderRadius: 'var(--radius)', background: 'var(--surface)',
+  color: 'var(--text-soft)', fontSize: 'var(--fs-base)',
 };
-const microLabel: React.CSSProperties = {
-  fontSize: '0.6rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em',
-};
-// A value with no linked id in Loaded — it would be created NEW on receive.
-const newBadge: React.CSSProperties = {
-  marginLeft: 6, fontSize: '0.56rem', fontWeight: 700, color: '#b45309',
-  background: '#fff4e5', border: '1px solid #f0c88a', borderRadius: 4,
-  padding: '1px 5px', whiteSpace: 'nowrap',
-};
-const fieldCol: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 3 };
-// Inline suggestion chip + its tiny accept/dismiss buttons.
+// Inline suggestion chip: the proposed value + accept (and dismiss).
 const chipStyle: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.6rem',
-  color: '#8a6d3b', background: '#fdf6e7', border: '1px solid #e6d3a3',
-  borderRadius: 4, padding: '1px 6px', marginTop: 2, whiteSpace: 'nowrap',
+  display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: '100%', marginTop: 4,
+  padding: '0 2px 0 8px', borderRadius: 'var(--radius-sm)', background: 'var(--accent-soft)',
+  color: 'var(--accent)', fontSize: 'var(--fs-sm)', fontWeight: 500, lineHeight: 1.3,
+  textDecoration: 'none',
 };
-const chipBtn: React.CSSProperties = {
-  border: 'none', background: 'none', cursor: 'pointer', padding: 0,
-  font: 'inherit', fontWeight: 700,
+const chipLabel: React.CSSProperties = { padding: '4px 0', overflowWrap: 'break-word' };
+// A sentence-sized message with its icon (errors, warnings, notes).
+const iconLine: React.CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 6 };
+const iconNudge: React.CSSProperties = { marginTop: 2 };
+const totalRow: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 24, padding: '2px 0' };
+// Inline text actions inside a sentence: the link button, at the sentence's size.
+const inlineLink: React.CSSProperties = {
+  display: 'inline', fontSize: 'inherit', lineHeight: 'inherit', whiteSpace: 'normal', textAlign: 'left',
 };
-const linkBtn: React.CSSProperties = {
-  border: 'none', background: 'none', color: '#8a6d3b', textDecoration: 'underline',
-  cursor: 'pointer', padding: 0, font: 'inherit',
+// The header money fields as the total chips name them (not the raw keys).
+const moneyFieldLabels: Record<string, string> = {
+  subtotal: 'Subtotal', tax_amount: 'Tax', discount_amount: 'Discount', total: 'Total',
 };
 // ISO string → the YYYY-MM-DD a <input type="date"> wants (and back on change).
 const dateVal = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : '');
@@ -1887,20 +1908,33 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   };
 
   // ---- Shared renderers (chips + rows read the SAME suggestion objects) --
+  // The chip's look, shared by the suggestion chips and the blocker-backed
+  // create chips: the proposed value, a ✓ that accepts, an optional ✕.
+  const chipBox = (
+    label: string,
+    title: string,
+    accept: { onClick: () => void; label: string; title: string; disabled?: boolean },
+    dismiss?: { onClick: () => void; label: string; title: string },
+  ) => (
+    <div>
+      <span style={chipStyle} title={title}>
+        <span style={chipLabel}>{label}</span>
+        <IconButton icon={Check} iconSize={16} label={accept.label} title={accept.title}
+          onClick={accept.onClick} disabled={accept.disabled} style={{ color: 'var(--ok)' }} />
+        {dismiss && (
+          <IconButton icon={X} iconSize={16} label={dismiss.label} title={dismiss.title}
+            onClick={dismiss.onClick} />
+        )}
+      </span>
+    </div>
+  );
   const suggChip = (s: Suggestion | undefined, label?: string) => {
     if (!s || doneState || viewLoaded) return null;
-    return (
-      <div>
-        <span style={chipStyle} title={s.explanation}>
-          <span>{label ?? `${fmtVal(s.current)} → ${fmtVal(s.proposed)}`}</span>
-          <button type="button" onClick={() => acceptSuggestion(s)}
-            title={`Accept — ${s.explanation}`} aria-label="Accept suggestion"
-            style={{ ...chipBtn, color: '#2e7d4f' }}>✓</button>
-          <button type="button" onClick={() => dismissAction(s.id)}
-            title="Dismiss this suggestion" aria-label="Dismiss suggestion"
-            style={{ ...chipBtn, color: '#c0392b' }}>✕</button>
-        </span>
-      </div>
+    return chipBox(
+      label ?? `${fmtVal(s.current)} → ${fmtVal(s.proposed)}`,
+      s.explanation,
+      { onClick: () => acceptSuggestion(s), label: 'Accept suggestion', title: `Accept — ${s.explanation}` },
+      { onClick: () => dismissAction(s.id), label: 'Dismiss suggestion', title: 'Dismiss this suggestion' },
     );
   };
   const deleteLinks = (s: Suggestion) => {
@@ -1923,54 +1957,53 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const valuePair = s.current != null || s.proposed != null
       ? ` (${fmtVal(s.current)} → ${fmtVal(s.proposed)})` : '';
     const links = isDelete ? deleteLinks(s) : [];
+    const live = st === 'pending' && !notActioned;
     return (
-      <div key={s.id} style={{ fontSize: '0.68rem', color: st === 'accepted' ? '#2e7d4f' : st === 'dismissed' || notActioned ? '#9ca3af' : '#8a6d3b', display: 'flex', gap: 8, padding: '2px 0', alignItems: 'center' }}>
-        <span>{st === 'accepted' ? '✓' : st === 'dismissed' ? '⊘' : notActioned ? '○' : '●'}</span>
-        <span style={{ flex: 1, ...(st === 'accepted' ? { textDecoration: 'line-through', color: '#9ca3af' } : {}) }}>
-          {s.explanation}{st === 'pending' && !notActioned ? valuePair : ''}
+      <div key={s.id} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '4px 0', fontSize: 'var(--fs-sm)', color: live ? 'var(--text)' : 'var(--muted)' }}>
+        <Icon icon={st === 'accepted' ? Check : st === 'dismissed' ? Ban : notActioned ? Circle : CircleDot} size={14}
+          style={{ position: 'relative', top: 2, color: st === 'accepted' ? 'var(--ok)' : live ? 'var(--accent)' : 'var(--icon)' }} />
+        <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', ...(st === 'accepted' ? { textDecoration: 'line-through' } : {}) }}>
+          {s.explanation}{live ? valuePair : ''}
           {st === 'dismissed' && <span style={{ fontStyle: 'italic' }}> — dismissed</span>}
           {notActioned && <span style={{ fontStyle: 'italic' }}> — not actioned</span>}
         </span>
         {byNorm && st !== 'pending' && (
-          <span title={a?.at ? `by Norm at ${a.at}` : 'by Norm'}
-            style={{ fontSize: '0.58rem', color: '#5a5a8a', background: '#eef1f8', border: '1px solid #ccd3e6', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap' }}>
-            {st === 'accepted' ? 'applied by Norm' : 'dismissed by Norm'}
-          </span>
+          <Badge title={a?.at ? `by Norm at ${a.at}` : 'by Norm'}>
+            {st === 'accepted' ? 'Applied by Norm' : 'Dismissed by Norm'}
+          </Badge>
         )}
         {!embedded && links.length > 0 && (
-          <span style={{ display: 'flex', gap: 8, whiteSpace: 'nowrap' }}>
+          <span style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
             {links.map((lk) =>
               lk.href ? (
                 <a key={lk.label} href={lk.href} target="_blank" rel="noreferrer"
-                  style={{ fontSize: '0.62rem', color: '#2563a8', textDecoration: 'underline' }}>
-                  {lk.label} ↗
+                  className="n-btn n-btn--link" style={{ fontSize: 'var(--fs-sm)' }}>
+                  {lk.label}<Icon icon={ExternalLink} size={12} />
                 </a>
               ) : lk.onClick ? (
-                <button key={lk.label} type="button" onClick={lk.onClick}
-                  style={{ fontSize: '0.62rem', padding: 0, border: 'none', background: 'none', color: '#2563a8', textDecoration: 'underline', cursor: 'pointer' }}>
+                <Button key={lk.label} variant="link" onClick={lk.onClick} style={{ fontSize: 'var(--fs-sm)' }}>
                   {lk.label}
-                </button>
+                </Button>
               ) : (
-                <span key={lk.label} style={{ fontSize: '0.62rem', color: '#9ca3af', fontStyle: 'italic' }}>{lk.label}</span>
+                <span key={lk.label} style={{ color: 'var(--muted)', fontStyle: 'italic' }}>{lk.label}</span>
               ),
             )}
           </span>
         )}
         {st !== 'pending' && !doneState && !isDelete && (
-          <button type="button" onClick={() => undoAction(s, s.id)}
-            title={st === 'dismissed' ? 'restore this suggestion' : 'undo this change'}
-            style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #ccc', background: '#fff', color: '#666', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <Button variant="quiet" size="sm" onClick={() => undoAction(s, s.id)}
+            title={st === 'dismissed' ? 'restore this suggestion' : 'undo this change'}>
             Undo
-          </button>
+          </Button>
         )}
         {/* One button, one decision: the user accepts the change or leaves
             it (18 Aug 2026 — Dismiss removed; not-accepting IS declining,
             and suggestions never block the receive). */}
         {st === 'pending' && !doneState && !(isDelete && embedded) && (
-          <button type="button" onClick={() => acceptSuggestion(s)} disabled={accepting !== null}
-            style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #b78a2f', background: accepting === s.id ? '#f0e6cc' : '#fff', color: '#8a6d3b', borderRadius: 4, cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap', opacity: accepting !== null && accepting !== s.id ? 0.5 : 1 }}>
+          <Button variant={isDelete ? 'danger' : 'secondary'} size="sm" onClick={() => acceptSuggestion(s)} disabled={accepting !== null}
+            style={accepting === s.id ? { opacity: 1 } : undefined}>
             {accepting === s.id ? 'Applying…' : 'Accept'}
-          </button>
+          </Button>
         )}
       </div>
     );
@@ -2089,13 +2122,20 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const issueRow = (i: Issue) => {
     const st = issueStateOf(i);
     const open = st === 'open';
-    const color = !i.blocking ? '#8a6d3b' : open ? '#c0392b' : '#9ca3af';
+    // Open blocker = error, open warning = warn (each sits on its own tint,
+    // see the Issues section); cleared rows read as done. Once received, an
+    // open row is the record of what stopped autopilot, not an alarm: muted,
+    // like a not-actioned suggestion.
+    const color = !open || doneState ? 'var(--muted)' : i.blocking ? 'var(--error)' : 'var(--warn)';
     const gateLabel = i.gate ? gateLabels[i.gate] : undefined;
+    // Accept on a delete-the-draft blocker removes it from Loaded: danger.
+    const destructive = ['delete_invoice', 'delete_non_invoice', 'delete_unreadable'].includes(String(i.action?.kind));
     return (
-      <div key={i.id} style={{ fontSize: '0.66rem', color, padding: '1px 0' }}>
-      <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
-        <span>{i.blocking ? (open ? '✗' : '✓') : '•'}</span>
-        <span style={{ flex: 1, ...(st !== 'open' ? { textDecoration: 'line-through' } : {}) }}>
+      <div key={i.id} style={{ padding: '4px 0', fontSize: 'var(--fs-sm)', color }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <Icon icon={!open ? Check : i.blocking ? TriangleAlert : Info} size={15}
+          style={{ position: 'relative', top: 2, ...(!open ? { color: 'var(--ok)' } : {}) }} />
+        <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', ...(st !== 'open' ? { textDecoration: 'line-through' } : {}) }}>
           {i.message}
           {st === 'checked' && <span style={{ fontStyle: 'italic', textDecoration: 'none' }}> — checked</span>}
         </span>
@@ -2105,36 +2145,36 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             the line's own controls, or the venue gate that authorises
             autopilot past it). The title keeps naming what Accept does. */}
         {open && i.action && !doneState && !embedded && (
-          <button type="button" onClick={() => runIssueAction(i)}
+          <Button variant={destructive ? 'danger' : 'secondary'} size="sm" onClick={() => runIssueAction(i)}
             disabled={actioningIssue === i.id}
             title={ISSUE_ACTION_LABELS[i.action.kind]
               ? `${ISSUE_ACTION_LABELS[i.action.kind]}${gateLabel ? ` — Norm can do this unattended once "${gateLabel}" is on for this venue` : ''}`
               : undefined}
-            style={{ fontSize: '0.62rem', padding: '2px 10px', border: '1px solid #b78a2f', background: actioningIssue === i.id ? '#f0e6cc' : '#fff', color: '#8a6d3b', borderRadius: 4, cursor: actioningIssue === i.id ? 'default' : 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+            style={actioningIssue === i.id ? { opacity: 1 } : undefined}>
             {actioningIssue === i.id ? 'Applying…' : 'Accept'}
-          </button>
+          </Button>
         )}
       </div>
       {/* Why autopilot stopped, in the words of the setting that would change
           it — so "why didn't this receive?" is answered on the row itself. */}
       {open && gateLabel && (
-        <div style={{ marginLeft: 14, fontSize: '0.6rem', color: '#9ca3af', fontStyle: 'italic' }}>
+        <div style={{ marginLeft: 23, marginTop: 2, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
           Auto-receive needs “{gateLabel}” switched on for this venue
         </div>
       )}
       </div>
     );
   };
-  const confidenceChip = !dojo && liveConfidence && !draftDeleted && !studying ? (
-    <span style={{
-      fontSize: '0.6rem', fontWeight: 700, padding: '1px 8px', borderRadius: 8, whiteSpace: 'nowrap',
-      background: liveConfidence === 'ready' ? '#e7f5ec' : '#fdf6e7',
-      color: liveConfidence === 'ready' ? '#2e7d4f' : '#8a6d3b',
-      border: `1px solid ${liveConfidence === 'ready' ? '#b7e0c6' : '#e6d3a3'}`,
-    }}>
-      {liveConfidence === 'ready' ? 'Ready to receive' : 'Needs review'}
-    </span>
-  ) : null;
+  // The header's status pill. A received (or deleted) invoice says so — its
+  // review verdict ("Ready to receive") no longer describes it.
+  const confidenceChip = dojo ? null
+    : draftDeleted ? <Badge>Deleted</Badge>
+    : doneState ? <Badge tone="ok">Received</Badge>
+    : liveConfidence && !studying ? (
+      <Badge tone={liveConfidence === 'ready' ? 'ok' : 'accent'}>
+        {liveConfidence === 'ready' ? 'Ready to receive' : 'Needs review'}
+      </Badge>
+    ) : null;
   const reviewSummaryText = !reviewed
     ? (reviewing ? 'reviewing against the copy…' : 'not yet reviewed')
     : (liveConfidence === 'ready' ? 'ready to receive' : `needs review · ${blockingOpen.length} blocking`)
@@ -2144,8 +2184,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // introduced were removed outright) — say so instead of spinning forever.
   if (missingDoc) {
     return (
-      <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, background: '#fbfaf8', padding: '1rem', fontSize: '0.8rem', color: '#888' }}>
-        ✓ This invoice draft no longer exists — it was deleted from Loaded (a supplier statement or duplicate).
+      <div className="n-card" style={{ ...iconLine, padding: '12px 16px', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+        <Icon icon={Check} size={16} tone="muted" style={iconNudge} />
+        This invoice draft no longer exists — it was deleted from Loaded (a supplier statement or duplicate).
       </div>
     );
   }
@@ -2154,14 +2195,16 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // loading state rather than an empty card in that gap.
   if (docUrl && !doc.invoice_id) {
     return (
-      <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', padding: '1rem', fontSize: '0.8rem', color: '#888' }}>
-        Opening the invoice…
+      <div className="n-card">
+        <PageState kind="loading" title="Opening the invoice…" />
       </div>
     );
   }
 
   const card = (
-    <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.04)', overflow: 'hidden', ...(overlay ? { width: 'min(1200px, 96vw)', margin: '0 auto' } : {}) }}>
+    // In the overlay the card fills its 1200px-capped wrapper; a 96vw width
+    // used to overrun the wrapper's 16px gutters on a phone.
+    <div className="n-card" style={{ overflow: 'hidden' }}>
     {/* Admin X-ray: the whole body renders read-only while a non-Norm view is
         on (the slider itself is span-based, so it stays clickable inside the
         disabled fieldset). */}
@@ -2169,7 +2212,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {/* A credit note stays receivable, but the consequence is surfaced as a
           visible banner (not a review "note"): receiving it reverses stock. */}
       {isCredit && !dojo && (
-        <div style={{ padding: '5px 10px', background: '#fdecea', color: '#a4322a', borderBottom: '1px solid #f0c2bc', fontSize: '0.66rem', fontWeight: 600 }}>
+        <div style={{ ...iconLine, padding: '8px 16px', background: 'var(--error-bg)', color: 'var(--error)', fontSize: 'var(--fs-sm)', fontWeight: 600 }}>
+          <Icon icon={TriangleAlert} size={16} style={iconNudge} />
           Credit note — receiving this reverses stock and cost (quantities are negative).
         </div>
       )}
@@ -2177,62 +2221,68 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           invoice in the background to write them (async; a spec appears when the
           study finishes). Set by the review's auto-spec trigger. */}
       {docLive.sensei_studying && !dojo && (
-        <div style={{ padding: '5px 10px', background: '#eef4fb', color: '#2c5a8c', borderBottom: '1px solid #cfe0f2', fontSize: '0.66rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span aria-hidden>⏳</span>
+        <div style={{ ...iconLine, padding: '8px 16px', background: 'var(--info-bg)', color: 'var(--info)', fontSize: 'var(--fs-sm)', fontWeight: 500 }}>
+          <Icon icon={Hourglass} size={16} style={iconNudge} />
           Norm is studying this supplier to create reading instructions. This may take 2 - 3 minutes.
         </div>
       )}
       {/* Header — editable form (Loaded-parity) */}
-      <div style={{ padding: '0.7rem 0.9rem', background: 'linear-gradient(#faf9f7,#f5f3ef)', borderBottom: '1px solid #eee' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#3a3a3a' }}>
-              {isCredit ? 'Receive Credit Note' : 'Receive Invoice'}
+      <div style={{ padding: '14px 16px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '8px 12px' }}>
+          <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <span style={{ fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)' }}>
+              {isCredit ? 'Receive credit note' : 'Receive invoice'}
             </span>
             {/* Never let a credit be mistaken for a delivery: it REVERSES
                 stock and cost, and every quantity on it is negative. */}
             {isCredit && (
-              <span title="this document credits the supplier — receiving it reverses stock and cost"
-                style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.04em', padding: '2px 7px', borderRadius: 4, background: '#fdecea', color: '#a4322a', border: '1px solid #f0c2bc', whiteSpace: 'nowrap' }}>
-                CREDIT NOTE
-              </span>
+              <Badge tone="error" title="this document credits the supplier — receiving it reverses stock and cost">
+                Credit note
+              </Badge>
             )}
             {confidenceChip}
           </span>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
             {/* Admin X-ray slider: Norm's editable draft | the verbatim PDF
                 extraction | Loaded's pristine snapshot | the replica (our full
                 resolution, read-only). */}
             {!embedded && isPlatformAdmin && docLive.loaded_snapshot && (
               <span role="group" aria-label="Data source"
                 title="Admin: flip every field between Norm's draft, what we extracted from the copy, what Loaded currently holds, and the replica"
-                style={{ display: 'inline-flex', height: 22, border: `1px solid ${viewLoaded ? '#b78a2f' : '#d8d4cc'}`, borderRadius: 4, overflow: 'hidden', fontSize: '0.62rem', userSelect: 'none' }}>
+                style={{ display: 'inline-flex', height: 30, padding: 2, gap: 2, boxSizing: 'border-box', border: `1px solid ${viewLoaded ? 'var(--brand-soft)' : 'var(--line-strong)'}`, borderRadius: 'var(--radius)', background: 'var(--bg)', fontSize: 'var(--fs-sm)', userSelect: 'none' }}>
                 {([
                   ['norm', 'Norm', true],
                   ['extracted', 'Extracted', !!docLive.extracted_snapshot],
                   ['loaded', 'Loaded', true],
                   ['replica', 'Replica', !!docLive.replica],
                 ] as const).map(([mode, label, available]) => (
-                  <span key={mode} role="button" tabIndex={available ? 0 : -1}
+                  <span key={mode} role="button" tabIndex={available ? 0 : -1} aria-pressed={viewMode === mode}
                     onClick={() => { if (available) setViewMode(mode); }}
                     onKeyDown={(e) => { if (available && (e.key === 'Enter' || e.key === ' ')) setViewMode(mode); }}
                     title={mode === 'extracted' && !available ? 'No extraction for this invoice (no readable copy)' : mode === 'replica' && !available ? 'No replica — the review has not produced one yet (re-run the replica)' : mode === 'replica' ? "Norm's own full resolution of the copy against the catalogue — the suggestions' source" : undefined}
-                    style={{ display: 'inline-flex', alignItems: 'center', padding: '0 8px', cursor: available ? 'pointer' : 'not-allowed', background: viewMode === mode ? (mode === 'norm' ? '#3a3a3a' : '#b78a2f') : '#fff', color: viewMode === mode ? '#fff' : available ? '#8a8a8a' : '#d0d0d0', whiteSpace: 'nowrap' }}>
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', padding: '0 8px', borderRadius: 'var(--radius-sm)', whiteSpace: 'nowrap',
+                      cursor: available ? 'pointer' : 'not-allowed', opacity: available ? 1 : 0.45,
+                      background: viewMode === mode ? (mode === 'norm' ? 'var(--selected)' : 'var(--accent-soft)') : 'transparent',
+                      color: viewMode === mode ? (mode === 'norm' ? 'var(--text)' : 'var(--accent)') : 'var(--text-soft)',
+                      fontWeight: viewMode === mode ? 600 : 500,
+                    }}>
                     {label}
                   </span>
                 ))}
               </span>
             )}
             {viewLoaded && (
-              <span style={{ fontSize: '0.6rem', color: '#8a6d3b', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--accent)' }}>
                 {viewMode === 'extracted' ? "showing the copy's extraction — read-only" : viewMode === 'replica' ? 'showing the replica (our full resolution) — read-only' : "showing Loaded's data — read-only"}
               </span>
             )}
             {compact && (
-              <button type="button" onClick={() => setExpandedFull((v) => !v)}
-                style={{ fontSize: '0.66rem', padding: '2px 9px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-                {expandedFull ? 'Hide details ▾' : 'Show full invoice ▸'}
-              </button>
+              <Button size="sm" onClick={() => setExpandedFull((v) => !v)}>
+                {expandedFull
+                  ? <>Hide details<Icon icon={ChevronDown} size={14} /></>
+                  : <>Show full invoice<Icon icon={ChevronRight} size={14} /></>}
+              </Button>
             )}
             {/* Deep-link to Loaded's own UI (the user's Loaded session
                 authenticates) — the escape hatch for everything the card
@@ -2244,18 +2294,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 target="_blank" rel="noreferrer"
                 title={doc.is_received ? 'Open this invoice in Loaded' : 'Open Loaded invoices'}
                 aria-label={doc.is_received ? 'Open this invoice in Loaded' : 'Open Loaded invoices'}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: 22, padding: '0 7px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', fontSize: '0.62rem', textDecoration: 'none', whiteSpace: 'nowrap' }}>
-                Open in Loaded ↗
+                className="n-btn n-btn--secondary n-btn--sm">
+                Open in Loaded<Icon icon={ExternalLink} size={14} />
               </a>
             )}
             {!embedded && doc.file_id && (
-              <button type="button" onClick={() => openCopy()} title="View invoice copy" aria-label="View invoice copy"
-                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, padding: 0, border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#6b6b6b', cursor: 'pointer' }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <polyline points="14 2 14 8 20 8" />
-                </svg>
-              </button>
+              <IconButton icon={FileText} label="View invoice copy" onClick={() => openCopy()} />
             )}
             {/* Dojo intake is the "Can't receive" button below — one intake
                 for admin and non-admin alike; it files the PDF AND kicks the
@@ -2264,35 +2308,38 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           </div>
         </div>
         {collapsed && (
-          <div style={{ display: 'flex', gap: 12, alignItems: 'baseline', flexWrap: 'wrap', fontSize: '0.8rem' }}>
-            <strong style={{ color: '#3a3a3a' }}>{doc.supplier_name || '—'}</strong>
-            <span style={{ color: '#666' }}>{doc.reference_number || '(no number)'}</span>
-            {doc.issued_at && <span style={{ color: '#999' }}>{dateVal(doc.issued_at)}</span>}
-            <span style={{ fontSize: '0.66rem', color: '#8a6d3b' }}>{reviewSummaryText}</span>
-            <strong style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{cur(doc.total)}</strong>
+          <div style={{ display: 'flex', gap: '2px 10px', alignItems: 'baseline', flexWrap: 'wrap', marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+            <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{doc.supplier_name || '—'}</span>
+            <span>
+              {/* Once received/deleted the status pill says so; the review
+                  summary ("ready to receive") would contradict it. */}
+              {[doc.reference_number || '(no number)', doc.issued_at ? dateVal(doc.issued_at) : null, doneState ? null : reviewSummaryText]
+                .filter(Boolean).join(' · ')}
+            </span>
+            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{cur(doc.total)}</span>
           </div>
         )}
         {/* Two columns like Loaded: order/supplier on the left, invoice on the
             right. Collapses to one column when the card is narrow. */}
         {!collapsed && (<>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '0.5rem 2rem' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '12px 24px', marginTop: 14 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <label style={fieldCol}>
-              <span style={microLabel}>Supplier</span>
+              <span className="n-label">Supplier</span>
               {/* X-ray modes show the VALUE (the extraction's printed name /
                   the replica's resolution) as text — the select below can
                   only display ids from the venue's list, which is how the
                   Extracted tab showed "[Unnamed Supplier]" while the copy
                   read 'BIDFOOD FSV DUNEDIN' (110016259, 19 Aug 2026). */}
               {viewLoaded ? (
-                <span style={{ ...inputStyle, width: '100%', display: 'inline-block', background: '#f7f5f1', color: '#444' }}>
+                <span style={readonlyField}>
                   {doc.supplier_name || '—'}
                 </span>
               ) : (<>
               {/* An unlinked supplier renders AMBER — Loaded's server 500s on
                   receiving a supplier-less invoice. */}
-              <select value={doc.linked_supplier_id || ''} disabled={doneState} onChange={(e) => onSupplier(e.target.value)}
-                style={{ ...inputStyle, width: '100%', ...(!doneState && !doc.linked_supplier_id && doc.invoice_id ? { border: '1px solid #f0c88a', background: '#fff4e5' } : {}) }}>
+              <select className="n-select" value={doc.linked_supplier_id || ''} disabled={doneState} onChange={(e) => onSupplier(e.target.value)}
+                style={{ width: '100%', ...(!doneState && !doc.linked_supplier_id && doc.invoice_id ? fieldMissing : {}) }}>
                 {!suppliers.some((s) => s.id === doc.linked_supplier_id) && (
                   <option value={doc.linked_supplier_id || ''}>{doc.supplier_name || 'Select supplier'}</option>
                 )}
@@ -2306,27 +2353,30 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   supplier_unresolved issue): create it — two-step confirm. */}
               {!doneState && !embedded && !supplierSugg && unresolvedSupplierName
                 && issues.some((i) => i.code === 'supplier_unresolved' && issueStateOf(i) === 'open') && (
-                <span style={{ fontSize: '0.6rem', color: '#c0392b', marginTop: 2 }}>
-                  no Loaded supplier matches ‘{unresolvedSupplierName}’ — pick one, or{' '}
-                  <button type="button" onClick={() => { void createSupplierAndApply(); }} disabled={creatingSupplier}
-                    style={{ ...linkBtn, color: '#8a2f2f' }}>
-                    {creatingSupplier ? 'creating…' : confirmSupplier ? `confirm — create '${unresolvedSupplierName}'` : 'create it'}
-                  </button>
+                <span style={{ ...iconLine, marginTop: 6, fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>
+                  <Icon icon={TriangleAlert} size={14} style={iconNudge} />
+                  <span>
+                    No Loaded supplier matches ‘{unresolvedSupplierName}’ — pick one, or{' '}
+                    <Button variant="link" onClick={() => { void createSupplierAndApply(); }} disabled={creatingSupplier}
+                      style={{ ...inlineLink, fontWeight: confirmSupplier ? 600 : 500 }}>
+                      {creatingSupplier ? 'creating…' : confirmSupplier ? `confirm — create '${unresolvedSupplierName}'` : 'create it'}
+                    </Button>
+                  </span>
                 </span>
               )}
               </>)}
             </label>
             <label style={fieldCol}>
-              <span style={microLabel}>Order Number</span>
+              <span className="n-label">Order number</span>
               {/* Same x-ray rule: show the order number the view holds (the
                   copy's printed reference in Extracted mode). */}
               {viewLoaded ? (
-                <span style={{ ...inputStyle, width: '100%', display: 'inline-block', background: '#f7f5f1', color: '#444' }}>
+                <span style={readonlyField}>
                   {doc.purchase_order_number || '—'}
                 </span>
               ) : (<>
-              <select value={doc.linked_purchase_order_id || ''} disabled={doneState} onChange={(e) => onPo(e.target.value)}
-                style={{ ...inputStyle, width: '100%', ...(poSuggs.length && !doneState ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }}>
+              <select className="n-select" value={doc.linked_purchase_order_id || ''} disabled={doneState} onChange={(e) => onPo(e.target.value)}
+                style={{ width: '100%', ...(poSuggs.length && !doneState ? fieldSuggested : {}) }}>
                 {/* Split order (reference accepted): the field shows the order
                     REFERENCE — Loaded's 1:1 link stays with the sibling, so
                     the select value remains '' (never a link). */}
@@ -2350,17 +2400,17 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               {poSuggs.map((s) => (
                 <Fragment key={s.id}>
                   {suggChip(s, s.kind === 'link_po'
-                    ? `link order ${fmtVal(s.proposed)}`
+                    ? `Link order ${fmtVal(s.proposed)}`
                     : s.kind === 'unlink_po'
-                      ? `remove order ${fmtVal(s.current)}`
-                      : `keep reference ${fmtVal(s.proposed)} (split order)`)}
+                      ? `Remove order ${fmtVal(s.current)}`
+                      : `Keep reference ${fmtVal(s.proposed)} (split order)`)}
                 </Fragment>
               ))}
               {/* Split order (accepted): where the rest of the order went. */}
               {doc.split_po_id && !doc.linked_purchase_order_id && doc.split_sibling_invoice_id && (
-                <span style={{ fontSize: '0.6rem', color: '#8a6d3b', marginTop: 2 }}>
-                  part of a split order — also invoiced on{' '}
-                  <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer" style={{ color: '#8a6d3b' }}>
+                <span style={{ marginTop: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                  Part of a split order — also invoiced on{' '}
+                  <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
                     the sibling invoice
                   </a>
                 </span>
@@ -2369,12 +2419,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             </label>
             {doc.order_date && (
               <label style={fieldCol}>
-                <span style={microLabel}>Order Date</span>
-                <span style={{ fontSize: '0.8rem', color: '#555', padding: '4px 0' }}>{dateVal(doc.order_date)}</span>
+                <span className="n-label">Order date</span>
+                <span style={{ display: 'flex', alignItems: 'center', minHeight: 34, fontSize: 'var(--fs-base)', color: 'var(--text-soft)' }}>{dateVal(doc.order_date)}</span>
               </label>
             )}
             <label style={fieldCol}>
-              <span style={microLabel}>Received Date</span>
+              <span className="n-label">Received date</span>
               {/* Show the invoice date when Loaded holds no received date —
                   mirroring do_receive, which writes issuedAt on receive when
                   this field is untouched. The box used to render empty, so the
@@ -2390,47 +2440,48 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   autopilot readiness read 0% from the day it shipped. A user
                   who accepts this date types nothing, so `received_at` stays
                   null and the server writes the same value. */}
-              <input type="date" value={dateVal(doc.received_at || doc.issued_at)} disabled={doneState}
-                onChange={(e) => patchHeader({ received_at: e.target.value || null })} style={{ ...inputStyle, width: '100%' }} />
+              <input type="date" className="n-input" value={dateVal(doc.received_at || doc.issued_at)} disabled={doneState}
+                onChange={(e) => patchHeader({ received_at: e.target.value || null })} style={{ width: '100%' }} />
             </label>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <label style={fieldCol}>
-              <span style={microLabel}>Invoice Number</span>
-              <input type="text" value={doc.reference_number || ''} disabled={doneState}
+              <span className="n-label">Invoice number</span>
+              <input type="text" className="n-input" value={doc.reference_number || ''} disabled={doneState}
                 onChange={(e) => patchHeader({ reference_number: e.target.value })}
-                style={{ ...inputStyle, width: '100%', ...(!doneState && headerValueSugg('reference_number') ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+                style={{ width: '100%', ...(!doneState && headerValueSugg('reference_number') ? fieldSuggested : {}) }} />
               {suggChip(headerValueSugg('reference_number'))}
             </label>
             <label style={fieldCol}>
-              <span style={microLabel}>Invoice Date</span>
-              <input type="date" value={dateVal(doc.issued_at)} disabled={doneState}
-                onChange={(e) => patchHeader({ issued_at: e.target.value || null })} style={{ ...inputStyle, width: '100%' }} />
+              <span className="n-label">Invoice date</span>
+              <input type="date" className="n-input" value={dateVal(doc.issued_at)} disabled={doneState}
+                onChange={(e) => patchHeader({ issued_at: e.target.value || null })} style={{ width: '100%' }} />
               {suggChip(headerValueSugg('issued_at'))}
             </label>
             <label style={fieldCol}>
-              <span style={microLabel}>Due Date</span>
-              <input type="date" value={dateVal(doc.due_at)} disabled={doneState}
-                onChange={(e) => patchHeader({ due_at: e.target.value || null })} style={{ ...inputStyle, width: '100%' }} />
+              <span className="n-label">Due date</span>
+              <input type="date" className="n-input" value={dateVal(doc.due_at)} disabled={doneState}
+                onChange={(e) => patchHeader({ due_at: e.target.value || null })} style={{ width: '100%' }} />
             </label>
             <label style={fieldCol}>
-              <span style={microLabel}>Invoice Total</span>
-              <input type="number" step="any" value={doc.total ?? 0} disabled={doneState}
+              <span className="n-label">Invoice total</span>
+              <input type="number" step="any" className="n-input" value={doc.total ?? 0} disabled={doneState}
                 onChange={(e) => patchHeader({ total: parseFloat(e.target.value) || 0 })}
-                style={{ ...inputStyle, width: '100%', fontWeight: 600, ...(!doneState && moneySuggs.length ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+                style={{ width: '100%', fontWeight: 600, textAlign: 'right', fontVariantNumeric: 'tabular-nums', ...(!doneState && moneySuggs.length ? fieldSuggested : {}) }} />
               {/* Header money suggestions (total / subtotal / tax / discount)
                   live together under the total field. */}
               {moneySuggs.map((s) => (
                 <Fragment key={s.id}>
-                  {suggChip(s, `${s.field}: ${fmtVal(s.current)} → ${fmtVal(s.proposed)}`)}
+                  {suggChip(s, `${moneyFieldLabels[s.field ?? ''] ?? s.field}: ${fmtVal(s.current)} → ${fmtVal(s.proposed)}`)}
                 </Fragment>
               ))}
             </label>
           </div>
         </div>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: '0.5rem', fontSize: '0.72rem', color: '#555' }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 14, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', cursor: doneState ? 'default' : 'pointer' }}>
           <input type="checkbox" checked={includesTax} disabled={doneState}
-            onChange={(e) => patchHeader({ unit_cost_includes_tax: e.target.checked })} />
+            onChange={(e) => patchHeader({ unit_cost_includes_tax: e.target.checked })}
+            style={{ width: 16, height: 16, margin: 0, accentColor: 'var(--accent)' }} />
           Line item costs include tax
         </label>
         </>)}
@@ -2440,24 +2491,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           collapsed ("Show full invoice" reveals it). */}
       {!collapsed && (<>
       {/* Lines */}
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+      <div style={{ overflowX: 'auto', borderTop: '1px solid var(--line)' }}>
+        {/* A floor width: on a phone the table scrolls sideways rather than
+            squeezing the description and chips into a column of letters. */}
+        <table className="n-table" style={{ minWidth: 900 }}>
           <thead>
-            <tr style={{ textAlign: 'left', color: '#9ca3af', fontSize: '0.62rem', textTransform: 'uppercase' }}>
-              <th style={{ padding: '0.4rem 0.6rem' }}>Code</th>
-              <th style={{ padding: '0.4rem 0.6rem' }}>Description</th>
-              <th style={{ padding: '0.4rem 0.6rem' }}>Brand</th>
+            <tr>
+              <th style={{ paddingLeft: 16 }}>Code</th>
+              <th>Description</th>
+              <th>Brand</th>
               {viewMode === 'extracted' ? (<>
-                <th style={{ padding: '0.4rem 0.6rem' }} title="the unit column exactly as printed — often how the line is CHARGED (EA/CTN), not the pack size">Unit (printed)</th>
-                <th style={{ padding: '0.4rem 0.6rem' }} title="the delivered unit of ONE item, derived from the document — what recipe costing and stock need">Unit of measure</th>
+                <th title="the unit column exactly as printed — often how the line is CHARGED (EA/CTN), not the pack size">Unit (printed)</th>
+                <th title="the delivered unit of ONE item, derived from the document — what recipe costing and stock need">Unit of measure</th>
               </>) : (
-              <th style={{ padding: '0.4rem 0.6rem' }}>Unit</th>
+              <th>Unit</th>
               )}
-              <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Qty ordered</th>
-              <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Qty received</th>
-              <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Unit cost</th>
-              <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Tax</th>
-              <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Total cost</th>
+              <th className="num">Qty ordered</th>
+              <th className="num">Qty received</th>
+              <th className="num">Unit cost</th>
+              <th className="num">Tax</th>
+              <th className="num" style={{ paddingRight: 16 }}>Total cost</th>
             </tr>
           </thead>
           <tbody>
@@ -2468,12 +2521,23 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               const struck = !!l.struck;
               const strikeSugg = strikeSuggFor(l.id);
               const itemSugg = itemSuggFor(l.id);
+              // Unit dropdown state: a pending suggestion (accent) or a value
+              // Loaded can't receive (warn); the tint only while still editable.
+              const unitField: React.CSSProperties = struck
+                ? { borderColor: 'var(--line)', backgroundColor: 'var(--surface)', color: 'var(--muted)' }
+                : unitSuggFor(l.id)
+                  ? (doneState ? { borderColor: fieldSuggested.borderColor } : fieldSuggested)
+                  : !l.linked_unit_id
+                    ? (doneState ? { borderColor: fieldMissing.borderColor } : fieldMissing)
+                    : {};
               return (
               <Fragment key={l.id}>
+              {/* Struck = muted + crossed out, its fields disabled. No row
+                  opacity: it would fade Restore too, the one control here. */}
               <tr id={`riv-${uid}-${l.id}`}
-                style={{ borderTop: '1px solid #f3f3f3', ...(struck ? { opacity: 0.5, textDecoration: 'line-through', color: '#999' } : {}) }}>
-                <td style={{ padding: '0.4rem 0.6rem', color: '#666' }}>{l.display_code || l.code || '—'}</td>
-                <td style={{ padding: '0.4rem 0.6rem' }}>
+                style={struck ? { textDecoration: 'line-through', color: 'var(--muted)' } : undefined}>
+                <td style={{ paddingLeft: 16, color: 'var(--muted)', fontSize: 'var(--fs-sm)', whiteSpace: 'nowrap' }}>{l.display_code || l.code || '—'}</td>
+                <td style={{ minWidth: 160 }}>
                   {l.item_name || l.description}
                   {/* Unlinked item: NEW rides at the end of the name, the
                       same convention as the unit dropdown's "— NEW". In the
@@ -2482,26 +2546,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       so a line with no linkedItemId is only NEW when that
                       lookup also came up empty. */}
                   {!struck && (viewMode === 'norm' ? !l.linked_item_id : viewMode === 'loaded' && l.item_is_new) && (
-                    <span style={{ color: '#b45309', fontWeight: 600 }}> — NEW</span>
+                    <>{' '}<Badge tone="warn">New</Badge></>
                   )}
                   {/* The server's strike suggestion (the copy doesn't bill
                       this line) — same object as its summary row. */}
-                  {!struck && suggChip(strikeSugg, 'not billed on the copy — strike')}
+                  {!struck && suggChip(strikeSugg, 'Not billed on the copy — strike')}
                   {!doneState && struck && viewMode === 'norm' && (
-                    <button type="button" onClick={() => onStrike(idx, false)}
+                    <Button size="sm" onClick={() => onStrike(idx, false)}
                       title="restore this line (it will be received again)"
-                      style={{ marginLeft: 6, fontSize: '0.58rem', color: '#666', background: '#fff', border: '1px solid #ccc', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap', fontFamily: 'inherit', cursor: 'pointer', textDecoration: 'none' }}>
-                      restore
-                    </button>
+                      style={{ marginLeft: 8 }}>
+                      Restore
+                    </Button>
                   )}
                   {/* Delivered under a different code than ordered — a substitute.
                       Click the badge to expand the original ordered line below. */}
                   {l.substitute_for && !struck && (
-                    <button type="button"
+                    <button type="button" className="n-badge n-badge--accent" aria-expanded={openSub.has(l.id)}
                       onClick={() => setOpenSub((prev) => { const n = new Set(prev); if (n.has(l.id)) n.delete(l.id); else n.add(l.id); return n; })}
                       title="delivered under a different stock code than ordered — click to show the ordered line"
-                      style={{ marginLeft: 6, fontSize: '0.58rem', color: '#8a6d3b', background: '#fdf6e7', border: '1px solid #e6d3a3', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap', fontFamily: 'inherit', fontWeight: 600, cursor: 'pointer' }}>
-                      substitute {openSub.has(l.id) ? '▾' : '▸'}
+                      style={{ marginLeft: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-sm)', verticalAlign: 'middle' }}>
+                      Substitute<Icon icon={openSub.has(l.id) ? ChevronDown : ChevronRight} size={12} />
                     </button>
                   )}
                   {/* The server's item suggestion. NOT gated on "unlinked":
@@ -2513,10 +2577,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   {!struck && !dojo && viewMode === 'norm' && itemSugg && suggChip(
                     itemSugg,
                     itemSugg.kind === 'create_item'
-                      ? `create '${fmtVal(itemSugg.proposed)}'`
+                      ? `Create '${fmtVal(itemSugg.proposed)}'`
                       : itemSugg.current
                         ? `${fmtVal(itemSugg.current)} → ${fmtVal(itemSugg.proposed)}`
-                        : `link to '${fmtVal(itemSugg.proposed)}'`,
+                        : `Link to '${fmtVal(itemSugg.proposed)}'`,
                   )}
                   {/* Same as the unit chip below, for the create-STOCK-ITEM
                       decision: the server folds the create_item suggestion into
@@ -2525,112 +2589,110 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       list. Read it off the same blocker and offer it as a
                       one-click chip under the item name; same runIssueAction the
                       bottom Accept uses, so the two can't disagree. */}
-                  {!struck && !dojo && viewMode === 'norm' && pendingItemName(l.id) && (
-                    <div>
-                      <span style={chipStyle}
-                        title={`'${l.description}' isn't in the Loaded catalogue — create it as '${pendingItemName(l.id)}'`}>
-                        <span>{`→ create '${pendingItemName(l.id)}'`}</span>
-                        <button type="button" onClick={() => runPendingItem(l.id)}
-                          disabled={!!actioningIssue}
-                          title={`Create '${pendingItemName(l.id)}' in Loaded and link it`}
-                          aria-label="Create this stock item"
-                          style={{ ...chipBtn, color: '#2e7d4f' }}>✓</button>
-                      </span>
-                    </div>
+                  {!struck && !dojo && viewMode === 'norm' && pendingItemName(l.id) && chipBox(
+                    `Create '${pendingItemName(l.id)}'`,
+                    `'${l.description}' isn't in the Loaded catalogue — create it as '${pendingItemName(l.id)}'`,
+                    {
+                      onClick: () => runPendingItem(l.id),
+                      label: 'Create this stock item',
+                      title: `Create '${pendingItemName(l.id)}' in Loaded and link it`,
+                      disabled: !!actioningIssue,
+                    },
                   )}
                   {/* No stock item at all — link an existing one or CREATE it;
                       must be resolved before receiving. */}
                   {!l.linked_item_id && !struck && !dojo && viewMode === 'norm'
                     && !itemSugg && !(embedded || doneState || itemForm?.lineId === l.id) && (
-                      <button type="button" onClick={() => openItemForm(l)}
-                        title="this stock item isn't linked in Loaded — link an existing item or create it before receiving"
-                        style={{ ...newBadge, cursor: 'pointer', font: 'inherit', fontWeight: 700 }}>
-                        link or create
-                      </button>
+                      <div style={{ marginTop: 6 }}>
+                        <Button size="sm" onClick={() => openItemForm(l)}
+                          title="this stock item isn't linked in Loaded — link an existing item or create it before receiving">
+                          Link or create
+                        </Button>
+                      </div>
                   )}
                   {itemForm?.lineId === l.id && (
-                    <div style={{ marginTop: 5, padding: 7, border: '1px solid #f0c88a', background: '#fff9f0', borderRadius: 5, display: 'flex', flexDirection: 'column', gap: 5, maxWidth: 340 }}>
-                      <div style={{ ...microLabel, color: '#8a6d3b' }}>Create stock item in Loaded</div>
-                      <input type="text" value={itemForm.name} placeholder="Item name"
+                    <div style={{ marginTop: 8, padding: 12, border: '1px solid var(--line)', background: 'var(--surface)', borderRadius: 'var(--radius)', display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 340 }}>
+                      <div style={sectionTitle}>Create stock item in Loaded</div>
+                      <input type="text" className="n-input" value={itemForm.name} placeholder="Item name"
                         onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })}
-                        style={{ ...inputStyle, fontSize: '0.72rem', width: '100%' }} />
-                      <select value={itemForm.groupId} onChange={(e) => setItemForm({ ...itemForm, groupId: e.target.value })}
-                        style={{ ...inputStyle, fontSize: '0.72rem', width: '100%' }}>
+                        style={{ width: '100%' }} />
+                      <select className="n-select" value={itemForm.groupId} onChange={(e) => setItemForm({ ...itemForm, groupId: e.target.value })}
+                        style={{ width: '100%' }}>
                         <option value="">Select stock group…</option>
                         {sortedGroups.map((g) => <option key={g.id} value={g.id}>{g.name}{g.category ? ` · ${g.category}` : ''}</option>)}
                       </select>
                       {!l.linked_unit_id && (
-                        <div style={{ fontSize: '0.58rem', color: '#c0392b' }}>Resolve this line’s unit first (in the Unit column).</div>
+                        <div style={{ ...iconLine, fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>
+                          <Icon icon={TriangleAlert} size={14} style={iconNudge} />
+                          Resolve this line’s unit first (in the Unit column).
+                        </div>
                       )}
                       {/* Fallback: the product may already exist under a different
                           name — search and link it instead of creating a duplicate. */}
-                      <div style={{ borderTop: '1px dashed #e6d3ad', paddingTop: 5 }}>
-                        <input type="text" value={linkQuery} placeholder="Already in Loaded? search to link…"
+                      <div style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}>
+                        <input type="text" className="n-input" value={linkQuery} placeholder="Already in Loaded? search to link…"
                           onChange={(e) => setLinkQuery(e.target.value)}
-                          style={{ ...inputStyle, fontSize: '0.7rem', width: '100%' }} />
+                          style={{ width: '100%' }} />
                         {linkMatches.length > 0 && (
-                          <div style={{ marginTop: 3, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 130, overflowY: 'auto' }}>
+                          <div className="scroll-quiet" style={{ marginTop: 4, maxHeight: 130, padding: '4px 0', border: '1px solid var(--line)', borderRadius: 'var(--radius)', background: 'var(--bg)' }}>
                             {linkMatches.map((it) => (
-                              <button key={it.id} type="button" onClick={() => linkItem(itemForm.lineId, it.id)}
-                                style={{ textAlign: 'left', fontSize: '0.66rem', padding: '3px 6px', border: '1px solid #cfe6d8', borderRadius: 4, background: '#fff', color: '#2d6a4f', cursor: 'pointer' }}>
-                                {it.name}{it.code ? ` · ${it.code}` : ''}
+                              <button key={it.id} type="button" className="n-option" onClick={() => linkItem(itemForm.lineId, it.id)}>
+                                {it.name}{it.code ? <span style={{ color: 'var(--muted)' }}>{` · ${it.code}`}</span> : null}
                               </button>
                             ))}
                           </div>
                         )}
                       </div>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button type="button" onClick={createItem}
-                          disabled={creatingItem || !itemForm.name.trim() || !itemForm.groupId || !l.linked_unit_id}
-                          style={{ fontSize: '0.66rem', padding: '3px 10px', border: '1px solid #b45309', borderRadius: 4, background: creatingItem ? '#f0e0c8' : '#fff', color: '#b45309', cursor: (creatingItem || !itemForm.name.trim() || !itemForm.groupId || !l.linked_unit_id) ? 'not-allowed' : 'pointer', opacity: (!itemForm.name.trim() || !itemForm.groupId || !l.linked_unit_id) ? 0.5 : 1 }}>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <Button size="sm" onClick={createItem}
+                          disabled={creatingItem || !itemForm.name.trim() || !itemForm.groupId || !l.linked_unit_id}>
                           {creatingItem ? 'Creating…' : 'Create & link'}
-                        </button>
-                        <button type="button" onClick={() => setItemForm(null)}
-                          style={{ fontSize: '0.66rem', padding: '3px 10px', border: '1px solid #ddd', borderRadius: 4, background: '#fff', color: '#888', cursor: 'pointer' }}>
+                        </Button>
+                        <Button size="sm" variant="quiet" onClick={() => setItemForm(null)}>
                           Cancel
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   )}
                 </td>
-                <td style={{ padding: '0.4rem 0.6rem', color: l.brand ? '#555' : '#b0b0b0' }}>
-                  {l.brand || 'Not Set'}
+                <td style={{ color: l.brand && !struck ? 'var(--text-soft)' : 'var(--muted)', ...(l.brand ? {} : { whiteSpace: 'nowrap' }) }}>
+                  {l.brand || 'Not set'}
                   {l.brand && !l.linked_brand_id && !struck && (
-                    <span title="Loaded has no record for this brand and won't receive the line until it does" style={newBadge}>NEW</span>
+                    <>{' '}<Badge tone="warn" title="Loaded has no record for this brand and won't receive the line until it does">New</Badge></>
                   )}
                   {!struck && viewMode === 'norm' && suggChip(
-                    brandSuggFor(l.id), `create '${fmtVal(l.brand)}'`,
+                    brandSuggFor(l.id), `Create '${fmtVal(l.brand)}'`,
                   )}
                 </td>
                 {viewMode === 'extracted' && (
-                  <td style={{ padding: '0.4rem 0.6rem', color: '#777' }}>
+                  <td style={{ color: 'var(--text-soft)' }}>
                     {l.unit || '—'}
                   </td>
                 )}
-                <td style={{ padding: '0.4rem 0.6rem' }}>
+                <td>
                   {viewMode === 'extracted' ? (
-                    <span style={{ fontSize: '0.8rem', color: '#555' }}>
+                    <span style={{ color: 'var(--text-soft)' }}>
                       {l.unit_of_measure || '—'}
                       {l.unit_unrecognisable && (
-                        <span style={{ color: '#b45309' }}> (unreadable)</span>
+                        <span style={{ color: 'var(--warn)' }}> (unreadable)</span>
                       )}
                     </span>
                   ) : viewMode !== 'norm' ? (
                     // X-ray modes are read-only — the unit renders as text
                     // (extracted lines carry no Loaded unit records at all).
-                    <span style={{ fontSize: '0.8rem', color: '#555' }}>
+                    <span style={{ color: 'var(--text-soft)' }}>
                       {l.unit_name || l.unit || '—'}
                       {viewMode === 'loaded' && l.unit_is_new && (
-                        <span style={{ color: '#b45309', fontWeight: 600 }}> — NEW</span>
+                        <>{' '}<Badge tone="warn">New</Badge></>
                       )}
                     </span>
                   ) : studying ? (
                     // The study will re-resolve the unit; don't show the dud one.
-                    <span style={{ fontSize: '0.78rem', color: '#9ca3af', fontStyle: 'italic' }}>studying…</span>
+                    <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', fontStyle: 'italic' }}>Studying…</span>
                   ) : (
-                  <select value={l.linked_unit_id || ''} disabled={doneState || struck}
+                  <select className="n-select" value={l.linked_unit_id || ''} disabled={doneState || struck}
                     onChange={(e) => onUnit(idx, e.target.value)}
-                    style={{ ...inputStyle, minWidth: 120, borderColor: struck ? '#e2e2e2' : unitSuggFor(l.id) ? '#b78a2f' : (!l.linked_unit_id ? '#f0c88a' : '#d1d5db'), background: struck ? '#fafafa' : unitSuggFor(l.id) && !doneState ? '#fdf6e7' : (!l.linked_unit_id && !doneState ? '#fff4e5' : '#fff') }}>
+                    style={{ minWidth: 120, ...unitField }}>
                     {/* The unresolved state lives INSIDE the dropdown: an
                         unlinked unit string renders as the selected option,
                         marked NEW — picking a real unit replaces it. */}
@@ -2651,18 +2713,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       "6 X 750ML" with "→ 12x375ml (new)" under it, exactly
                       like the quantity and tax chips, rather than the row
                       quietly displaying a unit that does not exist. */}
-                  {!struck && !studying && viewMode === 'norm' && pendingUnitName(l.id) && (
-                    <div>
-                      <span style={chipStyle}
-                        title={`the copy's delivered unit '${pendingUnitName(l.id)}' doesn't exist in Loaded — create it`}>
-                        <span>{`→ ${pendingUnitName(l.id)} (new)`}</span>
-                        <button type="button" onClick={() => runPendingUnit(l.id)}
-                          disabled={!!actioningIssue}
-                          title={`Create '${pendingUnitName(l.id)}' in Loaded and use it`}
-                          aria-label="Create this unit"
-                          style={{ ...chipBtn, color: '#2e7d4f' }}>✓</button>
-                      </span>
-                    </div>
+                  {!struck && !studying && viewMode === 'norm' && pendingUnitName(l.id) && chipBox(
+                    `→ ${pendingUnitName(l.id)} (new)`,
+                    `the copy's delivered unit '${pendingUnitName(l.id)}' doesn't exist in Loaded — create it`,
+                    {
+                      onClick: () => runPendingUnit(l.id),
+                      label: 'Create this unit',
+                      title: `Create '${pendingUnitName(l.id)}' in Loaded and use it`,
+                      disabled: !!actioningIssue,
+                    },
                   )}
                   {/* Create-in-Loaded is offered ONLY for a unit the REPLICA
                       read off the copy (unit_not_in_loaded / unit_missing
@@ -2672,82 +2731,84 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     const createName = replicaUnitName(String(l.id));
                     if (!createName) return null;
                     return (
-                      <div style={{ fontSize: '0.58rem', color: '#b45309', marginTop: 2 }}>
+                      <div style={{ marginTop: 6, maxWidth: 260, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
                         {creatingUnitLine === l.id ? (
-                          <span style={{ color: '#8a2f2f' }}>creating unit…</span>
+                          <span style={{ color: 'var(--muted)' }}>Creating unit…</span>
                         ) : confirmUnitLine === l.id ? (
-                          <span style={{ color: '#8a2f2f' }}>
-                            creates a NEW unit “{createName}” in Loaded —{' '}
-                            <button type="button" onClick={() => createUnitAndApply(idx)}
-                              style={{ ...linkBtn, color: '#8a2f2f', fontWeight: 700 }}>
+                          <span>
+                            Creates a new unit “{createName}” in Loaded —{' '}
+                            <Button variant="link" onClick={() => createUnitAndApply(idx)}
+                              style={{ ...inlineLink, fontWeight: 600 }}>
                               create it
-                            </button>
+                            </Button>
                             {' · '}
-                            <button type="button" onClick={() => setConfirmUnitLine(null)}
-                              style={{ ...linkBtn, color: '#888' }}>
+                            <Button variant="link" onClick={() => setConfirmUnitLine(null)}
+                              style={{ ...inlineLink, color: 'var(--text-soft)' }}>
                               cancel
-                            </button>
+                            </Button>
                           </span>
                         ) : (
-                          <button type="button" onClick={() => createUnitAndApply(idx)}
-                            style={{ ...linkBtn, color: '#8a2f2f' }}>
-                            the copy says “{createName}” — create it in Loaded
-                          </button>
+                          <Button variant="link" onClick={() => createUnitAndApply(idx)} style={inlineLink}>
+                            The copy says “{createName}” — create it in Loaded
+                          </Button>
                         )}
                       </div>
                     );
                   })()}
                 </td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', color: '#888', fontVariantNumeric: 'tabular-nums' }}>
+                <td className="num" style={{ color: 'var(--muted)' }}>
                   {/* Loaded prints a literal 0 where nothing on the order is
                       left to claim (a second line sharing a code); every other
                       view says "—", which is the honest reading of "no order
                       row for this line". */}
                   {l.quantity_ordered ?? (viewMode === 'loaded' ? 0 : '—')}
                 </td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>
-                  {/* Amber = a qty suggestion is pending (same treatment as the
-                      unit dropdown). Full `border` shorthand — never mix with
-                      borderColor. */}
-                  <input type="number" step="any" value={l.quantity_received ?? 0} disabled={doneState || struck}
+                <td className="num">
+                  {/* Accent = a qty suggestion is pending (same treatment as the
+                      unit dropdown). Longhands only (borderColor /
+                      backgroundColor) — never mix with the `border` shorthand. */}
+                  <input type="number" step="any" className="n-input" value={l.quantity_received ?? 0} disabled={doneState || struck}
                     onChange={(e) => onQty(idx, parseFloat(e.target.value) || 0)}
-                    style={{ ...inputStyle, width: 70, textAlign: 'right', ...(!doneState && !struck && suggFor(l.id, 'quantity_received') ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+                    style={{ ...numInput, width: 70, ...(!doneState && !struck && suggFor(l.id, 'quantity_received') ? fieldSuggested : {}) }} />
                   {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'quantity_received'))}
                 </td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                <td className="num" style={{ whiteSpace: 'nowrap' }}>
                   {/* Red ↑ when the invoice cost is above the linked PO's cost. */}
                   {!struck && l.reference_cost != null && (l.unit_cost ?? 0) > l.reference_cost + 0.001 && (
-                    <span title={`up from ${cur(l.reference_cost)} on the order`} style={{ color: '#c0392b', marginRight: 3 }}>↑</span>
+                    <span title={`up from ${cur(l.reference_cost)} on the order`}
+                      style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: 4, color: 'var(--error)' }}>
+                      <Icon icon={ArrowUp} size={14} strokeWidth={2} label={`up from ${cur(l.reference_cost)} on the order`} />
+                    </span>
                   )}
-                  <input type="number" step="any" value={l.unit_cost ?? 0} disabled={doneState || struck}
+                  <input type="number" step="any" className="n-input" value={l.unit_cost ?? 0} disabled={doneState || struck}
                     onChange={(e) => onCost(idx, parseFloat(e.target.value) || 0)}
-                    style={{ ...inputStyle, width: 80, textAlign: 'right', ...(!doneState && !struck && suggFor(l.id, 'unit_cost') ? { border: '1px solid #b78a2f', background: '#fdf6e7' } : {}) }} />
+                    style={{ ...numInput, width: 80, ...(!doneState && !struck && suggFor(l.id, 'unit_cost') ? fieldSuggested : {}) }} />
                   {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'unit_cost'))}
-                  {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'sale_tax_rate'), 'set the tax rate from the catalogue')}
+                  {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'sale_tax_rate'), 'Set the tax rate from the catalogue')}
                 </td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', color: '#888', fontVariantNumeric: 'tabular-nums' }}>
+                <td className="num" style={{ color: 'var(--muted)' }}>
                   {cur(lineTax((l.quantity_received ?? 0) * (l.unit_cost ?? 0), l.sale_tax_rate, includesTax))}
                 </td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                <td className="num" style={{ paddingRight: 16, fontWeight: 500 }}>
                   {cur((l.quantity_received ?? 0) * (l.unit_cost ?? 0))}
                 </td>
               </tr>
               {/* The original ordered line this delivery stood in for — a full,
                   read-only row shown when the substitute badge is expanded. */}
               {l.substitute_for && !struck && openSub.has(l.id) && (
-                <tr style={{ background: '#fdf6e7', color: '#6b5626', fontSize: '0.82rem' }}>
-                  <td style={{ padding: '0.35rem 0.6rem', paddingLeft: '1.4rem' }}>{l.substitute_for.code || '—'}</td>
-                  <td style={{ padding: '0.35rem 0.6rem' }}>
-                    <span style={{ fontSize: '0.56rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: '#a8843a', marginRight: 6 }}>ordered</span>
+                <tr style={{ background: 'var(--surface)', color: 'var(--text-soft)', fontSize: 'var(--fs-sm)' }}>
+                  <td style={{ paddingLeft: 28, whiteSpace: 'nowrap' }}>{l.substitute_for.code || '—'}</td>
+                  <td>
+                    <Badge>Ordered</Badge>{' '}
                     {l.substitute_for.description}
                   </td>
-                  <td style={{ padding: '0.35rem 0.6rem', color: '#b0a074' }}>—</td>
-                  <td style={{ padding: '0.35rem 0.6rem' }}>{l.substitute_for.unit || '—'}</td>
-                  <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{l.substitute_for.quantity_ordered ?? '—'}</td>
-                  <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right', color: '#b0a074' }}>—</td>
-                  <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{l.substitute_for.unit_cost != null ? cur(l.substitute_for.unit_cost) : '—'}</td>
-                  <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right', color: '#b0a074' }}>—</td>
-                  <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{l.substitute_for.quantity_ordered != null && l.substitute_for.unit_cost != null ? cur(l.substitute_for.quantity_ordered * l.substitute_for.unit_cost) : '—'}</td>
+                  <td style={{ color: 'var(--muted)' }}>—</td>
+                  <td>{l.substitute_for.unit || '—'}</td>
+                  <td className="num">{l.substitute_for.quantity_ordered ?? '—'}</td>
+                  <td className="num" style={{ color: 'var(--muted)' }}>—</td>
+                  <td className="num">{l.substitute_for.unit_cost != null ? cur(l.substitute_for.unit_cost) : '—'}</td>
+                  <td className="num" style={{ color: 'var(--muted)' }}>—</td>
+                  <td className="num" style={{ paddingRight: 16 }}>{l.substitute_for.quantity_ordered != null && l.substitute_for.unit_cost != null ? cur(l.substitute_for.quantity_ordered * l.substitute_for.unit_cost) : '—'}</td>
                 </tr>
               )}
               </Fragment>
@@ -2758,16 +2819,16 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 in the "Ordered, not delivered" section below (they are not
                 invoice lines and are never sent on receive). */}
             {viewMode === 'loaded' && (doc.ordered_not_received || []).map((o, i) => (
-              <tr key={`onr-inline-${o.code || i}-${i}`} style={{ borderTop: '1px solid #f3f3f3', color: '#9a9a9a' }}>
-                <td style={{ padding: '0.4rem 0.6rem' }}>{o.code || '—'}</td>
-                <td style={{ padding: '0.4rem 0.6rem' }}>{o.description || '—'}</td>
-                <td style={{ padding: '0.4rem 0.6rem' }}>—</td>
-                <td style={{ padding: '0.4rem 0.6rem' }}>{o.unit || '—'}</td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.quantity_ordered ?? '—'}</td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>0</td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.unit_cost != null ? cur(o.unit_cost) : '—'}</td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>—</td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{cur(0)}</td>
+              <tr key={`onr-inline-${o.code || i}-${i}`} style={{ color: 'var(--muted)' }}>
+                <td style={{ paddingLeft: 16, whiteSpace: 'nowrap' }}>{o.code || '—'}</td>
+                <td>{o.description || '—'}</td>
+                <td>—</td>
+                <td>{o.unit || '—'}</td>
+                <td className="num">{o.quantity_ordered ?? '—'}</td>
+                <td className="num">0</td>
+                <td className="num">{o.unit_cost != null ? cur(o.unit_cost) : '—'}</td>
+                <td className="num">—</td>
+                <td className="num" style={{ paddingRight: 16 }}>{cur(0)}</td>
               </tr>
             ))}
           </tbody>
@@ -2777,10 +2838,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {/* Replica X-ray: the resolution log — every decision the replica made,
           the troubleshooting record. */}
       {viewMode === 'replica' && (docLive.replica?.resolution_log?.length ?? 0) > 0 && (
-        <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee', background: '#fbfaf8' }}>
-          <div style={{ ...microLabel, marginBottom: 4 }}>Resolution log</div>
+        <div style={{ ...section, background: 'var(--surface)' }}>
+          <div style={{ ...sectionTitle, marginBottom: 6 }}>Resolution log</div>
           {docLive.replica!.resolution_log!.map((r, i) => (
-            <div key={`rl-${i}`} style={{ fontFamily: 'ui-monospace, monospace', fontSize: '0.62rem', color: '#666', padding: '1px 0' }}>{r}</div>
+            <div key={`rl-${i}`} style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--text-soft)', padding: '1px 0', overflowWrap: 'anywhere' }}>{r}</div>
           ))}
         </div>
       )}
@@ -2788,42 +2849,45 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {/* Split order: PO items that arrived on the SIBLING delivery — they were
           received, just on the other invoice. Read-only; never sent on receive. */}
       {(doc.ordered_received_elsewhere?.length ?? 0) > 0 && (
-        <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee', background: '#fafafa' }}>
-          <div style={{ ...microLabel, marginBottom: 4 }}>
+        <div style={section}>
+          <div style={{ ...sectionTitle, marginBottom: 8 }}>
             Ordered, received on the sibling delivery ({doc.ordered_received_elsewhere!.length})
             {doc.split_sibling_invoice_id && (
               <>
-                {' · '}
-                <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer" style={{ color: '#8a6d3b' }}>
-                  its invoice ↗
+                <span style={{ color: 'var(--muted)', fontWeight: 400 }}>{' · '}</span>
+                <a href={loadedInvoiceUrl(doc.split_sibling_invoice_id)} target="_blank" rel="noreferrer"
+                  className="n-btn n-btn--link" style={{ fontSize: 'var(--fs-sm)', fontWeight: 500 }}>
+                  its invoice<Icon icon={ExternalLink} size={12} />
                 </a>
               </>
             )}
           </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', color: '#8a8a8a' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', color: '#b0b0b0', fontSize: '0.6rem', textTransform: 'uppercase' }}>
-                <th style={{ padding: '0.25rem 0.6rem' }}>Code</th>
-                <th style={{ padding: '0.25rem 0.6rem' }}>Description</th>
-                <th style={{ padding: '0.25rem 0.6rem' }}>Unit</th>
-                <th style={{ padding: '0.25rem 0.6rem', textAlign: 'right' }}>Qty ordered</th>
-                <th style={{ padding: '0.25rem 0.6rem', textAlign: 'right' }}>Qty received</th>
-                <th style={{ padding: '0.25rem 0.6rem', textAlign: 'right' }}>Unit cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {doc.ordered_received_elsewhere!.map((o, i) => (
-                <tr key={`${o.code || 'ore'}-${i}`} style={{ borderTop: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: '0.25rem 0.6rem' }}>{o.code || '—'}</td>
-                  <td style={{ padding: '0.25rem 0.6rem' }}>{o.description || '—'}</td>
-                  <td style={{ padding: '0.25rem 0.6rem' }}>{o.unit || '—'}</td>
-                  <td style={{ padding: '0.25rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.quantity_ordered ?? '—'}</td>
-                  <td style={{ padding: '0.25rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.quantity_received ?? '—'}</td>
-                  <td style={{ padding: '0.25rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.unit_cost != null ? cur(o.unit_cost) : '—'}</td>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="n-table" style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Description</th>
+                  <th>Unit</th>
+                  <th className="num">Qty ordered</th>
+                  <th className="num">Qty received</th>
+                  <th className="num">Unit cost</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {doc.ordered_received_elsewhere!.map((o, i) => (
+                  <tr key={`${o.code || 'ore'}-${i}`}>
+                    <td style={{ whiteSpace: 'nowrap' }}>{o.code || '—'}</td>
+                    <td>{o.description || '—'}</td>
+                    <td>{o.unit || '—'}</td>
+                    <td className="num">{o.quantity_ordered ?? '—'}</td>
+                    <td className="num">{o.quantity_received ?? '—'}</td>
+                    <td className="num">{o.unit_cost != null ? cur(o.unit_cost) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -2831,49 +2895,53 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           code nor as a substitute). Read-only; never sent on receive. The Loaded
           X-ray shows these inline instead, the way Loaded's own screen does. */}
       {viewMode !== 'loaded' && (doc.ordered_not_received?.length ?? 0) > 0 && (
-        <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee', background: '#fafafa' }}>
-          <div style={{ ...microLabel, marginBottom: 4 }}>
+        <div style={section}>
+          <div style={{ ...sectionTitle, marginBottom: 8 }}>
             Ordered, not delivered ({doc.ordered_not_received!.length})
           </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', color: '#8a8a8a' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', color: '#b0b0b0', fontSize: '0.6rem', textTransform: 'uppercase' }}>
-                <th style={{ padding: '0.25rem 0.6rem' }}>Code</th>
-                <th style={{ padding: '0.25rem 0.6rem' }}>Description</th>
-                <th style={{ padding: '0.25rem 0.6rem' }}>Unit</th>
-                <th style={{ padding: '0.25rem 0.6rem', textAlign: 'right' }}>Qty ordered</th>
-                <th style={{ padding: '0.25rem 0.6rem', textAlign: 'right' }}>Unit cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {doc.ordered_not_received!.map((o, i) => (
-                <tr key={`${o.code || 'onr'}-${i}`} style={{ borderTop: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: '0.25rem 0.6rem' }}>{o.code || '—'}</td>
-                  <td style={{ padding: '0.25rem 0.6rem' }}>{o.description || '—'}</td>
-                  <td style={{ padding: '0.25rem 0.6rem' }}>{o.unit || '—'}</td>
-                  <td style={{ padding: '0.25rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.quantity_ordered ?? '—'}</td>
-                  <td style={{ padding: '0.25rem 0.6rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{o.unit_cost != null ? cur(o.unit_cost) : '—'}</td>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="n-table" style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Description</th>
+                  <th>Unit</th>
+                  <th className="num">Qty ordered</th>
+                  <th className="num">Unit cost</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {doc.ordered_not_received!.map((o, i) => (
+                  <tr key={`${o.code || 'onr'}-${i}`}>
+                    <td style={{ whiteSpace: 'nowrap' }}>{o.code || '—'}</td>
+                    <td>{o.description || '—'}</td>
+                    <td>{o.unit || '—'}</td>
+                    <td className="num">{o.quantity_ordered ?? '—'}</td>
+                    <td className="num">{o.unit_cost != null ? cur(o.unit_cost) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
       {/* Add Item */}
       {!doneState && (
-        <div style={{ position: 'relative', padding: '0.4rem 0.9rem', borderTop: '1px solid #f3f3f3' }}>
-          <input type="text" placeholder="+ Add item…" value={addQuery}
-            onChange={(e) => { setAddQuery(e.target.value); setAddOpen(true); }}
-            onFocus={() => setAddOpen(true)}
-            onBlur={() => setTimeout(() => setAddOpen(false), 150)}
-            style={{ ...inputStyle, width: 240 }} />
+        <div style={{ ...section, position: 'relative' }}>
+          <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', width: 240, maxWidth: '100%' }}>
+            <Icon icon={Plus} size={16} tone="muted" style={{ position: 'absolute', left: 10, pointerEvents: 'none' }} />
+            <input type="text" className="n-input" placeholder="Add item…" value={addQuery}
+              onChange={(e) => { setAddQuery(e.target.value); setAddOpen(true); }}
+              onFocus={() => setAddOpen(true)}
+              onBlur={() => setTimeout(() => setAddOpen(false), 150)}
+              style={{ width: '100%', paddingLeft: 32 }} />
+          </span>
           {addOpen && filteredStock.length > 0 && (
-            <div style={{ position: 'absolute', zIndex: 20, background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, marginTop: 2, maxHeight: 220, overflowY: 'auto', minWidth: 280, boxShadow: '0 6px 18px rgba(0,0,0,0.12)' }}>
+            <div className="scroll-quiet" style={{ position: 'absolute', zIndex: 20, marginTop: 4, padding: '4px 0', maxHeight: 220, minWidth: 280, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', boxShadow: '0 6px 18px rgba(26,26,26,0.12)' }}>
               {filteredStock.map((i) => (
-                <div key={i.id} onMouseDown={() => addItem(i)}
-                  style={{ padding: '6px 10px', fontSize: '0.78rem', cursor: 'pointer' }}>
-                  {i.code ? <span style={{ color: '#999' }}>{i.code} · </span> : null}{i.name}
+                <div key={i.id} className="n-option" onMouseDown={() => addItem(i)}>
+                  {i.code ? <span style={{ color: 'var(--muted)' }}>{i.code} · </span> : null}{i.name}
                 </div>
               ))}
             </div>
@@ -2884,19 +2952,19 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {/* Totals block (bottom, Loaded layout). Display sums only — the stated
           total is a working value the server reconciles; a real drift rides
           in as a header_value suggestion, never derived here. */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0.5rem 0.9rem', borderTop: '1px solid #eee' }}>
-        <div style={{ minWidth: 220, fontSize: '0.78rem', fontVariantNumeric: 'tabular-nums' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
-            <span>Total excl Tax</span><span>{cur(totals.excl)}</span>
+      <div style={{ ...section, display: 'flex', justifyContent: 'flex-end' }}>
+        <div style={{ minWidth: 240, fontSize: 'var(--fs-base)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-soft)' }}>
+          <div style={totalRow}>
+            <span>Total excl tax</span><span>{cur(totals.excl)}</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
+          <div style={totalRow}>
             <span>Tax</span><span>{cur(totals.tax)}</span>
           </div>
           {/* The Loaded mirror shows the discount row even at zero, and a
               Rounding row reconciling the derived total to Loaded's stated
               one — both exactly as Loaded's own screen does. */}
           {(viewMode === 'loaded' || !!totals.discount) && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
+            <div style={totalRow}>
               <span>{viewMode === 'loaded' ? 'Discount incl tax' : 'Discount'}</span>
               <span>{totals.discount ? `−${cur(totals.discount)}` : cur(0)}</span>
             </div>
@@ -2911,52 +2979,54 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             // lie, and the Norm view already raises it as a suggestion.
             if (!rounding || Math.abs(rounding) > 0.1) return null;
             return (
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', color: '#555' }}>
+              <div style={totalRow}>
                 <span>Rounding</span><span>{rounding < 0 ? `−${cur(-rounding)}` : cur(rounding)}</span>
               </div>
             );
           })()}
-          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #eee', marginTop: 4, paddingTop: 4, fontWeight: 700 }}>
-            <span>Total incl Tax</span><span>{cur(totals.incl)}</span>
+          <div style={{ ...totalRow, borderTop: '1px solid var(--line)', marginTop: 6, paddingTop: 8, fontWeight: 600, color: 'var(--text)' }}>
+            <span>Total incl tax</span><span>{cur(totals.incl)}</span>
           </div>
         </div>
       </div>
 
       {/* Notes */}
-      <div style={{ padding: '0.5rem 0.9rem', borderTop: '1px solid #eee' }}>
-        <div style={{ ...microLabel, marginBottom: 3 }}>Notes</div>
-        <textarea value={doc.notes || ''} disabled={doneState} onChange={(e) => onNotes(e.target.value)}
-          placeholder="Notes on the received goods…" rows={2}
-          style={{ ...inputStyle, width: '100%', resize: 'vertical', minHeight: 40 }} />
+      <div style={section}>
+        <label style={fieldCol}>
+          <span className="n-label">Notes</span>
+          <textarea className="n-input" value={doc.notes || ''} disabled={doneState} onChange={(e) => onNotes(e.target.value)}
+            placeholder="Notes on the received goods…" rows={2}
+            style={{ width: '100%', minHeight: 40 }} />
+        </label>
       </div>
       </>)}
 
       {/* Dojo banner: run status + every mismatch vs the stored baseline.
           Replaces suggestions/issues/receive in dojo mode. */}
       {dojo && (
-        <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: (doc.dojo_diffs?.length ?? 0) > 0 ? 6 : 0 }}>
+        <div style={section}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: (doc.dojo_diffs?.length ?? 0) > 0 ? 8 : 0 }}>
             {(() => {
               const st = doc.dojo_status || 'new';
-              const palette: Record<string, { bg: string; fg: string; label: string; note: string }> = {
-                pass: { bg: '#d1fae5', fg: '#065f46', label: 'PASS', note: 'matches the stored expected extraction' },
-                fail: { bg: '#fee2e2', fg: '#991b1b', label: 'FAIL', note: `${doc.dojo_diffs?.length ?? 0} mismatch${(doc.dojo_diffs?.length ?? 0) === 1 ? '' : 'es'} vs the expected extraction` },
-                error: { bg: '#fee2e2', fg: '#991b1b', label: 'ERROR', note: 'the extraction run failed' },
-                new: { bg: '#fdf6e7', fg: '#8a6d3b', label: 'NO BASELINE', note: 'review the extracted values, then Save as expected' },
+              const palette: Record<string, { tone: BadgeTone; label: string; note: string }> = {
+                pass: { tone: 'ok', label: 'Pass', note: 'Matches the stored expected extraction' },
+                fail: { tone: 'error', label: 'Fail', note: `${doc.dojo_diffs?.length ?? 0} mismatch${(doc.dojo_diffs?.length ?? 0) === 1 ? '' : 'es'} vs the expected extraction` },
+                error: { tone: 'error', label: 'Error', note: 'The extraction run failed' },
+                new: { tone: 'accent', label: 'No baseline', note: 'Review the extracted values, then save as expected' },
               };
               const p = palette[st] || palette.new;
               return (
                 <>
-                  <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: p.bg, color: p.fg }}>{p.label}</span>
-                  <span style={{ fontSize: '0.7rem', color: '#777' }}>{p.note}</span>
+                  <Badge tone={p.tone}>{p.label}</Badge>
+                  <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{p.note}</span>
                 </>
               );
             })()}
           </div>
           {(doc.dojo_diffs || []).map((d, i) => (
-            <div key={`dj-${i}`} style={{ fontSize: '0.66rem', color: '#c0392b', display: 'flex', gap: 6, padding: '1px 0' }}>
-              <span>✗</span>
-              <span>
+            <div key={`dj-${i}`} style={{ ...iconLine, padding: '2px 0', fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>
+              <Icon icon={X} size={14} style={iconNudge} />
+              <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
                 {d.line != null ? `Line ${d.line}${d.description ? ` · ${d.description}` : ''}: ` : ''}
                 {d.field === 'line_missing' ? 'missing from this run'
                   : d.field === 'line_extra' ? 'extra line not in the baseline'
@@ -2972,51 +3042,51 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           surfaces can never diverge. The action record renders compactly
           underneath. */}
       {!dojo && !studying && viewMode === 'norm' && (suggestions.length > 0 || (reviewed && !doneState)) && (
-        <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-            <div style={{ ...microLabel, color: '#8a6d3b' }}>
+        <div style={section}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+            <div style={sectionTitle}>
               {suggestions.length === 0
                 ? 'No changes suggested'
                 : `Suggested changes (${pendingSuggestions.length ? `${pendingSuggestions.length} pending` : 'all decided'})`}
             </div>
             {!doneState && !embedded && (
-              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+              <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {acceptAllCount > 0 && (
-                  <button type="button" onClick={acceptAllSuggestions} disabled={accepting !== null}
+                  <Button size="sm" onClick={acceptAllSuggestions} disabled={accepting !== null}
                     title={deleteSugg && stateOf(deleteSugg.id) === 'pending'
                       ? 'accepts every change EXCEPT deleting the draft — that one stays a deliberate click'
-                      : 'accept every pending change at once'}
-                    style={{ fontSize: '0.66rem', padding: '3px 10px', border: '1px solid #b78a2f', borderRadius: 4, background: '#fff', color: '#8a6d3b', cursor: accepting !== null ? 'default' : 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
+                      : 'accept every pending change at once'}>
                     Accept all ({acceptAllCount})
-                  </button>
+                  </Button>
                 )}
                 {/* The measurement half of the loop: this invoice defeated
                     Norm, so file it for training rather than fixing it by
                     hand and leaving no trace. */}
-                <button type="button" onClick={cannotReceive} disabled={cannotState === 'sending' || cannotState === 'filed'}
+                <Button size="sm" variant="quiet" onClick={cannotReceive} disabled={cannotState === 'sending' || cannotState === 'filed'}
+                  icon={cannotState === 'filed' ? Check : undefined}
                   title="Norm can't get this invoice right — file it for training. Nothing is received."
-                  style={{ fontSize: '0.66rem', padding: '3px 10px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: cannotState === 'filed' ? '#2e7d4f' : '#777', cursor: cannotState ? 'default' : 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
-                  {cannotState === 'sending' ? 'Filing…' : cannotState === 'filed' ? '✓ Filed for training' : "Can't receive"}
-                </button>
+                  style={cannotState === 'filed' ? { color: 'var(--ok)', opacity: 1 } : undefined}>
+                  {cannotState === 'sending' ? 'Filing…' : cannotState === 'filed' ? 'Filed for training' : "Can't receive"}
+                </Button>
               </div>
             )}
           </div>
           {[...suggestions].sort((a, b) => Number(stateOf(a.id) !== 'pending') - Number(stateOf(b.id) !== 'pending')).map(suggRow)}
           {effectiveActions.length > 0 && (
-            <details style={{ marginTop: 4 }}>
-              <summary style={{ fontSize: '0.62rem', color: '#9ca3af', cursor: 'pointer', userSelect: 'none' }}>
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', cursor: 'pointer', userSelect: 'none' }}>
                 {[
                   recordCounts.norm ? `Norm applied ${recordCounts.norm} change${recordCounts.norm > 1 ? 's' : ''}` : null,
                   recordCounts.user ? `you applied ${recordCounts.user}` : null,
                   recordCounts.dismissed ? `dismissed ${recordCounts.dismissed}` : null,
                 ].filter(Boolean).join(' · ') || 'action record'}
               </summary>
-              <div style={{ marginTop: 3 }}>
+              <div style={{ marginTop: 4 }}>
                 {actionsList.map((a, i) => (
-                  <div key={`ar-${i}`} style={{ fontSize: '0.6rem', color: '#9ca3af', display: 'flex', gap: 6, padding: '1px 0' }}>
+                  <div key={`ar-${i}`} style={{ display: 'flex', gap: 8, padding: '2px 0', fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
                     <span style={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{a.at ? a.at.replace('T', ' ').slice(0, 16) : '—'}</span>
-                    <span style={{ whiteSpace: 'nowrap', fontWeight: 600 }}>{a.by === 'norm' ? 'Norm' : 'you'} {a.action}</span>
-                    <span style={{ flex: 1 }}>{explanationFor(a.suggestion_id)}</span>
+                    <span style={{ whiteSpace: 'nowrap', fontWeight: 600, color: 'var(--text-soft)' }}>{a.by === 'norm' ? 'Norm' : 'you'} {a.action}</span>
+                    <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{explanationFor(a.suggestion_id)}</span>
                   </div>
                 ))}
               </div>
@@ -3030,10 +3100,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           until their clears_when predicate holds against the working values, or
           the user marks them checked. */}
       {!dojo && viewMode === 'norm' && !draftDeleted && (issues.length > 0 || reviewing || !reviewed) && (
-        <div style={{ padding: '0.55rem 0.9rem', borderTop: '1px solid #eee' }}>
+        <div style={{ ...section, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {/* Blockers sit on the error tint while any is still open; once
+              every one is cleared — or the invoice is received anyway — the
+              box goes quiet (the rows read as the record). */}
           {blockingIssues.length > 0 && (
-            <div>
-              <div style={{ ...microLabel, color: '#c0392b', marginBottom: 3 }}>Blocked from auto receive</div>
+            <div role="group" aria-label="Blocked from auto receive"
+              style={{ padding: '10px 12px', borderRadius: 'var(--radius)', background: blockingOpen.length && !doneState ? 'var(--error-bg)' : 'var(--surface)' }}>
+              <div style={{ ...sectionTitle, marginBottom: 2, color: blockingOpen.length && !doneState ? 'var(--error)' : 'var(--text-soft)' }}>Blocked from auto receive</div>
               {blockingIssues.map(issueRow)}
             </div>
           )}
@@ -3044,13 +3118,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               belonging to the supplier who sells through this one, a credit
               note that will reverse stock. */}
           {warningIssues.length > 0 && (
-            <div style={{ marginTop: blockingIssues.length > 0 ? 8 : 0 }}>
-              <div style={{ ...microLabel, color: '#8a6d3b', marginBottom: 3 }}>Worth knowing</div>
+            <div role="group" aria-label="Worth knowing"
+              style={{ padding: '10px 12px', borderRadius: 'var(--radius)', background: doneState ? 'var(--surface)' : 'var(--warn-bg)' }}>
+              <div style={{ ...sectionTitle, marginBottom: 2, color: doneState ? 'var(--text-soft)' : 'var(--warn)' }}>Worth knowing</div>
               {warningIssues.map(issueRow)}
             </div>
           )}
           {issues.length === 0 && (
-            <div style={{ fontSize: '0.64rem', color: '#9ca3af' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+              {reviewing && <Icon icon={LoaderCircle} size={14} tone="muted" style={{ animation: 'n-spin 1s linear infinite' }} />}
               {reviewing ? 'Reviewing the invoice against the attached copy…' : 'Not yet reviewed.'}
             </div>
           )}
@@ -3060,21 +3136,20 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       {/* The one recovery control: re-analyse from scratch (confirmed —
           discards local edits and the accept record). */}
       {!dojo && !collapsed && !embedded && !doneState && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0.4rem 0.9rem', borderTop: '1px solid #eee' }}>
-          <span style={{ fontSize: '0.62rem', color: '#9ca3af' }}>
-            {reviewing ? 'reviewing…' : studying ? 'Norm is studying this supplier…' : reviewed ? `reviewed ${String(docLive.reviewed_at).replace('T', ' ').slice(0, 16)}` : 'not yet reviewed'}
+        <div style={{ ...section, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, paddingTop: 8, paddingBottom: 8 }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+            {reviewing ? 'Reviewing…' : studying ? 'Norm is studying this supplier…' : reviewed ? `Reviewed ${String(docLive.reviewed_at).replace('T', ' ').slice(0, 16)}` : 'Not yet reviewed'}
           </span>
-          <button type="button" onClick={() => { void reanalyse(); }} disabled={reviewing}
-            title="rebuild this invoice from Loaded and the copy and review it from scratch — resets your edits and accepted suggestions"
-            style={{ fontSize: '0.6rem', padding: '1px 8px', border: '1px solid #d8d4cc', borderRadius: 4, background: '#fff', color: '#8a8a8a', cursor: reviewing ? 'default' : 'pointer', fontFamily: 'inherit' }}>
-            {reviewing ? 'running…' : 'Re-analyse'}
-          </button>
+          <Button size="sm" variant="quiet" icon={RefreshCw} onClick={() => { void reanalyse(); }} disabled={reviewing}
+            title="rebuild this invoice from Loaded and the copy and review it from scratch — resets your edits and accepted suggestions">
+            {reviewing ? 'Running…' : 'Re-analyse'}
+          </Button>
         </div>
       )}
 
       {/* Footer */}
       {!dojo && (
-      <div style={{ padding: '0.6rem 0.9rem', borderTop: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
+      <div style={{ ...section, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px 12px' }}>
         {/* Only what has nowhere else to appear. Every "you can't receive
             because..." line this used to carry is now said once, in its own
             words, on the row that owns it: Suggested changes, Blocked from
@@ -3085,35 +3160,41 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             What stays is the transient and the terminal — a failed receive,
             a receive in flight, a receive that happened. None of those has a
             section of its own. */}
-        <span style={{ flex: 1, fontSize: '0.72rem', color: status === 'error' ? '#c0392b' : doneState ? '#2e7d4f' : '#888' }}>
-          {status === 'error' ? `✗ ${message}`
-            : draftDeleted ? `✓ Draft deleted from Loaded${doc.deleted_reason ? ` — ${doc.deleted_reason}` : ' — this document was a supplier statement or duplicate.'}`
-            : doneState ? '✓ Received in Loaded.'
-            : status === 'saving' ? 'Receiving…'
-            : ''}
-        </span>
-        {overlay && (
-          <button type="button" onClick={() => setExpandedFull(false)}
-            style={{ padding: '0.4rem 1rem', fontSize: '0.78rem', border: '1px solid #d8d4cc', borderRadius: 6, background: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-            Close
-          </button>
+        {(status === 'error' || doneState || status === 'saving') && (
+          <span style={{ ...iconLine, flex: '1 1 220px', minWidth: 0, fontSize: 'var(--fs-sm)', fontWeight: 500, color: status === 'error' ? 'var(--error)' : doneState ? 'var(--ok)' : 'var(--muted)' }}>
+            {status === 'error' ? (
+              <><Icon icon={TriangleAlert} size={15} style={iconNudge} /><span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{message}</span></>
+            ) : draftDeleted ? (
+              <><Icon icon={Check} size={15} style={iconNudge} /><span>{`Draft deleted from Loaded${doc.deleted_reason ? ` — ${doc.deleted_reason}` : ' — this document was a supplier statement or duplicate.'}`}</span></>
+            ) : doneState ? (
+              <><Icon icon={Check} size={15} style={iconNudge} /><span>Received in Loaded.</span></>
+            ) : 'Receiving…'}
+          </span>
         )}
-        {!doneState && (
-          <button onClick={receive} disabled={receiveBlocked}
-            title={
-              noLines
-                ? 'This draft has no line items — nothing to receive'
-                : supplierBlocking
-                ? 'Pick the supplier first — Loaded can’t receive a supplier-less invoice'
-                // It used to say "items/units" whatever was actually wrong —
-                // including a brand, which is neither.
-                : blockedCount > 0
-                  ? `${blockedCount} thing${blockedCount > 1 ? 's' : ''} to sort out above — each row says what it needs`
-                  : undefined
-            }
-            style={{ padding: '0.4rem 1.1rem', fontSize: '0.78rem', fontWeight: 500, border: 'none', borderRadius: 6, cursor: receiveBlocked ? 'not-allowed' : 'pointer', background: '#2e7d4f', color: '#fff', fontFamily: 'inherit', opacity: receiveBlocked ? 0.5 : 1, whiteSpace: 'nowrap' }}>
-            {status === 'saving' ? 'Receiving…' : isCredit ? 'Accept & Receive credit' : 'Accept & Receive'}
-          </button>
+        {(overlay || !doneState) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginLeft: 'auto' }}>
+            {overlay && (
+              <Button onClick={() => setExpandedFull(false)}>
+                Close
+              </Button>
+            )}
+            {!doneState && (
+              <Button variant="primary" icon={Check} onClick={receive} disabled={receiveBlocked}
+                title={
+                  noLines
+                    ? 'This draft has no line items — nothing to receive'
+                    : supplierBlocking
+                    ? 'Pick the supplier first — Loaded can’t receive a supplier-less invoice'
+                    // It used to say "items/units" whatever was actually wrong —
+                    // including a brand, which is neither.
+                    : blockedCount > 0
+                      ? `${blockedCount} thing${blockedCount > 1 ? 's' : ''} to sort out above — each row says what it needs`
+                      : undefined
+                }>
+                {status === 'saving' ? 'Receiving…' : isCredit ? 'Accept & Receive credit' : 'Accept & Receive'}
+              </Button>
+            )}
+          </div>
         )}
       </div>
       )}
@@ -3126,16 +3207,16 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     <>
       {/* In-flow stub keeps the thread from jumping while the full editor is
           open in the overlay. */}
-      <div style={{ border: '1px dashed #d8d4cc', borderRadius: 10, padding: '0.55rem 0.9rem', fontSize: '0.72rem', color: '#8a8a8a', background: '#fbfaf8' }}>
+      <div style={{ border: '1px dashed var(--line-strong)', borderRadius: 'var(--radius-lg)', padding: '12px 16px', fontSize: 'var(--fs-sm)', color: 'var(--muted)', background: 'var(--surface)' }}>
         {doc.supplier_name || '—'} · {doc.reference_number || '(no number)'} — open in the expanded view
       </div>
       <div
         onClick={() => setExpandedFull(false)}
-        style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(30,28,24,0.4)', overflowY: 'auto', padding: '2rem 1rem' }}>
+        style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(30,28,24,0.4)', overflowY: 'auto', padding: '32px 16px' }}>
         {/* Constrained to the card's width so clicks BESIDE the card hit the
             backdrop (a full-width block here used to swallow them — closing
             only worked below the card). */}
-        <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: 1100, margin: '0 auto' }}>{card}</div>
+        <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: 1200, margin: '0 auto' }}>{card}</div>
       </div>
     </>
   );

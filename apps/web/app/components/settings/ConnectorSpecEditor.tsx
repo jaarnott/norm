@@ -1,13 +1,18 @@
 'use client';
 
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { ChevronRight, ChevronDown } from 'lucide-react';
+import { ChevronRight, ChevronDown, Check, X, Plus, GripVertical, CornerDownRight } from 'lucide-react';
 import type { ConnectorSpecFull, ConnectorSpecTool, SpecInventoryRow, TestRequest } from '../../types';
 import { apiFetch, getToken } from '../../lib/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import FunctionEditor from './FunctionEditor';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import Icon from '../ui/Icon';
+import Badge from '../ui/Badge';
+import BackLink from '../ui/BackLink';
 
 interface Props {
   spec: ConnectorSpecFull | null;
@@ -87,38 +92,48 @@ function toStoredSpec(form: ConnectorSpecFull, split: boolean): ConnectorSpecFul
   };
 }
 
-const rowBadge = (color: string, bg: string): React.CSSProperties => ({
-  fontSize: '0.65rem', fontWeight: 600, color, backgroundColor: bg,
-  padding: '1px 6px', borderRadius: 3, marginLeft: 4, whiteSpace: 'nowrap',
+const rowMeta: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' };
+
+// Text fields take .n-input, selects .n-select and labels .n-label (tokens.css);
+// these only stretch a field to its column, or set code in monospace.
+const fieldStyle: React.CSSProperties = { width: '100%' };
+// Two equal columns on a wide card; one column once a column would drop under
+// 220px (phones). Each track is at least half the row, so never more than two.
+const twoColGrid: React.CSSProperties = {
+  display: 'grid', gap: '0.75rem',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(max(220px, calc(50% - 0.375rem)), 1fr))',
+};
+const codeFieldStyle: React.CSSProperties = { width: '100%', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' };
+// Inputs inside the field table: borderless — the table's rules are their edges.
+const cellInputStyle: React.CSSProperties = {
+  width: '100%', border: 'none', padding: '4px 6px', borderRadius: 'var(--radius-sm)',
+  fontFamily: 'inherit', fontSize: 'var(--fs-base)', color: 'var(--text)', backgroundColor: 'transparent', boxSizing: 'border-box',
+};
+
+// Each group of settings is a white card on the cream page, titled like the
+// cards in the design foundations: 18px/600 title, 13px muted note under it.
+const sectionStyle: React.CSSProperties = { marginBottom: 16, padding: '20px 24px' };
+const sectionTitle: React.CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' };
+const sectionNote: React.CSSProperties = { margin: '2px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
+// "Nothing here yet" lines inside a card.
+const emptyNote: React.CSSProperties = { margin: 0, fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
+// Small label over a group (Request, Response, a field list's column heads).
+const groupLabel: React.CSSProperties = { fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-soft)', marginBottom: 4 };
+// JSON, requests and logs: the warm dark code block.
+const codeBlock: React.CSSProperties = {
+  margin: 0, padding: '10px 12px', borderRadius: 'var(--radius)',
+  background: 'var(--code-bg)', color: 'var(--code-text)',
+  fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', lineHeight: 1.5,
+  overflow: 'auto',
+};
+const wrapCode: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-all' };
+// A result on its status tint (passed / failed).
+const resultBox = (ok: boolean): React.CSSProperties => ({
+  padding: '8px 10px', borderRadius: 'var(--radius)', userSelect: 'text',
+  background: ok ? 'var(--ok-bg)' : 'var(--error-bg)', color: 'var(--text)',
 });
-const rowMeta: React.CSSProperties = { fontSize: '0.7rem', color: '#888', whiteSpace: 'nowrap' };
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '8px 10px',
-  border: '1px solid #ddd',
-  borderRadius: 6,
-  fontSize: '0.85rem',
-  fontFamily: 'inherit',
-  boxSizing: 'border-box',
-  outline: 'none',
-};
-
-const labelStyle: React.CSSProperties = {
-  display: 'block',
-  fontSize: '0.78rem',
-  fontWeight: 500,
-  color: '#555',
-  marginBottom: 4,
-};
-
-const sectionStyle: React.CSSProperties = {
-  marginBottom: '1.25rem',
-  padding: '1rem',
-  border: '1px solid #edf2f7',
-  borderRadius: 8,
-  backgroundColor: '#fafafa',
-};
+// Disclosure summary inside a result ("Raw JSON", "Step result").
+const detailsSummary: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)', cursor: 'pointer' };
 
 /** Textarea for JSON values that keeps a local draft so you can type invalid intermediate JSON. */
 function JsonTextarea({ value, onChange, rows, placeholder, style, autoResize }: {
@@ -172,9 +187,13 @@ function JsonTextarea({ value, onChange, rows, placeholder, style, autoResize }:
       }}
       rows={autoResize ? 1 : rows}
       placeholder={placeholder}
+      aria-invalid={valid ? undefined : true}
+      className="n-input"
       style={{
         ...style,
-        outline: valid ? undefined : '2px solid #e53e3e',
+        // Invalid JSON: a red edge. Not an outline — the focus ring
+        // (globals.css, !important) would hide it while you type.
+        ...(valid ? {} : { borderColor: 'var(--error)', boxShadow: '0 0 0 1px var(--error)' }),
         ...(autoResize ? { overflow: 'hidden', resize: 'none' } : {}),
       }}
     />
@@ -209,6 +228,7 @@ function AutoResizeTextarea({ value, onChange, placeholder, style }: {
       }}
       rows={1}
       placeholder={placeholder}
+      className="n-input"
       style={{ ...style, overflow: 'hidden', resize: 'none' }}
     />
   );
@@ -539,8 +559,8 @@ function FieldMappingEditor({
           />
         </label>
         <div style={{ display: 'flex', alignItems: 'center' }}>
-          {indent > 0 && <span style={{ color: '#ccc', fontSize: '0.7rem', marginRight: 4 }}>└</span>}
-          <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: '#555' }}>
+          {indent > 0 && <Icon icon={CornerDownRight} size="meta" tone="muted" style={{ marginRight: 4 }} />}
+          <span style={{ fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--text-soft)' }}>
             {src.includes('[].') ? src.split('[].').pop() : src}
           </span>
         </div>
@@ -549,15 +569,16 @@ function FieldMappingEditor({
           onChange={e => updateField(src, src, rebuildDest(e.target.value, roundVal, dtVal))}
           placeholder="(excluded)"
           disabled={!included}
-          style={{ ...inputStyle, fontSize: '0.78rem', opacity: included ? 1 : 0.5 }}
+          className="n-input"
+          style={{ ...fieldStyle, height: 30, fontSize: 'var(--fs-sm)', opacity: included ? 1 : 0.5 }}
         />
         <select
           value={roundVal}
           onChange={e => updateField(src, src, rebuildDest(destName || leaf, e.target.value, dtVal))}
           disabled={!included}
           style={{
-            width: 48, fontSize: '0.68rem', padding: '2px 2px', border: '1px solid #e2ddd7',
-            borderRadius: 4, backgroundColor: '#fff', color: roundVal ? '#333' : '#bbb',
+            width: 48, fontSize: 'var(--fs-xs)', padding: '2px 2px', border: '1px solid var(--line-strong)',
+            borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg)', color: roundVal ? 'var(--text)' : 'var(--muted)',
             fontFamily: 'inherit', opacity: included ? 1 : 0.4, cursor: included ? 'pointer' : 'default',
           }}
         >
@@ -573,8 +594,8 @@ function FieldMappingEditor({
           onChange={e => updateField(src, src, rebuildDest(destName || leaf, roundVal, e.target.value))}
           disabled={!included}
           style={{
-            width: 62, fontSize: '0.68rem', padding: '2px 2px', border: '1px solid #e2ddd7',
-            borderRadius: 4, backgroundColor: '#fff', color: dtVal ? '#333' : '#bbb',
+            width: 62, fontSize: 'var(--fs-xs)', padding: '2px 2px', border: '1px solid var(--line-strong)',
+            borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg)', color: dtVal ? 'var(--text)' : 'var(--muted)',
             fontFamily: 'inherit', opacity: included ? 1 : 0.4, cursor: included ? 'pointer' : 'default',
           }}
         >
@@ -589,14 +610,14 @@ function FieldMappingEditor({
 
   return (
     <div style={{ marginBottom: '0.5rem' }}>
-      <div style={{ fontSize: '0.7rem', color: '#999', marginBottom: 4 }}>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 4 }}>
         Fetch a sample response to generate field mappings. Toggle fields to include/exclude, and edit output names.
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr auto', gap: '0 6px', marginBottom: 4 }}>
         <div style={{ width: 20 }} />
-        <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.03em', padding: '0 2px' }}>Source Field</div>
-        <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.03em', padding: '0 2px' }}>Output Name</div>
-        <div style={{ width: 48, fontSize: '0.65rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.03em', textAlign: 'center' }}>Round</div>
+        <div style={{ ...groupLabel, marginBottom: 0, padding: '0 2px' }}>Source field</div>
+        <div style={{ ...groupLabel, marginBottom: 0, padding: '0 2px' }}>Output name</div>
+        <div style={{ ...groupLabel, marginBottom: 0, width: 48, textAlign: 'center' }}>Round</div>
       </div>
 
       {/* Top-level fields */}
@@ -612,7 +633,7 @@ function FieldMappingEditor({
           return (
             <div key={src}>
               {showHeader && (
-                <div style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', padding: '4px 0 2px 0', marginTop: 4, borderTop: '1px solid #f0f0f0', paddingLeft: 26 }}>
+                <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--muted)', padding: '4px 0 2px 0', marginTop: 4, borderTop: '1px solid var(--line-soft)', paddingLeft: 26 }}>
                   {parent}
                 </div>
               )}
@@ -627,32 +648,36 @@ function FieldMappingEditor({
         const isCollapsed = collapsed.has(arrName);
         const isFlattened = flattenList.includes(arrName);
         return (
-          <div key={arrName} style={{ marginTop: 4, borderTop: '1px solid #f0f0f0', paddingTop: 4 }}>
+          <div key={arrName} style={{ marginTop: 4, borderTop: '1px solid var(--line-soft)', paddingTop: 4 }}>
             {/* Array parent header */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
               <button
+                type="button"
                 onClick={() => toggleCollapse(arrName)}
-                style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0, fontSize: '0.7rem', color: '#888', width: 20, textAlign: 'center' }}
-              >{isCollapsed ? '▶' : '▼'}</button>
-              <span style={{ fontSize: '0.75rem', fontWeight: 600, fontFamily: 'monospace', color: '#555' }}>
+                aria-label={isCollapsed ? `Show ${arrName} fields` : `Hide ${arrName} fields`}
+                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'none', cursor: 'pointer', padding: 0, color: 'var(--icon)', width: 20 }}
+              ><Icon icon={isCollapsed ? ChevronRight : ChevronDown} size="dense" /></button>
+              <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--text-soft)' }}>
                 {arrName}[]
               </span>
-              <span style={{ fontSize: '0.62rem', color: '#aaa' }}>{entries.length} fields</span>
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{entries.length} fields</span>
               <button
+                type="button"
                 onClick={() => toggleFlatten(arrName)}
                 title={isFlattened ? 'Flattened into parent rows — click to keep nested' : 'Click to flatten into parent rows'}
+                aria-pressed={isFlattened}
                 style={{
-                  border: '1px solid ' + (isFlattened ? '#2563eb' : '#cbd5e1'),
-                  borderRadius: 3,
-                  backgroundColor: isFlattened ? '#eff6ff' : '#fff',
-                  color: isFlattened ? '#2563eb' : '#888',
-                  padding: '1px 6px',
-                  fontSize: '0.62rem',
+                  border: '1px solid ' + (isFlattened ? 'var(--brand-soft)' : 'var(--line-strong)'),
+                  borderRadius: 999,
+                  backgroundColor: isFlattened ? 'var(--accent-soft)' : 'var(--bg)',
+                  color: isFlattened ? 'var(--accent)' : 'var(--text-soft)',
+                  padding: '1px 8px',
+                  fontSize: 'var(--fs-2xs)',
                   fontWeight: 600,
                   cursor: 'pointer',
                   fontFamily: 'inherit',
                 }}
-              >{isFlattened ? '⊟ Flattened' : '⊞ Flatten'}</button>
+              >{isFlattened ? 'Flattened' : 'Flatten'}</button>
             </div>
             {/* Array sub-fields — split into direct and nested sub-arrays */}
             {!isCollapsed && (() => {
@@ -683,13 +708,15 @@ function FieldMappingEditor({
                       <div key={subKey} style={{ marginTop: 2, marginLeft: 24 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
                           <button
+                            type="button"
                             onClick={() => toggleCollapse(subKey)}
-                            style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0, fontSize: '0.65rem', color: '#aaa', width: 16, textAlign: 'center' }}
-                          >{subCollapsed ? '▶' : '▼'}</button>
-                          <span style={{ fontSize: '0.7rem', fontWeight: 600, fontFamily: 'monospace', color: '#888' }}>
+                            aria-label={subCollapsed ? `Show ${subArrName} fields` : `Hide ${subArrName} fields`}
+                            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'none', cursor: 'pointer', padding: 0, color: 'var(--icon)', width: 16 }}
+                          ><Icon icon={subCollapsed ? ChevronRight : ChevronDown} size="meta" /></button>
+                          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>
                             {subArrName}[]
                           </span>
-                          <span style={{ fontSize: '0.58rem', color: '#bbb' }}>{subEntries.length} fields</span>
+                          <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--muted)' }}>{subEntries.length} fields</span>
                         </div>
                         {!subCollapsed && subEntries.map(([src, dest]) => renderFieldRow(src, dest, 40))}
                       </div>
@@ -714,14 +741,12 @@ interface ChatMessage {
 }
 
 function ConsolidatorToolEditor({
-  op, idx, updateTool, setForm, labelStyle, inputStyle,
+  op, idx, updateTool, setForm,
 }: {
   op: ConnectorSpecTool;
   idx: number;
   updateTool: (index: number, field: keyof ConnectorSpecTool, value: unknown) => void;
   setForm: React.Dispatch<React.SetStateAction<ConnectorSpecFull>>;
-  labelStyle: React.CSSProperties;
-  inputStyle: React.CSSProperties;
 }) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -881,10 +906,10 @@ function ConsolidatorToolEditor({
     if (event.type === 'tool_use') {
       const displayName = (event.name || '').replace('__', '.');
       return (
-        <div key={i} style={{ fontSize: '0.72rem', color: '#7c3aed', padding: '4px 8px', backgroundColor: '#faf5ff', borderRadius: 4, marginBottom: 4, userSelect: 'text' }}>
-          Calling <strong>{displayName}</strong>
+        <div key={i} style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', padding: '4px 8px', backgroundColor: 'var(--surface-alt)', borderRadius: 'var(--radius-sm)', marginBottom: 4, userSelect: 'text' }}>
+          Calling <strong style={{ fontWeight: 600, color: 'var(--text)' }}>{displayName}</strong>
           {event.input && Object.keys(event.input).length > 0 && (
-            <span style={{ color: '#999', marginLeft: 4 }}>
+            <span style={{ color: 'var(--muted)', marginLeft: 4 }}>
               ({Object.entries(event.input).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ').slice(0, 120)})
             </span>
           )}
@@ -898,19 +923,19 @@ function ConsolidatorToolEditor({
       const preview = r._preview as unknown[] | undefined;
       const hasData = r.data != null || preview != null;
       return (
-        <div key={i} style={{ fontSize: '0.72rem', padding: '4px 8px', backgroundColor: isSuccess ? '#f0fdf4' : '#fef2f2', borderRadius: 4, marginBottom: 4, border: `1px solid ${isSuccess ? '#bbf7d0' : '#fecaca'}`, userSelect: 'text' }}>
+        <div key={i} style={{ ...resultBox(isSuccess), padding: '4px 8px', marginBottom: 4, fontSize: 'var(--fs-sm)', borderRadius: 'var(--radius-sm)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-            <span style={{ color: isSuccess ? '#16a34a' : '#dc2626' }}>{isSuccess ? '\u2713' : '\u2717'}</span>
-            <span>{isSuccess ? 'Success' : 'Failed'}</span>
-            {summary ? <span style={{ color: '#888', marginLeft: 4 }}>({summary})</span> : null}
-            {r.error ? <span style={{ color: '#dc2626' }}>— {String(r.error)}</span> : null}
+            <Icon icon={isSuccess ? Check : X} size="dense" style={{ color: isSuccess ? 'var(--ok)' : 'var(--error)' }} />
+            <span style={{ fontWeight: 500, color: isSuccess ? 'var(--ok)' : 'var(--error)' }}>{isSuccess ? 'Success' : 'Failed'}</span>
+            {summary ? <span style={{ color: 'var(--muted)', marginLeft: 4 }}>({summary})</span> : null}
+            {r.error ? <span style={{ color: 'var(--error)' }}>— {String(r.error)}</span> : null}
           </div>
           {hasData && (
             <details>
-              <summary style={{ fontSize: '0.65rem', color: '#888', cursor: 'pointer' }}>
+              <summary style={detailsSummary}>
                 {preview ? `Preview (${(preview as unknown[]).length} of ${summary || '?'})` : 'Response data'}
               </summary>
-              <pre style={{ fontSize: '0.62rem', margin: '4px 0 0', overflow: 'auto', maxHeight: 150, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+              <pre style={{ ...codeBlock, ...wrapCode, margin: '4px 0 0', maxHeight: 150 }}>
                 {JSON.stringify(preview || r.data, null, 2)}
               </pre>
             </details>
@@ -920,7 +945,8 @@ function ConsolidatorToolEditor({
     }
     if (event.type === 'save') {
       return (
-        <div key={i} style={{ fontSize: '0.72rem', color: '#16a34a', padding: '4px 8px', backgroundColor: '#f0fdf4', borderRadius: 4, marginBottom: 4 }}>
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', color: 'var(--ok)', padding: '4px 8px', backgroundColor: 'var(--ok-bg)', borderRadius: 'var(--radius-sm)', marginBottom: 4 }}>
+          <Icon icon={Check} size="dense" />
           Config saved to tool
         </div>
       );
@@ -930,56 +956,55 @@ function ConsolidatorToolEditor({
 
   return (
     <div>
-      {/* Action + Description */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
-        <div>
-          <label style={labelStyle}>Action</label>
+      {/* Action + Description: 1:2 on a wide card, stacked on a phone. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '0.75rem' }}>
+        <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+          <label className="n-label">Action</label>
           <input
             type="text"
             value={op.action}
             onChange={e => updateTool(idx, 'action', e.target.value)}
             placeholder="get_stock_comparison"
-            style={inputStyle}
+            className="n-input"
+            style={fieldStyle}
           />
         </div>
-        <div>
-          <label style={labelStyle}>Description</label>
+        <div style={{ flex: '2 1 360px', minWidth: 0 }}>
+          <label className="n-label">Description</label>
           <input
             type="text"
             value={op.description || ''}
             onChange={e => updateTool(idx, 'description', e.target.value || undefined)}
             placeholder="What this consolidator does"
-            style={inputStyle}
+            className="n-input"
+            style={fieldStyle}
           />
         </div>
       </div>
 
       {/* Chat area */}
       <div style={{
-        border: '1px solid #e2e8f0', borderRadius: '8px 8px 0 0',
-        height: chatHeight, minHeight: 120, overflowY: 'auto', padding: '0.5rem',
-        backgroundColor: '#fafafa', userSelect: 'text', resize: 'vertical',
+        border: '1px solid var(--line)', borderRadius: 'var(--radius)',
+        height: chatHeight, minHeight: 120, overflowY: 'auto', padding: '10px 12px',
+        backgroundColor: 'var(--surface)', userSelect: 'text', resize: 'vertical',
       }}>
         {chatMessages.length === 0 && !streamingText && (
-          <div style={{ color: '#aaa', fontSize: '0.78rem', textAlign: 'center', padding: '2rem 1rem' }}>
+          <div style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)', textAlign: 'center', padding: '2rem 1rem' }}>
             Describe what this consolidator should do, or ask to test/fix the current config.
           </div>
         )}
         {chatMessages.map((msg, i) => (
-          <div key={i} style={{ marginBottom: '0.5rem' }}>
-            <div style={{
-              fontSize: '0.62rem', fontWeight: 600, color: msg.role === 'user' ? '#7c3aed' : '#555',
-              textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2,
-            }}>
+          <div key={i} style={{ marginBottom: '0.75rem' }}>
+            <div className="n-eyebrow" style={{ marginBottom: 2 }}>
               {msg.role === 'user' ? 'You' : 'AI'}
             </div>
             {msg.toolEvents?.map((ev, j) => renderToolEvent(ev, j) as React.ReactNode)}
             {msg.role === 'assistant' ? (
-              <div className="markdown-message" style={{ fontSize: '0.78rem', color: '#333', lineHeight: 1.5 }}>
+              <div className="markdown-message" style={{ fontSize: 'var(--fs-base)', color: 'var(--text)', lineHeight: 1.5 }}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{String(msg.content)}</ReactMarkdown>
               </div>
             ) : (
-              <div style={{ fontSize: '0.78rem', color: '#333', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+              <div style={{ fontSize: 'var(--fs-base)', color: 'var(--text)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
                 {String(msg.content)}
               </div>
             )}
@@ -987,15 +1012,15 @@ function ConsolidatorToolEditor({
         ))}
         {/* Streaming state */}
         {chatLoading && (
-          <div style={{ marginBottom: '0.5rem' }}>
-            <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#555', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>AI</div>
+          <div style={{ marginBottom: '0.75rem' }}>
+            <div className="n-eyebrow" style={{ marginBottom: 2 }}>AI</div>
             {streamingEvents?.map((ev, j) => renderToolEvent(ev, j) as React.ReactNode)}
             {streamingText ? (
-              <div className="markdown-message" style={{ fontSize: '0.78rem', color: '#333', lineHeight: 1.5 }}>
+              <div className="markdown-message" style={{ fontSize: 'var(--fs-base)', color: 'var(--text)', lineHeight: 1.5 }}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{String(streamingText)}</ReactMarkdown>
               </div>
             ) : (
-              <div style={{ fontSize: '0.78rem', color: '#aaa', lineHeight: 1.5 }}>Thinking...</div>
+              <div style={{ fontSize: 'var(--fs-base)', color: 'var(--muted)', lineHeight: 1.5 }}>Thinking...</div>
             )}
           </div>
         )}
@@ -1003,7 +1028,7 @@ function ConsolidatorToolEditor({
       </div>
 
       {/* Input */}
-      <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.75rem' }}>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, marginBottom: '0.75rem' }}>
         <input
           type="text"
           value={chatInput}
@@ -1011,81 +1036,68 @@ function ConsolidatorToolEditor({
           onKeyDown={e => { if (e.key === 'Enter' && !chatLoading) handleSend(); }}
           placeholder="e.g. fetch stocktake templates, filter by category, then get stock on hand..."
           disabled={chatLoading}
-          style={{ ...inputStyle, flex: 1, fontSize: '0.78rem', padding: '6px 10px' }}
+          className="n-input"
+          style={{ flex: 1, minWidth: 0 }}
         />
-        <button
+        <Button
+          variant="primary"
           onClick={handleSend}
           disabled={chatLoading || !chatInput.trim()}
-          style={{
-            padding: '6px 16px', fontSize: '0.78rem', fontWeight: 600,
-            backgroundColor: chatLoading ? '#a78bfa' : '#7c3aed', color: '#fff',
-            border: 'none', borderRadius: 6, flexShrink: 0,
-            cursor: (chatLoading || !chatInput.trim()) ? 'not-allowed' : 'pointer',
-            fontFamily: 'inherit',
-          }}
         >
           {chatLoading ? '...' : 'Send'}
-        </button>
+        </Button>
       </div>
 
       {/* Manual test */}
-      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '0.5rem', marginBottom: '0.5rem' }}>
-        <div
+      <div style={{ borderTop: '1px solid var(--line)', paddingTop: '0.75rem', marginBottom: '0.75rem' }}>
+        <button
+          type="button"
           onClick={() => setShowTest(!showTest)}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none', marginBottom: showTest ? '0.4rem' : 0 }}
+          aria-expanded={showTest}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: 0, border: 'none', background: 'none',
+            fontFamily: 'inherit', cursor: 'pointer', userSelect: 'none', marginBottom: showTest ? '0.5rem' : 0,
+          }}
         >
-          <span style={{ fontSize: '0.7rem', color: '#888' }}>{showTest ? '\u25BC' : '\u25B6'}</span>
-          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666' }}>Manual Test</span>
-        </div>
+          <Icon icon={showTest ? ChevronDown : ChevronRight} size="dense" tone="muted" />
+          <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)' }}>Manual test</span>
+        </button>
         {showTest && (
           <div>
             {(op.required_fields || []).length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.4rem' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
                 {(op.required_fields || []).map(key => (
                   <div key={key} style={{ flex: '1 1 160px' }}>
-                    <label style={{ fontSize: '0.62rem', color: '#888', textTransform: 'uppercase' }}>{key}</label>
+                    <label className="n-label">{key}</label>
                     <input
                       type="text"
                       value={testParams[key] || ''}
                       onChange={e => setTestParams(prev => ({ ...prev, [key]: e.target.value }))}
                       placeholder={(op.field_descriptions || {})[key] || key}
-                      style={{ ...inputStyle, fontSize: '0.78rem', padding: '4px 8px', width: '100%' }}
+                      className="n-input"
+                      style={fieldStyle}
                     />
                   </div>
                 ))}
               </div>
             )}
-            <button
-              onClick={handleTest}
-              disabled={testing}
-              style={{
-                padding: '5px 14px', fontSize: '0.78rem', fontWeight: 600,
-                backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
-                cursor: testing ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                opacity: testing ? 0.6 : 1,
-              }}
-            >
+            <Button size="sm" onClick={handleTest} disabled={testing}>
               {testing ? 'Testing...' : 'Test'}
-            </button>
+            </Button>
             {testResult ? (
-              <div style={{
-                marginTop: '0.4rem', padding: '0.5rem', userSelect: 'text',
-                backgroundColor: testResult.success ? '#f0fdf4' : '#fef2f2',
-                border: `1px solid ${testResult.success ? '#bbf7d0' : '#fecaca'}`,
-                borderRadius: 6,
-              }}>
+              <div style={{ ...resultBox(Boolean(testResult.success)), marginTop: '0.5rem' }}>
                 {(testResult._steps as { id: string; status: string; error?: string; duration_ms?: number; result_preview?: Record<string, unknown> }[] || []).map((s, i) => (
                   <div key={i} style={{ marginBottom: 4 }}>
-                    <div style={{ fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <span style={{ color: s.status === 'success' ? '#16a34a' : '#dc2626' }}>{s.status === 'success' ? '\u2713' : '\u2717'}</span>
+                    <div style={{ fontSize: 'var(--fs-sm)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <Icon icon={s.status === 'success' ? Check : X} size="dense" style={{ color: s.status === 'success' ? 'var(--ok)' : 'var(--error)' }} />
                       <span style={{ fontWeight: 500 }}>{s.id}</span>
-                      {s.duration_ms != null && <span style={{ color: '#999' }}>({s.duration_ms}ms)</span>}
-                      {s.error && <span style={{ color: '#dc2626' }}>— {s.error}</span>}
+                      {s.duration_ms != null && <span style={{ color: 'var(--muted)' }}>({s.duration_ms}ms)</span>}
+                      {s.error && <span style={{ color: 'var(--error)' }}>— {s.error}</span>}
                     </div>
                     {s.result_preview && (
                       <details style={{ marginLeft: 18, marginTop: 2 }}>
-                        <summary style={{ fontSize: '0.65rem', color: '#888', cursor: 'pointer' }}>Step result</summary>
-                        <pre style={{ fontSize: '0.62rem', margin: '2px 0 0', overflow: 'auto', maxHeight: 120, backgroundColor: '#f8fafc', padding: '4px 6px', borderRadius: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                        <summary style={detailsSummary}>Step result</summary>
+                        <pre style={{ ...codeBlock, ...wrapCode, margin: '2px 0 0', maxHeight: 120, padding: '6px 8px' }}>
                           {JSON.stringify(s.result_preview, null, 2)}
                         </pre>
                       </details>
@@ -1093,8 +1105,8 @@ function ConsolidatorToolEditor({
                   </div>
                 ))}
                 <details style={{ marginTop: 4 }}>
-                  <summary style={{ fontSize: '0.68rem', color: '#888', cursor: 'pointer' }}>Raw JSON</summary>
-                  <pre style={{ fontSize: '0.65rem', margin: '4px 0 0', overflow: 'auto', maxHeight: 150 }}>
+                  <summary style={detailsSummary}>Raw JSON</summary>
+                  <pre style={{ ...codeBlock, margin: '4px 0 0', maxHeight: 150 }}>
                     {JSON.stringify(testResult, null, 2)}
                   </pre>
                 </details>
@@ -1105,7 +1117,7 @@ function ConsolidatorToolEditor({
       </div>
 
       {/* Function Editor — always shown for consolidator tools */}
-      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '0.5rem', marginBottom: '0.5rem' }}>
+      <div style={{ borderTop: '1px solid var(--line)', paddingTop: '0.75rem', marginBottom: '0.5rem' }}>
         <FunctionEditor
           functionCode={((op.consolidator_config as Record<string, unknown>)?.function_code as string) || 'def run(params, call_api, log):\n    venue = params.get("venue", "")\n    log(f"Hello from {venue}")\n    return {"message": "Replace this with your function"}'}
           // Keep the rest of the config (max_api_calls, allowed_write_actions,
@@ -1348,21 +1360,23 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
           backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 1000,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          <div style={{
-            backgroundColor: '#fff', borderRadius: 12, width: '90%', maxWidth: 700,
-            maxHeight: '85vh', overflow: 'auto', padding: '1.5rem',
+          <div role="dialog" aria-modal="true" aria-label="Create consolidator" style={{
+            backgroundColor: 'var(--bg)', borderRadius: 'var(--radius-lg)', width: '90%', maxWidth: 700,
+            maxHeight: '85vh', overflow: 'auto', padding: '20px 24px',
             boxShadow: '0 8px 30px rgba(0,0,0,0.15)',
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>Create Consolidator</h3>
-              <button onClick={() => { setShowConsolidatorBuilder(false); setConsolidatorResult(null); setConsolidatorTestResult(null); }} style={{
-                border: 'none', background: 'none', fontSize: '1.2rem', cursor: 'pointer', color: '#999',
-              }}>&times;</button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: '1rem' }}>
+              <h3 style={sectionTitle}>Create consolidator</h3>
+              <IconButton
+                icon={X}
+                label="Close"
+                onClick={() => { setShowConsolidatorBuilder(false); setConsolidatorResult(null); setConsolidatorTestResult(null); }}
+              />
             </div>
 
             {/* Step 1: Describe */}
             <div style={{ marginBottom: '1rem' }}>
-              <label style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', display: 'block', marginBottom: 4 }}>
+              <label className="n-label">
                 Describe what this consolidator should do
               </label>
               <textarea
@@ -1370,12 +1384,12 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                 onChange={e => setConsolidatorPrompt(e.target.value)}
                 placeholder="e.g., Get stock on hand for a specific item today and 4 weeks ago, and return a comparison showing current vs historical quantity"
                 rows={3}
-                style={{
-                  width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: 6,
-                  fontSize: '0.82rem', fontFamily: 'inherit', resize: 'vertical',
-                }}
+                className="n-input"
+                style={fieldStyle}
               />
-              <button
+              <Button
+                variant={consolidatorResult && !consolidatorResult.error ? 'secondary' : 'primary'}
+                style={{ marginTop: '0.5rem' }}
                 onClick={async () => {
                   if (!consolidatorPrompt.trim()) return;
                   setConsolidatorGenerating(true);
@@ -1402,54 +1416,45 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                   setConsolidatorGenerating(false);
                 }}
                 disabled={consolidatorGenerating || !consolidatorPrompt.trim()}
-                style={{
-                  marginTop: '0.5rem', padding: '6px 16px', fontSize: '0.78rem', fontWeight: 600,
-                  backgroundColor: '#6366f1', color: '#fff', border: 'none', borderRadius: 6,
-                  cursor: consolidatorGenerating ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                }}
               >
                 {consolidatorGenerating ? 'Generating...' : 'Generate with AI'}
-              </button>
+              </Button>
             </div>
 
             {/* Step 2: Preview generated config */}
             {(consolidatorResult && !consolidatorResult.error) ? (
               <div style={{ marginBottom: '1rem' }}>
-                <label style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', display: 'block', marginBottom: 4 }}>
-                  Generated Config
+                <label className="n-label">
+                  Generated config
                 </label>
-                <div style={{ fontSize: '0.78rem', marginBottom: '0.5rem' }}>
-                  <strong>{String(consolidatorResult.action || '')}</strong> — {String(consolidatorResult.description || '')}
+                <div style={{ fontSize: 'var(--fs-base)', color: 'var(--text)', marginBottom: '0.5rem' }}>
+                  <strong style={{ fontWeight: 600 }}>{String(consolidatorResult.action || '')}</strong> — {String(consolidatorResult.description || '')}
                 </div>
-                <pre style={{
-                  padding: '0.5rem', backgroundColor: '#1a202c', color: '#e2e8f0',
-                  borderRadius: 6, fontSize: '0.7rem', overflow: 'auto', maxHeight: 200,
-                }}>
+                <pre style={{ ...codeBlock, maxHeight: 200 }}>
                   {JSON.stringify(consolidatorResult.consolidator_config || consolidatorResult, null, 2)}
                 </pre>
 
                 {/* Step 3: Test */}
-                <div style={{ marginTop: '0.75rem' }}>
-                  <label style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', display: 'block', marginBottom: 4 }}>
+                <div style={{ marginTop: '1rem' }}>
+                  <label className="n-label">
                     Test with sample inputs
                   </label>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.5rem' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
                     {Object.keys(consolidatorTestParams).map(key => (
                       <div key={key} style={{ flex: '1 1 200px' }}>
-                        <label style={{ fontSize: '0.65rem', color: '#888' }}>{key}</label>
+                        <label className="n-label">{key}</label>
                         <input
                           value={consolidatorTestParams[key] || ''}
                           onChange={e => setConsolidatorTestParams(prev => ({ ...prev, [key]: e.target.value }))}
                           placeholder={String((consolidatorResult.field_descriptions as Record<string, string>)?.[key] || key)}
-                          style={{
-                            width: '100%', padding: '3px 6px', border: '1px solid #ddd',
-                            borderRadius: 4, fontSize: '0.78rem', fontFamily: 'inherit',
-                          }}
+                          className="n-input"
+                          style={fieldStyle}
                         />
                       </div>
                     ))}
                   </div>
-                  <button
+                  <Button
+                    size="sm"
                     onClick={async () => {
                       setConsolidatorTesting(true);
                       setConsolidatorTestResult(null);
@@ -1469,33 +1474,29 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       setConsolidatorTesting(false);
                     }}
                     disabled={consolidatorTesting}
-                    style={{
-                      padding: '5px 14px', fontSize: '0.75rem', fontWeight: 600,
-                      border: '1px solid #ddd', borderRadius: 6, backgroundColor: '#fff',
-                      cursor: consolidatorTesting ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                    }}
                   >
                     {consolidatorTesting ? 'Testing...' : 'Test'}
-                  </button>
+                  </Button>
                 </div>
 
                 {/* Test result */}
                 {consolidatorTestResult && (
-                  <div style={{
-                    marginTop: '0.5rem', padding: '0.5rem',
-                    backgroundColor: (consolidatorTestResult as Record<string, unknown>).success ? '#f0fdf4' : '#fef2f2',
-                    border: `1px solid ${(consolidatorTestResult as Record<string, unknown>).success ? '#bbf7d0' : '#fecaca'}`,
-                    borderRadius: 6,
-                  }}>
-                    <pre style={{ fontSize: '0.7rem', margin: 0, overflow: 'auto', maxHeight: 200 }}>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <div style={{ marginBottom: 6 }}>
+                      <Badge tone={(consolidatorTestResult as Record<string, unknown>).success ? 'ok' : 'error'}>
+                        {(consolidatorTestResult as Record<string, unknown>).success ? 'Success' : 'Failed'}
+                      </Badge>
+                    </div>
+                    <pre style={{ ...codeBlock, maxHeight: 200 }}>
                       {JSON.stringify(consolidatorTestResult, null, 2)}
                     </pre>
                   </div>
                 )}
 
                 {/* Step 4: Save */}
-                <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.3rem' }}>
-                  <button
+                <div style={{ marginTop: '1rem', display: 'flex', gap: 8 }}>
+                  <Button
+                    variant="primary"
                     onClick={() => {
                       // Add as a new tool to the form
                       const newTool: ConnectorSpecTool = {
@@ -1520,21 +1521,16 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       setConsolidatorTestResult(null);
                       setConsolidatorPrompt('');
                     }}
-                    style={{
-                      padding: '6px 18px', fontSize: '0.78rem', fontWeight: 600,
-                      backgroundColor: '#111', color: '#fff', border: 'none', borderRadius: 6,
-                      cursor: 'pointer', fontFamily: 'inherit',
-                    }}
                   >
-                    Add to Spec
-                  </button>
+                    Add to spec
+                  </Button>
                 </div>
               </div>
             ) : null}
 
             {/* Error display */}
             {consolidatorResult?.error ? (
-              <div style={{ color: '#dc2626', fontSize: '0.78rem', marginTop: '0.5rem' }}>
+              <div role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', marginTop: '0.5rem' }}>
                 {String(consolidatorResult.error)}
               </div>
             ) : null}
@@ -1542,56 +1538,60 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          {isNew ? 'New Connector Spec' : `Edit: ${form.display_name}`}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 6 }}>
+          <BackLink label="Back to list" onClick={onCancel} />
+        </div>
+        <h3 style={{ margin: 0, fontSize: 'var(--fs-xl)', fontWeight: 700, letterSpacing: '-0.01em', lineHeight: 1.25, color: 'var(--text)', overflowWrap: 'anywhere' }}>
+          {isNew ? 'New connector spec' : `Edit: ${form.display_name}`}
         </h3>
-        <button onClick={onCancel} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '0.85rem', color: '#999' }}>
-          &#8592; Back to list
-        </button>
       </div>
 
       {/* Basic Info */}
-      <div style={sectionStyle}>
-        <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Basic</h4>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+      <div className="n-card" style={sectionStyle}>
+        <h4 style={{ ...sectionTitle, marginBottom: 16 }}>Basic</h4>
+        <div style={twoColGrid}>
           <div>
-            <label style={labelStyle}>Connector Name</label>
+            <label className="n-label">Connector name</label>
             <input
               type="text"
               value={form.connector_name}
               onChange={e => update('connector_name', e.target.value)}
               disabled={!isNew}
               placeholder="e.g. bamboohr"
-              style={{ ...inputStyle, backgroundColor: isNew ? '#fff' : '#f7f7f7' }}
+              className="n-input"
+              style={fieldStyle}
             />
           </div>
           <div>
-            <label style={labelStyle}>Display Name</label>
+            <label className="n-label">Display name</label>
             <input
               type="text"
               value={form.display_name}
               onChange={e => update('display_name', e.target.value)}
               placeholder="e.g. BambooHR"
-              style={inputStyle}
+              className="n-input"
+              style={fieldStyle}
             />
           </div>
           <div>
-            <label style={labelStyle}>Category</label>
+            <label className="n-label">Category</label>
             <input
               type="text"
               value={form.category || ''}
               onChange={e => update('category', e.target.value || null)}
               placeholder="e.g. hr, procurement"
-              style={inputStyle}
+              className="n-input"
+              style={fieldStyle}
             />
           </div>
           <div>
-            <label style={labelStyle}>Execution Mode</label>
+            <label className="n-label">Execution mode</label>
             <select
               value={form.execution_mode}
               onChange={e => update('execution_mode', e.target.value as 'template' | 'agent' | 'internal')}
-              style={inputStyle}
+              className="n-select"
+              style={fieldStyle}
             >
               <option value="template">Template</option>
               <option value="agent">Agent</option>
@@ -1602,25 +1602,26 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
       </div>
 
       {/* Auth */}
-      <div style={sectionStyle}>
-        <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Authentication</h4>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+      <div className="n-card" style={sectionStyle}>
+        <h4 style={{ ...sectionTitle, marginBottom: 16 }}>Authentication</h4>
+        <div style={twoColGrid}>
           <div>
-            <label style={labelStyle}>Auth Type</label>
+            <label className="n-label">Auth type</label>
             <select
               value={form.auth_type}
               onChange={e => update('auth_type', e.target.value)}
-              style={inputStyle}
+              className="n-select"
+              style={fieldStyle}
             >
               <option value="none">None (Internal)</option>
-              <option value="bearer">Bearer Token</option>
-              <option value="api_key_header">API Key Header</option>
-              <option value="basic">Basic Auth</option>
+              <option value="bearer">Bearer token</option>
+              <option value="api_key_header">API key header</option>
+              <option value="basic">Basic auth</option>
               <option value="oauth2">OAuth2</option>
             </select>
           </div>
           <div>
-            <label style={labelStyle}>Base URL Mode</label>
+            <label className="n-label">Base URL mode</label>
             <select
               value={baseUrlMode}
               onChange={e => {
@@ -1636,7 +1637,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                 }
                 setBaseUrlMode(mode);
               }}
-              style={inputStyle}
+              className="n-select"
+              style={fieldStyle}
             >
               <option value="fixed">Fixed URL</option>
               <option value="dynamic">User-provided domain</option>
@@ -1645,19 +1647,20 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
         </div>
         {baseUrlMode === 'fixed' ? (
           <div style={{ marginTop: '0.75rem' }}>
-            <label style={labelStyle}>Base URL</label>
+            <label className="n-label">Base URL</label>
             <input
               type="text"
               value={form.base_url_template || ''}
               onChange={e => update('base_url_template', e.target.value || null)}
               placeholder="https://api.example.com/v1"
-              style={inputStyle}
+              className="n-input"
+              style={fieldStyle}
             />
           </div>
         ) : (
-          <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             <div>
-              <label style={labelStyle}>URL Pattern (use {'{{ domain }}'} as placeholder)</label>
+              <label className="n-label">URL pattern (use {'{{ domain }}'} as placeholder)</label>
               <input
                 type="text"
                 value={displayPattern(form.base_url_template || '')}
@@ -1666,12 +1669,13 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                   update('base_url_template', stored || null);
                 }}
                 placeholder="https://{{ domain }}.bamboohr.com/api"
-                style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem' }}
+                className="n-input"
+                style={codeFieldStyle}
               />
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+            <div style={twoColGrid}>
               <div>
-                <label style={labelStyle}>Field Key</label>
+                <label className="n-label">Field key</label>
                 <input
                   type="text"
                   value={domainFieldKey}
@@ -1689,11 +1693,12 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     syncDomainCredField(newKey, domainFieldLabel, oldKey);
                   }}
                   placeholder="subdomain"
-                  style={inputStyle}
+                  className="n-input"
+                  style={fieldStyle}
                 />
               </div>
               <div>
-                <label style={labelStyle}>Field Label</label>
+                <label className="n-label">Field label</label>
                 <input
                   type="text"
                   value={domainFieldLabel}
@@ -1702,89 +1707,94 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     syncDomainCredField(domainFieldKey, e.target.value);
                   }}
                   placeholder="BambooHR Subdomain (e.g. mycompany)"
-                  style={inputStyle}
+                  className="n-input"
+                  style={fieldStyle}
                 />
               </div>
             </div>
           </div>
         )}
         <div style={{ marginTop: '0.75rem' }}>
-          <label style={labelStyle}>Auth Config (JSON)</label>
+          <label className="n-label">Auth config (JSON)</label>
           <JsonTextarea
             value={form.auth_config}
             onChange={v => update('auth_config', (v ?? {}) as Record<string, unknown>)}
             rows={3}
-            style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
+            style={codeFieldStyle}
           />
         </div>
       </div>
 
       {/* OAuth Config (shown when auth_type is oauth2) */}
       {form.auth_type === 'oauth2' && (
-        <div style={sectionStyle}>
-          <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>OAuth 2.0 Configuration</h4>
+        <div className="n-card" style={sectionStyle}>
+          <h4 style={{ ...sectionTitle, marginBottom: 16 }}>OAuth 2.0 configuration</h4>
           <div style={{
             marginBottom: '0.75rem',
             padding: '8px 10px',
-            backgroundColor: '#f0f4f8',
-            border: '1px solid #d2dce6',
-            borderRadius: 6,
-            fontSize: '0.82rem',
-            color: '#444',
+            backgroundColor: 'var(--info-bg)',
+            borderRadius: 'var(--radius)',
+            fontSize: 'var(--fs-sm)',
+            color: 'var(--info)',
             wordBreak: 'break-all',
           }}>
-            <span style={{ fontWeight: 500, color: '#555' }}>Redirect URI: </span>
+            <span style={{ fontWeight: 600 }}>Redirect URI: </span>
             {typeof window !== 'undefined' ? `${window.location.origin}/api/oauth/callback` : '(loading...)'}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+          <div style={twoColGrid}>
             <div>
-              <label style={labelStyle}>Authorize URL</label>
+              <label className="n-label">Authorize URL</label>
               <input
                 type="text"
                 value={form.oauth_config?.authorize_url || ''}
                 onChange={e => update('oauth_config', { ...form.oauth_config, authorize_url: e.target.value } as ConnectorSpecFull['oauth_config'])}
                 placeholder="https://provider.com/oauth/authorize"
-                style={inputStyle}
+                className="n-input"
+                style={fieldStyle}
               />
             </div>
             <div>
-              <label style={labelStyle}>Token URL</label>
+              <label className="n-label">Token URL</label>
               <input
                 type="text"
                 value={form.oauth_config?.token_url || ''}
                 onChange={e => update('oauth_config', { ...form.oauth_config, token_url: e.target.value } as ConnectorSpecFull['oauth_config'])}
                 placeholder="https://provider.com/oauth/token"
-                style={inputStyle}
+                className="n-input"
+                style={fieldStyle}
               />
             </div>
             <div>
-              <label style={labelStyle}>Client ID</label>
+              <label className="n-label">Client ID</label>
               <input
                 type="text"
                 value={form.oauth_config?.client_id || ''}
                 onChange={e => update('oauth_config', { ...form.oauth_config, client_id: e.target.value } as ConnectorSpecFull['oauth_config'])}
                 placeholder="your-client-id"
-                style={inputStyle}
+                className="n-input"
+                style={fieldStyle}
               />
             </div>
             <div>
-              <label style={labelStyle}>Client Secret</label>
+              <label className="n-label">Client secret</label>
               <input
                 type="password"
                 value={form.oauth_config?.client_secret || ''}
                 onChange={e => update('oauth_config', { ...form.oauth_config, client_secret: e.target.value } as ConnectorSpecFull['oauth_config'])}
                 placeholder="your-client-secret"
-                style={inputStyle}
+                className="n-input"
+                style={fieldStyle}
               />
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
-              <label style={labelStyle}>Scopes</label>
+              <label className="n-label">Scopes</label>
               <input
                 type="text"
                 value={form.oauth_config?.scopes || ''}
                 onChange={e => update('oauth_config', { ...form.oauth_config, scopes: e.target.value } as ConnectorSpecFull['oauth_config'])}
                 placeholder="e.g. core:time:rw"
-                style={inputStyle}
+                className="n-input"
+                style={fieldStyle}
               />
             </div>
           </div>
@@ -1792,15 +1802,12 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
       )}
 
       {/* Credential Fields */}
-      <div style={sectionStyle}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Credential Fields</h4>
-          <button onClick={addCredentialField} style={{
-            padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
-            backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-          }}>
-            + Add
-          </button>
+      <div className="n-card" style={sectionStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <h4 style={sectionTitle}>Credential fields</h4>
+          <Button size="sm" icon={Plus} onClick={addCredentialField}>
+            Add
+          </Button>
         </div>
         {form.credential_fields.map((cf, idx) => (
           <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '0.5rem' }}>
@@ -1809,16 +1816,18 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
               value={cf.key}
               onChange={e => updateCredentialField(idx, 'key', e.target.value)}
               placeholder="key"
-              style={{ ...inputStyle, flex: 1 }}
+              className="n-input"
+              style={{ flex: 1, minWidth: 0 }}
             />
             <input
               type="text"
               value={cf.label}
               onChange={e => updateCredentialField(idx, 'label', e.target.value)}
               placeholder="label"
-              style={{ ...inputStyle, flex: 1 }}
+              className="n-input"
+              style={{ flex: 1, minWidth: 0 }}
             />
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', whiteSpace: 'nowrap' }}>
               <input
                 type="checkbox"
                 checked={cf.secret}
@@ -1826,53 +1835,42 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
               />
               Secret
             </label>
-            <button onClick={() => removeCredentialField(idx)} style={{
-              border: 'none', background: 'none', cursor: 'pointer', color: '#e53e3e', fontSize: '0.9rem',
-            }}>
-              &#10005;
-            </button>
+            <IconButton icon={X} label="Remove credential field" onClick={() => removeCredentialField(idx)} />
           </div>
         ))}
       </div>
 
       {/* Connection Test */}
-      <div style={sectionStyle}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Connection Test</h4>
+      <div className="n-card" style={sectionStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <h4 style={sectionTitle}>Connection test</h4>
           {!form.test_request ? (
-            <button
+            <Button
+              size="sm"
+              icon={Plus}
               onClick={() => update('test_request', { method: 'GET', path_template: '', headers: {}, success_status_codes: [200], timeout_seconds: 15 })}
-              style={{
-                padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
-                backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-              }}
             >
-              + Add Test
-            </button>
+              Add test
+            </Button>
           ) : (
-            <button
-              onClick={() => update('test_request', null)}
-              style={{
-                padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #e53e3e', borderRadius: 4,
-                backgroundColor: '#fff', color: '#e53e3e', cursor: 'pointer', fontFamily: 'inherit',
-              }}
-            >
+            <Button variant="danger" size="sm" onClick={() => update('test_request', null)}>
               Remove
-            </button>
+            </Button>
           )}
         </div>
         {!form.test_request ? (
-          <p style={{ color: '#999', fontSize: '0.78rem', margin: 0, fontStyle: 'italic' }}>
+          <p style={emptyNote}>
             No test configured. Add a lightweight API call (e.g. a GET to a health or list endpoint) to verify credentials from the Connectors tab.
           </p>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '0.5rem', alignItems: 'start' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '0.75rem', alignItems: 'start' }}>
             <div>
-              <label style={labelStyle}>Method</label>
+              <label className="n-label">Method</label>
               <select
                 value={form.test_request.method}
                 onChange={e => update('test_request', { ...form.test_request, method: e.target.value } as TestRequest)}
-                style={inputStyle}
+                className="n-select"
+                style={fieldStyle}
               >
                 <option value="GET">GET</option>
                 <option value="POST">POST</option>
@@ -1880,17 +1878,18 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
               </select>
             </div>
             <div>
-              <label style={labelStyle}>Path</label>
+              <label className="n-label">Path</label>
               <input
                 type="text"
                 value={form.test_request.path_template}
                 onChange={e => update('test_request', { ...form.test_request, path_template: e.target.value } as TestRequest)}
                 placeholder="/api/v1/ping"
-                style={inputStyle}
+                className="n-input"
+                style={fieldStyle}
               />
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
-              <label style={labelStyle}>Success Status Codes (comma-separated)</label>
+              <label className="n-label">Success status codes (comma-separated)</label>
               <input
                 type="text"
                 value={(form.test_request.success_status_codes || [200]).join(', ')}
@@ -1899,7 +1898,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                   success_status_codes: e.target.value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)),
                 } as TestRequest)}
                 placeholder="200"
-                style={inputStyle}
+                className="n-input"
+                style={fieldStyle}
               />
             </div>
           </div>
@@ -1907,44 +1907,38 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
       </div>
 
       {/* Operations */}
-      <div style={sectionStyle}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <div>
-            <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Tools</h4>
-            <p style={{ margin: '2px 0 0', fontSize: '0.72rem', color: '#888' }}>
+      <div className="n-card" style={sectionStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+          <div style={{ minWidth: 0, flex: '1 1 260px' }}>
+            <h4 style={sectionTitle}>Tools</h4>
+            <p style={sectionNote}>
               {split
                 ? 'What an LLM can see — consolidators and built-ins. A tool reaches the agent only when an App claims it.'
                 : 'Not split yet: tools and API endpoints are still one list.'}
             </p>
           </div>
-          <div style={{ display: 'flex', gap: '0.3rem' }}>
-            <button onClick={() => setShowConsolidatorBuilder(true)} style={{
-              padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #6366f1', borderRadius: 4,
-              backgroundColor: '#fff', color: '#6366f1', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500,
-            }}>
-              + Consolidator
-            </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button size="sm" icon={Plus} onClick={() => setShowConsolidatorBuilder(true)}>
+              Consolidator
+            </Button>
             {!split && (
-              <button onClick={addTool} style={{
-                padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
-                backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-              }}>
-                + Add Tool
-              </button>
+              <Button size="sm" icon={Plus} onClick={addTool}>
+                Add tool
+              </Button>
             )}
           </div>
         </div>
         {form.tools.length > 0 && !isNew && (
           <div style={{
-            border: '1px solid #d4e5f7',
-            borderRadius: 8,
-            padding: '0.75rem',
-            marginBottom: '0.75rem',
-            backgroundColor: '#f8fbff',
+            border: '1px solid var(--line)',
+            borderRadius: 'var(--radius)',
+            padding: '14px 16px',
+            marginBottom: 16,
+            backgroundColor: 'var(--surface)',
           }}>
-            <h5 style={{ margin: '0 0 0.6rem', fontSize: '0.78rem', fontWeight: 600, color: '#444' }}>Try Tool</h5>
+            <h5 style={{ margin: '0 0 10px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Try tool</h5>
             <div style={{ marginBottom: '0.5rem' }}>
-              <label style={labelStyle}>Tool</label>
+              <label className="n-label">Tool</label>
               <select
                 value={tryToolAction}
                 onChange={e => {
@@ -1968,7 +1962,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     setTryToolFields({});
                   }
                 }}
-                style={inputStyle}
+                className="n-select"
+                style={fieldStyle}
               >
                 <option value="">Select a tool...</option>
                 {form.tools.map((t, i) => (
@@ -1981,8 +1976,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
 
             {venues.length > 0 && (
               <div style={{ marginBottom: '0.5rem' }}>
-                <label style={labelStyle}>Venue</label>
-                <select value={tryVenueId} onChange={e => setTryVenueId(e.target.value)} style={inputStyle}>
+                <label className="n-label">Venue</label>
+                <select value={tryVenueId} onChange={e => setTryVenueId(e.target.value)} className="n-select" style={fieldStyle}>
                   <option value="">Any venue</option>
                   {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                 </select>
@@ -1992,24 +1987,18 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
             {selectedTool && (
               <>
                 <div style={{ marginBottom: '0.5rem' }}>
-                  <label style={{ ...labelStyle, marginBottom: 6 }}>Fields</label>
+                  <label className="n-label" style={{ marginBottom: 6 }}>Fields</label>
                   {Object.keys(selectedTool.field_mapping).length === 0 && (
-                    <p style={{ color: '#999', fontSize: '0.78rem', margin: 0, fontStyle: 'italic' }}>
+                    <p style={emptyNote}>
                       No fields defined for this tool.
                     </p>
                   )}
                   {Object.keys(selectedTool.field_mapping).map(fieldKey => (
                     <div key={fieldKey} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      <label style={{
-                        fontSize: '0.78rem',
-                        fontWeight: 500,
-                        color: '#555',
-                        width: 130,
-                        flexShrink: 0,
-                      }}>
+                      <label className="n-label" style={{ width: 130, flexShrink: 0, marginBottom: 0, overflowWrap: 'anywhere' }}>
                         {fieldKey}
                         {selectedTool.required_fields.includes(fieldKey) && (
-                          <span style={{ color: '#e53e3e', marginLeft: 2 }}>*</span>
+                          <span style={{ color: 'var(--error)', marginLeft: 2 }}>*</span>
                         )}
                       </label>
                       <input
@@ -2017,71 +2006,45 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                         value={tryToolFields[fieldKey] ?? ''}
                         onChange={e => setTryToolFields(prev => ({ ...prev, [fieldKey]: e.target.value }))}
                         placeholder={selectedTool.field_descriptions?.[fieldKey] || selectedTool.field_mapping[fieldKey] || fieldKey}
-                        style={{ ...inputStyle, flex: 1 }}
+                        className="n-input"
+                        style={{ flex: 1, minWidth: 0 }}
                       />
                     </div>
                   ))}
                 </div>
 
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <button
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Button
+                    variant="primary"
+                    size="sm"
                     onClick={() => handleTryRun('render')}
                     disabled={tryLoading !== null}
-                    style={{
-                      padding: '5px 12px',
-                      fontSize: '0.78rem',
-                      fontWeight: 500,
-                      border: 'none',
-                      borderRadius: 6,
-                      backgroundColor: '#c4a882',
-                      color: '#fff',
-                      cursor: tryLoading !== null ? 'not-allowed' : 'pointer',
-                      fontFamily: 'inherit',
-                    }}
                   >
                     {tryLoading === 'render' ? 'Rendering...' : 'Render'}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
                     onClick={() => handleTryRun('test')}
                     disabled={tryLoading !== null}
-                    style={{
-                      padding: '5px 12px',
-                      fontSize: '0.78rem',
-                      fontWeight: 500,
-                      border: '1px solid #e53e3e',
-                      borderRadius: 6,
-                      backgroundColor: '#fff',
-                      color: '#e53e3e',
-                      cursor: tryLoading !== null ? 'not-allowed' : 'pointer',
-                      fontFamily: 'inherit',
-                    }}
                   >
-                    {tryLoading === 'test' ? 'Testing...' : 'Test (Live)'}
-                  </button>
-                  <span style={{ fontSize: '0.72rem', color: '#999' }}>
+                    {tryLoading === 'test' ? 'Testing...' : 'Test (live)'}
+                  </Button>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
                     Test makes a real HTTP call
                   </span>
                 </div>
 
                 {tryError && (
-                  <p style={{ color: '#e53e3e', fontSize: '0.82rem', marginTop: '0.5rem', marginBottom: 0 }}>
+                  <p role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', marginTop: '0.5rem', marginBottom: 0 }}>
                     {tryError}
                   </p>
                 )}
 
                 {tryDryRunResult && (
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <div style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Rendered Request</div>
-                    <pre style={{
-                      padding: '0.75rem',
-                      backgroundColor: '#1a202c',
-                      color: '#e2e8f0',
-                      borderRadius: 6,
-                      fontSize: '0.78rem',
-                      overflow: 'auto',
-                      lineHeight: 1.5,
-                      margin: 0,
-                    }}>
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <div style={groupLabel}>Rendered request</div>
+                    <pre style={codeBlock}>
                       {JSON.stringify(tryDryRunResult, null, 2)}
                     </pre>
                   </div>
@@ -2090,32 +2053,20 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                 {tryTestResult && (() => {
                   const rendered = tryTestResult.rendered_request as Record<string, unknown> | undefined;
                   const payload = tryTestResult.response_payload;
-                  const preStyle: React.CSSProperties = {
-                    padding: '0.75rem', backgroundColor: '#1a202c', color: '#e2e8f0',
-                    borderRadius: 6, fontSize: '0.72rem', overflow: 'auto', lineHeight: 1.5,
-                    margin: 0, maxHeight: 300,
-                  };
-                  const labelStyle: React.CSSProperties = {
-                    fontSize: '0.65rem', fontWeight: 600, color: '#666', marginBottom: 4,
-                    textTransform: 'uppercase', letterSpacing: '0.03em',
-                  };
+                  const preStyle: React.CSSProperties = { ...codeBlock, maxHeight: 300 };
                   return (
-                    <div style={{ marginTop: '0.5rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: '0.5rem' }}>
-                        <span style={{
-                          fontSize: '0.72rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-                          backgroundColor: tryTestResult.success ? '#d4edda' : '#f8d7da',
-                          color: tryTestResult.success ? '#155724' : '#721c24',
-                        }}>
-                          {tryTestResult.success ? 'SUCCESS' : 'FAILED'}
-                        </span>
+                    <div style={{ marginTop: '0.75rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                        <Badge tone={tryTestResult.success ? 'ok' : 'error'}>
+                          {tryTestResult.success ? 'Success' : 'Failed'}
+                        </Badge>
                         {'error' in tryTestResult && Boolean(tryTestResult.error) && (
-                          <span style={{ fontSize: '0.78rem', color: '#e53e3e' }}>{String(tryTestResult.error)}</span>
+                          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>{String(tryTestResult.error)}</span>
                         )}
                       </div>
                       {rendered && rendered.url ? (
-                        <div style={{ marginBottom: '0.5rem' }}>
-                          <div style={labelStyle}>Request</div>
+                        <div style={{ marginBottom: '0.75rem' }}>
+                          <div style={groupLabel}>Request</div>
                           <pre style={preStyle}>
                             {`${rendered.method} ${rendered.url}\n`}
                             {!!(rendered.headers && Object.keys(rendered.headers as Record<string, string>).length > 0) &&
@@ -2124,15 +2075,15 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                           </pre>
                         </div>
                       ) : (
-                        <div style={{ marginBottom: '0.5rem' }}>
-                          <div style={labelStyle}>Request</div>
-                          <div style={{ fontSize: '0.78rem', color: '#888', fontStyle: 'italic' }}>
+                        <div style={{ marginBottom: '0.75rem' }}>
+                          <div style={groupLabel}>Request</div>
+                          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
                             No request was sent — check that required fields are filled in above.
                           </div>
                         </div>
                       )}
                       <div style={{ marginBottom: '0.5rem' }}>
-                        <div style={labelStyle}>Response</div>
+                        <div style={groupLabel}>Response</div>
                         <pre style={preStyle}>
                           {payload ? JSON.stringify(payload, null, 2) : '(empty)'}
                         </pre>
@@ -2160,10 +2111,10 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
               key={idx}
               onDragOver={e => { e.preventDefault(); setDragOverIdx(idx); }}
               style={{
-                border: isDragOver ? '1px solid #2563eb' : '1px solid #e2e8f0',
-                borderRadius: 8,
-                marginBottom: '0.5rem',
-                backgroundColor: dragIdx === idx ? '#f0f4ff' : '#fff',
+                border: isDragOver ? '1px solid var(--accent)' : '1px solid var(--line)',
+                borderRadius: 'var(--radius)',
+                marginBottom: 8,
+                backgroundColor: dragIdx === idx ? 'var(--selected)' : 'var(--bg)',
                 overflow: 'hidden',
                 opacity: dragIdx === idx ? 0.6 : 1,
                 transition: 'border-color 0.1s, opacity 0.1s',
@@ -2175,65 +2126,54 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  padding: '0.6rem 0.75rem',
+                  flexWrap: 'wrap',
+                  gap: '6px 12px',
+                  padding: '10px 12px',
                   cursor: 'pointer',
                   userSelect: 'none',
-                  backgroundColor: isCollapsed ? '#fff' : '#fafafa',
-                  borderBottom: isCollapsed ? 'none' : '1px solid #e2e8f0',
+                  backgroundColor: isCollapsed ? 'var(--bg)' : 'var(--surface)',
+                  borderBottom: isCollapsed ? 'none' : '1px solid var(--line)',
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, minWidth: 0 }}>
                   {/* Drag handle */}
                   <span
                     draggable
                     onDragStart={() => setDragIdx(idx)}
                     onDragEnd={handleDragEnd}
-                    style={{ cursor: 'grab', color: '#ccc', fontSize: '0.85rem', lineHeight: 1, padding: '0 4px', userSelect: 'none' }}
+                    style={{ display: 'inline-flex', cursor: 'grab', color: 'var(--icon)', lineHeight: 1, padding: '0 2px', userSelect: 'none' }}
                     title="Drag to reorder"
-                  >&#8942;&#8942;</span>
-                  {isCollapsed
-                    ? <ChevronRight size={14} strokeWidth={2} style={{ color: '#999' }} />
-                    : <ChevronDown size={14} strokeWidth={2} style={{ color: '#999' }} />
-                  }
-                  <span style={{ fontWeight: 500, fontSize: '0.85rem', color: '#444' }}>
+                  ><Icon icon={GripVertical} size="dense" /></span>
+                  <Icon icon={isCollapsed ? ChevronRight : ChevronDown} size="dense" tone="muted" />
+                  <span style={{ fontWeight: 500, fontSize: 'var(--fs-base)', color: 'var(--text)', overflowWrap: 'anywhere' }}>
                     {op.action || (isEndpoint ? `Endpoint ${idx + 1}` : `Tool ${idx + 1}`)}
                   </span>
                   {!isEndpoint && build === 'built-in' ? (
-                    <span style={rowBadge('#0f766e', '#f0fdfa')}
-                      title={inv?.code ? `Norm code runs instead of this row: ${inv.code}` : 'Norm code'}>Built-in</span>
+                    <Badge title={inv?.code ? `Norm code runs instead of this row: ${inv.code}` : 'Norm code'}>Built-in</Badge>
                   ) : !isEndpoint && build === 'consolidator' ? (
-                    <span style={rowBadge('#7c3aed', '#f5f3ff')}>Consolidator</span>
+                    <Badge>Consolidator</Badge>
                   ) : (
                     <>
                       {op.method && (
-                        <span style={{
-                          fontSize: '0.7rem',
-                          fontWeight: 600,
-                          color: '#888',
-                          backgroundColor: '#f0f0f0',
-                          padding: '1px 6px',
-                          borderRadius: 3,
-                          marginLeft: 4,
-                        }}>
-                          {op.method}
-                        </span>
+                        <Badge>{op.method}</Badge>
                       )}
                       {op.path_template && (
-                        <span style={{ fontSize: '0.75rem', color: '#aaa' }}>
+                        <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflowWrap: 'anywhere' }}>
                           {op.path_template}
                         </span>
                       )}
                     </>
                   )}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 10px' }}>
                   {!isEndpoint && inv && (
-                    <span style={rowBadge(inv.app ? '#166534' : '#6b7280', inv.app ? '#f0fdf4' : '#f3f4f6')}
+                    <Badge
+                      tone={inv.app ? 'ok' : 'neutral'}
                       title={inv.app
                         ? `The ${inv.app.name} App puts this tool in front of the agent`
                         : 'No App claims this tool: the agent never sees it — other tools may use it'}>
-                      {inv.app ? inv.app.name : 'not exposed'}
-                    </span>
+                      {inv.app ? inv.app.name : 'Not exposed'}
+                    </Badge>
                   )}
                   {!isEndpoint && inv && inv.uses.length > 0 && (
                     <span style={rowMeta} title={inv.uses.join('\n')}>uses {inv.uses.length}</span>
@@ -2250,28 +2190,26 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                   {!isEndpoint && inv && inv.calls_30d > 0 && (
                     <span style={rowMeta} title="Direct calls in the last 30 days">{inv.calls_30d} calls</span>
                   )}
-                  <span style={{ fontSize: '0.7rem', color: '#aaa', whiteSpace: 'nowrap' }}
+                  <span style={rowMeta}
                     title="When this row was first added to the spec">
                     {op.added_at ? `added ${new Date(op.added_at).toLocaleDateString()}` : 'added —'}
                   </span>
-                  <button
+                  <Button
+                    variant="danger"
+                    size="sm"
                     disabled={!!removeBlocked}
-                    title={removeBlocked || 'Remove (saved when you press Update Spec)'}
+                    title={removeBlocked || 'Remove (saved when you press Update spec)'}
                     onClick={(e) => { e.stopPropagation(); if (!removeBlocked) removeTool(idx); }}
-                    style={{
-                      border: '1px solid #e53e3e', borderRadius: 4, backgroundColor: '#fff', color: '#e53e3e',
-                      padding: '2px 8px', fontSize: '0.72rem', fontFamily: 'inherit',
-                      cursor: removeBlocked ? 'not-allowed' : 'pointer', opacity: removeBlocked ? 0.4 : 1,
-                    }}>
+                  >
                     Remove
-                  </button>
+                  </Button>
                 </div>
               </div>
               {!isCollapsed && (
-                <div style={{ padding: '0.75rem' }}>
+                <div style={{ padding: '14px 16px' }}>
                   {!isEndpoint && build === 'built-in' && (
-                    <p style={{ margin: '0 0 0.6rem', fontSize: '0.75rem', color: '#0f766e' }}>
-                      Built-in: Norm code{inv?.code ? <> at <code>{inv.code}</code></> : ''} runs instead of this row.
+                    <p style={{ margin: '0 0 0.75rem', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                      Built-in: Norm code{inv?.code ? <> at <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', background: 'var(--surface-alt)', padding: '1px 4px', borderRadius: 'var(--radius-sm)' }}>{inv.code}</code></> : ''} runs instead of this row.
                       The description and fields below are what the agent sees; the behaviour lives in code.
                     </p>
                   )}
@@ -2281,28 +2219,28 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       idx={idx}
                       updateTool={updateTool}
                       setForm={setForm}
-                      labelStyle={labelStyle}
-                      inputStyle={inputStyle}
                     />
                   ) : (
                   <>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                  <div style={twoColGrid}>
                     <div>
-                      <label style={labelStyle}>Action</label>
+                      <label className="n-label">Action</label>
                       <input
                         type="text"
                         value={op.action}
                         onChange={e => updateTool(idx, 'action', e.target.value)}
                         placeholder="create_employee"
-                        style={inputStyle}
+                        className="n-input"
+                        style={fieldStyle}
                       />
                     </div>
                     <div>
-                      <label style={labelStyle}>Method</label>
+                      <label className="n-label">Method</label>
                       <select
                         value={op.method}
                         onChange={e => updateTool(idx, 'method', e.target.value)}
-                        style={inputStyle}
+                        className="n-select"
+                        style={fieldStyle}
                       >
                         <option value="GET">GET</option>
                         <option value="POST">POST</option>
@@ -2312,61 +2250,68 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       </select>
                     </div>
                     <div style={{ gridColumn: '1 / -1' }}>
-                      <label style={labelStyle}>Description</label>
+                      <label className="n-label">Description</label>
                       <input
                         type="text"
                         value={op.description || ''}
                         onChange={e => updateTool(idx, 'description', e.target.value || undefined)}
                         placeholder="e.g. Get a roster by date"
-                        style={inputStyle}
+                        className="n-input"
+                        style={fieldStyle}
                       />
                     </div>
                     <div style={{ gridColumn: '1 / -1' }}>
-                      <label style={labelStyle}>Path Template</label>
+                      <label className="n-label">Path template</label>
                       <input
                         type="text"
                         value={op.path_template}
                         onChange={e => updateTool(idx, 'path_template', e.target.value)}
                         placeholder="/api/v1/employees"
-                        style={inputStyle}
+                        className="n-input"
+                        style={fieldStyle}
                       />
                     </div>
                     <div>
-                      <label style={labelStyle}>Success Status Codes (comma-separated)</label>
+                      <label className="n-label">Success status codes (comma-separated)</label>
                       <input
                         type="text"
                         value={(op.success_status_codes || [200]).join(', ')}
                         onChange={e => updateTool(idx, 'success_status_codes', e.target.value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)))}
                         placeholder="200, 201"
-                        style={inputStyle}
+                        className="n-input"
+                        style={fieldStyle}
                       />
                     </div>
                     <div>
-                      <label style={labelStyle}>Response Ref Path</label>
+                      <label className="n-label">Response ref path</label>
                       <input
                         type="text"
                         value={op.response_ref_path || ''}
                         onChange={e => updateTool(idx, 'response_ref_path', e.target.value || null)}
                         placeholder="body.id"
-                        style={inputStyle}
+                        className="n-input"
+                        style={fieldStyle}
                       />
                     </div>
                     <div>
-                      <label style={labelStyle}>Timeout (seconds)</label>
+                      <label className="n-label">Timeout (seconds)</label>
                       <input
                         type="number"
                         value={op.timeout_seconds || 30}
                         onChange={e => updateTool(idx, 'timeout_seconds', parseInt(e.target.value, 10) || 30)}
-                        style={inputStyle}
+                        className="n-input"
+                        style={fieldStyle}
                       />
                     </div>
                   </div>
 
                   {/* Fields */}
-                  <div style={{ marginTop: '0.75rem' }}>
+                  <div style={{ marginTop: '1rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                      <label style={{ ...labelStyle, marginBottom: 0 }}>Fields</label>
-                      <button
+                      <label className="n-label" style={{ marginBottom: 0 }}>Fields</label>
+                      <Button
+                        size="sm"
+                        icon={Plus}
                         onClick={() => {
                           let newKey = 'new_field';
                           let suffix = 1;
@@ -2374,148 +2319,147 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                           const updated = { ...(op.field_mapping || {}), [newKey]: '' };
                           updateTool(idx, 'field_mapping', updated);
                         }}
-                        style={{
-                          padding: '2px 8px', fontSize: '0.72rem', border: '1px solid #ddd', borderRadius: 4,
-                          backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-                        }}
                       >
-                        + Add Field
-                      </button>
+                        Add field
+                      </Button>
                     </div>
                     {Object.keys(op.field_mapping || {}).length === 0 && (
-                      <p style={{ color: '#999', fontSize: '0.78rem', margin: '0 0 0.25rem', fontStyle: 'italic' }}>
+                      <p style={{ ...emptyNote, margin: '0 0 0.25rem' }}>
                         No fields defined. Add fields to map source data to API parameters.
                       </p>
                     )}
                     {Object.keys(op.field_mapping || {}).length > 0 && (
                       <div style={{
-                        border: '1px solid #e2e8f0',
-                        borderRadius: 6,
-                        overflow: 'hidden',
+                        border: '1px solid var(--line)',
+                        borderRadius: 'var(--radius)',
+                        overflowX: 'auto',
+                        backgroundColor: 'var(--bg)',
                       }}>
-                        <div style={{
-                          display: 'grid',
-                          gridTemplateColumns: '1fr 1fr 1.5fr 70px 32px',
-                          gap: 0,
-                          backgroundColor: '#f7f7f7',
-                          padding: '6px 10px',
-                          borderBottom: '1px solid #e2e8f0',
-                        }}>
-                          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Field Name</span>
-                          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.03em' }}>API Mapping</span>
-                          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Format Hint</span>
-                          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.03em', textAlign: 'center' }}>Required</span>
-                          <span />
-                        </div>
-                        {Object.entries(op.field_mapping || {}).map(([fieldKey, apiMapping], fieldIdx) => (
-                          <div
-                            key={fieldIdx}
-                            style={{
-                              display: 'grid',
-                              gridTemplateColumns: '1fr 1fr 1.5fr 70px 32px',
-                              gap: 0,
-                              alignItems: 'center',
-                              padding: '4px 10px',
-                              borderBottom: fieldIdx < Object.keys(op.field_mapping || {}).length - 1 ? '1px solid #f0f0f0' : 'none',
-                            }}
-                          >
-                            <input
-                              type="text"
-                              value={fieldKey}
-                              onChange={e => {
-                                const newKey = e.target.value;
-                                const entries = Object.entries(op.field_mapping || {});
-                                entries[fieldIdx] = [newKey, apiMapping];
-                                const newMapping = Object.fromEntries(entries);
-                                const newRequired = op.required_fields.map(f => f === fieldKey ? newKey : f);
-                                const newDescs = { ...(op.field_descriptions || {}) };
-                                if (fieldKey in newDescs) {
-                                  newDescs[newKey] = newDescs[fieldKey];
-                                  delete newDescs[fieldKey];
-                                }
-                                setForm(prev => ({
-                                  ...prev,
-                                  tools: prev.tools.map((o, i) =>
-                                    i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired, field_descriptions: newDescs } : o
-                                  ),
-                                }));
-                              }}
-                              placeholder="field_name"
-                              style={{ ...inputStyle, border: 'none', padding: '4px 6px', fontSize: '0.82rem', backgroundColor: 'transparent' }}
-                            />
-                            <input
-                              type="text"
-                              value={apiMapping}
-                              onChange={e => {
-                                const entries = Object.entries(op.field_mapping || {});
-                                entries[fieldIdx] = [fieldKey, e.target.value];
-                                updateTool(idx, 'field_mapping', Object.fromEntries(entries));
-                              }}
-                              placeholder="apiFieldName"
-                              style={{ ...inputStyle, border: 'none', padding: '4px 6px', fontSize: '0.82rem', fontFamily: 'monospace', backgroundColor: 'transparent' }}
-                            />
-                            <input
-                              type="text"
-                              value={(op.field_descriptions || {})[fieldKey] || ''}
-                              onChange={e => {
-                                const newDescs = { ...(op.field_descriptions || {}), [fieldKey]: e.target.value };
-                                updateTool(idx, 'field_descriptions', newDescs);
-                              }}
-                              placeholder="e.g. Date in YYYY-MM-DD"
-                              style={{ ...inputStyle, border: 'none', padding: '4px 6px', fontSize: '0.82rem', color: '#888', backgroundColor: 'transparent' }}
-                            />
-                            <div style={{ textAlign: 'center' }}>
-                              <input
-                                type="checkbox"
-                                checked={op.required_fields.includes(fieldKey)}
-                                onChange={e => {
-                                  const newRequired = e.target.checked
-                                    ? [...op.required_fields, fieldKey]
-                                    : op.required_fields.filter(f => f !== fieldKey);
-                                  updateTool(idx, 'required_fields', newRequired);
-                                }}
-                                style={{ cursor: 'pointer' }}
-                              />
-                            </div>
-                            <button
-                              onClick={() => {
-                                const newMapping = { ...(op.field_mapping || {}) };
-                                delete newMapping[fieldKey];
-                                const newDescs = { ...(op.field_descriptions || {}) };
-                                delete newDescs[fieldKey];
-                                const newRequired = op.required_fields.filter(f => f !== fieldKey);
-                                setForm(prev => ({
-                                  ...prev,
-                                  tools: prev.tools.map((o, i) =>
-                                    i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired, field_descriptions: newDescs } : o
-                                  ),
-                                }));
-                              }}
+                        {/* Scrolls sideways on a phone rather than squeezing five columns. */}
+                        <div style={{ minWidth: 560 }}>
+                          {/* Header row in the .n-table look: 12px/600 on the hover fill, strong rule. */}
+                          <div style={{
+                            display: 'grid',
+                            gridTemplateColumns: '1fr 1fr 1.5fr 70px 40px',
+                            gap: 0,
+                            backgroundColor: 'var(--surface-alt)',
+                            padding: '8px 10px',
+                            borderBottom: '1px solid var(--line-strong)',
+                          }}>
+                            <span style={{ ...groupLabel, marginBottom: 0, paddingLeft: 6 }}>Field name</span>
+                            <span style={{ ...groupLabel, marginBottom: 0, paddingLeft: 6 }}>API mapping</span>
+                            <span style={{ ...groupLabel, marginBottom: 0, paddingLeft: 6 }}>Format hint</span>
+                            <span style={{ ...groupLabel, marginBottom: 0, textAlign: 'center' }}>Required</span>
+                            <span />
+                          </div>
+                          {Object.entries(op.field_mapping || {}).map(([fieldKey, apiMapping], fieldIdx) => (
+                            <div
+                              key={fieldIdx}
                               style={{
-                                border: 'none', background: 'none', cursor: 'pointer', color: '#e53e3e',
-                                fontSize: '0.85rem', padding: 0, lineHeight: 1,
+                                display: 'grid',
+                                gridTemplateColumns: '1fr 1fr 1.5fr 70px 40px',
+                                gap: 0,
+                                alignItems: 'center',
+                                padding: '4px 10px',
+                                borderBottom: fieldIdx < Object.keys(op.field_mapping || {}).length - 1 ? '1px solid var(--line-soft)' : 'none',
                               }}
                             >
-                              &#10005;
-                            </button>
-                          </div>
-                        ))}
+                              <input
+                                type="text"
+                                value={fieldKey}
+                                onChange={e => {
+                                  const newKey = e.target.value;
+                                  const entries = Object.entries(op.field_mapping || {});
+                                  entries[fieldIdx] = [newKey, apiMapping];
+                                  const newMapping = Object.fromEntries(entries);
+                                  const newRequired = op.required_fields.map(f => f === fieldKey ? newKey : f);
+                                  const newDescs = { ...(op.field_descriptions || {}) };
+                                  if (fieldKey in newDescs) {
+                                    newDescs[newKey] = newDescs[fieldKey];
+                                    delete newDescs[fieldKey];
+                                  }
+                                  setForm(prev => ({
+                                    ...prev,
+                                    tools: prev.tools.map((o, i) =>
+                                      i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired, field_descriptions: newDescs } : o
+                                    ),
+                                  }));
+                                }}
+                                placeholder="field_name"
+                                style={cellInputStyle}
+                              />
+                              <input
+                                type="text"
+                                value={apiMapping}
+                                onChange={e => {
+                                  const entries = Object.entries(op.field_mapping || {});
+                                  entries[fieldIdx] = [fieldKey, e.target.value];
+                                  updateTool(idx, 'field_mapping', Object.fromEntries(entries));
+                                }}
+                                placeholder="apiFieldName"
+                                style={{ ...cellInputStyle, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' }}
+                              />
+                              <input
+                                type="text"
+                                value={(op.field_descriptions || {})[fieldKey] || ''}
+                                onChange={e => {
+                                  const newDescs = { ...(op.field_descriptions || {}), [fieldKey]: e.target.value };
+                                  updateTool(idx, 'field_descriptions', newDescs);
+                                }}
+                                placeholder="e.g. Date in YYYY-MM-DD"
+                                style={{ ...cellInputStyle, color: 'var(--muted)' }}
+                              />
+                              <div style={{ textAlign: 'center' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={op.required_fields.includes(fieldKey)}
+                                  onChange={e => {
+                                    const newRequired = e.target.checked
+                                      ? [...op.required_fields, fieldKey]
+                                      : op.required_fields.filter(f => f !== fieldKey);
+                                    updateTool(idx, 'required_fields', newRequired);
+                                  }}
+                                  style={{ cursor: 'pointer' }}
+                                />
+                              </div>
+                              <IconButton
+                                icon={X}
+                                label={`Remove field ${fieldKey}`}
+                                iconSize={14}
+                                style={{ justifySelf: 'center' }}
+                                onClick={() => {
+                                  const newMapping = { ...(op.field_mapping || {}) };
+                                  delete newMapping[fieldKey];
+                                  const newDescs = { ...(op.field_descriptions || {}) };
+                                  delete newDescs[fieldKey];
+                                  const newRequired = op.required_fields.filter(f => f !== fieldKey);
+                                  setForm(prev => ({
+                                    ...prev,
+                                    tools: prev.tools.map((o, i) =>
+                                      i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired, field_descriptions: newDescs } : o
+                                    ),
+                                  }));
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
 
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <label style={labelStyle}>Headers (JSON)</label>
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <label className="n-label">Headers (JSON)</label>
                     <JsonTextarea
                       value={op.headers}
                       onChange={v => updateTool(idx, 'headers', v ?? {})}
                       autoResize
-                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem' }}
+                      style={codeFieldStyle}
                     />
                   </div>
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <label style={labelStyle}>Field Schema (JSON)</label>
-                    <div style={{ fontSize: '0.7rem', color: '#888', marginBottom: 4 }}>
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <label className="n-label">Field schema (JSON)</label>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 4 }}>
                       Define JSON Schema for complex fields (e.g., arrays with required properties). Overrides the default string type.
                     </div>
                     <JsonTextarea
@@ -2523,49 +2467,50 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       onChange={v => updateTool(idx, 'field_schema', v)}
                       autoResize
                       placeholder='{"lines": {"type": "array", "items": {"type": "object", "properties": {...}, "required": [...]}}}'
-                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem' }}
+                      style={codeFieldStyle}
                     />
                   </div>
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <label style={labelStyle}>Request Body Template (JSON)</label>
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <label className="n-label">Request body template (JSON)</label>
                     <AutoResizeTextarea
                       value={op.request_body_template || ''}
                       onChange={e => updateTool(idx, 'request_body_template', e.target.value || null)}
                       placeholder=""
-                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem' }}
+                      style={codeFieldStyle}
                     />
                   </div>
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <label style={labelStyle}>Display Component</label>
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <label className="n-label">Display component</label>
                     <input
                       value={op.display_component || ''}
                       onChange={e => updateTool(idx, 'display_component', e.target.value || null)}
                       placeholder="e.g. generic_table"
-                      style={inputStyle}
+                      className="n-input"
+                      style={fieldStyle}
                     />
                   </div>
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <label style={labelStyle}>Display Props (JSON)</label>
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <label className="n-label">Display props (JSON)</label>
                     <JsonTextarea
                       value={op.display_props}
                       onChange={v => updateTool(idx, 'display_props', v)}
                       rows={2}
                       placeholder='{"title": "Results"}'
-                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
+                      style={codeFieldStyle}
                     />
                   </div>
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <label style={labelStyle}>Working Document (JSON)</label>
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <label className="n-label">Working document (JSON)</label>
                     <JsonTextarea
                       value={op.working_document}
                       onChange={v => updateTool(idx, 'working_document', v)}
                       rows={2}
                       placeholder='{"doc_type": "roster", "sync_mode": "auto", "ref_fields": ["search_date"]}'
-                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
+                      style={codeFieldStyle}
                     />
                   </div>
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <label style={labelStyle}>Summary Fields</label>
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <label className="n-label">Summary fields</label>
                     <input
                       value={(op.summary_fields || []).join(', ')}
                       onChange={e => {
@@ -2573,9 +2518,10 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                         updateTool(idx, 'summary_fields', val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : null);
                       }}
                       placeholder="name, id, sku, price"
-                      style={inputStyle}
+                      className="n-input"
+                      style={fieldStyle}
                     />
-                    <div style={{ fontSize: '0.7rem', color: '#999', marginTop: 2 }}>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 4 }}>
                       Comma-separated field names to show when result is too large. Leave empty to use search-only mode.
                     </div>
                   </div>
@@ -2594,27 +2540,24 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
           <>
             {toolIdxs.map(i => renderRow(form.tools[i], i))}
             {split && toolIdxs.length === 0 && (
-              <p style={{ fontSize: '0.78rem', color: '#999', fontStyle: 'italic', margin: '0 0 0.5rem' }}>No tools yet.</p>
+              <p style={{ ...emptyNote, margin: '0 0 0.5rem' }}>No tools yet.</p>
             )}
             {split && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '1.25rem 0 0.75rem' }}>
-                <div>
-                  <h4 style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>API endpoints</h4>
-                  <p style={{ margin: '2px 0 0', fontSize: '0.72rem', color: '#888' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', margin: '24px 0 16px', paddingTop: 20, borderTop: '1px solid var(--line)' }}>
+                <div style={{ minWidth: 0, flex: '1 1 260px' }}>
+                  <h4 style={sectionTitle}>API endpoints</h4>
+                  <p style={sectionNote}>
                     Building blocks — one call to {form.display_name || 'the outside system'} each. Tools call them; an LLM never sees them.
                   </p>
                 </div>
-                <button onClick={addTool} style={{
-                  padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4,
-                  backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit',
-                }}>
-                  + Endpoint
-                </button>
+                <Button size="sm" icon={Plus} onClick={addTool}>
+                  Endpoint
+                </Button>
               </div>
             )}
             {endpointIdxs.map(i => renderRow(form.tools[i], i))}
             {split && endpointIdxs.length === 0 && (
-              <p style={{ fontSize: '0.78rem', color: '#999', fontStyle: 'italic', margin: 0 }}>No endpoints.</p>
+              <p style={emptyNote}>No endpoints.</p>
             )}
           </>
         );
@@ -2623,25 +2566,26 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
 
       {/* Agent Mode (conditional) */}
       {form.execution_mode === 'agent' && (
-        <div style={sectionStyle}>
-          <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.82rem', fontWeight: 600, color: '#444' }}>Agent Mode</h4>
+        <div className="n-card" style={sectionStyle}>
+          <h4 style={{ ...sectionTitle, marginBottom: 16 }}>Agent mode</h4>
           <div style={{ marginBottom: '0.75rem' }}>
-            <label style={labelStyle}>API Documentation</label>
+            <label className="n-label">API documentation</label>
             <textarea
               value={form.api_documentation || ''}
               onChange={e => update('api_documentation', e.target.value || null)}
               rows={8}
               placeholder="Paste API docs for the LLM to reference..."
-              style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical', lineHeight: 1.5 }}
+              className="n-input"
+              style={{ ...codeFieldStyle, lineHeight: 1.5 }}
             />
           </div>
           <div>
-            <label style={labelStyle}>Example Requests (JSON array)</label>
+            <label className="n-label">Example requests (JSON array)</label>
             <JsonTextarea
               value={form.example_requests}
               onChange={v => update('example_requests', (v ?? []) as Record<string, unknown>[])}
               rows={4}
-              style={{ ...inputStyle, fontFamily: 'monospace', fontSize: '0.82rem', resize: 'vertical' }}
+              style={codeFieldStyle}
             />
           </div>
         </div>
@@ -2649,38 +2593,16 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
 
       {/* Save / Cancel */}
       <div style={{ display: 'flex', gap: 8 }}>
-        <button
+        <Button
+          variant="primary"
           onClick={handleSubmit}
           disabled={saving || !form.connector_name || !form.display_name}
-          style={{
-            padding: '8px 20px',
-            fontSize: '0.85rem',
-            fontWeight: 500,
-            border: 'none',
-            borderRadius: 6,
-            backgroundColor: '#c4a882',
-            color: '#fff',
-            cursor: saving ? 'not-allowed' : 'pointer',
-            fontFamily: 'inherit',
-          }}
         >
-          {saving ? 'Saving...' : isNew ? 'Create Spec' : 'Update Spec'}
-        </button>
-        <button
-          onClick={onCancel}
-          style={{
-            padding: '8px 20px',
-            fontSize: '0.85rem',
-            fontWeight: 500,
-            border: '1px solid #ddd',
-            borderRadius: 6,
-            backgroundColor: '#fff',
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-          }}
-        >
+          {saving ? 'Saving...' : isNew ? 'Create spec' : 'Update spec'}
+        </Button>
+        <Button onClick={onCancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );

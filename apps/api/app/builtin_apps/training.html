@@ -1,89 +1,265 @@
 <style>
-  :root { --line:#e5e2dc; --muted:#8a8a8a; --ink:#2a2a2a; --green:#2e7d4f; --amber:#b45309; }
-  body { font-size: 13px; }
-  .wrap { max-width: 1100px; margin: 0 auto; padding: 14px 16px 40px; }
-  h1 { font-size: 1.05rem; margin: 0; }
-  .sub { color: var(--muted); font-size: .72rem; }
-  .tabs { display:flex; gap:4px; margin:12px 0 14px; border-bottom:1px solid var(--line); }
-  .tab { border:none; background:none; padding:6px 12px; font:inherit; font-size:.78rem; color:var(--muted);
-         cursor:pointer; border-bottom:2px solid transparent; }
-  .tab[aria-selected="true"] { color:var(--ink); border-bottom-color: var(--green); font-weight:600; }
-  .card { border:1px solid var(--line); border-radius:10px; background:#fff; padding:.7rem .9rem; margin-top:8px; }
-  .row { display:flex; align-items:center; gap:12px; }
-  .grow { flex:1; min-width:0; }
-  .name { font-weight:600; }
-  .pill { font-size:.6rem; padding:1px 7px; border-radius:99px; white-space:nowrap; }
-  .ok { background:#d1fae5; color:#065f46; }
-  .go { background:#fef3c7; color:#92400e; }
-  .off { background:#f3f4f6; color:#6b7280; }
-  button.act { font-size:.7rem; padding:3px 11px; border:1px solid var(--line); border-radius:5px;
-               background:#fff; cursor:pointer; font-family:inherit; color:#555; }
-  button.act:hover { border-color:#bbb; }
-  button.primary { background:var(--green); color:#fff; border-color:var(--green); }
-  button.act:disabled { opacity:.5; cursor:default; }
-  table { border-collapse:collapse; width:100%; font-size:.75rem; }
-  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid #f0eee9; vertical-align:top; }
-  th { font-size:.62rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
-  .matrix { overflow-x:auto; }
-  .matrix th.person, .matrix td.person { position:sticky; left:0; background:#fff; min-width:150px; }
-  .matrix td { text-align:center; min-width:120px; }
-  .inst { font-size:.58rem; color:var(--muted); display:block; }
-  .dash { color:#cbd5e1; }
-  .empty { border:1px dashed var(--line); border-radius:10px; padding:26px; text-align:center; color:var(--muted); }
-  .back { font-size:.7rem; color:#6b6b6b; background:none; border:none; cursor:pointer; padding:0; font-family:inherit; }
-  .link { color:var(--green); cursor:pointer; }
-  .link:hover { text-decoration:underline; }
-  .tree { margin-left:2px; }
-  .mod { border-left:2px solid var(--line); padding-left:10px; margin:8px 0; }
-  .sec { color:#555; margin:3px 0 3px 8px; font-size:.74rem; }
-  .item { color:var(--muted); margin-left:20px; font-size:.7rem; }
-  .err { color:#b91c1c; font-size:.75rem; }
-  input[type=text], input[type=number], input[type=date], input[type=time], textarea, select {
-    font:inherit; font-size:.75rem; border:1px solid var(--line); border-radius:6px;
-    padding:4px 7px; box-sizing:border-box; background:#fff; }
-  input[type=text]:focus, textarea:focus { outline:1px solid #cbd5e1; }
-  .field { display:flex; align-items:center; gap:8px; margin:5px 0; }
-  .field label { font-size:.66rem; color:var(--muted); min-width:118px; font-weight:600;
-                 text-transform:uppercase; letter-spacing:.03em; }
-  .modhead { display:flex; align-items:center; gap:8px; }
-  .tiny { font-size:.62rem; padding:1px 7px; }
-  .arrow { font-size:.6rem; padding:0 5px; }
-  .danger { color:#b91c1c; border-color:#f0d0d0; }
-  .addrow { display:flex; gap:6px; margin-top:6px; align-items:center; }
-  .pick { max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; margin-top:6px; }
-  .pick label { display:flex; align-items:center; gap:7px; padding:4px 9px; font-size:.75rem;
-                border-bottom:1px solid #f4f2ee; cursor:pointer; }
-  .pick label:hover { background:#faf9f6; }
-  .filters { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
-  .modal { position:fixed; inset:0; background:rgba(30,30,30,.35); display:flex;
-           align-items:flex-start; justify-content:center; padding:40px 16px; z-index:50; overflow-y:auto; }
-  .modal .panel { background:#fff; border-radius:12px; max-width:640px; width:100%; padding:18px 20px;
-                  box-shadow:0 12px 40px rgba(0,0,0,.2); }
-  .prose { font-size:.82rem; line-height:1.5; color:var(--ink); }
-  .prose img, .prose video { max-width:100%; }
+  /* Norm Training.
+     Styled by its host (AppRunner → hostStyles.ts): the --norm-* tokens, the
+     element defaults and the opt-in .n-* classes (buttons, badges, tables,
+     tabs, fields, cards) all come from there, and the body carries the page
+     gutter — so nothing here frames, centres or pads the app. */
+
+  /* Our own title shows only outside Norm: the host draws the app's title.
+     The scope line (which venue, which version) stays — the host doesn't say it. */
+  .app-head { margin: 12px 0 8px; }
+  .app-head h1 { margin: 0; font-size: var(--norm-fs-xl); font-weight: 700; letter-spacing: -0.01em; }
+  html[data-norm-variant] .app-head h1 { display: none; }
+  html[data-norm-variant] .app-head { margin: 0 0 4px; }
+
+  /* Tabs on the left, the one primary action on the right, one rule under both. */
+  .bar { display: flex; align-items: flex-end; gap: 16px; box-shadow: inset 0 -1px 0 var(--norm-line); }
+  .bar .n-tabs { flex: 0 1 auto; min-width: 0; gap: 24px; box-shadow: none; }
+  .bar .n-tab { padding: 10px 2px; }
+  .n-tab:focus-visible { outline-offset: -2px; }
+  .bar > .n-btn { flex: 0 0 auto; align-self: center; margin: 0 0 8px auto; }
+  #body { padding-top: 16px; }
+
+  /* ---- Small parts ---- */
+  .row { display: flex; align-items: center; gap: 12px; }
+  .grow { flex: 1; min-width: 0; }
+  .name { font-weight: 600; }
+  .sub, .hint, .none { font-size: var(--norm-fs-sm); color: var(--norm-muted); }
+  .none { padding: 4px 0; }
+  .inst { display: block; font-size: var(--norm-fs-xs); color: var(--norm-muted); }
+  .dash { color: var(--norm-muted-soft); }
+  .nowrap { white-space: nowrap; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .err { margin-top: 8px; font-size: var(--norm-fs-sm); color: var(--norm-error); }
+  .err:empty { display: none; }
+  .saved { font-size: var(--norm-fs-sm); font-weight: 500; color: var(--norm-ok); }
+  .i { display: inline-block; flex: 0 0 auto; vertical-align: middle; }
+  .link { padding: 0; border: none; background: none; font: inherit; color: var(--norm-accent); text-align: left; cursor: pointer; }
+  .link:hover { color: var(--norm-accent-strong); text-decoration: underline; text-underline-offset: 2px; }
+  .back { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 8px; padding: 2px 0; border: none; background: none;
+          font: inherit; font-size: var(--norm-fs-sm); font-weight: 500; color: var(--norm-text-soft); cursor: pointer; }
+  .back:hover { color: var(--norm-text); }
+  .ibtn { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 28px; height: 28px; padding: 0;
+          border: none; border-radius: var(--norm-radius); background: transparent; color: var(--norm-icon); cursor: pointer; }
+  .ibtn:hover { background: var(--norm-surface-alt); color: var(--norm-text); }
+  .ibtn--danger:hover { background: var(--norm-error-bg); color: var(--norm-error); }
+  .ibtn-gap { flex: 0 0 auto; width: 28px; }
+  @media (pointer: coarse) { .ibtn, .ibtn-gap { width: 36px; height: 36px; } }
+  .fld-sm { height: 30px; font-size: var(--norm-fs-sm); }
+  @media (pointer: coarse) { .fld-sm { height: 40px; } }
+  input[type=checkbox] { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; accent-color: var(--norm-accent); cursor: pointer; }
+  .check { display: inline-flex; align-items: center; gap: 6px; font-size: var(--norm-fs-sm); color: var(--norm-text-soft);
+           white-space: nowrap; cursor: pointer; }
+  .tile { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+          border-radius: var(--norm-radius); background: var(--norm-surface-alt); color: var(--norm-text-soft); }
+  .avatar { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+            border-radius: 50%; background: var(--norm-selected); color: var(--norm-accent-strong); font-size: var(--norm-fs-sm); font-weight: 600; }
+
+  /* ---- Loading, empty, error ---- */
+  .state { padding: 40px 16px; text-align: center; color: var(--norm-muted); }
+  .state-title { font-weight: 500; color: var(--norm-text-soft); }
+  .state-detail { margin-top: 4px; font-size: var(--norm-fs-sm); }
+  .spin { display: flex; width: 18px; height: 18px; margin: 0 auto 8px; color: var(--norm-icon); animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .alert { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: var(--norm-radius);
+           background: var(--norm-error-bg); color: var(--norm-error); }
+  .alert .i { margin-top: 2px; }
+  .alert-title { font-weight: 600; }
+  .alert-detail { margin-top: 2px; font-size: var(--norm-fs-sm); }
+
+  /* ---- Programs and frameworks: a table on the page, cards on a phone ---- */
+  .ltable .c-main { width: 100%; max-width: 0; }
+  .prog { display: flex; align-items: center; gap: 12px; min-width: 0; cursor: pointer; }
+  .prog-text { min-width: 0; }
+  .prog .meta { font-size: var(--norm-fs-xs); color: var(--norm-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .m-only { display: none; }
+  .meter { display: flex; align-items: center; gap: 10px; }
+  .track { flex: 0 0 auto; width: 120px; height: 6px; border-radius: 3px; background: var(--norm-line-soft); overflow: hidden; }
+  .track > span { display: block; height: 100%; border-radius: 3px; background: var(--norm-brand); }
+  .pct { min-width: 4ch; font-size: var(--norm-fs-sm); color: var(--norm-text-soft); }
+  @media (max-width: 640px) {
+    .ltable thead { display: none; }
+    .ltable, .ltable tbody { display: block; }
+    .ltable tbody tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px 12px;
+                       margin-bottom: 10px; padding: 12px 14px; border: 1px solid var(--norm-line); border-radius: var(--norm-radius-lg);
+                       background: var(--norm-bg); }
+    .ltable tbody td { display: block; padding: 0; border: none; background: none; }
+    /* A tap leaves :hover on a card; the table's row hover must not paint it. */
+    .ltable.n-table tbody tr:hover > td { background: none; }
+    .ltable .c-main { grid-column: 1 / 3; grid-row: 1; width: auto; max-width: none; }
+    .ltable .c-act { grid-column: 3; grid-row: 1; }
+    .ltable .c-desk { display: none; }
+    .ltable .c-status { grid-column: 1; grid-row: 2; }
+    .ltable.progs .c-status { padding-left: 44px; }
+    .ltable .c-wide { grid-column: 2 / 4; grid-row: 2; }
+    .ltable .m-only { display: block; }
+    .ltable .track { flex: 1 1 auto; width: auto; }
+  }
+
+  /* ---- Detail views: sections as cards ---- */
+  .title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .title-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .title { margin: 0; font-size: var(--norm-fs-lg); font-weight: 600; }
+  .panel { margin-top: 16px; overflow: hidden; }
+  .panel-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--norm-line); }
+  .panel-head h2 { margin: 0; font-size: var(--norm-fs-md); font-weight: 600; }
+  .panel-body { padding: 12px 16px; }
+  .panel-body.form { max-width: 760px; }
+  .panel-foot { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--norm-line-soft); }
+  .tbl { overflow-x: auto; }
+  /* On a narrow screen the table scrolls sideways rather than crushing its first column. */
+  .tbl .n-table td:first-child { min-width: 120px; }
+  .n-card .n-table tbody tr:last-child > td { border-bottom: none; }
+  .n-card .n-table th:first-child, .n-card .n-table td:first-child { padding-left: 16px; }
+  .n-card .n-table th:last-child, .n-card .n-table td:last-child { padding-right: 16px; }
+  .actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+  .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .lbl { font-size: var(--norm-fs-sm); font-weight: 500; color: var(--norm-text-soft); }
+  .filter { display: inline-flex; align-items: center; gap: 8px; min-width: 0; margin-right: 8px; }
+  .intro { margin: 0 0 12px; font-size: var(--norm-fs-sm); color: var(--norm-text-soft); }
+  .foot-note { margin-top: 8px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 4px; }
+  .cell-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; }
+
+  /* Form rows: a label column, then the control. */
+  .field { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
+  .panel-body > .field:first-child { margin-top: 0; }
+  .panel-body > .field:last-child { margin-bottom: 0; }
+  .field > label, .field > .lbl { flex: 0 0 120px; font-size: var(--norm-fs-sm); font-weight: 500; color: var(--norm-text-soft); }
+  .field > label.inline { flex: 0 0 auto; margin-left: 12px; }
+  .field .n-input, .field .n-select { min-width: 0; }
+  .stack { margin-top: 12px; }
+  .stack .n-input { display: block; width: 100%; }
+  @media (max-width: 640px) {
+    .field { flex-wrap: wrap; row-gap: 6px; }
+    .field > label, .field > .lbl { flex-basis: 100%; }
+    .field--inline > label, .field > label.inline { flex-basis: auto; margin-left: 0; }
+  }
+
+  /* Program structure: modules → sections → content. */
+  .tree { max-width: 880px; }
+  .mod { padding: 12px 0; border-top: 1px solid var(--norm-line-soft); }
+  .mod:first-child { padding-top: 0; border-top: none; }
+  .mod:last-child { padding-bottom: 4px; }
+  .modhead, .sec-head, .item, .cap-head, .cat-head, .group-head, .opt-row, .q-head { display: flex; align-items: center; gap: 8px; }
+  .idx { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 6px;
+         border-radius: 999px; background: var(--norm-surface-alt); font-size: var(--norm-fs-xs); font-weight: 600; color: var(--norm-text-soft); }
+  .mod-name { flex: 1; min-width: 0; font-weight: 500; }
+  .ctl { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+  .secs { margin: 8px 0 0 12px; padding-left: 20px; border-left: 1px solid var(--norm-line); }
+  .sec { padding: 6px 0; }
+  .sec-name { flex: 0 1 260px; min-width: 0; }
+  .item { min-height: 32px; margin-left: 4px; font-size: var(--norm-fs-sm); }
+  .item > .i { color: var(--norm-icon); }
+  .item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .addrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+  .addrow .n-input { flex: 0 1 240px; min-width: 0; }
+  @media (max-width: 640px) {
+    .modhead, .sec-head { flex-wrap: wrap; }
+    .mod-name { flex: 1 1 70%; }
+    .secs { margin-left: 4px; padding-left: 12px; }
+  }
+
+  /* ---- Dialogs ---- */
+  .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start; justify-content: center;
+           padding: 40px 16px; overflow-y: auto; background: rgba(26, 26, 26, 0.35); }
+  .dlg { width: 100%; max-width: 640px; padding: 20px; border-radius: var(--norm-radius-lg); background: var(--norm-bg);
+         box-shadow: 0 12px 40px rgba(26, 26, 26, 0.18); }
+  .dlg--sm { max-width: 440px; }
+  .dlg-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .dlg-title { margin: 0; font-size: var(--norm-fs-md); font-weight: 600; }
+  .dlg-msg { margin: 8px 0 0; color: var(--norm-text-soft); }
+  .dlg-intro { margin: -6px 0 12px; font-size: var(--norm-fs-sm); color: var(--norm-text-soft); }
+  .dlg-label { margin-top: 14px; }
+  .dlg-input { display: block; width: 100%; }
+  .dlg-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+  /* A long editor keeps Save in reach: the footer sticks to the foot of the view. */
+  .dlg-foot--bar { position: sticky; bottom: -40px; z-index: 2; margin: 20px -20px -20px; padding: 12px 20px;
+                   border-top: 1px solid var(--norm-line); border-radius: 0 0 var(--norm-radius-lg) var(--norm-radius-lg);
+                   background: var(--norm-bg); }
+  .dlg iframe, .dlg video { display: block; max-width: 100%; border: 0; border-radius: var(--norm-radius); }
+  .evidence { display: block; max-width: 100%; border-radius: var(--norm-radius); }
+  .pick { max-height: 240px; overflow-y: auto; margin-top: 8px; border: 1px solid var(--norm-line); border-radius: var(--norm-radius); }
+  .pick label { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--norm-line-soft); cursor: pointer; }
+  .pick label:last-child { border-bottom: none; }
+  .pick label:hover { background: var(--norm-surface-alt); }
+  .pick .none { padding: 8px 10px; }
+  .preview { max-height: 220px; overflow: auto; padding: 10px 12px; border: 1px solid var(--norm-line); border-radius: var(--norm-radius);
+             background: var(--norm-surface); }
+  .group, .q-edit, .cat { padding: 12px 0; border-top: 1px solid var(--norm-line-soft); }
+  .group:first-child, .q-edit:first-child, .cat:first-child { padding-top: 4px; border-top: none; }
+  .group-name { flex: 1; min-width: 0; font-weight: 600; }
+  .opt-row, .add-opt, .opt-hint { margin: 6px 0 0 16px; }
+  .opt-hint { display: block; }
+  .q-num { flex: 0 0 auto; font-size: var(--norm-fs-sm); font-weight: 600; color: var(--norm-text-soft); }
+  .q-edit > .n-input { display: block; width: 100%; margin-top: 8px; }
+  .ord { flex: 0 0 auto; min-width: 18px; font-size: var(--norm-fs-sm); color: var(--norm-muted); }
+  .pair-sep { color: var(--norm-icon); }
+  .caps { margin: 4px 0 0 12px; }
+  .cap { margin-top: 10px; padding-left: 12px; border-left: 2px solid var(--norm-line); }
+  .lvl-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .lvl-tag { flex: 0 0 84px; font-size: var(--norm-fs-xs); color: var(--norm-muted); }
+  .lvl-row .n-input { flex: 1; min-width: 0; }
+  /* Inputs sharing a row with buttons may shrink, so nothing is pushed off a phone screen. */
+  .cat-head .n-input, .cap-head .n-input, .group-head .n-input, .opt-row .n-input { min-width: 0; }
+  .q { margin-top: 12px; }
+  .q-head { flex-wrap: wrap; }
+  .ans { display: flex; align-items: center; gap: 6px; margin-top: 4px; padding: 4px 8px; border-radius: var(--norm-radius-sm);
+         font-size: var(--norm-fs-sm); }
+  .ans--ok { background: var(--norm-ok-bg); color: var(--norm-ok); }
+  .ans-gap { flex: 0 0 auto; width: 14px; }
+  .prose { line-height: 1.5; color: var(--norm-text); }
+  .prose > :first-child { margin-top: 0; }
+  .prose > :last-child { margin-bottom: 0; }
+  .prose img, .prose video { max-width: 100%; }
+
+  /* ---- Tracker: the matrix scrolls sideways under a pinned name column ---- */
+  .matrix { overflow-x: auto; }
+  .matrix th.person, .matrix td.person { position: sticky; left: 0; z-index: 1; min-width: 160px; background: var(--norm-bg); }
+  .matrix th.person { background: var(--norm-surface-alt); }
+  .matrix .mid { min-width: 120px; text-align: center; }
+  .matrix .cell + .cell { margin-top: 4px; }
+  .matrix .n-badge { display: inline-block; max-width: 180px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+
+  /* ---- Sign-off queue ---- */
+  .list-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--norm-line); }
+  .list-row:first-child { border-top: none; }
+  .row-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+  .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .files .n-btn { min-width: 0; max-width: 260px; }
+  .fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+  @media (max-width: 640px) {
+    .bar { flex-wrap: wrap; }
+    .bar > .n-btn { order: -1; margin: 0 0 4px; }
+    .bar .n-tabs { flex: 1 1 100%; }
+    .list-row { flex-wrap: wrap; }
+    .list-row > .grow { flex-basis: 100%; }
+    .row-actions { margin-left: auto; }
+    .filter { flex: 1 1 100%; margin-right: 0; }
+    .filter .lbl { flex: 0 0 64px; }
+    .filter .n-select { flex: 1; min-width: 0; }
+  }
 </style>
 
 <div class="wrap">
-  <div class="row">
-    <div class="grow">
-      <h1>Training</h1>
-      <div class="sub" id="scope">—</div>
+  <header class="app-head">
+    <h1>Training</h1>
+    <div class="sub" id="scope">—</div>
+  </header>
+
+  <div class="bar">
+    <div class="n-tabs" role="tablist" aria-label="Training">
+      <button type="button" class="n-tab tab" role="tab" data-view="programs" aria-selected="true">Programs</button>
+      <button type="button" class="n-tab tab" role="tab" data-view="plans" aria-selected="false">Plans</button>
+      <button type="button" class="n-tab tab" role="tab" data-view="signoffs" aria-selected="false">Sign-offs</button>
+      <button type="button" class="n-tab tab" role="tab" data-view="tracker" aria-selected="false">Tracker</button>
+      <button type="button" class="n-tab tab" role="tab" data-view="frameworks" aria-selected="false">Frameworks</button>
     </div>
+    <button type="button" class="n-btn n-btn--primary" id="newprog"><svg class="i" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New program</button>
   </div>
 
-  <div class="row" style="justify-content:space-between">
-    <div class="tabs" role="tablist" style="margin-bottom:0;border:none">
-      <button class="tab" role="tab" data-view="programs" aria-selected="true">Programs</button>
-      <button class="tab" role="tab" data-view="plans" aria-selected="false">Plans</button>
-      <button class="tab" role="tab" data-view="signoffs" aria-selected="false">Sign-offs</button>
-      <button class="tab" role="tab" data-view="tracker" aria-selected="false">Tracker</button>
-      <button class="tab" role="tab" data-view="frameworks" aria-selected="false">Frameworks</button>
-    </div>
-    <button class="act primary" id="newprog">+ New program</button>
-  </div>
-  <div style="border-bottom:1px solid var(--line);margin:0 0 14px"></div>
-
-  <div id="body"><div class="sub">Loading…</div></div>
+  <div id="body" role="tabpanel"><div class="state" role="status">Loading…</div></div>
 </div>
 <div id="modal"></div>
 
@@ -93,28 +269,157 @@
   var body = document.getElementById('body');
   var modalHost = document.getElementById('modal');
 
-  var ICONS = {
-    'beer': '🍺', 'wine': '🍷', 'martini': '🍸', 'coffee': '☕', 'utensils': '🍽️',
-    'salad': '🥗', 'chef-hat': '👨‍🍳', 'flame': '🔥', 'soup': '🍲', 'cake': '🍰',
-    'graduation-cap': '🎓', 'book': '📘', 'book-open': '📖', 'award': '🏅',
-    'star': '⭐', 'sparkles': '✨', 'crown': '👑', 'rocket': '🚀', 'target': '🎯',
-    'handshake': '🤝', 'users': '👥', 'user-check': '🙋', 'shield': '🛡️',
-    'wrench': '🔧', 'hammer': '🔨', 'key': '🔑', 'clipboard': '📋',
-    'clipboard-check': '☑️', 'calendar': '📅', 'clock': '⏰', 'truck': '🚚',
-    'box': '📦', 'chart-bar': '📊', 'dollar-sign': '💵', 'heart': '❤️',
-    'lightbulb': '💡', 'music': '🎵', 'phone': '📞', 'mail': '✉️', 'lock': '🔒',
+  // ---- Icons -------------------------------------------------------------
+  // Lucide line icons (lucide.dev, ISC licence), inlined because the sandbox
+  // can load nothing. A program's `icon` is a lucide name (what Orbit stored)
+  // or an emoji; either resolves to one of PROGRAM_ICONS, and anything else
+  // to book-open. Emoji are never printed: the design uses line icons only.
+  var PROGRAM_ICONS = {
+    'beer': '<path d="M17 11h1a3 3 0 0 1 0 6h-1"/><path d="M9 12v6"/><path d="M13 12v6"/><path d="M14 7.5c-1 0-1.44.5-3 .5s-2-.5-3-.5-1.72.5-2.5.5a2.5 2.5 0 0 1 0-5c.78 0 1.57.5 2.5.5S9.44 2 11 2s2 1.5 3 1.5 1.72-.5 2.5-.5a2.5 2.5 0 0 1 0 5c-.78 0-1.5-.5-2.5-.5Z"/><path d="M5 8v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8"/>',
+    'wine': '<path d="M8 22h8"/><path d="M7 10h10"/><path d="M12 15v7"/><path d="M12 15a5 5 0 0 0 5-5c0-2-.5-4-2-8H9c-1.5 4-2 6-2 8a5 5 0 0 0 5 5Z"/>',
+    'martini': '<path d="M8 22h8"/><path d="M12 11v11"/><path d="m19 3-7 8-7-8Z"/>',
+    'glass-water': '<path d="M5.116 4.104A1 1 0 0 1 6.11 3h11.78a1 1 0 0 1 .994 1.105L17.19 20.21A2 2 0 0 1 15.2 22H8.8a2 2 0 0 1-2-1.79z"/><path d="M6 12a5 5 0 0 1 6 0 5 5 0 0 0 6 0"/>',
+    'cup-soda': '<path d="m6 8 1.75 12.28a2 2 0 0 0 2 1.72h4.54a2 2 0 0 0 2-1.72L18 8"/><path d="M5 8h14"/><path d="M7 15a6.47 6.47 0 0 1 5 0 6.47 6.47 0 0 0 5 0"/><path d="m12 8 1-6h2"/>',
+    'coffee': '<path d="M10 2v2"/><path d="M14 2v2"/><path d="M16 8a1 1 0 0 1 1 1v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1h14a4 4 0 1 1 0 8h-1"/><path d="M6 2v2"/>',
+    'utensils': '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>',
+    'chef-hat': '<path d="M17 21a1 1 0 0 0 1-1v-5.35c0-.457.316-.844.727-1.041a4 4 0 0 0-2.134-7.589 5 5 0 0 0-9.186 0 4 4 0 0 0-2.134 7.588c.411.198.727.585.727 1.041V20a1 1 0 0 0 1 1Z"/><path d="M6 17h12"/>',
+    'cooking-pot': '<path d="M2 12h20"/><path d="M20 12v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8"/><path d="m4 8 16-4"/><path d="m8.86 6.78-.45-1.81a2 2 0 0 1 1.45-2.43l1.94-.48a2 2 0 0 1 2.43 1.46l.45 1.8"/>',
+    'flame': '<path d="M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4"/>',
+    'soup': '<path d="M12 21a9 9 0 0 0 9-9H3a9 9 0 0 0 9 9Z"/><path d="M7 21h10"/><path d="M19.5 12 22 6"/><path d="M16.25 3c.27.1.8.53.75 1.36-.06.83-.93 1.2-1 2.02-.05.78.34 1.24.73 1.62"/><path d="M11.25 3c.27.1.8.53.74 1.36-.05.83-.93 1.2-.98 2.02-.06.78.33 1.24.72 1.62"/><path d="M6.25 3c.27.1.8.53.75 1.36-.06.83-.93 1.2-1 2.02-.05.78.34 1.24.74 1.62"/>',
+    'salad': '<path d="M7 21h10"/><path d="M12 21a9 9 0 0 0 9-9H3a9 9 0 0 0 9 9Z"/><path d="M11.38 12a2.4 2.4 0 0 1-.4-4.77 2.4 2.4 0 0 1 3.2-2.77 2.4 2.4 0 0 1 3.47-.63 2.4 2.4 0 0 1 3.37 3.37 2.4 2.4 0 0 1-1.1 3.7 2.51 2.51 0 0 1 .03 1.1"/><path d="m13 12 4-4"/><path d="M10.9 7.25A3.99 3.99 0 0 0 4 10c0 .73.2 1.41.54 2"/>',
+    'pizza': '<path d="m12 14-1 1"/><path d="m13.75 18.25-1.25 1.42"/><path d="M17.775 5.654a15.68 15.68 0 0 0-12.121 12.12"/><path d="M18.8 9.3a1 1 0 0 0 2.1 7.7"/><path d="M21.964 20.732a1 1 0 0 1-1.232 1.232l-18-5a1 1 0 0 1-.695-1.232A19.68 19.68 0 0 1 15.732 2.037a1 1 0 0 1 1.232.695z"/>',
+    'cake': '<path d="M20 21v-8a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8"/><path d="M4 16s.5-1 2-1 2.5 2 4 2 2.5-2 4-2 2.5 2 4 2 2-1 2-1"/><path d="M2 21h20"/><path d="M7 8v3"/><path d="M12 8v3"/><path d="M17 8v3"/><path d="M7 4h.01"/><path d="M12 4h.01"/><path d="M17 4h.01"/>',
+    'concierge-bell': '<path d="M3 20a1 1 0 0 1-1-1v-1a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v1a1 1 0 0 1-1 1Z"/><path d="M20 16a8 8 0 1 0-16 0"/><path d="M12 4v4"/><path d="M10 4h4"/>',
+    'hand-platter': '<path d="M12 3V2"/><path d="m15.4 17.4 3.2-2.8a2 2 0 1 1 2.8 2.9l-3.6 3.3c-.7.8-1.7 1.2-2.8 1.2h-4c-1.1 0-2.1-.4-2.8-1.2l-1.302-1.464A1 1 0 0 0 6.151 19H5"/><path d="M2 14h12a2 2 0 0 1 0 4h-2"/><path d="M4 10h16"/><path d="M5 10a7 7 0 0 1 14 0"/><path d="M5 14v6a1 1 0 0 1-1 1H2"/>',
+    'thermometer': '<path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/>',
+    'graduation-cap': '<path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/>',
+    'book': '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/>',
+    'book-open': '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
+    'award': '<path d="m15.477 12.89 1.515 8.526a.5.5 0 0 1-.81.47l-3.58-2.687a1 1 0 0 0-1.197 0l-3.586 2.686a.5.5 0 0 1-.81-.469l1.514-8.526"/><circle cx="12" cy="8" r="6"/>',
+    'trophy': '<path d="M10 14.66v1.626a2 2 0 0 1-.976 1.696A5 5 0 0 0 7 21.978"/><path d="M14 14.66v1.626a2 2 0 0 0 .976 1.696A5 5 0 0 1 17 21.978"/><path d="M18 9h1.5a1 1 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M6 9a6 6 0 0 0 12 0V3a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1z"/><path d="M6 9H4.5a1 1 0 0 1 0-5H6"/>',
+    'star': '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>',
+    'sparkles': '<path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M20 2v4"/><path d="M22 4h-4"/><circle cx="4" cy="20" r="2"/>',
+    'crown': '<path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z"/><path d="M5 21h14"/>',
+    'rocket': '<path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09"/><path d="M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05"/>',
+    'target': '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+    'lightbulb': '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
+    'handshake': '<path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/>',
+    'users': '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/>',
+    'user-check': '<path d="m16 11 2 2 4-4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>',
+    'heart': '<path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/>',
+    'shield': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+    'shield-check': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
+    'lock': '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    'key': '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
+    'wrench': '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/>',
+    'hammer': '<path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>',
+    'clipboard': '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
+    'clipboard-list': '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/>',
+    'clipboard-check': '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/>',
+    'calendar': '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
+    'clock': '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+    'truck': '<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/>',
+    'package': '<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/>',
+    'store': '<path d="M15 21v-5a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v5"/><path d="M17.774 10.31a1.12 1.12 0 0 0-1.549 0 2.5 2.5 0 0 1-3.451 0 1.12 1.12 0 0 0-1.548 0 2.5 2.5 0 0 1-3.452 0 1.12 1.12 0 0 0-1.549 0 2.5 2.5 0 0 1-3.77-3.248l2.889-4.184A2 2 0 0 1 7 2h10a2 2 0 0 1 1.653.873l2.895 4.192a2.5 2.5 0 0 1-3.774 3.244"/><path d="M4 10.95V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8.05"/>',
+    'chart-bar': '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 16h8"/><path d="M7 11h12"/><path d="M7 6h3"/>',
+    'dollar-sign': '<line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+    'music': '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+    'phone': '<path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>',
+    'mail': '<path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7"/><rect x="2" y="4" width="20" height="16" rx="2"/>',
   };
-  function icon(value) {
-    var v = String(value || '').trim();
-    if (!v) return '📘';
-    if (/[^\x00-\x7F]/.test(v)) return v;
-    return ICONS[v.toLowerCase()] || '📘';
+  var UI_ICONS = {
+    'plus': '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    'x': '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    'trash-2': '<path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    'arrow-left': '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+    'arrow-up': '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+    'arrow-down': '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+    'arrow-left-right': '<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>',
+    'check': '<path d="M20 6 9 17l-5-5"/>',
+    'file-text': '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+    'circle-play': '<path d="M9 9.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997A1 1 0 0 1 9 14.996z"/><circle cx="12" cy="12" r="10"/>',
+    'list-checks': '<path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/>',
+    'upload': '<path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>',
+    'printer': '<path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/><rect x="6" y="14" width="12" height="8" rx="1"/>',
+    'paperclip': '<path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/>',
+    'loader-circle': '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+    'triangle-alert': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    'circle-check': '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  };
+  var ICON_ALIASES = {
+    'box': 'package', 'boxes': 'package', 'bar-chart': 'chart-bar', 'chart-column': 'chart-bar', 'bell': 'concierge-bell',
+    'cocktail': 'martini', 'glass': 'glass-water', 'water': 'glass-water', 'soda': 'cup-soda', 'tea': 'coffee',
+    'chef': 'chef-hat', 'kitchen': 'chef-hat', 'pot': 'cooking-pot', 'food': 'utensils', 'service': 'hand-platter',
+    'safety': 'shield-check', 'calendar-days': 'calendar', 'timer': 'clock', 'banknote': 'dollar-sign', 'money': 'dollar-sign',
+    'idea': 'lightbulb', 'team': 'users', 'user': 'user-check', 'medal': 'award', 'certificate': 'award',
+  };
+  var EMOJI = {};
+  (function (raw) { for (var k in raw) EMOJI[k.replace(/\uFE0F/g, '')] = raw[k]; })({
+    '🍺': 'beer', '🍻': 'beer', '🍷': 'wine', '🥂': 'wine', '🍾': 'wine', '🍸': 'martini', '🍹': 'martini',
+    '🥃': 'glass-water', '🥛': 'glass-water', '💧': 'glass-water', '🥤': 'cup-soda', '🧃': 'cup-soda', '☕': 'coffee', '🍵': 'coffee',
+    '🍽️': 'utensils', '🍴': 'utensils', '👨‍🍳': 'chef-hat', '👩‍🍳': 'chef-hat', '🧑‍🍳': 'chef-hat', '🍳': 'cooking-pot', '🥘': 'cooking-pot',
+    '🔥': 'flame', '🍲': 'soup', '🍜': 'soup', '🥗': 'salad', '🥬': 'salad', '🍕': 'pizza', '🍰': 'cake', '🎂': 'cake', '🧁': 'cake',
+    '🥐': 'cake', '🛎️': 'concierge-bell', '🔔': 'concierge-bell', '🌡️': 'thermometer', '🎓': 'graduation-cap',
+    '📘': 'book-open', '📗': 'book-open', '📖': 'book-open', '📕': 'book', '📙': 'book', '📚': 'book', '📓': 'book',
+    '🏅': 'award', '🎖️': 'award', '🥇': 'award', '🏆': 'trophy', '⭐': 'star', '🌟': 'star', '✨': 'sparkles', '👑': 'crown',
+    '🚀': 'rocket', '🎯': 'target', '💡': 'lightbulb', '🤝': 'handshake', '👥': 'users', '🙋': 'user-check',
+    '🙋‍♀️': 'user-check', '🙋‍♂️': 'user-check', '❤️': 'heart', '♥️': 'heart', '🛡️': 'shield-check', '🔒': 'lock', '🔐': 'lock',
+    '🔑': 'key', '🗝️': 'key', '🔧': 'wrench', '🛠️': 'wrench', '🔨': 'hammer', '📋': 'clipboard-list', '☑️': 'clipboard-check',
+    '✅': 'clipboard-check', '📅': 'calendar', '📆': 'calendar', '🗓️': 'calendar', '⏰': 'clock', '⏱️': 'clock', '🕒': 'clock',
+    '🚚': 'truck', '🚛': 'truck', '📦': 'package', '🏪': 'store', '🏬': 'store', '📊': 'chart-bar', '📈': 'chart-bar',
+    '💵': 'dollar-sign', '💰': 'dollar-sign', '💲': 'dollar-sign', '🎵': 'music', '🎶': 'music', '📞': 'phone', '☎️': 'phone',
+    '📱': 'phone', '✉️': 'mail', '📧': 'mail', '📨': 'mail',
+  });
+  function svg(paths, size) {
+    return '<svg class="i" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+      ' stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
   }
+  function ui(name, size) { return svg(UI_ICONS[name] || '', size || 16); }
+  function iconName(value) {
+    var v = String(value || '').trim();
+    if (!v) return 'book-open';
+    if (/[^\x00-\x7F]/.test(v)) return EMOJI[v.replace(/\uFE0F/g, '')] || 'book-open';
+    var k = v.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/([a-zA-Z])(\d)/g, '$1-$2').replace(/[\s_]+/g, '-').toLowerCase();
+    k = ICON_ALIASES[k] || k;
+    return PROGRAM_ICONS[k] ? k : 'book-open';
+  }
+  function tile(value) { return '<span class="tile">' + svg(PROGRAM_ICONS[iconName(value)], 18) + '</span>'; }
+
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   }
+  // Sentence case for a stored value: "in_progress" → "In progress".
+  function label(s) { s = String(s || '').replace(/_/g, ' '); return s.charAt(0).toUpperCase() + s.slice(1); }
+  // Norm's status colours: done or on → ok, under way or waiting → warn, draft → info.
+  function tone(s) {
+    s = String(s || '').toLowerCase();
+    if (s === 'active' || s === 'complete' || s === 'completed') return 'ok';
+    if (s === 'in_progress' || s === 'progress' || s === 'pending') return 'warn';
+    if (s === 'draft') return 'info';
+    return '';
+  }
+  function badge(text, t, title) {
+    return '<span class="n-badge' + (t ? ' n-badge--' + t : '') + '"' + (title ? ' title="' + esc(title) + '"' : '') + '>' + esc(text) + '</span>';
+  }
+  function status(s, fallback) { var v = s || fallback || ''; return badge(label(v), tone(v)); }
+  var TYPE_LABELS = { rich_text: 'Text', video: 'Video', quiz: 'Quiz', file_upload: 'Upload' };
+  var TYPE_ICONS = { rich_text: 'file-text', video: 'circle-play', quiz: 'list-checks', file_upload: 'upload' };
+  function typeLabel(t) { return TYPE_LABELS[t] || label(t); }
+  var SECTION_TYPES = { online: 'Online', on_shift: 'On-shift', shift_exercise: 'Exercise' };
+  function sectionLabel(t) { return SECTION_TYPES[t] || label(t); }
+  // An icon-only button: `name` is its accessible name and its tooltip.
+  function ibtn(attrs, icon, name, danger) {
+    return '<button type="button" class="ibtn' + (danger ? ' ibtn--danger' : '') + '" ' + attrs +
+      ' aria-label="' + esc(name) + '" title="' + esc(name) + '">' + ui(icon, 16) + '</button>';
+  }
+  var GAP = '<span class="ibtn-gap"></span>';
+  function meter(pct) {
+    return '<div class="meter" role="progressbar" aria-label="Completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '">' +
+      '<span class="track"><span style="width:' + pct + '%"></span></span><span class="pct">' + pct + '%</span></div>';
+  }
+
   function run(op, extra) {
     var p = { op: op, venues: (ctx && ctx.venues) || [] };
     for (var k in (extra || {})) p[k] = extra[k];
@@ -123,16 +428,131 @@
       return d;
     });
   }
-  function loading() { body.innerHTML = '<div class="sub">Loading…</div>'; }
-  function fail(e) {
-    body.innerHTML = '<div class="card err">' + esc(e && e.message ? e.message : e) + '</div>';
+  function loading() { body.innerHTML = '<div class="state" role="status"><span class="spin">' + ui('loader-circle', 18) + '</span>Loading…</div>'; }
+  function empty(title, detail) {
+    return '<div class="state"><div class="state-title">' + esc(title) + '</div>' +
+      (detail ? '<div class="state-detail">' + esc(detail) + '</div>' : '') + '</div>';
   }
-  function closeModal() { modalHost.innerHTML = ''; }
-  function modal(html) {
-    modalHost.innerHTML = '<div class="modal"><div class="panel">' + html + '</div></div>';
-    modalHost.querySelector('.modal').addEventListener('click', function (ev) {
+  function fail(e) {
+    body.innerHTML = '<div class="alert" role="alert">' + ui('triangle-alert', 16) +
+      '<div><div class="alert-title">That didn’t work</div><div class="alert-detail">' + esc(e && e.message ? e.message : e) + '</div></div></div>';
+  }
+
+  // ---- Dialogs -----------------------------------------------------------
+  // The sandbox has no allow-modals, so window.confirm / prompt / alert do
+  // nothing here: every question is asked in the app's own dialog instead.
+  var dismiss = null;    // how the open question cancels (overlay click, Escape)
+  var pointerY = null;   // where the last click landed (placeModal)
+  document.addEventListener('pointerdown', function (ev) { pointerY = ev.clientY; }, true);
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape' && dismiss) { ev.preventDefault(); closeModal(); }
+  });
+  function closeModal() {
+    var d = dismiss; dismiss = null;
+    modalHost.innerHTML = '';
+    if (d) d();
+  }
+  function foot(html) { return '<div class="dlg-foot dlg-foot--bar">' + html + '</div>'; }
+  // A card in a conversation grows to fit its content, so its frame never
+  // scrolls, and a dialog pinned to the top of a tall card would open out of
+  // sight. There, it opens level with the click that asked for it.
+  function placeModal(overlay) {
+    if (document.documentElement.getAttribute('data-norm-variant') !== 'embedded') return;
+    var vh = window.innerHeight;
+    if (pointerY == null || document.documentElement.scrollHeight > vh + 1) return;
+    var y = Math.min(pointerY - 60, vh - overlay.firstChild.offsetHeight - 16);
+    if (y > 40) overlay.style.paddingTop = Math.round(y) + 'px';
+  }
+  // opts: small (a question), role, onDismiss (cancel path), keep (an editor
+  // re-rendering itself keeps its scroll position).
+  function modal(html, opts) {
+    opts = opts || {};
+    var prev = modalHost.querySelector('.modal');
+    var pad = prev ? prev.style.paddingTop : '';
+    var top = prev && opts.keep ? prev.scrollTop : 0;
+    closeModal();
+    modalHost.innerHTML = '<div class="modal"><div class="dlg' + (opts.small ? ' dlg--sm' : '') + '" role="' + (opts.role || 'dialog') +
+      '" aria-modal="true" aria-labelledby="dlg-title">' + html + '</div></div>';
+    var overlay = modalHost.querySelector('.modal');
+    dismiss = opts.onDismiss || null;
+    overlay.addEventListener('click', function (ev) {
       if (ev.target === ev.currentTarget) closeModal();
     });
+    if (prev) overlay.style.paddingTop = pad; else placeModal(overlay);
+    if (top) overlay.scrollTop = top;
+    return overlay;
+  }
+  // One question in a small dialog; resolves with what `finish` is given, or
+  // with `cancelled` when it is dismissed.
+  function dialog(html, cancelled, setup) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      function finish(value) {
+        if (settled) return;
+        settled = true;
+        dismiss = null;
+        modalHost.innerHTML = '';
+        resolve(value);
+      }
+      var overlay = modal(html, { small: true, role: 'alertdialog', onDismiss: function () { finish(cancelled); } });
+      setup(overlay, finish);
+    });
+  }
+  // → Promise<boolean>. opts: title, confirm, cancel (button labels), danger.
+  function askConfirm(message, opts) {
+    opts = opts || {};
+    return dialog(
+      '<h2 class="dlg-title" id="dlg-title">' + esc(opts.title || 'Are you sure?') + '</h2>' +
+      '<p class="dlg-msg">' + esc(message) + '</p>' +
+      '<div class="dlg-foot">' +
+        '<button type="button" class="n-btn n-btn--secondary" data-dlg="no">' + esc(opts.cancel || 'Cancel') + '</button>' +
+        '<button type="button" class="n-btn ' + (opts.danger ? 'n-btn--danger' : 'n-btn--primary') + '" data-dlg="yes">' + esc(opts.confirm || 'OK') + '</button>' +
+      '</div>', false, function (root, finish) {
+        var no = root.querySelector('[data-dlg="no"]'), yes = root.querySelector('[data-dlg="yes"]');
+        no.addEventListener('click', function () { finish(false); });
+        yes.addEventListener('click', function () { finish(true); });
+        (opts.danger ? no : yes).focus();
+      });
+  }
+  // → Promise<string|null> (null = cancelled). opts: title, placeholder,
+  // confirm, required (no empty answer), multiline.
+  function askText(labelText, initial, opts) {
+    opts = opts || {};
+    var ph = opts.placeholder ? ' placeholder="' + esc(opts.placeholder) + '"' : '';
+    var field = opts.multiline
+      ? '<textarea class="n-input dlg-input" id="dlg-in" rows="3"' + ph + '>' + esc(initial || '') + '</textarea>'
+      : '<input type="text" class="n-input dlg-input" id="dlg-in" autocomplete="off" value="' + esc(initial || '') + '"' + ph + '>';
+    return dialog(
+      '<h2 class="dlg-title" id="dlg-title">' + esc(opts.title || labelText) + '</h2>' +
+      '<label class="n-label dlg-label" for="dlg-in">' + esc(labelText) + '</label>' + field +
+      '<div class="dlg-foot">' +
+        '<button type="button" class="n-btn n-btn--secondary" data-dlg="no">Cancel</button>' +
+        '<button type="button" class="n-btn n-btn--primary" data-dlg="yes">' + esc(opts.confirm || 'OK') + '</button>' +
+      '</div>', null, function (root, finish) {
+        var input = root.querySelector('#dlg-in'), yes = root.querySelector('[data-dlg="yes"]');
+        function sync() { if (opts.required) yes.disabled = !input.value.trim(); }
+        input.addEventListener('input', sync);
+        sync();
+        yes.addEventListener('click', function () { if (!yes.disabled) finish(input.value); });
+        root.querySelector('[data-dlg="no"]').addEventListener('click', function () { finish(null); });
+        if (!opts.multiline) input.addEventListener('keydown', function (ev) {
+          if (ev.key === 'Enter') { ev.preventDefault(); yes.click(); }
+        });
+        input.focus();
+      });
+  }
+  // → Promise<void>.
+  function notify(message, opts) {
+    opts = opts || {};
+    return dialog(
+      '<h2 class="dlg-title" id="dlg-title">' + esc(opts.title || 'Before you do that') + '</h2>' +
+      '<p class="dlg-msg">' + esc(message) + '</p>' +
+      '<div class="dlg-foot"><button type="button" class="n-btn n-btn--primary" data-dlg="yes">OK</button></div>',
+      undefined, function (root, finish) {
+        var ok = root.querySelector('[data-dlg="yes"]');
+        ok.addEventListener('click', function () { finish(); });
+        ok.focus();
+      });
   }
 
   // ---- Programs list -----------------------------------------------------
@@ -140,23 +560,30 @@
     loading();
     run('overview').then(function (d) {
       var rows = d.programs || [];
-      if (!rows.length) { body.innerHTML = '<div class="empty">No training programs yet.</div>'; return; }
-      body.innerHTML = rows.map(function (p) {
-        var done = p.assignment_count ? Math.round((p.completed_count / p.assignment_count) * 100) : 0;
-        return '<div class="card row">' +
-          '<div class="grow" style="cursor:pointer" data-open="' + esc(p.id) + '">' +
-            '<div class="row" style="gap:8px">' +
-              '<span class="name">' + icon(p.icon) + ' ' + esc(p.name) + '</span>' +
-              (p.is_active === false ? '<span class="pill off">Inactive</span>' : '') +
-              (p.requires_plan ? '<span class="pill off">Plan-led</span>' : '') +
-            '</div>' +
-            '<div class="sub">' + p.module_count + ' module' + (p.module_count === 1 ? '' : 's') +
-              ' · ' + p.assignment_count + ' enrolled' +
-              (p.assignment_count ? ' · ' + done + '% complete' : '') + '</div>' +
-          '</div>' +
-          '<button class="act" data-open="' + esc(p.id) + '">Open</button>' +
-        '</div>';
-      }).join('');
+      if (!rows.length) { body.innerHTML = empty('No training programs yet.', 'Start one with New program.'); return; }
+      body.innerHTML = '<table class="n-table ltable progs"><thead><tr>' +
+          '<th class="c-main">Program</th><th class="num c-desk">Modules</th><th class="num c-desk">Enrolled</th>' +
+          '<th class="c-wide">Completion</th><th class="c-status">Status</th><th class="c-act"><span class="sr">Actions</span></th>' +
+        '</tr></thead><tbody>' +
+        rows.map(function (p) {
+          var done = p.assignment_count ? Math.round((p.completed_count / p.assignment_count) * 100) : 0;
+          var meta = [p.requires_plan ? 'Plan-led' : 'Self-paced'];
+          if (p.description) meta.push(p.description);
+          return '<tr>' +
+            '<td class="c-main"><div class="prog" data-open="' + esc(p.id) + '">' + tile(p.icon) +
+              '<div class="prog-text"><div class="name">' + esc(p.name) + '</div>' +
+                '<div class="meta">' + esc(meta.join(' · ')) + '</div>' +
+                '<div class="meta m-only">' + p.module_count + ' module' + (p.module_count === 1 ? '' : 's') +
+                  ' · ' + p.assignment_count + ' enrolled</div>' +
+              '</div></div></td>' +
+            '<td class="num c-desk">' + p.module_count + '</td>' +
+            '<td class="num c-desk">' + p.assignment_count + '</td>' +
+            '<td class="c-wide">' + (p.assignment_count ? meter(done) : '<span class="dash">—</span>') + '</td>' +
+            '<td class="c-status">' + (p.is_active === false ? badge('Inactive') : badge('Active', 'ok')) + '</td>' +
+            '<td class="num c-act"><button type="button" class="n-btn n-btn--secondary n-btn--sm" data-open="' + esc(p.id) +
+              '" aria-label="Open ' + esc(p.name) + '">Open</button></td>' +
+          '</tr>';
+        }).join('') + '</tbody></table>';
       body.querySelectorAll('[data-open]').forEach(function (el) {
         el.addEventListener('click', function () { showProgram(el.getAttribute('data-open')); });
       });
@@ -164,6 +591,11 @@
   }
 
   // ---- One program -------------------------------------------------------
+  function titleInner(p) {
+    return tile(p.icon) + '<h2 class="title">' + esc(p.name || 'Untitled program') + '</h2>' +
+      (p.is_active === false ? badge('Inactive') : badge('Active', 'ok')) +
+      (p.requires_plan ? badge('Plan-led') : '');
+  }
   function showProgram(id) {
     loading();
     Promise.all([run('program', { program_id: id }), run('enrollments', { program_id: id })])
@@ -182,116 +614,139 @@
           var secs = (secsByModule[m.id] || []).map(function (s) {
             var items = (itemsBySection[s.id] || []);
             var itemRows = items.map(function (c, ci) {
-              return '<div class="item"><span class="link" data-viewc="' + esc(c.id) + '">· ' + esc(c.title) + '</span>' +
-                ' <span class="sub">' + esc(c.content_type || '') + '</span>' +
-                (ci > 0 ? ' <button class="act tiny arrow" data-cup="' + esc(c.id) + '">↑</button>' : '') +
-                (ci < items.length - 1 ? ' <button class="act tiny arrow" data-cdn="' + esc(c.id) + '">↓</button>' : '') +
-                ' <button class="act tiny danger" data-delc="' + esc(c.id) + '">×</button></div>';
+              return '<div class="item">' + ui(TYPE_ICONS[c.content_type] || 'file-text', 16) +
+                '<button type="button" class="link item-title" data-viewc="' + esc(c.id) + '">' + esc(c.title) + '</button>' +
+                '<span class="sub">' + esc(typeLabel(c.content_type || '')) + '</span>' +
+                '<span class="ctl">' +
+                  (ci > 0 ? ibtn('data-cup="' + esc(c.id) + '"', 'arrow-up', 'Move up') : GAP) +
+                  (ci < items.length - 1 ? ibtn('data-cdn="' + esc(c.id) + '"', 'arrow-down', 'Move down') : GAP) +
+                  ibtn('data-delc="' + esc(c.id) + '"', 'trash-2', 'Delete ' + (c.title || 'content'), true) +
+                '</span></div>';
             }).join('');
-            return '<div class="sec"><input type="text" data-secname="' + esc(s.id) + '" value="' + esc(s.name || '') + '" style="max-width:220px">' +
-                ' <span class="pill off">' + esc(s.section_type || 'online') + '</span>' +
-                ' <button class="act tiny" data-secedit="' + esc(s.id) + '">details</button>' +
-                ' <button class="act tiny danger" data-dels="' + esc(s.id) + '">×</button></div>' +
+            return '<div class="sec"><div class="sec-head">' +
+                '<input type="text" class="n-input fld-sm sec-name" data-secname="' + esc(s.id) + '" value="' + esc(s.name || '') + '" aria-label="Section name">' +
+                badge(sectionLabel(s.section_type || 'online')) +
+                '<span class="ctl">' +
+                  '<button type="button" class="n-btn n-btn--quiet n-btn--sm" data-secedit="' + esc(s.id) + '">Details</button>' +
+                  ibtn('data-dels="' + esc(s.id) + '"', 'trash-2', 'Delete section', true) +
+                '</span></div>' +
               itemRows +
-              '<div class="addrow" style="margin-left:20px">' +
-                '<input type="text" placeholder="Add content…" data-newc="' + esc(s.id) + '" style="flex:1;max-width:240px">' +
-                '<select data-newctype="' + esc(s.id) + '">' +
-                  '<option value="rich_text">text</option><option value="video">video</option>' +
-                  '<option value="quiz">quiz</option><option value="file_upload">upload</option>' +
+              '<div class="addrow">' +
+                '<input type="text" class="n-input fld-sm" placeholder="Add content…" data-newc="' + esc(s.id) + '" aria-label="New content title">' +
+                '<select class="n-select fld-sm" data-newctype="' + esc(s.id) + '" aria-label="Content type">' +
+                  '<option value="rich_text">Text</option><option value="video">Video</option>' +
+                  '<option value="quiz">Quiz</option><option value="file_upload">Upload</option>' +
                 '</select>' +
-                '<button class="act tiny" data-addc="' + esc(s.id) + '">Add</button>' +
-              '</div>';
+                '<button type="button" class="n-btn n-btn--secondary n-btn--sm" data-addc="' + esc(s.id) + '">Add</button>' +
+              '</div></div>';
           }).join('');
           return '<div class="mod"><div class="modhead">' +
-              '<span class="name" style="font-size:.78rem">' + (i + 1) + '.</span>' +
-              '<input type="text" data-mod="' + esc(m.id) + '" value="' + esc(m.name || '') + '" style="flex:1;max-width:300px">' +
-              (i > 0 ? '<button class="act tiny arrow" data-mup="' + esc(m.id) + '">↑</button>' : '') +
-              (i < mods.length - 1 ? '<button class="act tiny arrow" data-mdn="' + esc(m.id) + '">↓</button>' : '') +
-              '<label class="sub" style="display:inline-flex;gap:4px;align-items:center">' +
-                '<input type="checkbox" data-modsign="' + esc(m.id) + '"' + (m.requires_signoff ? ' checked' : '') + '> sign-off</label>' +
-              '<button class="act tiny danger" data-delm="' + esc(m.id) + '">×</button>' +
+              '<span class="idx">' + (i + 1) + '</span>' +
+              '<input type="text" class="n-input mod-name" data-mod="' + esc(m.id) + '" value="' + esc(m.name || '') + '" aria-label="Module name">' +
+              '<label class="check"><input type="checkbox" data-modsign="' + esc(m.id) + '"' + (m.requires_signoff ? ' checked' : '') + '>Sign-off</label>' +
+              '<span class="ctl">' +
+                (i > 0 ? ibtn('data-mup="' + esc(m.id) + '"', 'arrow-up', 'Move module up') : GAP) +
+                (i < mods.length - 1 ? ibtn('data-mdn="' + esc(m.id) + '"', 'arrow-down', 'Move module down') : GAP) +
+                ibtn('data-delm="' + esc(m.id) + '"', 'trash-2', 'Delete module', true) +
+              '</span>' +
             '</div>' +
-            (secs || '<div class="item">no sections</div>') +
-            '<div class="addrow" style="margin-left:8px">' +
-              '<select data-newstype="' + esc(m.id) + '">' +
-                '<option value="online">online</option><option value="on_shift">on-shift</option>' +
-                '<option value="shift_exercise">exercise</option>' +
-              '</select>' +
-              '<input type="text" placeholder="Section name (optional)" data-news="' + esc(m.id) + '" style="flex:1;max-width:220px">' +
-              '<button class="act tiny" data-adds="' + esc(m.id) + '">+ Section</button>' +
+            '<div class="secs">' + (secs || '<div class="none">No sections</div>') +
+              '<div class="addrow">' +
+                '<select class="n-select fld-sm" data-newstype="' + esc(m.id) + '" aria-label="Section type">' +
+                  '<option value="online">Online</option><option value="on_shift">On-shift</option>' +
+                  '<option value="shift_exercise">Exercise</option>' +
+                '</select>' +
+                '<input type="text" class="n-input fld-sm" placeholder="Section name (optional)" data-news="' + esc(m.id) + '" aria-label="New section name">' +
+                '<button type="button" class="n-btn n-btn--secondary n-btn--sm" data-adds="' + esc(m.id) + '">' + ui('plus', 14) + 'Section</button>' +
+              '</div>' +
             '</div>' +
           '</div>';
         }).join('');
 
         var enrolled = (e.assignments || []).map(function (a) {
-          var cls = a.status === 'completed' ? 'ok' : (a.status === 'in_progress' ? 'go' : 'off');
-          return '<tr><td><span class="link" data-member="' + esc(a.person_id) + '">' + esc(a.person_name) + '</span>' +
+          return '<tr><td><button type="button" class="link" data-member="' + esc(a.person_id) + '">' + esc(a.person_name) + '</button>' +
             (a.instance ? '<span class="inst">' + esc(a.instance) + '</span>' : '') + '</td>' +
             '<td>' + esc(a.person_role || '') + '</td>' +
-            '<td>' + esc(a.due_date || '') + '</td>' +
-            '<td><span class="pill ' + cls + '">' + esc(a.status || 'assigned') + '</span></td>' +
-            '<td style="text-align:right">' +
+            '<td class="nowrap">' + esc(a.due_date || '') + '</td>' +
+            '<td>' + status(a.status, 'assigned') + '</td>' +
+            '<td class="num nowrap"><span class="cell-actions">' +
               (a.status === 'completed'
-                ? '<button class="act" data-reopen="' + esc(a.id) + '">Reopen</button>'
-                : '<button class="act primary" data-done="' + esc(a.id) + '">Mark complete</button>') +
-              ' <button class="act tiny danger" data-unenrol="' + esc(a.id) + '">Remove</button>' +
-            '</td></tr>';
+                ? '<button type="button" class="n-btn n-btn--secondary n-btn--sm" data-reopen="' + esc(a.id) + '">Reopen</button>'
+                : '<button type="button" class="n-btn n-btn--secondary n-btn--sm" data-done="' + esc(a.id) + '">Mark complete</button>') +
+              '<button type="button" class="n-btn n-btn--danger n-btn--sm" data-unenrol="' + esc(a.id) + '">Remove</button>' +
+            '</span></td></tr>';
         }).join('');
 
         body.innerHTML =
-          '<button class="back" id="back">← All programs</button>' +
-          '<div class="card">' +
-            '<div class="field"><label>Name</label><input type="text" id="f-name" style="flex:1" value="' + esc(p.name || '') + '"></div>' +
-            '<div class="field"><label>Icon</label><input type="text" id="f-icon" style="width:70px" value="' + esc(p.icon || '') + '">' +
-              '<span class="sub">' + icon(p.icon) + ' — an emoji, or a lucide name like "chef-hat"</span></div>' +
-            '<div class="field"><label>Description</label><input type="text" id="f-desc" style="flex:1" value="' + esc(p.description || '') + '"></div>' +
-            '<div class="field"><label>Due within</label><input type="number" id="f-due" style="width:80px" min="0" value="' +
-                (p.default_due_days == null ? '' : esc(p.default_due_days)) + '">' +
-              '<span class="sub">days after enrolling — blank means no due date</span></div>' +
-            '<div class="field"><label>Active</label><input type="checkbox" id="f-active"' + (p.is_active === false ? '' : ' checked') + '></div>' +
-            '<div class="field"><label>Plan-led</label><input type="checkbox" id="f-plan"' + (p.requires_plan ? ' checked' : '') + '>' +
-              '<span class="sub">scheduled with a trainer instead of self-paced</span></div>' +
-            '<div class="field"><label>Variants</label>' +
-              '<span class="grow sub">' + ((p.variants || []).length
-                ? (p.variants || []).map(function (g) { return esc(g.name) + (g.source === 'venue' ? ' (by venue)' : ' (' + ((g.options || []).length) + ')'); }).join(', ')
-                : 'none — one track for everyone') + '</span>' +
-              '<button class="act tiny" id="editvariants">Edit variants</button></div>' +
-            '<div class="row" style="margin-top:8px">' +
-              '<button class="act primary" id="saveprog">Save</button><span class="sub" id="saved"></span>' +
-              '<span class="grow"></span><button class="act danger tiny" id="delprog">Delete program</button>' +
+          '<button type="button" class="back" id="back">' + ui('arrow-left', 14) + 'All programs</button>' +
+          '<div class="title-row" id="ptitle">' + titleInner(p) + '</div>' +
+          '<section class="n-card panel">' +
+            '<div class="panel-head"><h2>Details</h2></div>' +
+            '<div class="panel-body form">' +
+              '<div class="field"><label for="f-name">Name</label><input type="text" class="n-input" id="f-name" style="flex:1" value="' + esc(p.name || '') + '"></div>' +
+              '<div class="field"><label for="f-icon">Icon</label><input type="text" class="n-input" id="f-icon" style="width:140px" value="' + esc(p.icon || '') + '">' +
+                '<span id="f-icon-tile">' + tile(p.icon) + '</span><span class="hint">An emoji, or an icon name like “chef-hat”</span></div>' +
+              '<div class="field"><label for="f-desc">Description</label><input type="text" class="n-input" id="f-desc" style="flex:1" value="' + esc(p.description || '') + '"></div>' +
+              '<div class="field"><label for="f-due">Due within</label><input type="number" class="n-input" id="f-due" style="width:90px" min="0" value="' +
+                  (p.default_due_days == null ? '' : esc(p.default_due_days)) + '">' +
+                '<span class="hint">days after enrolling — blank means no due date</span></div>' +
+              '<div class="field field--inline"><label for="f-active">Active</label><input type="checkbox" id="f-active"' + (p.is_active === false ? '' : ' checked') + '></div>' +
+              '<div class="field field--inline"><label for="f-plan">Plan-led</label><input type="checkbox" id="f-plan"' + (p.requires_plan ? ' checked' : '') + '>' +
+                '<span class="hint">scheduled with a trainer instead of self-paced</span></div>' +
+              '<div class="field"><span class="lbl">Variants</span>' +
+                '<span class="grow hint">' + ((p.variants || []).length
+                  ? (p.variants || []).map(function (g) { return esc(g.name) + (g.source === 'venue' ? ' (by venue)' : ' (' + ((g.options || []).length) + ')'); }).join(', ')
+                  : 'none — one track for everyone') + '</span>' +
+                '<button type="button" class="n-btn n-btn--secondary n-btn--sm" id="editvariants">Edit variants</button></div>' +
             '</div>' +
-          '</div>' +
-          '<div class="card"><div class="row"><div class="grow name" style="font-size:.8rem">Structure</div>' +
-            '<button class="act" id="addmod">+ Module</button></div>' +
-            '<div class="tree" style="margin-top:8px">' + (tree || '<div class="sub">No modules yet — add one.</div>') + '</div></div>' +
-          '<div class="card"><div class="row"><div class="grow name" style="font-size:.8rem">Enrolled (' + (e.assignments || []).length + ')</div>' +
-            '<button class="act primary" id="enrolbtn">+ Enrol people</button></div>' +
-          (enrolled
-            ? '<table><thead><tr><th>Person</th><th>Role</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>' + enrolled + '</tbody></table>'
-            : '<div class="sub" style="margin-top:6px">Nobody is enrolled yet.</div>') +
-          '</div>';
+            '<div class="panel-foot">' +
+              '<button type="button" class="n-btn n-btn--danger n-btn--sm" id="delprog">Delete program</button>' +
+              '<span class="grow"></span><span class="saved" id="saved"></span>' +
+              '<button type="button" class="n-btn n-btn--primary" id="saveprog">Save</button>' +
+            '</div>' +
+          '</section>' +
+          '<section class="n-card panel">' +
+            '<div class="panel-head"><h2>Structure</h2><span class="sub">' + mods.length + ' module' + (mods.length === 1 ? '' : 's') + '</span>' +
+              '<span class="grow"></span><button type="button" class="n-btn n-btn--secondary n-btn--sm" id="addmod">' + ui('plus', 14) + 'Module</button></div>' +
+            '<div class="panel-body"><div class="tree">' + (tree || '<div class="none">No modules yet — add one.</div>') + '</div></div>' +
+          '</section>' +
+          '<section class="n-card panel">' +
+            '<div class="panel-head"><h2>Enrolled</h2><span class="sub">' + (e.assignments || []).length + '</span>' +
+              '<span class="grow"></span><button type="button" class="n-btn n-btn--secondary n-btn--sm" id="enrolbtn">' + ui('plus', 14) + 'Enrol people</button></div>' +
+            (enrolled
+              ? '<div class="tbl"><table class="n-table"><thead><tr><th>Person</th><th>Role</th><th>Due</th><th>Status</th><th><span class="sr">Actions</span></th></tr></thead><tbody>' + enrolled + '</tbody></table></div>'
+              : '<div class="panel-body none">Nobody is enrolled yet.</div>') +
+          '</section>';
 
         var reload = function () { showProgram(id); };
         function act(op, extra) { return run(op, extra).then(reload).catch(fail); }
         document.getElementById('back').addEventListener('click', showPrograms);
+        document.getElementById('f-icon').addEventListener('input', function () {
+          document.getElementById('f-icon-tile').innerHTML = tile(this.value);
+        });
 
         document.getElementById('saveprog').addEventListener('click', function () {
           var due = document.getElementById('f-due').value;
-          run('save_program', { program_id: id, fields: {
+          var fields = {
             name: document.getElementById('f-name').value,
             icon: document.getElementById('f-icon').value || null,
             description: document.getElementById('f-desc').value || null,
             default_due_days: due === '' ? null : Number(due),
             is_active: document.getElementById('f-active').checked,
             requires_plan: document.getElementById('f-plan').checked,
-          }}).then(function () {
+          };
+          run('save_program', { program_id: id, fields: fields }).then(function () {
+            var t = document.getElementById('ptitle'); if (t) t.innerHTML = titleInner(fields);
             var el = document.getElementById('saved'); el.textContent = 'Saved';
             setTimeout(function () { if (el) el.textContent = ''; }, 1500);
           }).catch(fail);
         });
         document.getElementById('delprog').addEventListener('click', function () {
-          if (!confirm('Delete "' + (p.name || 'this program') + '" and every enrolment, completion and plan on it?')) return;
-          run('delete_program', { program_id: id }).then(showPrograms).catch(fail);
+          askConfirm('Delete "' + (p.name || 'this program') + '" and every enrolment, completion and plan on it?',
+            { title: 'Delete program', confirm: 'Delete program', danger: true }).then(function (ok) {
+            if (!ok) return;
+            run('delete_program', { program_id: id }).then(showPrograms).catch(fail);
+          });
         });
         document.getElementById('addmod').addEventListener('click', function () { act('add_module', { program_id: id }); });
         document.getElementById('enrolbtn').addEventListener('click', function () { enrolPicker(p, e.available || []); });
@@ -299,12 +754,18 @@
 
         bind('[data-mod]', 'change', function (el) { run('update_module', { module_id: el.getAttribute('data-mod'), fields: { name: el.value } }).catch(fail); });
         bind('[data-modsign]', 'change', function (el) { act('update_module', { module_id: el.getAttribute('data-modsign'), fields: { requires_signoff: el.checked } }); });
-        bind('[data-delm]', 'click', function (el) { if (confirm('Delete this module, its sections and their content?')) act('delete_module', { module_id: el.getAttribute('data-delm') }); });
+        bind('[data-delm]', 'click', function (el) {
+          askConfirm('Delete this module, its sections and their content?', { title: 'Delete module', confirm: 'Delete module', danger: true })
+            .then(function (ok) { if (ok) act('delete_module', { module_id: el.getAttribute('data-delm') }); });
+        });
         bind('[data-adds]', 'click', function (el) {
           var mid = el.getAttribute('data-adds');
           act('add_section', { module_id: mid, section_type: q('[data-newstype="' + mid + '"]').value, name: q('[data-news="' + mid + '"]').value || null });
         });
-        bind('[data-dels]', 'click', function (el) { if (confirm('Delete this section and its content? Any scheduled plan dates for it go too.')) act('delete_section', { section_id: el.getAttribute('data-dels') }); });
+        bind('[data-dels]', 'click', function (el) {
+          askConfirm('Delete this section and its content? Any scheduled plan dates for it go too.', { title: 'Delete section', confirm: 'Delete section', danger: true })
+            .then(function (ok) { if (ok) act('delete_section', { section_id: el.getAttribute('data-dels') }); });
+        });
         bind('[data-secname]', 'change', function (el) { run('update_section', { section_id: el.getAttribute('data-secname'), fields: { name: el.value } }).catch(fail); });
         bind('[data-secedit]', 'click', function (el) { editSection(state.sections[el.getAttribute('data-secedit')]); });
         bind('[data-addc]', 'click', function (el) {
@@ -315,7 +776,10 @@
         bind('[data-viewc]', 'click', function (el) { viewContent(el.getAttribute('data-viewc')); });
         bind('[data-done]', 'click', function (el) { setStatus(el.getAttribute('data-done'), 'completed', id); });
         bind('[data-reopen]', 'click', function (el) { setStatus(el.getAttribute('data-reopen'), 'assigned', id); });
-        bind('[data-unenrol]', 'click', function (el) { if (confirm('Remove this enrolment and its completion history?')) act('unenrol', { assignment_id: el.getAttribute('data-unenrol') }); });
+        bind('[data-unenrol]', 'click', function (el) {
+          askConfirm('Remove this enrolment and its completion history?', { title: 'Remove enrolment', confirm: 'Remove', danger: true })
+            .then(function (ok) { if (ok) act('unenrol', { assignment_id: el.getAttribute('data-unenrol') }); });
+        });
         bind('[data-member]', 'click', function (el) { showMember(el.getAttribute('data-member')); });
         // reorder: send the whole new order for the collection
         reorderArrows('[data-mup]', '[data-mdn]', 'modules', mods.map(function (m) { return m.id; }));
@@ -383,21 +847,23 @@
     var groupsHtml = (state.vg || []).map(function (g, gi) {
       var isVenue = g.source === 'venue';
       var opts = isVenue
-        ? '<div class="sub" style="margin-left:12px">Options come from your venues automatically.</div>'
+        ? '<div class="hint opt-hint">Options come from your venues automatically.</div>'
         : (g.options || []).map(function (o, oi) {
-            return '<div class="field" style="margin-left:12px"><input type="text" id="vo-' + gi + '-' + oi + '" value="' + esc(o.name || '') + '" placeholder="Option (e.g. Larder)" style="flex:1">' +
-              '<button class="act tiny danger" data-delvo="' + gi + '-' + oi + '">×</button></div>';
-          }).join('') + '<button class="act tiny" data-addvo="' + gi + '" style="margin-left:12px">+ option</button>';
-      return '<div class="mod"><div class="field"><input type="text" id="vg-' + gi + '" value="' + esc(g.name || '') + '" placeholder="Group name (e.g. Section)" style="flex:1;font-weight:600">' +
-        '<span class="pill off">' + (isVenue ? 'by venue' : 'manual') + '</span>' +
-        '<button class="act tiny danger" data-delvg="' + gi + '">× group</button></div>' + opts + '</div>';
+            return '<div class="opt-row"><input type="text" class="n-input fld-sm" id="vo-' + gi + '-' + oi + '" value="' + esc(o.name || '') + '" placeholder="Option (e.g. Larder)" style="flex:1" aria-label="Option">' +
+              ibtn('data-delvo="' + gi + '-' + oi + '"', 'x', 'Remove option') + '</div>';
+          }).join('') + '<button type="button" class="n-btn n-btn--quiet n-btn--sm add-opt" data-addvo="' + gi + '">' + ui('plus', 14) + 'Option</button>';
+      return '<div class="group"><div class="group-head"><input type="text" class="n-input group-name" id="vg-' + gi + '" value="' + esc(g.name || '') + '" placeholder="Group name (e.g. Section)" aria-label="Group name">' +
+        badge(isVenue ? 'By venue' : 'Manual') +
+        ibtn('data-delvg="' + gi + '"', 'trash-2', 'Remove group', true) + '</div>' + opts + '</div>';
     }).join('');
-    modal('<div class="row"><div class="grow name" style="font-size:.85rem">Variant groups — ' + esc(program.name) + '</div>' +
-      '<button class="act primary" id="vg-save">Save</button> <button class="act" id="vg-cancel">Cancel</button></div>' +
-      '<div class="sub" style="margin:6px 0">A variant splits this program into separately-tracked tracks — someone enrols on one track and the tracker shows a badge per track. A "by venue" group tracks per venue automatically.</div>' +
-      '<div>' + (groupsHtml || '<div class="sub">No variant groups yet.</div>') + '</div>' +
-      '<div class="addrow" style="margin-top:8px"><button class="act" id="addvg">+ Manual group</button><button class="act" id="addvgvenue">+ Venue group</button></div>' +
-      '<div class="err" id="vg-err" style="margin-top:6px"></div>');
+    modal('<div class="dlg-head"><h2 class="dlg-title" id="dlg-title">Variant groups — ' + esc(program.name) + '</h2></div>' +
+      '<p class="dlg-intro">A variant splits this program into separately-tracked tracks — someone enrols on one track and the tracker shows a badge per track. A "by venue" group tracks per venue automatically.</p>' +
+      '<div>' + (groupsHtml || '<div class="none">No variant groups yet.</div>') + '</div>' +
+      '<div class="addrow" style="margin-top:12px"><button type="button" class="n-btn n-btn--secondary n-btn--sm" id="addvg">' + ui('plus', 14) + 'Manual group</button>' +
+        '<button type="button" class="n-btn n-btn--secondary n-btn--sm" id="addvgvenue">' + ui('plus', 14) + 'Venue group</button></div>' +
+      '<div class="err" id="vg-err"></div>' +
+      foot('<button type="button" class="n-btn n-btn--secondary" id="vg-cancel">Cancel</button>' +
+        '<button type="button" class="n-btn n-btn--primary" id="vg-save">Save</button>'), { keep: true });
     modalHost.querySelector('#vg-cancel').addEventListener('click', closeModal);
     modalHost.querySelector('#addvg').addEventListener('click', function () { readVarInputs(); state.vg.push({ id: uid(), name: 'New group', source: 'manual', options: [] }); renderVariants(program); });
     modalHost.querySelector('#addvgvenue').addEventListener('click', function () {
@@ -428,16 +894,16 @@
   function enrolPicker(program, available) {
     var groups = variantGroups(program);
     var pickerRows = available.map(function (p) {
-      return '<label><input type="checkbox" value="' + esc(p.id) + '"> ' + esc(p.name) +
-        (p.role ? ' <span class="sub">' + esc(p.role) + '</span>' : '') + '</label>';
-    }).join('') || '<div class="sub" style="padding:8px">Everyone is already enrolled on this instance.</div>';
-    modal('<div class="name" style="font-size:.85rem">Enrol on ' + esc(program.name) + '</div>' +
+      return '<label><input type="checkbox" value="' + esc(p.id) + '"><span class="grow">' + esc(p.name) + '</span>' +
+        (p.role ? '<span class="sub">' + esc(p.role) + '</span>' : '') + '</label>';
+    }).join('') || '<div class="none">Everyone is already enrolled on this instance.</div>';
+    modal('<div class="dlg-head"><h2 class="dlg-title" id="dlg-title">Enrol on ' + esc(program.name) + '</h2></div>' +
       groups.html +
-      '<input type="text" id="pfilter" placeholder="Filter names…" style="width:100%;margin-top:8px">' +
+      '<input type="text" class="n-input" id="pfilter" placeholder="Filter names…" aria-label="Filter names" style="width:100%;margin-top:12px">' +
       '<div class="pick" id="picklist">' + pickerRows + '</div>' +
-      '<div class="row" style="margin-top:10px"><button class="act primary" id="doenrol">Enrol selected</button>' +
-      '<span class="sub" id="enrolcount">0 selected</span><span class="grow"></span>' +
-      '<button class="act" id="cancelenrol">Cancel</button></div>');
+      foot('<span class="sub" id="enrolcount">0 selected</span><span class="grow"></span>' +
+        '<button type="button" class="n-btn n-btn--secondary" id="cancelenrol">Cancel</button>' +
+        '<button type="button" class="n-btn n-btn--primary" id="doenrol">Enrol selected</button>'));
 
     var list = document.getElementById('picklist');
     function count() { document.getElementById('enrolcount').textContent = list.querySelectorAll('input:checked').length + ' selected'; }
@@ -466,7 +932,7 @@
       var opts = '<option value="">No venue</option>' + venues.map(function (v) {
         return '<option value="' + esc(v.id) + '">' + esc(v.name) + '</option>'; }).join('');
       return {
-        html: '<div class="field" style="margin-top:6px"><label>Venue</label><select id="v-venue">' + opts + '</select></div>',
+        html: '<div class="field"><label for="v-venue">Venue</label><select class="n-select" id="v-venue" style="flex:1">' + opts + '</select></div>',
         selection: function () { var v = document.getElementById('v-venue'); return { variant_id: null, variant_name: null, venue_id: v && v.value || null }; }
       };
     }
@@ -475,8 +941,8 @@
       var opts = isVenue
         ? '<option value="">Not set</option>' + venues.map(function (v) { return '<option value="' + esc(v.id) + '">' + esc(v.name) + '</option>'; }).join('')
         : '<option value="">Not set</option>' + (g.options || []).map(function (o) { return '<option value="' + esc(o.id) + '">' + esc(o.name) + '</option>'; }).join('');
-      return '<div class="field" style="margin-top:6px"><label>' + esc(g.name || 'Variant') + '</label>' +
-        '<select data-vg="' + esc(g.id) + '" data-vgsrc="' + esc(g.source || '') + '">' + opts + '</select></div>';
+      return '<div class="field"><label>' + esc(g.name || 'Variant') + '</label>' +
+        '<select class="n-select" data-vg="' + esc(g.id) + '" data-vgsrc="' + esc(g.source || '') + '" style="flex:1">' + opts + '</select></div>';
     }).join('');
     return {
       html: html,
@@ -507,7 +973,7 @@
     } else if (c.content_type === 'video') {
       var yt = body_.youtube_id;
       inner = yt ? '<iframe width="100%" height="320" src="https://www.youtube.com/embed/' + esc(yt) + '" frameborder="0" allowfullscreen></iframe>'
-        : (body_.url ? '<video controls style="width:100%"><source src="' + esc(body_.url) + '"></video>' : '<div class="sub">No video attached.</div>');
+        : (body_.url ? '<video controls style="width:100%"><source src="' + esc(body_.url) + '"></video>' : '<div class="none">No video attached.</div>');
     } else if (c.content_type === 'quiz') {
       var qs = (body_.questions || []);
       inner = '<div class="sub">Quiz — ' + qs.length + ' question' + (qs.length === 1 ? '' : 's') +
@@ -518,29 +984,29 @@
           if (qtype === 'multiple_choice') {
             detail = (qq.options || []).map(function (o, oi) {
               var correct = (qq.correct_indices || []).indexOf(oi) >= 0;
-              return '<div class="' + (correct ? 'ok' : '') + '" style="font-size:.75rem;padding:2px 6px">' +
-                (correct ? '✓ ' : '· ') + esc(o) + '</div>';
+              return '<div class="ans' + (correct ? ' ans--ok' : '') + '">' +
+                (correct ? ui('check', 14) : '<span class="ans-gap"></span>') + '<span>' + esc(o) + '</span></div>';
             }).join('');
           } else if (qtype === 'match_pairs') {
             detail = (qq.pairs || []).map(function (pr) {
-              return '<div style="font-size:.75rem;padding:2px 6px">' + esc(pr.left || '') + ' <span class="sub">↔</span> ' + esc(pr.right || '') + '</div>';
+              return '<div class="ans"><span>' + esc(pr.left || '') + '</span><span class="pair-sep">' + ui('arrow-left-right', 14) + '</span><span>' + esc(pr.right || '') + '</span></div>';
             }).join('');
           } else if (qtype === 'ordering') {
             detail = (qq.items || []).map(function (it, ii) {
-              return '<div style="font-size:.75rem;padding:2px 6px">' + (ii + 1) + '. ' + esc(it) + '</div>';
+              return '<div class="ans"><span class="ord">' + (ii + 1) + '.</span><span>' + esc(it) + '</span></div>';
             }).join('');
           }
-          return '<div style="margin-top:8px"><b>' + (i + 1) + '. ' + esc(qq.question || '') + '</b>' +
-            ' <span class="pill off">' + esc(qtype.replace('_', ' ')) + '</span>' + detail + '</div>';
+          return '<div class="q"><div class="q-head"><span class="name">' + (i + 1) + '. ' + esc(qq.question || '') + '</span>' +
+            badge(label(qtype)) + '</div>' + detail + '</div>';
         }).join('');
     } else if (c.content_type === 'file_upload') {
       inner = '<div class="sub">Evidence upload step — trainees attach files here.' +
         (body_.requires_signoff ? ' Requires manager sign-off.' : '') + '</div>';
     }
-    modal('<div class="row"><div class="grow name" style="font-size:.85rem">' + esc(c.title) +
-      ' <span class="pill off">' + esc(c.content_type || '') + '</span></div>' +
-      '<button class="act" id="editc">Edit</button> <button class="act" id="closev">Close</button></div>' +
-      '<div style="margin-top:10px">' + inner + '</div>');
+    modal('<div class="dlg-head"><h2 class="dlg-title" id="dlg-title">' + esc(c.title) + '</h2>' + badge(typeLabel(c.content_type || '')) + '</div>' +
+      '<div>' + inner + '</div>' +
+      foot('<button type="button" class="n-btn n-btn--secondary" id="closev">Close</button>' +
+        '<button type="button" class="n-btn n-btn--primary" id="editc">Edit</button>'));
     document.getElementById('closev').addEventListener('click', closeModal);
     document.getElementById('editc').addEventListener('click', function () { editContent(c); });
   }
@@ -603,72 +1069,75 @@
     var b = state.ec.body || {};
     var qHtml = (b.questions || []).map(function (qq, qi) {
       var typeOpts = ['multiple_choice', 'match_pairs', 'ordering'].map(function (t) {
-        return '<option value="' + t + '"' + (qq.type === t ? ' selected' : '') + '>' + t.replace('_', ' ') + '</option>';
+        return '<option value="' + t + '"' + (qq.type === t ? ' selected' : '') + '>' + label(t) + '</option>';
       }).join('');
       var tb = '';
       if (qq.type === 'multiple_choice') {
         tb = (qq.options || []).map(function (o, oi) {
           var correct = (qq.correct_indices || []).indexOf(oi) >= 0;
-          return '<div class="field" style="margin-left:12px"><input type="checkbox" id="q-' + qi + '-opt-' + oi + '-correct"' + (correct ? ' checked' : '') + ' title="correct answer">' +
-            '<input type="text" id="q-' + qi + '-opt-' + oi + '-text" value="' + esc(o) + '" placeholder="Option" style="flex:1">' +
-            '<button class="act tiny danger" data-delopt="' + qi + '-' + oi + '">×</button></div>';
-        }).join('') + '<button class="act tiny" data-addopt="' + qi + '" style="margin-left:12px">+ option</button>' +
-          '<div class="sub" style="margin-left:12px">Tick every correct answer — more than one is allowed.</div>';
+          return '<div class="opt-row"><input type="checkbox" id="q-' + qi + '-opt-' + oi + '-correct"' + (correct ? ' checked' : '') + ' title="Correct answer" aria-label="Correct answer">' +
+            '<input type="text" class="n-input fld-sm" id="q-' + qi + '-opt-' + oi + '-text" value="' + esc(o) + '" placeholder="Option" style="flex:1" aria-label="Option">' +
+            ibtn('data-delopt="' + qi + '-' + oi + '"', 'x', 'Remove option') + '</div>';
+        }).join('') + '<button type="button" class="n-btn n-btn--quiet n-btn--sm add-opt" data-addopt="' + qi + '">' + ui('plus', 14) + 'Option</button>' +
+          '<div class="hint opt-hint">Tick every correct answer — more than one is allowed.</div>';
       } else if (qq.type === 'match_pairs') {
         tb = (qq.pairs || []).map(function (pr, pi) {
-          return '<div class="field" style="margin-left:12px"><input type="text" id="q-' + qi + '-pair-' + pi + '-left" value="' + esc(pr.left || '') + '" placeholder="Left" style="flex:1">' +
-            '<span class="sub">↔</span><input type="text" id="q-' + qi + '-pair-' + pi + '-right" value="' + esc(pr.right || '') + '" placeholder="Right" style="flex:1">' +
-            '<button class="act tiny danger" data-delpair="' + qi + '-' + pi + '">×</button></div>';
-        }).join('') + '<button class="act tiny" data-addpair="' + qi + '" style="margin-left:12px">+ pair</button>';
+          return '<div class="opt-row"><input type="text" class="n-input fld-sm" id="q-' + qi + '-pair-' + pi + '-left" value="' + esc(pr.left || '') + '" placeholder="Left" style="flex:1" aria-label="Left">' +
+            '<span class="pair-sep">' + ui('arrow-left-right', 14) + '</span>' +
+            '<input type="text" class="n-input fld-sm" id="q-' + qi + '-pair-' + pi + '-right" value="' + esc(pr.right || '') + '" placeholder="Right" style="flex:1" aria-label="Right">' +
+            ibtn('data-delpair="' + qi + '-' + pi + '"', 'x', 'Remove pair') + '</div>';
+        }).join('') + '<button type="button" class="n-btn n-btn--quiet n-btn--sm add-opt" data-addpair="' + qi + '">' + ui('plus', 14) + 'Pair</button>';
       } else if (qq.type === 'ordering') {
         tb = (qq.items || []).map(function (it, ii) {
-          return '<div class="field" style="margin-left:12px"><span class="sub">' + (ii + 1) + '.</span><input type="text" id="q-' + qi + '-item-' + ii + '" value="' + esc(it) + '" placeholder="Item" style="flex:1">' +
-            (ii > 0 ? '<button class="act tiny arrow" data-itemup="' + qi + '-' + ii + '">↑</button>' : '') +
-            '<button class="act tiny danger" data-delitem="' + qi + '-' + ii + '">×</button></div>';
-        }).join('') + '<button class="act tiny" data-additem="' + qi + '" style="margin-left:12px">+ item</button>' +
-          '<div class="sub" style="margin-left:12px">List them in the correct order.</div>';
+          return '<div class="opt-row"><span class="ord">' + (ii + 1) + '.</span>' +
+            '<input type="text" class="n-input fld-sm" id="q-' + qi + '-item-' + ii + '" value="' + esc(it) + '" placeholder="Item" style="flex:1" aria-label="Item ' + (ii + 1) + '">' +
+            (ii > 0 ? ibtn('data-itemup="' + qi + '-' + ii + '"', 'arrow-up', 'Move up') : GAP) +
+            ibtn('data-delitem="' + qi + '-' + ii + '"', 'x', 'Remove item') + '</div>';
+        }).join('') + '<button type="button" class="n-btn n-btn--quiet n-btn--sm add-opt" data-additem="' + qi + '">' + ui('plus', 14) + 'Item</button>' +
+          '<div class="hint opt-hint">List them in the correct order.</div>';
       }
-      return '<div class="mod"><div class="field"><span class="name" style="font-size:.72rem">Q' + (qi + 1) + '</span>' +
-        '<select data-qtype="' + qi + '">' + typeOpts + '</select>' +
-        '<span class="grow"></span><button class="act tiny danger" data-delq="' + qi + '">× question</button></div>' +
-        '<input type="text" id="q-' + qi + '-text" value="' + esc(qq.question || '') + '" placeholder="Question" style="width:100%;margin-bottom:5px">' +
+      return '<div class="q-edit"><div class="q-head"><span class="q-num">Q' + (qi + 1) + '</span>' +
+        '<select class="n-select fld-sm" data-qtype="' + qi + '" aria-label="Question type">' + typeOpts + '</select>' +
+        '<span class="grow"></span>' + ibtn('data-delq="' + qi + '"', 'trash-2', 'Remove question', true) + '</div>' +
+        '<input type="text" class="n-input" id="q-' + qi + '-text" value="' + esc(qq.question || '') + '" placeholder="Question" aria-label="Question">' +
         tb + '</div>';
     }).join('');
-    return '<div class="field"><label>Pass %</label><input type="number" id="ec-pass" style="width:90px" value="' + esc(b.pass_percentage == null ? 100 : b.pass_percentage) + '"></div>' +
-      '<div style="margin-top:6px">' + (qHtml || '<div class="sub">No questions yet.</div>') + '</div>' +
-      '<button class="act" id="ec-addq" style="margin-top:8px">+ Question</button>';
+    return '<div class="field"><label for="ec-pass">Pass %</label><input type="number" class="n-input" id="ec-pass" style="width:90px" value="' + esc(b.pass_percentage == null ? 100 : b.pass_percentage) + '"></div>' +
+      '<div>' + (qHtml || '<div class="none">No questions yet.</div>') + '</div>' +
+      '<button type="button" class="n-btn n-btn--secondary n-btn--sm" id="ec-addq" style="margin-top:8px">' + ui('plus', 14) + 'Question</button>';
   }
 
   function renderEditContent() {
     var ct = state.ec.content_type, b = state.ec.body || {};
     var typeSel = ['rich_text', 'video', 'quiz', 'file_upload'].map(function (t) {
-      return '<option value="' + t + '"' + (ct === t ? ' selected' : '') + '>' + t + '</option>';
+      return '<option value="' + t + '"' + (ct === t ? ' selected' : '') + '>' + typeLabel(t) + '</option>';
     }).join('');
     var editor = '';
     if (ct === 'rich_text') {
       var html = typeof b === 'object' ? (b.html || b.text || '') : String(b);
-      editor = '<div class="field"><label>Body (HTML)</label></div>' +
-        '<textarea id="ec-html" style="width:100%;min-height:140px">' + esc(html) + '</textarea>' +
-        '<div class="sub" style="margin-top:6px">Live preview</div>' +
-        '<div class="card prose" id="ec-preview" style="max-height:220px;overflow:auto">' + html + '</div>';
+      editor = '<div class="stack"><label class="n-label" for="ec-html">Body (HTML)</label>' +
+        '<textarea class="n-input" id="ec-html" style="min-height:140px">' + esc(html) + '</textarea></div>' +
+        '<div class="stack"><div class="n-label">Live preview</div>' +
+        '<div class="preview prose" id="ec-preview">' + html + '</div></div>';
     } else if (ct === 'video') {
-      editor = '<div class="field"><label>YouTube link/ID</label><input type="text" id="ec-yt" style="flex:1" value="' + esc(b.youtube_id || '') + '" placeholder="paste a YouTube link or the 11-char id"></div>' +
-        '<div class="field"><label>Duration (s)</label><input type="number" id="ec-dur" style="width:110px" value="' + esc(b.duration_seconds || '') + '"></div>' +
-        '<div id="ec-vpreview" style="margin-top:6px">' + (b.youtube_id ? '<iframe width="100%" height="220" src="https://www.youtube.com/embed/' + esc(b.youtube_id) + '" frameborder="0" allowfullscreen></iframe>' : '<div class="sub">Paste a link to preview.</div>') + '</div>';
+      editor = '<div class="field"><label for="ec-yt">YouTube link or ID</label><input type="text" class="n-input" id="ec-yt" style="flex:1" value="' + esc(b.youtube_id || '') + '" placeholder="Paste a YouTube link or the 11-character id"></div>' +
+        '<div class="field"><label for="ec-dur">Duration (s)</label><input type="number" class="n-input" id="ec-dur" style="width:110px" value="' + esc(b.duration_seconds || '') + '"></div>' +
+        '<div id="ec-vpreview" class="stack">' + (b.youtube_id ? '<iframe width="100%" height="220" src="https://www.youtube.com/embed/' + esc(b.youtube_id) + '" frameborder="0" allowfullscreen></iframe>' : '<div class="none">Paste a link to preview.</div>') + '</div>';
     } else if (ct === 'quiz') {
       editor = quizEditorHtml();
     } else if (ct === 'file_upload') {
-      editor = '<div class="field"><label>Instructions</label></div>' +
-        '<textarea id="ec-inst" style="width:100%;min-height:70px">' + esc(b.instructions || '') + '</textarea>' +
-        '<div class="field" style="margin-top:6px"><label>Max files</label><input type="number" id="ec-max" style="width:90px" value="' + esc(b.max_files == null ? 10 : b.max_files) + '"></div>' +
-        '<div class="field"><label>Sign-off</label><input type="checkbox" id="ec-sign"' + (b.requires_signoff ? ' checked' : '') + '><span class="sub">a manager must accept the uploaded evidence</span></div>';
+      editor = '<div class="stack"><label class="n-label" for="ec-inst">Instructions</label>' +
+        '<textarea class="n-input" id="ec-inst" style="min-height:70px">' + esc(b.instructions || '') + '</textarea></div>' +
+        '<div class="field" style="margin-top:12px"><label for="ec-max">Max files</label><input type="number" class="n-input" id="ec-max" style="width:90px" value="' + esc(b.max_files == null ? 10 : b.max_files) + '"></div>' +
+        '<div class="field field--inline"><label for="ec-sign">Sign-off</label><input type="checkbox" id="ec-sign"' + (b.requires_signoff ? ' checked' : '') + '><span class="hint">a manager must accept the uploaded evidence</span></div>';
     }
-    modal('<div class="row"><div class="grow name" style="font-size:.85rem">Edit content</div>' +
-      '<button class="act primary" id="ec-save">Save</button> <button class="act" id="ec-cancel">Cancel</button></div>' +
-      '<div class="field" style="margin-top:8px"><label>Title</label><input type="text" id="ec-title" style="flex:1" value="' + esc(state.ec.title || '') + '"></div>' +
-      '<div class="field"><label>Type</label><select id="ec-type">' + typeSel + '</select></div>' +
-      '<div id="ec-body" style="margin-top:8px">' + editor + '</div>' +
-      '<div class="err" id="ec-err" style="margin-top:6px"></div>');
+    modal('<div class="dlg-head"><h2 class="dlg-title" id="dlg-title">Edit content</h2></div>' +
+      '<div class="field"><label for="ec-title">Title</label><input type="text" class="n-input" id="ec-title" style="flex:1" value="' + esc(state.ec.title || '') + '"></div>' +
+      '<div class="field"><label for="ec-type">Type</label><select class="n-select" id="ec-type">' + typeSel + '</select></div>' +
+      '<div id="ec-body" style="margin-top:12px">' + editor + '</div>' +
+      '<div class="err" id="ec-err"></div>' +
+      foot('<button type="button" class="n-btn n-btn--secondary" id="ec-cancel">Cancel</button>' +
+        '<button type="button" class="n-btn n-btn--primary" id="ec-save">Save</button>'), { keep: true });
 
     modalHost.querySelector('#ec-cancel').addEventListener('click', function () {
       renderContent({ id: state.ec.id, title: state.ec.title, content_type: state.ec.content_type, body: state.ec.body });
@@ -684,7 +1153,7 @@
     if (ytEl) ytEl.addEventListener('change', function () {
       this.value = extractYouTube(this.value);
       var pv = modalHost.querySelector('#ec-vpreview');
-      if (pv) pv.innerHTML = this.value ? '<iframe width="100%" height="220" src="https://www.youtube.com/embed/' + esc(this.value) + '" frameborder="0" allowfullscreen></iframe>' : '<div class="sub">Paste a link to preview.</div>';
+      if (pv) pv.innerHTML = this.value ? '<iframe width="100%" height="220" src="https://www.youtube.com/embed/' + esc(this.value) + '" frameborder="0" allowfullscreen></iframe>' : '<div class="none">Paste a link to preview.</div>';
     });
     // Quiz structural controls
     var addq = modalHost.querySelector('#ec-addq');
@@ -723,15 +1192,16 @@
   // ---- Section details editor --------------------------------------------
   function editSection(s) {
     if (!s) return;
-    modal('<div class="row"><div class="grow name" style="font-size:.85rem">Section details</div>' +
-      '<button class="act primary" id="s-save">Save</button> <button class="act" id="s-cancel">Cancel</button></div>' +
-      '<div class="field" style="margin-top:8px"><label>Name</label><input type="text" id="s-name" style="flex:1" value="' + esc(s.name || '') + '"></div>' +
-      '<div class="field"><label>Introduction</label></div>' +
-      '<textarea id="s-intro" style="width:100%;min-height:70px">' + esc(s.introduction || '') + '</textarea>' +
-      '<div class="field" style="margin-top:6px"><label>Instructions</label></div>' +
-      '<textarea id="s-instr" style="width:100%;min-height:70px">' + esc(s.instructions || '') + '</textarea>' +
-      '<div class="field" style="margin-top:6px"><label>Trainer mins</label><input type="number" id="s-trm" style="width:90px" value="' + esc(s.trainer_time_minutes == null ? '' : s.trainer_time_minutes) + '">' +
-        '<label style="min-width:auto;margin-left:10px">Trainee mins</label><input type="number" id="s-tem" style="width:90px" value="' + esc(s.trainee_time_minutes == null ? '' : s.trainee_time_minutes) + '"></div>');
+    modal('<div class="dlg-head"><h2 class="dlg-title" id="dlg-title">Section details</h2></div>' +
+      '<div class="field"><label for="s-name">Name</label><input type="text" class="n-input" id="s-name" style="flex:1" value="' + esc(s.name || '') + '"></div>' +
+      '<div class="stack"><label class="n-label" for="s-intro">Introduction</label>' +
+      '<textarea class="n-input" id="s-intro" style="min-height:70px">' + esc(s.introduction || '') + '</textarea></div>' +
+      '<div class="stack"><label class="n-label" for="s-instr">Instructions</label>' +
+      '<textarea class="n-input" id="s-instr" style="min-height:70px">' + esc(s.instructions || '') + '</textarea></div>' +
+      '<div class="field" style="margin-top:12px"><label for="s-trm">Trainer mins</label><input type="number" class="n-input" id="s-trm" style="width:90px" value="' + esc(s.trainer_time_minutes == null ? '' : s.trainer_time_minutes) + '">' +
+        '<label class="inline" for="s-tem">Trainee mins</label><input type="number" class="n-input" id="s-tem" style="width:90px" value="' + esc(s.trainee_time_minutes == null ? '' : s.trainee_time_minutes) + '"></div>' +
+      foot('<button type="button" class="n-btn n-btn--secondary" id="s-cancel">Cancel</button>' +
+        '<button type="button" class="n-btn n-btn--primary" id="s-save">Save</button>'));
     document.getElementById('s-cancel').addEventListener('click', closeModal);
     document.getElementById('s-save').addEventListener('click', function () {
       var trm = document.getElementById('s-trm').value, tem = document.getElementById('s-tem').value;
@@ -751,28 +1221,27 @@
     run('member', { person_id: personId }).then(function (d) {
       var a = (d.assignments || []).map(function (r) {
         var mods = (r.modules || []).map(function (m) {
-          var cls = m.done === m.total ? 'ok' : (m.done > 0 ? 'go' : 'off');
-          return '<span class="pill ' + cls + '" style="margin:1px">' + esc(m.name) + ' ' + m.done + '/' + m.total + '</span>';
-        }).join(' ');
+          return badge((m.name || '') + ' ' + m.done + '/' + m.total, m.done === m.total ? 'ok' : (m.done > 0 ? 'warn' : ''));
+        }).join('');
         return '<tr><td>' + esc(r.program) + (r.instance ? '<span class="inst">' + esc(r.instance) + '</span>' : '') + '</td>' +
-          '<td>' + mods + '</td><td style="text-align:right">' + r.percent + '%</td></tr>';
+          '<td><div class="pills">' + mods + '</div></td><td class="num">' + r.percent + '%</td></tr>';
       }).join('');
       var plans = (d.plans || []).map(function (pl) {
         var secs = (pl.sections || []).map(function (s) {
-          var cls = s.status === 'completed' ? 'ok' : 'off';
-          return '<span class="pill ' + cls + '" style="margin:1px" title="' + esc(s.due_date || '') + '">' + esc(s.name) + '</span>';
-        }).join(' ');
-        return '<tr><td>' + esc(pl.program) + '</td><td>' + (secs || '<span class="sub">no sections scheduled</span>') + '</td></tr>';
+          return badge(s.name, s.status === 'completed' ? 'ok' : '', s.due_date || '');
+        }).join('');
+        return '<tr><td>' + esc(pl.program) + '</td><td>' + (secs ? '<div class="pills">' + secs + '</div>' : '<span class="hint">No sections scheduled</span>') + '</td></tr>';
       }).join('');
-      body.innerHTML = '<button class="back" id="back">← Back</button>' +
-        '<div class="card"><div class="name">' + esc(d.person.name) +
-          (d.person.role ? ' <span class="sub">' + esc(d.person.role) + '</span>' : '') + '</div></div>' +
-        '<div class="card"><div class="name" style="font-size:.8rem;margin-bottom:6px">Programs</div>' +
-          (a ? '<table><thead><tr><th>Program</th><th>Modules</th><th style="text-align:right">Overall</th></tr></thead><tbody>' + a + '</tbody></table>'
-             : '<div class="sub">No self-paced programs.</div>') + '</div>' +
+      body.innerHTML = '<button type="button" class="back" id="back">' + ui('arrow-left', 14) + 'Back</button>' +
+        '<div class="title-row"><span class="avatar" aria-hidden="true">' + esc(String(d.person.name || '?').trim().charAt(0).toUpperCase()) + '</span>' +
+          '<h2 class="title">' + esc(d.person.name) + '</h2>' +
+          (d.person.role ? '<span class="sub">' + esc(d.person.role) + '</span>' : '') + '</div>' +
+        '<section class="n-card panel"><div class="panel-head"><h2>Programs</h2></div>' +
+          (a ? '<div class="tbl"><table class="n-table"><thead><tr><th>Program</th><th>Modules</th><th class="num">Overall</th></tr></thead><tbody>' + a + '</tbody></table></div>'
+             : '<div class="panel-body none">No self-paced programs.</div>') + '</section>' +
         (d.plans && d.plans.length
-          ? '<div class="card"><div class="name" style="font-size:.8rem;margin-bottom:6px">Plans</div>' +
-            '<table><thead><tr><th>Program</th><th>Sections</th></tr></thead><tbody>' + plans + '</tbody></table></div>'
+          ? '<section class="n-card panel"><div class="panel-head"><h2>Plans</h2></div>' +
+            '<div class="tbl"><table class="n-table"><thead><tr><th>Program</th><th>Sections</th></tr></thead><tbody>' + plans + '</tbody></table></div></section>'
           : '');
       document.getElementById('back').addEventListener('click', function () {
         if (state.program) showProgram(state.program.id); else { view = 'tracker'; render(); }
@@ -787,27 +1256,32 @@
       var plans = res[0].plans || [], programs = res[1].programs || [];
       state.planPrograms = programs.filter(function (p) { return p.requires_plan; });
       var statusSel = ['active', 'completed', 'cancelled', 'all'].map(function (s) {
-        return '<option value="' + s + '"' + ((state.planStatus || 'active') === s ? ' selected' : '') + '>' + s + '</option>';
+        return '<option value="' + s + '"' + ((state.planStatus || 'active') === s ? ' selected' : '') + '>' + label(s) + '</option>';
       }).join('');
       var rows = plans.map(function (pl) {
-        return '<tr><td><span class="link" data-member="' + esc(pl.person_id) + '">' + esc(pl.person_name) + '</span></td>' +
-          '<td><span class="link" data-plan="' + esc(pl.id) + '">' + esc(pl.program_name || '') + '</span>' +
+        return '<tr><td><button type="button" class="link" data-member="' + esc(pl.person_id) + '">' + esc(pl.person_name) + '</button></td>' +
+          '<td><button type="button" class="link" data-plan="' + esc(pl.id) + '">' + esc(pl.program_name || '') + '</button>' +
             (pl.instance ? '<span class="inst">' + esc(pl.instance) + '</span>' : '') + '</td>' +
-          '<td>' + esc(pl.next_due || (pl.section_count ? 'all scheduled' : '—')) + '</td>' +
-          '<td><span class="pill off">' + esc(pl.status) + '</span></td>' +
-          '<td style="text-align:right"><button class="act tiny danger" data-delplan="' + esc(pl.id) + '">×</button></td></tr>';
+          '<td class="nowrap">' + esc(pl.next_due || (pl.section_count ? 'All scheduled' : '—')) + '</td>' +
+          '<td>' + (pl.status ? status(pl.status) : '') + '</td>' +
+          '<td class="num">' + ibtn('data-delplan="' + esc(pl.id) + '"', 'trash-2', 'Delete plan', true) + '</td></tr>';
       }).join('');
-      body.innerHTML = '<div class="row"><div class="grow filters">' +
-          'Status <select id="planstatus">' + statusSel + '</select></div>' +
-          '<button class="act primary" id="newplan">+ New plan</button></div>' +
-        '<div class="card">' + (rows
-          ? '<table><thead><tr><th>Team member</th><th>Program</th><th>Next due</th><th>Status</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
-          : '<div class="sub">No plans.</div>') + '</div>';
+      var which = state.planStatus || 'active';
+      body.innerHTML = '<div class="toolbar"><label class="lbl" for="planstatus">Status</label>' +
+          '<select class="n-select fld-sm" id="planstatus">' + statusSel + '</select><span class="grow"></span>' +
+          '<button type="button" class="n-btn n-btn--secondary n-btn--sm" id="newplan">' + ui('plus', 14) + 'New plan</button></div>' +
+        (rows
+          ? '<div class="tbl"><table class="n-table"><thead><tr><th>Team member</th><th>Program</th><th>Next due</th><th>Status</th><th><span class="sr">Actions</span></th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+          : empty(which === 'all' ? 'No plans.' : 'No ' + which + ' plans.'));
       document.getElementById('planstatus').addEventListener('change', function () { state.planStatus = this.value; showPlans(); });
       document.getElementById('newplan').addEventListener('click', newPlan);
       bind('[data-member]', 'click', function (el) { state.program = null; showMember(el.getAttribute('data-member')); });
       bind('[data-plan]', 'click', function (el) { showPlan(el.getAttribute('data-plan')); });
-      bind('[data-delplan]', 'click', function (el) { if (confirm('Delete this plan and its schedule?')) run('delete_plan', { plan_id: el.getAttribute('data-delplan') }).then(showPlans).catch(fail); });
+      bind('[data-delplan]', 'click', function (el) {
+        askConfirm('Delete this plan and its schedule?', { title: 'Delete plan', confirm: 'Delete plan', danger: true }).then(function (ok) {
+          if (ok) run('delete_plan', { plan_id: el.getAttribute('data-delplan') }).then(showPlans).catch(fail);
+        });
+      });
     }).catch(fail);
   }
 
@@ -815,7 +1289,7 @@
     Promise.all([run('overview'), run('enrollments', { program_id: (state.planPrograms[0] || {}).id })])
       .then(function () {
         var progs = (state.planPrograms || []);
-        if (!progs.length) { alert('Create a plan-led program first (tick "Plan-led").'); return; }
+        if (!progs.length) { notify('Create a plan-led program first (tick "Plan-led").', { title: 'No plan-led programs yet' }); return; }
         var progOpts = progs.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>'; }).join('');
         // people list from any program's enrollments call (returns all active people via available)
         run('enrollments', { program_id: progs[0].id }).then(function (e) {
@@ -823,11 +1297,11 @@
           var seen = {}; everyone = everyone.filter(function (p) { if (seen[p.id]) return false; seen[p.id] = 1; return true; });
           everyone.sort(function (a, b) { return String(a.name).localeCompare(b.name); });
           var pplOpts = everyone.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>'; }).join('');
-          modal('<div class="name" style="font-size:.85rem">New training plan</div>' +
-            '<div class="field" style="margin-top:8px"><label>Team member</label><select id="np-person" style="flex:1">' + pplOpts + '</select></div>' +
-            '<div class="field"><label>Program</label><select id="np-prog" style="flex:1">' + progOpts + '</select></div>' +
-            '<div class="row" style="margin-top:10px"><button class="act primary" id="np-create">Create &amp; schedule</button>' +
-            '<span class="grow"></span><button class="act" id="np-cancel">Cancel</button></div>');
+          modal('<div class="dlg-head"><h2 class="dlg-title" id="dlg-title">New training plan</h2></div>' +
+            '<div class="field"><label for="np-person">Team member</label><select class="n-select" id="np-person" style="flex:1">' + pplOpts + '</select></div>' +
+            '<div class="field"><label for="np-prog">Program</label><select class="n-select" id="np-prog" style="flex:1">' + progOpts + '</select></div>' +
+            foot('<button type="button" class="n-btn n-btn--secondary" id="np-cancel">Cancel</button>' +
+              '<button type="button" class="n-btn n-btn--primary" id="np-create">Create &amp; schedule</button>'));
           document.getElementById('np-cancel').addEventListener('click', closeModal);
           document.getElementById('np-create').addEventListener('click', function () {
             run('create_plan', { person_id: document.getElementById('np-person').value, program_id: document.getElementById('np-prog').value })
@@ -847,26 +1321,26 @@
           // A section can only be ticked off once it has been scheduled (that
           // is when it gets a plan_section_id to hang the status on).
           var toggle = s.plan_section_id
-            ? '<button class="act tiny' + (done ? '' : ' primary') + '" data-pstatus="' + esc(s.plan_section_id) +
-                '" data-to="' + (done ? 'pending' : 'completed') + '">' + (done ? 'Undo' : 'Done') + '</button>'
-            : '<span class="sub">schedule first</span>';
-          return '<tr><td>' + esc(s.module) + '<span class="inst">' + esc(s.name) + ' · ' + esc(s.section_type || '') + '</span></td>' +
-            '<td><input type="date" data-due="' + esc(s.section_id) + '" value="' + esc(s.due_date || '') + '"></td>' +
-            '<td><input type="time" data-time="' + esc(s.section_id) + '" value="' + esc(s.start_time || '') + '" style="width:90px"></td>' +
-            '<td><span class="pill ' + (done ? 'ok' : 'off') + '">' + esc(s.status) + '</span></td>' +
-            '<td style="text-align:right"><button class="act tiny" data-sched="' + esc(s.section_id) + '">Save</button> ' + toggle + '</td></tr>';
+            ? '<button type="button" class="n-btn n-btn--secondary n-btn--sm" data-pstatus="' + esc(s.plan_section_id) +
+                '" data-to="' + (done ? 'pending' : 'completed') + '">' + (done ? 'Undo' : ui('check', 14) + 'Done') + '</button>'
+            : '<span class="hint">Schedule first</span>';
+          return '<tr><td>' + esc(s.module) + '<span class="inst">' + esc(s.name) + ' · ' + esc(sectionLabel(s.section_type || '')) + '</span></td>' +
+            '<td><input type="date" class="n-input fld-sm" data-due="' + esc(s.section_id) + '" value="' + esc(s.due_date || '') + '" aria-label="Date"></td>' +
+            '<td><input type="time" class="n-input fld-sm" data-time="' + esc(s.section_id) + '" value="' + esc(s.start_time || '') + '" style="width:110px" aria-label="Time"></td>' +
+            '<td>' + status(s.status) + '</td>' +
+            '<td class="num nowrap"><span class="cell-actions"><button type="button" class="n-btn n-btn--secondary n-btn--sm" data-sched="' + esc(s.section_id) + '">Save</button>' + toggle + '</span></td></tr>';
         }).join('');
         var planAction = st === 'completed'
-          ? '<span class="pill ok">Completed</span> <button class="act" id="plan-reopen">Reopen</button>'
+          ? badge('Completed', 'ok') + '<button type="button" class="n-btn n-btn--secondary n-btn--sm" id="plan-reopen">Reopen</button>'
           : (st === 'cancelled'
-            ? '<span class="pill off">Cancelled</span> <button class="act" id="plan-reopen">Reactivate</button>'
-            : '<button class="act primary" id="plan-complete">Mark plan complete</button> ' +
-              '<button class="act danger tiny" id="plan-cancel">Cancel</button>');
-        body.innerHTML = '<button class="back" id="back">← All plans</button>' +
-          '<div class="card"><div class="row"><div class="grow name">' + esc(d.plan.program || 'Plan') + '</div>' + planAction + '</div></div>' +
-          '<div class="card">' + (rows
-            ? '<table><thead><tr><th>Section</th><th>Date</th><th>Time</th><th>Status</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
-            : '<div class="sub">This program has no sections to schedule.</div>') + '</div>';
+            ? badge('Cancelled') + '<button type="button" class="n-btn n-btn--secondary n-btn--sm" id="plan-reopen">Reactivate</button>'
+            : '<button type="button" class="n-btn n-btn--danger n-btn--sm" id="plan-cancel">Cancel plan</button>' +
+              '<button type="button" class="n-btn n-btn--primary n-btn--sm" id="plan-complete">Mark plan complete</button>');
+        body.innerHTML = '<button type="button" class="back" id="back">' + ui('arrow-left', 14) + 'All plans</button>' +
+          '<div class="title-row"><h2 class="title">' + esc(d.plan.program || 'Plan') + '</h2><span class="title-actions">' + planAction + '</span></div>' +
+          (rows
+            ? '<section class="n-card panel"><div class="tbl"><table class="n-table"><thead><tr><th>Section</th><th>Date</th><th>Time</th><th>Status</th><th><span class="sr">Actions</span></th></tr></thead><tbody>' + rows + '</tbody></table></div></section>'
+            : empty('This program has no sections to schedule.'));
         document.getElementById('back').addEventListener('click', function () { view = 'plans'; render(); });
         bind('[data-sched]', 'click', function (el) {
           var sid = el.getAttribute('data-sched');
@@ -888,7 +1362,10 @@
         var pr = document.getElementById('plan-reopen');
         if (pr) pr.addEventListener('click', function () { setPlan('active'); });
         var px = document.getElementById('plan-cancel');
-        if (px) px.addEventListener('click', function () { if (confirm('Cancel this plan? It drops off the active tracker.')) setPlan('cancelled', true); });
+        if (px) px.addEventListener('click', function () {
+          askConfirm('Cancel this plan? It drops off the active tracker.', { title: 'Cancel plan', confirm: 'Cancel plan', cancel: 'Keep plan', danger: true })
+            .then(function (ok) { if (ok) setPlan('cancelled', true); });
+        });
       }).catch(fail);
   }
 
@@ -898,7 +1375,7 @@
     run('tracker').then(function (d) {
       var cols = d.columns || [], rows = d.rows || [];
       state.tracker = d;
-      if (!rows.length) { body.innerHTML = '<div class="empty">Nobody is enrolled on a training program yet.</div>'; return; }
+      if (!rows.length) { body.innerHTML = empty('Nobody is enrolled on a training program yet.'); return; }
       var venues = (ctx && ctx.venues) || [];
       var venueSel = '<option value="">All venues</option>' + venues.map(function (v) { return '<option value="' + esc(v.id) + '"' + (state.trkVenue === v.id ? ' selected' : '') + '>' + esc(v.name) + '</option>'; }).join('');
       var progSel = '<option value="">All programs</option>' + cols.map(function (c) { return '<option value="' + esc(c.id) + '"' + (state.trkProg === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join('');
@@ -911,27 +1388,27 @@
         return r.cells.some(function (cell) { return (cell || []).some(function (e) { return e.venue_id === state.trkVenue; }); }) ||
           (r.person.venues || []).indexOf(state.trkVenue) >= 0;
       });
-      var head = '<tr><th class="person">Team member</th>' + showCols.map(function (c) { return '<th style="text-align:center">' + esc(c.name) + '</th>'; }).join('') + '</tr>';
+      var head = '<tr><th class="person">Team member</th>' + showCols.map(function (c) { return '<th class="mid">' + esc(c.name) + '</th>'; }).join('') + '</tr>';
       var trs = visRows.map(function (r) {
-        return '<tr><td class="person"><span class="link" data-member="' + esc(r.person.id) + '">' + esc(r.person.name) + '</span>' +
+        return '<tr><td class="person"><button type="button" class="link" data-member="' + esc(r.person.id) + '">' + esc(r.person.name) + '</button>' +
           (r.person.role ? '<span class="inst">' + esc(r.person.role) + '</span>' : '') + '</td>' +
           showCols.map(function (c) {
             var entries = r.cells[colIdx[c.id]] || [];
-            if (!entries.length) return '<td><span class="dash">—</span></td>';
-            return '<td>' + entries.map(function (e) {
-              var badge = e.status === 'complete' ? '<span class="pill ok">Complete</span>'
-                : (e.status === 'progress' ? '<span class="pill go">' + esc(e.label || 'In progress') + '</span>' : '<span class="dash">—</span>');
-              return (e.instance ? '<span class="inst">' + esc(e.instance) + '</span>' : '') + badge;
-            }).join('<div style="height:3px"></div>') + '</td>';
+            if (!entries.length) return '<td class="mid"><span class="dash">—</span></td>';
+            return '<td class="mid">' + entries.map(function (e) {
+              var b = e.status === 'complete' ? badge('Complete', 'ok')
+                : (e.status === 'progress' ? badge(e.label || 'In progress', 'warn', e.label || '') : '<span class="dash">—</span>');
+              return '<div class="cell">' + (e.instance ? '<span class="inst">' + esc(e.instance) + '</span>' : '') + b + '</div>';
+            }).join('') + '</td>';
           }).join('') + '</tr>';
       }).join('');
-      body.innerHTML = '<div class="filters">' +
-          'Venue <select id="trkvenue">' + venueSel + '</select>' +
-          'Program <select id="trkprog">' + progSel + '</select>' +
-          ((state.trkVenue || state.trkProg) ? '<button class="act tiny" id="trkclear">Clear</button>' : '') +
-          '<span class="grow"></span><button class="act" id="trkprint">Print</button></div>' +
-        '<div class="card matrix" id="trkmatrix"><table><thead>' + head + '</thead><tbody>' + trs + '</tbody></table></div>' +
-        '<div class="sub" style="margin-top:6px">One badge per enrolment — a person trained on two variants shows two. ' + visRows.length + ' of ' + rows.length + ' people shown.</div>';
+      body.innerHTML = '<div class="toolbar">' +
+          '<span class="filter"><label class="lbl" for="trkvenue">Venue</label><select class="n-select fld-sm" id="trkvenue">' + venueSel + '</select></span>' +
+          '<span class="filter"><label class="lbl" for="trkprog">Program</label><select class="n-select fld-sm" id="trkprog">' + progSel + '</select></span>' +
+          ((state.trkVenue || state.trkProg) ? '<button type="button" class="n-btn n-btn--quiet n-btn--sm" id="trkclear">Clear</button>' : '') +
+          '<span class="grow"></span><button type="button" class="n-btn n-btn--secondary n-btn--sm" id="trkprint">' + ui('printer', 14) + 'Print</button></div>' +
+        '<div class="n-card matrix" id="trkmatrix"><table class="n-table"><thead>' + head + '</thead><tbody>' + trs + '</tbody></table></div>' +
+        '<div class="hint foot-note">One badge per enrolment — a person trained on two variants shows two. ' + visRows.length + ' of ' + rows.length + ' people shown.</div>';
       document.getElementById('trkvenue').addEventListener('change', function () { state.trkVenue = this.value; showTracker(); });
       document.getElementById('trkprog').addEventListener('change', function () { state.trkProg = this.value; showTracker(); });
       var clr = document.getElementById('trkclear'); if (clr) clr.addEventListener('click', function () { state.trkVenue = ''; state.trkProg = ''; showTracker(); });
@@ -945,32 +1422,37 @@
     loading();
     run('signoffs').then(function (d) {
       var rows = d.pending || [];
-      if (!rows.length) { body.innerHTML = '<div class="empty">Nothing awaiting sign-off. 🎉</div>'; return; }
-      body.innerHTML = '<div class="sub" style="margin:2px 0 8px">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + ' a trainee has submitted, waiting for a manager to accept.</div>' +
-        rows.map(function (r) {
+      if (!rows.length) { body.innerHTML = empty('Nothing awaiting sign-off.'); return; }
+      body.innerHTML = '<p class="intro">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + ' a trainee has submitted, waiting for a manager to accept.</p>' +
+        '<div class="n-card">' + rows.map(function (r) {
           var files = (r.files || []).map(function (f) {
-            return '<button class="act tiny" data-viewfile="' + esc(f.id) + '" data-fct="' + esc(f.content_type || '') + '" data-fn="' + esc(f.filename || 'file') + '">' + esc(f.filename || 'evidence') + '</button>';
-          }).join(' ') || '<span class="sub">no files attached</span>';
-          return '<div class="card"><div class="row"><div class="grow">' +
+            return '<button type="button" class="n-btn n-btn--secondary n-btn--sm" data-viewfile="' + esc(f.id) + '" data-fct="' + esc(f.content_type || '') + '" data-fn="' + esc(f.filename || 'file') + '">' +
+              ui('paperclip', 14) + '<span class="fname">' + esc(f.filename || 'evidence') + '</span></button>';
+          }).join('') || '<span class="hint">No files attached</span>';
+          return '<div class="list-row"><div class="grow">' +
             '<div class="name">' + esc(r.person) + '</div>' +
             '<div class="sub">' + esc(r.program || '') + ' · ' + esc(r.item || '') + '</div>' +
-            '<div style="margin-top:5px">' + files + '</div></div>' +
-            '<button class="act primary" data-approve="' + esc(r.completion_id) + '">Approve</button>' +
-            '<button class="act danger" data-reject="' + esc(r.completion_id) + '">Reject</button>' +
-          '</div></div>';
-        }).join('');
+            '<div class="files">' + files + '</div></div>' +
+            '<div class="row-actions">' +
+              '<button type="button" class="n-btn n-btn--secondary n-btn--sm" data-reject="' + esc(r.completion_id) + '">Reject</button>' +
+              '<button type="button" class="n-btn n-btn--primary n-btn--sm" data-approve="' + esc(r.completion_id) + '">' + ui('check', 14) + 'Approve</button>' +
+            '</div></div>';
+        }).join('') + '</div>';
       bind('[data-approve]', 'click', function (el) { run('sign_off', { completion_id: el.getAttribute('data-approve') }).then(showSignoffs).catch(fail); });
       bind('[data-reject]', 'click', function (el) {
-        var notes = prompt('Reason for sending it back (the trainee sees this):');
-        if (notes === null) return;
-        run('reject_signoff', { completion_id: el.getAttribute('data-reject'), notes: notes || null }).then(showSignoffs).catch(fail);
+        askText('Reason for sending it back (the trainee sees this)', '', { title: 'Send it back', confirm: 'Send back', multiline: true })
+          .then(function (notes) {
+            if (notes === null) return;
+            run('reject_signoff', { completion_id: el.getAttribute('data-reject'), notes: notes || null }).then(showSignoffs).catch(fail);
+          });
       });
       bind('[data-viewfile]', 'click', function (el) {
         var fct = el.getAttribute('data-fct'), fn = el.getAttribute('data-fn');
         norm.files.urlFor(el.getAttribute('data-viewfile')).then(function (url) {
-          var inner = /^image\//.test(fct) ? '<img src="' + url + '" style="max-width:100%">'
+          var inner = /^image\//.test(fct) ? '<img src="' + url + '" alt="' + esc(fn) + '" class="evidence">'
             : '<a class="link" href="' + url + '" target="_blank">Open ' + esc(fn) + '</a>';
-          modal('<div class="row"><div class="grow name">' + esc(fn) + '</div><button class="act" id="closev">Close</button></div><div style="margin-top:10px">' + inner + '</div>');
+          modal('<div class="dlg-head"><h2 class="dlg-title" id="dlg-title">' + esc(fn) + '</h2></div><div>' + inner + '</div>' +
+            foot('<button type="button" class="n-btn n-btn--secondary" id="closev">Close</button>'));
           document.getElementById('closev').addEventListener('click', closeModal);
         }).catch(fail);
       });
@@ -982,18 +1464,28 @@
     loading();
     run('frameworks').then(function (d) {
       var rows = d.frameworks || [];
-      body.innerHTML = '<div class="row"><div class="grow"></div><button class="act primary" id="newfw">+ New framework</button></div>' +
-        (rows.length ? rows.map(function (f) {
-          return '<div class="card row"><div class="grow" style="cursor:pointer" data-fw="' + esc(f.id) + '">' +
-            '<div class="name">' + esc(f.name) + (f.role_label && f.role_label !== f.name ? ' <span class="sub">' + esc(f.role_label) + '</span>' : '') + '</div>' +
-            '<div class="sub">' + f.category_count + ' categor' + (f.category_count === 1 ? 'y' : 'ies') +
-              (f.is_active === false ? ' · inactive' : '') + '</div></div>' +
-            '<button class="act" data-fw="' + esc(f.id) + '">Open</button></div>';
-        }).join('') : '<div class="empty">No capability frameworks yet.</div>');
+      body.innerHTML = '<div class="toolbar">' +
+          (rows.length ? '<span class="sub">' + rows.length + ' framework' + (rows.length === 1 ? '' : 's') + '</span>' : '') +
+          '<span class="grow"></span><button type="button" class="n-btn n-btn--secondary n-btn--sm" id="newfw">' + ui('plus', 14) + 'New framework</button></div>' +
+        (rows.length ? '<table class="n-table ltable"><thead><tr><th class="c-main">Framework</th><th class="num c-desk">Categories</th>' +
+            '<th class="c-status">Status</th><th class="c-act"><span class="sr">Actions</span></th></tr></thead><tbody>' +
+          rows.map(function (f) {
+            return '<tr><td class="c-main"><div class="prog" data-fw="' + esc(f.id) + '"><div class="prog-text">' +
+                '<div class="name">' + esc(f.name) + '</div>' +
+                (f.role_label && f.role_label !== f.name ? '<div class="meta">' + esc(f.role_label) + '</div>' : '') +
+                '<div class="meta m-only">' + f.category_count + ' categor' + (f.category_count === 1 ? 'y' : 'ies') + '</div>' +
+              '</div></div></td>' +
+              '<td class="num c-desk">' + f.category_count + '</td>' +
+              '<td class="c-status">' + (f.is_active === false ? badge('Inactive') : badge('Active', 'ok')) + '</td>' +
+              '<td class="num c-act"><button type="button" class="n-btn n-btn--secondary n-btn--sm" data-fw="' + esc(f.id) + '" aria-label="Open ' + esc(f.name) + '">Open</button></td></tr>';
+          }).join('') + '</tbody></table>'
+          : empty('No capability frameworks yet.'));
       document.getElementById('newfw').addEventListener('click', function () {
-        var name = prompt('Name the capability framework (e.g. "Sales Manager")');
-        if (!name || !name.trim()) return;
-        run('save_framework', { fields: { name: name.trim(), is_active: true } }).then(function (r) { showFramework(r.framework.id); }).catch(fail);
+        askText('Name', '', { title: 'New capability framework', placeholder: 'e.g. Sales Manager', confirm: 'Create framework', required: true })
+          .then(function (name) {
+            if (!name || !name.trim()) return;
+            run('save_framework', { fields: { name: name.trim(), is_active: true } }).then(function (r) { showFramework(r.framework.id); }).catch(fail);
+          });
       });
       bind('[data-fw]', 'click', function (el) { showFramework(el.getAttribute('data-fw')); });
     }).catch(fail);
@@ -1028,27 +1520,34 @@
     var f = state.fw;
     var catsHtml = (state.fwCats || []).map(function (cat, ci) {
       var caps = (cat.capabilities || []).map(function (cap, ki) {
-        return '<div class="item" style="margin-left:12px;border-left:2px solid var(--line);padding-left:8px;margin-top:6px">' +
-          '<div class="field"><input type="text" id="cap-' + ci + '-' + ki + '" value="' + esc(cap.name || '') + '" placeholder="Capability" style="flex:1">' +
-            '<button class="act tiny danger" data-delcap="' + ci + '-' + ki + '">×</button></div>' +
-          '<input type="text" id="l1-' + ci + '-' + ki + '" value="' + esc(cap.level1_descriptor || '') + '" placeholder="Level 1 — developing" style="width:100%;margin-top:3px">' +
-          '<input type="text" id="l2-' + ci + '-' + ki + '" value="' + esc(cap.level2_descriptor || '') + '" placeholder="Level 2 — competent" style="width:100%;margin-top:3px">' +
-          '<input type="text" id="l3-' + ci + '-' + ki + '" value="' + esc(cap.level3_descriptor || '') + '" placeholder="Level 3 — leading" style="width:100%;margin-top:3px">' +
+        return '<div class="cap">' +
+          '<div class="cap-head"><input type="text" class="n-input fld-sm" id="cap-' + ci + '-' + ki + '" value="' + esc(cap.name || '') + '" placeholder="Capability" style="flex:1;font-weight:500" aria-label="Capability">' +
+            ibtn('data-delcap="' + ci + '-' + ki + '"', 'trash-2', 'Remove capability', true) + '</div>' +
+          '<div class="lvl-row"><label class="lvl-tag" for="l1-' + ci + '-' + ki + '">Developing</label>' +
+            '<input type="text" class="n-input fld-sm" id="l1-' + ci + '-' + ki + '" value="' + esc(cap.level1_descriptor || '') + '" placeholder="Level 1 — developing"></div>' +
+          '<div class="lvl-row"><label class="lvl-tag" for="l2-' + ci + '-' + ki + '">Competent</label>' +
+            '<input type="text" class="n-input fld-sm" id="l2-' + ci + '-' + ki + '" value="' + esc(cap.level2_descriptor || '') + '" placeholder="Level 2 — competent"></div>' +
+          '<div class="lvl-row"><label class="lvl-tag" for="l3-' + ci + '-' + ki + '">Leading</label>' +
+            '<input type="text" class="n-input fld-sm" id="l3-' + ci + '-' + ki + '" value="' + esc(cap.level3_descriptor || '') + '" placeholder="Level 3 — leading"></div>' +
           '</div>';
       }).join('');
-      return '<div class="mod"><div class="field"><input type="text" id="cat-' + ci + '" value="' + esc(cat.name || '') + '" placeholder="Category" style="flex:1;font-weight:600">' +
-        '<button class="act tiny" data-addcap="' + ci + '">+ capability</button>' +
-        '<button class="act tiny danger" data-delcat="' + ci + '">× category</button></div>' +
-        (caps || '<div class="sub" style="margin-left:12px">no capabilities yet</div>') + '</div>';
+      return '<div class="cat"><div class="cat-head"><input type="text" class="n-input" id="cat-' + ci + '" value="' + esc(cat.name || '') + '" placeholder="Category" style="flex:1;font-weight:600" aria-label="Category">' +
+        '<button type="button" class="n-btn n-btn--secondary n-btn--sm" data-addcap="' + ci + '">' + ui('plus', 14) + 'Capability</button>' +
+        ibtn('data-delcat="' + ci + '"', 'trash-2', 'Remove category', true) + '</div>' +
+        '<div class="caps">' + (caps || '<div class="none">No capabilities yet</div>') + '</div></div>';
     }).join('');
-    body.innerHTML = '<button class="back" id="back">← All frameworks</button>' +
-      '<div class="card"><div class="field"><label>Name</label><input type="text" id="fw-name" style="flex:1" value="' + esc(f.name || '') + '"></div>' +
-        '<div class="field"><label>Role label</label><input type="text" id="fw-role" style="flex:1" value="' + esc(f.role_label || '') + '"></div>' +
-        '<div class="field"><label>Active</label><input type="checkbox" id="fw-active"' + (f.is_active === false ? '' : ' checked') + '></div></div>' +
-      '<div class="card"><div class="row"><div class="grow name" style="font-size:.8rem">Categories &amp; capabilities</div>' +
-        '<button class="act" id="addcat">+ Category</button></div>' +
-        '<div style="margin-top:8px">' + (catsHtml || '<div class="sub">No categories yet — add one.</div>') + '</div></div>' +
-      '<div class="row"><button class="act primary" id="fw-save">Save framework</button> <span class="sub" id="fw-saved"></span></div>';
+    body.innerHTML = '<button type="button" class="back" id="back">' + ui('arrow-left', 14) + 'All frameworks</button>' +
+      '<div class="title-row"><h2 class="title">' + esc(f.name || 'Framework') + '</h2>' +
+        (f.is_active === false ? badge('Inactive') : badge('Active', 'ok')) + '</div>' +
+      '<section class="n-card panel"><div class="panel-head"><h2>Details</h2></div><div class="panel-body form">' +
+        '<div class="field"><label for="fw-name">Name</label><input type="text" class="n-input" id="fw-name" style="flex:1" value="' + esc(f.name || '') + '"></div>' +
+        '<div class="field"><label for="fw-role">Role label</label><input type="text" class="n-input" id="fw-role" style="flex:1" value="' + esc(f.role_label || '') + '"></div>' +
+        '<div class="field field--inline"><label for="fw-active">Active</label><input type="checkbox" id="fw-active"' + (f.is_active === false ? '' : ' checked') + '></div>' +
+      '</div></section>' +
+      '<section class="n-card panel"><div class="panel-head"><h2>Categories &amp; capabilities</h2><span class="grow"></span>' +
+        '<button type="button" class="n-btn n-btn--secondary n-btn--sm" id="addcat">' + ui('plus', 14) + 'Category</button></div>' +
+        '<div class="panel-body"><div class="tree">' + (catsHtml || '<div class="none">No categories yet — add one.</div>') + '</div></div></section>' +
+      '<div class="actions"><button type="button" class="n-btn n-btn--primary" id="fw-save">Save framework</button><span class="saved" id="fw-saved"></span></div>';
     document.getElementById('back').addEventListener('click', function () { view = 'frameworks'; render(); });
     document.getElementById('addcat').addEventListener('click', function () {
       readFwInputs(); state.fwCats.push({ name: 'New category', capabilities: [] }); renderFramework(fid);
@@ -1092,10 +1591,12 @@
   }
 
   document.getElementById('newprog').addEventListener('click', function () {
-    var name = prompt('Name the new training program');
-    if (!name || !name.trim()) return;
-    run('save_program', { fields: { name: name.trim(), is_active: true } })
-      .then(function (r) { showProgram(r.program.id); }).catch(fail);
+    askText('Name', '', { title: 'New training program', placeholder: 'e.g. Barista basics', confirm: 'Create program', required: true })
+      .then(function (name) {
+        if (!name || !name.trim()) return;
+        run('save_program', { fields: { name: name.trim(), is_active: true } })
+          .then(function (r) { showProgram(r.program.id); }).catch(fail);
+      });
   });
   document.querySelectorAll('.tab').forEach(function (t) {
     t.addEventListener('click', function () {

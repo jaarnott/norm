@@ -9,51 +9,83 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { ChevronRight } from 'lucide-react';
 import { apiFetch, getToken } from '../lib/api';
+import AppIcon from '../components/ui/AppIcon';
+import Icon from '../components/ui/Icon';
+import PageHeader from '../components/ui/PageHeader';
+import PageState from '../components/ui/PageState';
 
 interface AppRow {
   slug: string; name: string; description?: string | null; icon?: string | null;
   visibility: string; mine: boolean; access: string;
+  /** built into Norm (Norm Hiring, Norm Training) — everyone in the org has it */
+  builtin?: boolean;
 }
 
 export default function AppsPage() {
   const router = useRouter();
   const [apps, setApps] = useState<AppRow[] | null>(null);
+  // A failed load still leaves an empty list; this only lets the page say so.
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!getToken()) { router.replace('/login'); return; }
     apiFetch('/api/apps')
-      .then((r) => (r.ok ? r.json() : { apps: [] }))
+      .then((r) => { setFailed(!r.ok); return r.ok ? r.json() : { apps: [] }; })
       .then((d) => setApps(d.apps ?? []))
-      .catch(() => setApps([]));
+      .catch(() => { setFailed(true); setApps([]); });
   }, [router]);
 
+  // The same rows as the Apps page in the shell: the app's line icon on a
+  // tile, name 14/600, who it belongs to, a 13px muted description.
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto', padding: '2rem 1rem' }}>
-      <h1 style={{ fontSize: '1.3rem', marginBottom: 4 }}>Apps</h1>
-      <p style={{ color: '#8a8a8a', fontSize: '0.8rem', marginTop: 0 }}>
-        Apps you built, and apps shared with you. Private until you share them.
-      </p>
+    <main className="n-page" style={{ minHeight: '100dvh', paddingBottom: 32, background: 'var(--canvas)' }}>
+      <PageHeader
+        title="Apps"
+        back={{ label: 'Norm', onClick: () => router.push('/app') }}
+        meta="Apps you built, and apps shared with you. Private until you share them."
+      />
       {apps === null ? (
-        <div style={{ color: '#888' }}>Loading…</div>
+        <PageState kind="loading" title="Loading apps…" />
+      ) : failed ? (
+        <PageState kind="error" title="Couldn’t load your apps" detail="Refresh the page to try again." />
       ) : apps.length === 0 ? (
-        <div style={{ border: '1px dashed #d8d4cc', borderRadius: 10, padding: '2rem', color: '#8a8a8a', fontSize: '0.85rem' }}>
-          No apps yet. Describe one to Norm in chat — &ldquo;build me a weekly venue
-          performance dashboard&rdquo; — and it will appear here.
-        </div>
+        <PageState
+          kind="empty"
+          title="No apps yet"
+          detail={<>Describe one to Norm in chat — &ldquo;build me a weekly venue performance dashboard&rdquo; — and it will appear here.</>}
+        />
       ) : (
-        apps.map((a) => (
-          <Link key={a.slug} href={`/apps/${a.slug}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-            <div style={{ border: '1px solid #e5e2dc', borderRadius: 10, padding: '0.9rem 1.1rem', marginBottom: 10, background: '#fff', cursor: 'pointer', display: 'flex', gap: 12, alignItems: 'baseline' }}>
-              <strong style={{ fontSize: '0.95rem' }}>{a.icon} {a.name}</strong>
-              <span style={{ fontSize: '0.72rem', color: '#8a8a8a' }}>{a.description}</span>
-              <span style={{ marginLeft: 'auto', fontSize: '0.62rem', color: a.mine ? '#2e7d4f' : '#8a6d3b', whiteSpace: 'nowrap' }}>
-                {a.mine ? 'yours' : `shared · ${a.access}`}{a.visibility !== 'private' && ` · ${a.visibility}`}
+        <div className="n-card" style={{ overflow: 'hidden' }}>
+          {apps.map((a, i) => (
+            <Link
+              key={a.slug}
+              href={`/apps/${a.slug}`}
+              style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderTop: i ? '1px solid var(--line)' : undefined, textDecoration: 'none', color: 'inherit' }}
+            >
+              <span aria-hidden style={{ flex: '0 0 auto', width: 32, height: 32, borderRadius: 'var(--radius)', background: 'var(--surface-alt)', color: 'var(--text-soft)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                <AppIcon app={a} size="menu" tone="inherit" />
               </span>
-            </div>
-          </Link>
-        ))
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{a.name}</span>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                    {a.builtin ? 'Built into Norm' : a.mine ? 'Yours' : `Shared · ${a.access}`}
+                    {!a.builtin && a.visibility !== 'private' && ` · ${a.visibility}`}
+                  </span>
+                </span>
+                {a.description && (
+                  <span title={a.description} style={{ display: 'block', marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {a.description}
+                  </span>
+                )}
+              </span>
+              <Icon icon={ChevronRight} size={16} tone="muted" />
+            </Link>
+          ))}
+        </div>
       )}
-    </div>
+    </main>
   );
 }

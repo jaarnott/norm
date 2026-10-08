@@ -60,36 +60,15 @@ export default function GenericTable({ data, props }: DisplayBlockProps) {
 
   return (
     <div style={{ marginBottom: '0.75rem' }}>
-      {title && (
-        <div style={{
-          fontSize: '0.72rem',
-          fontWeight: 600,
-          textTransform: 'uppercase',
-          letterSpacing: '0.06em',
-          color: '#888',
-          marginBottom: '0.4rem',
-        }}>
-          {title}
-        </div>
-      )}
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{
-          width: '100%',
-          borderCollapse: 'collapse',
-          fontSize: '0.82rem',
-          lineHeight: 1.5,
-        }}>
+      {title && <div className="n-eyebrow" style={{ marginBottom: 6 }}>{title}</div>}
+      {/* White "paper" with its own edge: it reads on the cream conversation
+          and on Claude's background alike. */}
+      <div className="n-card" style={{ overflowX: 'auto' }}>
+        <table className="n-table">
           <thead>
             <tr>
               {columns.map(col => (
-                <th key={col.key} style={{
-                  textAlign: (col.align || 'left') as 'left' | 'right' | 'center',
-                  padding: '0.5rem 0.75rem',
-                  borderBottom: '2px solid #e2e8f0',
-                  fontWeight: 600,
-                  color: '#555',
-                  whiteSpace: 'nowrap',
-                }}>
+                <th key={col.key} scope="col" style={{ textAlign: (col.align || 'left') as 'left' | 'right' | 'center' }}>
                   {col.label}
                 </th>
               ))}
@@ -97,16 +76,9 @@ export default function GenericTable({ data, props }: DisplayBlockProps) {
           </thead>
           <tbody>
             {rows.map((row, ri) => (
-              <tr key={ri} style={{
-                backgroundColor: ri % 2 === 1 ? '#f8f9fa' : 'transparent',
-              }}>
+              <tr key={ri}>
                 {columns.map(col => (
-                  <td key={col.key} style={{
-                    textAlign: (col.align || 'left') as 'left' | 'right' | 'center',
-                    padding: '0.45rem 0.75rem',
-                    borderBottom: '1px solid #eee',
-                    color: '#333',
-                  }}>
+                  <td key={col.key} style={{ textAlign: (col.align || 'left') as 'left' | 'right' | 'center', color: 'var(--text)' }}>
                     {formatCell(row[col.key])}
                   </td>
                 ))}

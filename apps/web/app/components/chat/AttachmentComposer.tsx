@@ -103,15 +103,16 @@ export function AttachButton({ onPick, disabled }: {
         disabled={disabled}
         title="Attach files"
         onClick={() => ref.current?.click()}
+        aria-label="Attach files"
         style={{
           height: 50, width: 44, flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          backgroundColor: 'transparent', color: disabled ? '#ccc' : '#888',
-          border: '1px solid #ddd', borderRadius: 24,
+          backgroundColor: 'var(--bg)', color: disabled ? 'var(--muted-soft)' : 'var(--icon)',
+          border: '1px solid var(--line)', borderRadius: 24,
           cursor: disabled ? 'not-allowed' : 'pointer',
         }}
       >
-        <Paperclip size={18} />
+        <Paperclip size={18} strokeWidth={1.75} aria-hidden />
       </button>
     </>
   );
@@ -119,8 +120,8 @@ export function AttachButton({ onPick, disabled }: {
 
 const chipStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: 5,
-  fontSize: '0.75rem', color: '#444',
-  backgroundColor: '#f5f0ea', border: '1px solid #e6ddd0',
+  fontSize: 'var(--fs-xs)', color: 'var(--text-soft)',
+  backgroundColor: 'var(--bg)', border: '1px solid var(--line)',
   borderRadius: 14, padding: '3px 8px', maxWidth: 240,
 };
 
@@ -135,16 +136,19 @@ export function AttachmentChips({ items, remove, uploading }: {
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxWidth: 768, margin: '0 auto 8px', width: '100%' }}>
       {items.map(a => (
         <span key={a.upload_id} data-testid="attach-chip" style={chipStyle}>
-          <FileText size={13} style={{ flexShrink: 0 }} />
+          <FileText size={13} aria-hidden style={{ flexShrink: 0, color: 'var(--icon)' }} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.filename}</span>
-          <X
-            size={13}
-            style={{ cursor: 'pointer', flexShrink: 0, color: '#999' }}
+          <button
+            type="button"
+            aria-label={`Remove ${a.filename}`}
             onClick={() => remove(a.upload_id)}
-          />
+            style={{ display: 'inline-flex', padding: 0, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--icon)', flexShrink: 0 }}
+          >
+            <X size={13} aria-hidden />
+          </button>
         </span>
       ))}
-      {uploading && <span style={{ ...chipStyle, color: '#999' }}>Uploading…</span>}
+      {uploading && <span style={{ ...chipStyle, color: 'var(--muted)' }}>Uploading…</span>}
     </div>
   );
 }
@@ -158,7 +162,7 @@ export function SentAttachmentChips({ attachments }: {
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8, justifyContent: 'flex-end' }}>
       {attachments.map((a, i) => (
         <span key={i} style={chipStyle}>
-          <FileText size={13} style={{ flexShrink: 0 }} />
+          <FileText size={13} aria-hidden style={{ flexShrink: 0, color: 'var(--icon)' }} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.filename}</span>
         </span>
       ))}

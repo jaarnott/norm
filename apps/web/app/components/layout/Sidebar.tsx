@@ -1,9 +1,11 @@
 'use client';
 
-import { useState } from 'react';
-import { Home, Package, UserRound, Clock, BarChart3, Megaphone, ChefHat, Blocks, Settings, LogOut, Menu, X, UserRoundPlus, type LucideIcon } from 'lucide-react';
+import type { CSSProperties } from 'react';
+import { Home, Package, UserRound, Clock, ChartColumnBig, Megaphone, ChefHat, Blocks, Settings, LogOut, UserRoundPlus, type LucideIcon } from 'lucide-react';
 import { colors } from '../../lib/theme';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
+import Icon from '../ui/Icon';
+import Avatar from '../ui/Avatar';
 
 export interface AgentTab {
   id: string;
@@ -12,13 +14,15 @@ export interface AgentTab {
   color: string;
 }
 
+// Reports uses ChartColumnBig: its bars are closed shapes, so the active
+// duotone has something to fill (BarChart3's open strokes did not).
 export const AGENTS: AgentTab[] = [
   { id: 'home', label: 'Home', icon: Home, color: colors.home },
   { id: 'procurement', label: 'Procurement', icon: Package, color: colors.procurement },
   { id: 'hr', label: 'HR', icon: UserRound, color: colors.hr },
   { id: 'time_attendance', label: 'Time & Att.', icon: Clock, color: colors.time_attendance },
   { id: 'marketing', label: 'Marketing', icon: Megaphone, color: colors.marketing },
-  { id: 'reports', label: 'Reports', icon: BarChart3, color: colors.reports },
+  { id: 'reports', label: 'Reports', icon: ChartColumnBig, color: colors.reports },
   { id: 'executive_chef', label: 'Exec Chef', icon: ChefHat, color: colors.executive_chef },
   { id: 'app_builder', label: 'App Builder', icon: Blocks, color: colors.app_builder },
 ];
@@ -41,163 +45,123 @@ interface SidebarProps {
   threadCounts: Record<string, number>;
   user?: SidebarUser | null;
   onLogout?: () => void;
-  children?: React.ReactNode;
   /** Hired team-member slugs (hierarchy v2). null/undefined = show every tab
-   *  (gating inactive — fail-open). AGENTS stays the icon/colour registry;
-   *  this only decides which tabs render. */
+   *  (gating inactive — fail-open). AGENTS stays the icon registry; this only
+   *  decides which tabs render. */
   hired?: Set<string> | null;
 }
 
-export default function Sidebar({ selected, onSelect, threadCounts, user, onLogout, children, hired }: SidebarProps) {
+/** A 42px rail tile: icon only, named by its label (tooltip + screen readers). */
+function tileStyle(active: boolean, extra?: CSSProperties): CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 42,
+    height: 42,
+    border: 'none',
+    borderRadius: 'var(--radius)',
+    backgroundColor: active ? 'var(--selected)' : 'transparent',
+    color: active ? 'var(--text)' : 'var(--icon)',
+    cursor: 'pointer',
+    ...extra,
+  };
+}
+
+export default function Sidebar({ selected, onSelect, user, onLogout, hired }: SidebarProps) {
   const { isMobile } = useBreakpoint();
-  const [menuOpen, setMenuOpen] = useState(false);
   const showSettings = hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read', 'org:members', 'org:venues', 'billing:read');
 
   // On mobile, Sidebar is not rendered — navigation is handled by page.tsx
   if (isMobile) return null;
 
   return (
-    <div style={{
-      width: 60,
-      minWidth: 60,
-      backgroundColor: '#faf8f5',
-      color: '#1a1a1a',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      height: '100vh',
-      borderRight: '1px solid #e2ddd7',
-    }}>
+    <nav
+      aria-label="Team members"
+      style={{
+        width: 60,
+        minWidth: 60,
+        height: '100%',
+        backgroundColor: 'var(--canvas)',
+        color: 'var(--text)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        borderRight: '1px solid var(--line)',
+      }}
+    >
       {/* Logo */}
-      <div style={{
-        padding: '1rem 0',
-        borderBottom: '1px solid #e2ddd7',
-        width: '100%',
-        textAlign: 'center',
-      }}>
-        <div style={{ fontSize: '1.1rem', fontWeight: 700, letterSpacing: '-0.02em' }}>N</div>
+      <div style={{ width: '100%', padding: '14px 0', textAlign: 'center', borderBottom: '1px solid var(--line)' }}>
+        <div aria-hidden style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1 }}>N</div>
       </div>
 
-      {/* Agent icons */}
-      <div style={{ padding: '0.75rem 0', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      {/* Team members */}
+      <div style={{ padding: '12px 0', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
         {AGENTS.filter((a) => a.id === 'home' || !hired || hired.has(a.id)).map((agent) => {
           const isActive = selected === agent.id;
           return (
             <button
               key={agent.id}
+              type="button"
+              className="n-rail-tile"
               data-testid={`sidebar-${agent.id}`}
               onClick={() => onSelect(agent.id)}
               title={agent.label}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                position: 'relative',
-                width: 42,
-                height: 42,
-                border: 'none',
-                borderRadius: 8,
-                backgroundColor: isActive ? '#f0ebe5' : 'transparent',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
+              aria-label={agent.label}
+              aria-current={isActive ? 'page' : undefined}
+              style={tileStyle(isActive)}
             >
-              <agent.icon size={22} strokeWidth={1.75} />
+              <Icon icon={agent.icon} size="nav" duo={isActive} />
             </button>
           );
         })}
         <button
+          type="button"
+          className="n-rail-tile"
           data-testid="sidebar-team"
           onClick={() => onSelect('team')}
           title="Your AI team — hire agents"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 42,
-            height: 42,
-            border: '1px dashed #d5cfc7',
-            borderRadius: 8,
-            backgroundColor: selected === 'team' ? '#f0ebe5' : 'transparent',
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-            color: '#8a8378',
-            marginTop: 6,
-          }}
+          aria-label="Your AI team"
+          aria-current={selected === 'team' ? 'page' : undefined}
+          style={tileStyle(selected === 'team', { border: '1px dashed var(--line-strong)', marginTop: 6 })}
         >
-          <UserRoundPlus size={20} strokeWidth={1.75} />
+          <Icon icon={UserRoundPlus} size={20} duo={selected === 'team'} />
         </button>
       </div>
 
-      {/* Bottom section: Settings + User + Logout */}
-      <div style={{ padding: '0.75rem 0', borderTop: '1px solid #e2ddd7', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      {/* Bottom: settings, who you are, sign out */}
+      <div style={{ padding: '12px 0', borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
         {showSettings && (
           <button
+            type="button"
+            className="n-rail-tile"
             data-testid="sidebar-settings"
             onClick={() => onSelect('settings')}
             title="Settings"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 42,
-              height: 42,
-              border: 'none',
-              borderRadius: 8,
-              backgroundColor: selected === 'settings' ? '#f0ebe5' : 'transparent',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              color: '#999',
-            }}
+            aria-label="Settings"
+            aria-current={selected === 'settings' ? 'page' : undefined}
+            style={tileStyle(selected === 'settings')}
           >
-            <Settings size={20} strokeWidth={1.75} />
+            <Icon icon={Settings} size={20} duo={selected === 'settings'} />
           </button>
         )}
 
-        {user && (
-          <div
-            title={`${user.full_name} (${user.role})`}
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: '50%',
-              backgroundColor: user.role === 'admin' ? '#1a1a1a' : '#b8e6cc',
-              color: '#fff',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.7rem',
-              fontWeight: 700,
-              cursor: 'default',
-            }}
-          >
-            {user.full_name.charAt(0).toUpperCase()}
-          </div>
-        )}
+        {user && <Avatar name={user.full_name} title={`${user.full_name} (${user.role})`} />}
 
         {onLogout && (
           <button
+            type="button"
+            className="n-rail-tile"
             data-testid="sidebar-logout"
             onClick={onLogout}
             title="Sign out"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 42,
-              height: 28,
-              border: 'none',
-              borderRadius: 6,
-              backgroundColor: 'transparent',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              color: '#bbb',
-            }}
+            aria-label="Sign out"
+            style={tileStyle(false, { height: 34 })}
           >
-            <LogOut size={16} strokeWidth={1.75} />
+            <Icon icon={LogOut} size={18} />
           </button>
         )}
       </div>
-    </div>
+    </nav>
   );
 }

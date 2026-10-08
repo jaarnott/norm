@@ -1,8 +1,14 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type CSSProperties, type ReactNode } from 'react';
+import { ChevronRight, Download } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch } from '../../lib/api';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
 
 // --- Types (normalised from BambooHR) ---
 
@@ -132,27 +138,145 @@ function extractApplicationDetail(data: unknown): ApplicationDetail | null {
 
 // --- UI Helpers ---
 
-const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
-  open: { bg: '#d1fae5', color: '#065f46' },
-  draft: { bg: '#fef3c7', color: '#92400e' },
-  closed: { bg: '#e5e7eb', color: '#374151' },
-  'on hold': { bg: '#fef3c7', color: '#92400e' },
-  new: { bg: '#dbeafe', color: '#1e40af' },
-  screening: { bg: '#fef3c7', color: '#92400e' },
-  interview: { bg: '#ede9fe', color: '#5b21b6' },
-  offer: { bg: '#d1fae5', color: '#065f46' },
-  hired: { bg: '#d1fae5', color: '#065f46' },
-  rejected: { bg: '#fee2e2', color: '#991b1b' },
+/** BambooHR's labels come in Title Case ("Schedule Phone Screen"); Norm shows sentence case. */
+function sentenceCase(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s;
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n !== 1 ? 's' : ''}`;
+}
+
+/** A posting is live (open), a draft, or paused (on hold); closed and filled need no colour. */
+const JOB_STATUS_TONES: Record<string, BadgeTone> = { open: 'ok', draft: 'info', 'on hold': 'warn' };
+
+function JobStatusBadge({ status }: { status: string }) {
+  return <Badge tone={JOB_STATUS_TONES[status.toLowerCase()] ?? 'neutral'}>{sentenceCase(status)}</Badge>;
+}
+
+/** A candidate's stage says where they are in the pipeline, not how it went: always neutral. */
+function StageBadge({ status }: { status: string }) {
+  return <Badge>{sentenceCase(status)}</Badge>;
+}
+
+const META: CSSProperties = { fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
+const SUBLINE: CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)' };
+const LINK: CSSProperties = { color: 'var(--accent)', textDecoration: 'underline', textUnderlineOffset: 2 };
+
+/** A table row's name is a real button with no handler of its own: Tab reaches
+ *  it and Enter clicks it, and the click bubbles to the row, which opens it. */
+const ROW_NAME: CSSProperties = {
+  padding: 0, border: 'none', background: 'none', fontFamily: 'inherit', fontSize: 'inherit',
+  lineHeight: 'inherit', fontWeight: 600, color: 'var(--text)', textAlign: 'left', cursor: 'pointer',
 };
 
-function StatusBadge({ status }: { status: string }) {
-  const key = status.toLowerCase();
-  const s = STATUS_COLORS[key] || { bg: '#e5e7eb', color: '#374151' };
+/** Below this width the lists become rows of cards: phones, and narrow chat
+ *  panes or dashboard tiles on a wide screen. */
+const TABLE_MIN_WIDTH = 640;
+
+/** The status filter: the same chips as the thread filters. */
+function chipStyle(on: boolean): CSSProperties {
+  return {
+    flex: '0 0 auto',
+    whiteSpace: 'nowrap',
+    padding: '4px 8px',
+    fontSize: 'var(--fs-xs)',
+    fontWeight: on ? 600 : 500,
+    color: on ? 'var(--text)' : 'var(--text-soft)',
+    backgroundColor: on ? 'var(--selected)' : 'transparent',
+    border: `1px solid ${on ? 'var(--brand-soft)' : 'var(--line)'}`,
+    borderRadius: 999,
+    cursor: 'pointer',
+  };
+}
+
+/** Narrow widths get rows instead of a table: a white card each on the page,
+ *  flat divided rows inside a chat card. */
+function cardRowStyle(card: boolean): CSSProperties {
+  return {
+    display: 'block', width: '100%', boxSizing: 'border-box',
+    fontFamily: 'inherit', fontSize: 'inherit', lineHeight: 1.45, fontVariantNumeric: 'tabular-nums',
+    color: 'var(--text)', textAlign: 'left', cursor: 'pointer',
+    borderStyle: 'solid', borderColor: 'var(--line)',
+    ...(card
+      ? { padding: '14px 16px', borderWidth: 1, borderRadius: 'var(--radius-lg)', background: 'var(--bg)' }
+      : { padding: '12px 16px', borderWidth: '1px 0 0', borderRadius: 0, background: 'none' }),
+  };
+}
+
+const CARD_LIST: CSSProperties = { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column' };
+
+/** First line of a card row: the name, and its badge on the right. */
+function CardRowTop({ name, badge }: { name: string; badge: ReactNode }) {
   return (
-    <span style={{
-      fontSize: '0.68rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-      backgroundColor: s.bg, color: s.color, textTransform: 'capitalize', whiteSpace: 'nowrap',
-    }}>{status}</span>
+    <span style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+      <span style={{ minWidth: 0, overflowWrap: 'anywhere', fontSize: 'var(--fs-base)', fontWeight: 600 }}>{name}</span>
+      {badge}
+    </span>
+  );
+}
+
+/** The page is the frame: on a page the content sits straight on the cream.
+ *  In a conversation (or a dashboard tile) it is one compact white card. */
+function Frame({ page, children }: { page: boolean; children: ReactNode }) {
+  if (page) return <>{children}</>;
+  return <div className="n-card" style={{ overflow: 'hidden', lineHeight: 1.45 }}>{children}</div>;
+}
+
+/** THE page header on a page; a small title row at the top of a chat card. */
+function Head({ page, title, status, meta, actions, children, titleOnPhone }: {
+  page: boolean;
+  /** A job or a candidate: the title says more than the menu label. */
+  titleOnPhone?: boolean;
+  title: ReactNode;
+  status?: ReactNode;
+  meta?: ReactNode;
+  actions?: ReactNode;
+  children?: ReactNode;
+}) {
+  if (page) return <PageHeader title={title} status={status} meta={meta} actions={actions} titleOnPhone={titleOnPhone}>{children}</PageHeader>;
+  return (
+    <div style={{ padding: '14px 16px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0, fontSize: 'var(--fs-md)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</h2>
+            {status}
+          </div>
+          {meta && <div style={{ marginTop: 2, ...META }}>{meta}</div>}
+        </div>
+        {actions && <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{actions}</div>}
+      </div>
+      {children && <div style={{ marginTop: 10 }}>{children}</div>}
+    </div>
+  );
+}
+
+/** A titled block of the candidate view: its own card on a page, a divided
+ *  section inside the chat card. */
+function Section({ page, title, children }: { page: boolean; title: string; children: ReactNode }) {
+  const H = page ? 'h2' : 'h3';
+  return (
+    <section
+      className={page ? 'n-card' : undefined}
+      style={page ? { marginBottom: 12, padding: '14px 16px 8px' } : { padding: '12px 16px 8px', borderTop: '1px solid var(--line)' }}
+    >
+      <H style={{ margin: '0 0 4px', fontSize: 'var(--fs-md)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</H>
+      {children}
+    </section>
+  );
+}
+
+/** A label and its value side by side, or stacked (phones, long questions). */
+function Field({ label, stacked, first, children }: { label: ReactNode; stacked: boolean; first: boolean; children: ReactNode }) {
+  return (
+    <div style={{
+      display: 'flex', flexDirection: stacked ? 'column' : 'row', gap: stacked ? 2 : 16,
+      padding: '8px 0', borderTop: first ? 'none' : '1px solid var(--line-soft)',
+    }}>
+      <div style={{ flex: stacked ? 'none' : '0 0 180px', fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>{label}</div>
+      <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 'var(--fs-base)', color: 'var(--text)' }}>{children}</div>
+    </div>
   );
 }
 
@@ -184,6 +308,22 @@ async function callConnector(connector: string, action: string, params: Record<s
 export default function HiringBoard({ data, props }: DisplayBlockProps) {
   const connector = (props?.connector_name as string) || 'bamboohr';
   const initialJobId = (props?.initial_job_id as string) || null;
+  // A PAGE instance (FunctionalPage marks it with persistVenue) gets the page
+  // header and sits straight on the cream; in a conversation it stays one
+  // compact card.
+  const isPage = !!props?.persistVenue;
+
+  // The board's own width decides table or cards — not the viewport, since a
+  // split conversation or a dashboard tile can make it narrow on a wide screen.
+  const [width, setWidth] = useState(0);
+  const measure = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    setWidth(el.offsetWidth);
+    const ro = new ResizeObserver(() => setWidth(el.offsetWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const narrow = width < TABLE_MIN_WIDTH;
 
   const [view, setView] = useState<ViewMode>(initialJobId ? 'job_detail' : 'jobs');
   const [selectedJobId, setSelectedJobId] = useState<string | null>(initialJobId);
@@ -195,14 +335,18 @@ export default function HiringBoard({ data, props }: DisplayBlockProps) {
   const [selectedApp, setSelectedApp] = useState<ApplicationSummary | null>(null);
   const [appDetail, setAppDetail] = useState<ApplicationDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  // Why the last load failed, so a failure reads as an error — never as
+  // "No positions found."
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Load jobs on mount if not pre-populated
   const loadJobs = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const result = await callConnector(connector, 'get_jobs');
       setJobs(extractJobs(result));
-    } catch { /* ignore */ }
+    } catch (e) { setLoadError(e instanceof Error ? e.message : String(e)); }
     finally { setLoading(false); }
   }, [connector]);
 
@@ -213,20 +357,22 @@ export default function HiringBoard({ data, props }: DisplayBlockProps) {
   // Load applications for a job
   const loadApplications = useCallback(async (jobId: string) => {
     setLoading(true);
+    setLoadError(null);
     try {
       const result = await callConnector(connector, 'get_applications', { job_id: jobId });
       setApplications(extractApplications(result));
-    } catch { /* ignore */ }
+    } catch (e) { setLoadError(e instanceof Error ? e.message : String(e)); }
     finally { setLoading(false); }
   }, [connector]);
 
   // Load full application detail
   const loadApplicationDetail = useCallback(async (applicationId: string) => {
     setLoading(true);
+    setLoadError(null);
     try {
       const result = await callConnector(connector, 'get_application_details', { application_id: applicationId });
       setAppDetail(extractApplicationDetail(result));
-    } catch { /* ignore */ }
+    } catch (e) { setLoadError(e instanceof Error ? e.message : String(e)); }
     finally { setLoading(false); }
   }, [connector]);
 
@@ -261,23 +407,44 @@ export default function HiringBoard({ data, props }: DisplayBlockProps) {
     if (selectedJobId) loadApplications(selectedJobId);
   }, [loadApplications, selectedJobId]);
 
-  // --- Breadcrumb ---
+  // Inside a chat card a table's outer cells line up with the card's 16px padding.
+  const edgeL: CSSProperties | undefined = isPage ? undefined : { paddingLeft: 16 };
+  const edgeR: CSSProperties | undefined = isPage ? undefined : { paddingRight: 16 };
+  const rowChevron = <Icon icon={ChevronRight} size="dense" tone="muted" style={{ display: 'block' }} />;
+
+  const errorState = (title: string) => (loadError && !loading ? (
+    <div style={isPage ? { marginBottom: 12 } : { padding: '0 16px 14px' }}>
+      <PageState kind="error" title={title} detail={loadError} />
+    </div>
+  ) : null);
+
+  // --- Breadcrumb: Jobs › Head Chef › Jane Doe. Each level above the current one leads back. ---
+  const jobTitle = selectedJobTitle || jobs.find(j => j.id === selectedJobId)?.title || '';
+  const crumbSep = <Icon icon={ChevronRight} size="dense" tone="muted" />;
   const breadcrumb = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.78rem', marginBottom: '0.75rem' }}>
-      <button onClick={goBackToJobs} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#2563eb', fontWeight: 500, fontFamily: 'inherit', fontSize: 'inherit', padding: 0 }}>Jobs</button>
+    <nav aria-label="Breadcrumb" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4, marginBottom: isPage ? 6 : 8 }}>
+      <button type="button" className="n-back" onClick={goBackToJobs}>Jobs</button>
       {view !== 'jobs' && (
         <>
-          <span style={{ color: '#999' }}>/</span>
-          <button onClick={goBackToJob} style={{ border: 'none', background: 'none', cursor: 'pointer', color: view === 'candidate_detail' ? '#2563eb' : '#333', fontWeight: 500, fontFamily: 'inherit', fontSize: 'inherit', padding: 0 }}>{selectedJobTitle}</button>
+          {crumbSep}
+          <button
+            type="button"
+            className="n-back"
+            onClick={goBackToJob}
+            aria-current={view === 'job_detail' ? 'page' : undefined}
+            style={view === 'job_detail' ? { color: 'var(--text)' } : undefined}
+          >
+            {jobTitle}
+          </button>
         </>
       )}
       {view === 'candidate_detail' && selectedApp && (
         <>
-          <span style={{ color: '#999' }}>/</span>
-          <span style={{ color: '#333', fontWeight: 500 }}>{selectedApp.candidate_name}</span>
+          {crumbSep}
+          <span aria-current="page" style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text)' }}>{selectedApp.candidate_name}</span>
         </>
       )}
-    </div>
+    </nav>
   );
 
   // --- Jobs View ---
@@ -285,133 +452,165 @@ export default function HiringBoard({ data, props }: DisplayBlockProps) {
     const filteredJobs = jobFilter === 'all' ? jobs : jobs.filter(j => j.status === jobFilter);
     const statuses = ['all', ...Array.from(new Set(jobs.map(j => j.status)))];
 
-    return (
-      <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-        <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e5e7eb', background: 'linear-gradient(to bottom, #fafafa, #fff)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-            <span style={{ fontSize: '1rem', fontWeight: 700, color: '#111' }}>Open Positions</span>
-            <span style={{ fontSize: '0.75rem', color: '#999' }}>{jobs.length} job{jobs.length !== 1 ? 's' : ''}</span>
-          </div>
-          <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-            {statuses.map(f => (
-              <button key={f} onClick={() => setJobFilter(f)} style={{
-                padding: '0.2rem 0.6rem', fontSize: '0.72rem', fontWeight: jobFilter === f ? 600 : 400,
-                borderRadius: 12, border: jobFilter === f ? '1px solid #2563eb' : '1px solid #e0e0e0',
-                backgroundColor: jobFilter === f ? '#eff6ff' : '#fff', color: jobFilter === f ? '#2563eb' : '#666',
-                cursor: 'pointer', fontFamily: 'inherit', textTransform: 'capitalize',
-              }}>{f}</button>
-            ))}
-          </div>
-        </div>
+    const filters = jobs.length > 0 ? (
+      <div role="group" aria-label="Filter positions by status" style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {statuses.map(f => (
+          <button key={f} type="button" aria-pressed={jobFilter === f} onClick={() => setJobFilter(f)} style={chipStyle(jobFilter === f)}>
+            {f === 'all' ? 'All' : sentenceCase(f)}
+          </button>
+        ))}
+      </div>
+    ) : null;
 
-        <div>
-          {loading && jobs.length === 0 && (
-            <div style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>Loading...</div>
+    let list: ReactNode = null;
+    if (filteredJobs.length > 0) {
+      list = narrow ? (
+        <ul aria-label="Positions" style={{ ...CARD_LIST, gap: isPage ? 10 : 0 }}>
+          {filteredJobs.map(job => {
+            const where = [job.department, job.location].filter(Boolean).join(' · ');
+            const facts = [
+              plural(job.candidate_count, 'applicant'),
+              timeAgo(job.posted_date),
+              job.hiring_lead && `Lead: ${job.hiring_lead}`,
+            ].filter(Boolean).join(' · ');
+            return (
+              <li key={job.id}>
+                <button type="button" onClick={() => goToJob(job)} style={cardRowStyle(isPage)}>
+                  <CardRowTop name={job.title} badge={<JobStatusBadge status={job.status} />} />
+                  {where && <span style={{ display: 'block', marginTop: 2, ...META }}>{where}</span>}
+                  <span style={{ display: 'block', marginTop: 2, ...META }}>{facts}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <table className="n-table">
+          <thead>
+            <tr>
+              <th style={edgeL}>Position</th>
+              <th>Hiring lead</th>
+              <th>Status</th>
+              <th className="num">Applicants</th>
+              <th className="num">Posted</th>
+              <th style={edgeR} />
+            </tr>
+          </thead>
+          <tbody>
+            {filteredJobs.map(job => {
+              const where = [job.department, job.location].filter(Boolean).join(' · ');
+              return (
+                <tr key={job.id} onClick={() => goToJob(job)} style={{ cursor: 'pointer' }}>
+                  <td style={edgeL}>
+                    <button type="button" style={ROW_NAME}>{job.title}</button>
+                    {where && <div style={SUBLINE}>{where}</div>}
+                  </td>
+                  <td style={{ color: 'var(--text-soft)' }}>{job.hiring_lead}</td>
+                  <td><JobStatusBadge status={job.status} /></td>
+                  <td className="num">{job.candidate_count}</td>
+                  <td className="num" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{timeAgo(job.posted_date)}</td>
+                  <td style={{ width: 16, ...edgeR }}>{rowChevron}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      );
+    }
+
+    return (
+      <div ref={measure}>
+        <Frame page={isPage}>
+          <Head page={isPage} title="Open Positions" meta={jobs.length > 0 ? plural(jobs.length, 'job') : undefined}>
+            {filters}
+          </Head>
+          {errorState('Couldn’t load positions')}
+          {loading && jobs.length === 0 && <PageState kind="loading" title="Loading positions…" />}
+          {!loading && !loadError && filteredJobs.length === 0 && (
+            <PageState kind="empty" title={jobs.length === 0 ? 'No positions found.' : 'No positions match this filter.'} />
           )}
-          {!loading && filteredJobs.length === 0 && (
-            <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.85rem' }}>
-              {jobs.length === 0 ? 'No positions found.' : 'No positions match this filter.'}
-            </div>
-          )}
-          {filteredJobs.map((job, i) => (
-            <div
-              key={job.id}
-              onClick={() => goToJob(job)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: '0.75rem',
-                padding: '0.75rem 1.25rem', cursor: 'pointer',
-                borderBottom: i < filteredJobs.length - 1 ? '1px solid #f3f4f6' : 'none',
-                transition: 'background-color 0.1s',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f9fafb')}
-              onMouseLeave={e => (e.currentTarget.style.backgroundColor = '')}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, color: '#111', fontSize: '0.88rem' }}>{job.title}</div>
-                <div style={{ fontSize: '0.72rem', color: '#6b7280' }}>
-                  {[job.department, job.location].filter(Boolean).join(' · ')}
-                  {job.hiring_lead && <span> · Lead: {job.hiring_lead}</span>}
-                </div>
-              </div>
-              <StatusBadge status={job.status} />
-              <div style={{ fontSize: '0.75rem', color: '#6b7280', minWidth: 90, textAlign: 'right' }}>
-                {job.candidate_count} applicant{job.candidate_count !== 1 ? 's' : ''}
-              </div>
-              <div style={{ fontSize: '0.72rem', color: '#999', minWidth: 60, textAlign: 'right' }}>
-                {timeAgo(job.posted_date)}
-              </div>
-            </div>
-          ))}
-        </div>
+          {list}
+        </Frame>
       </div>
     );
   }
 
   // --- Job Detail View (Candidates) ---
   if (view === 'job_detail') {
-    return (
-      <div>
-        {breadcrumb}
-        <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-          <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e5e7eb', background: 'linear-gradient(to bottom, #fafafa, #fff)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
-              <span style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111' }}>{selectedJobTitle}</span>
-              {jobs.find(j => j.id === selectedJobId) && (
-                <StatusBadge status={jobs.find(j => j.id === selectedJobId)!.status} />
-              )}
-            </div>
-          </div>
+    const job = jobs.find(j => j.id === selectedJobId);
+    const meta = [
+      job ? [job.department, job.location].filter(Boolean).join(' · ') : '',
+      applications.length > 0 || (!loading && !loadError) ? plural(applications.length, 'applicant') : '',
+    ].filter(Boolean).join(' · ');
 
-          <div style={{ padding: '0.75rem 1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #f3f4f6' }}>
-            <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333' }}>
-              Applicants ({applications.length})
-            </span>
-          </div>
-
-          <div>
-            {loading && applications.length === 0 && (
-              <div style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>Loading applicants...</div>
-            )}
-            {!loading && applications.length === 0 && (
-              <div style={{ padding: '2rem', textAlign: 'center', color: '#999', fontSize: '0.85rem' }}>
-                No applicants yet.
-              </div>
-            )}
-            {applications.map((app, i) => (
-              <div
-                key={app.id}
-                onClick={() => goToCandidate(app)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: '0.75rem',
-                  padding: '0.65rem 1.25rem', cursor: 'pointer',
-                  borderBottom: i < applications.length - 1 ? '1px solid #f3f4f6' : 'none',
-                  transition: 'background-color 0.1s',
-                }}
-                onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f9fafb')}
-                onMouseLeave={e => (e.currentTarget.style.backgroundColor = '')}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 500, color: '#111', fontSize: '0.85rem' }}>{app.candidate_name}</div>
-                  {app.candidate_email && <div style={{ fontSize: '0.72rem', color: '#6b7280' }}>{app.candidate_email}</div>}
-                </div>
-                {app.candidate_source && (
-                  <span style={{ fontSize: '0.68rem', color: '#6b7280', backgroundColor: '#f3f4f6', padding: '1px 6px', borderRadius: 8 }}>
-                    {app.candidate_source}
-                  </span>
-                )}
-                <StatusBadge status={app.status} />
-                {app.rating != null && (
-                  <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#333' }}>
-                    {app.rating}
-                  </span>
-                )}
-                <div style={{ fontSize: '0.72rem', color: '#999', minWidth: 60, textAlign: 'right' }}>
-                  {timeAgo(app.applied_at)}
-                </div>
-              </div>
+    let list: ReactNode = null;
+    if (applications.length > 0) {
+      list = narrow ? (
+        <ul aria-label="Applicants" style={{ ...CARD_LIST, gap: isPage ? 10 : 0 }}>
+          {applications.map(app => {
+            const facts = [
+              app.candidate_source,
+              app.rating != null && `Rating ${app.rating}`,
+              timeAgo(app.applied_at),
+            ].filter(Boolean).join(' · ');
+            return (
+              <li key={app.id}>
+                <button type="button" onClick={() => goToCandidate(app)} style={cardRowStyle(isPage)}>
+                  <CardRowTop name={app.candidate_name} badge={<StageBadge status={app.status} />} />
+                  {app.candidate_email && <span style={{ display: 'block', marginTop: 2, overflowWrap: 'anywhere', ...META }}>{app.candidate_email}</span>}
+                  {facts && <span style={{ display: 'block', marginTop: 2, ...META }}>{facts}</span>}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <table className="n-table">
+          <thead>
+            <tr>
+              <th style={edgeL}>Candidate</th>
+              <th>Source</th>
+              <th>Stage</th>
+              <th className="num">Rating</th>
+              <th className="num">Applied</th>
+              <th style={edgeR} />
+            </tr>
+          </thead>
+          <tbody>
+            {applications.map(app => (
+              <tr key={app.id} onClick={() => goToCandidate(app)} style={{ cursor: 'pointer' }}>
+                <td style={edgeL}>
+                  <button type="button" style={ROW_NAME}>{app.candidate_name}</button>
+                  {app.candidate_email && <div style={SUBLINE}>{app.candidate_email}</div>}
+                </td>
+                <td style={{ color: 'var(--text-soft)' }}>{app.candidate_source}</td>
+                <td><StageBadge status={app.status} /></td>
+                <td className="num">{app.rating}</td>
+                <td className="num" style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{timeAgo(app.applied_at)}</td>
+                <td style={{ width: 16, ...edgeR }}>{rowChevron}</td>
+              </tr>
             ))}
-          </div>
-        </div>
+          </tbody>
+        </table>
+      );
+    }
+
+    return (
+      <div ref={measure}>
+        {breadcrumb}
+        <Frame page={isPage}>
+          <Head
+            page={isPage}
+            titleOnPhone
+            title={jobTitle}
+            status={job ? <JobStatusBadge status={job.status} /> : undefined}
+            meta={meta || undefined}
+          />
+          {errorState('Couldn’t load the applicants')}
+          {loading && applications.length === 0 && <PageState kind="loading" title="Loading applicants…" />}
+          {!loading && !loadError && applications.length === 0 && <PageState kind="empty" title="No applicants yet." />}
+          {list}
+        </Frame>
       </div>
     );
   }
@@ -425,122 +624,77 @@ export default function HiringBoard({ data, props }: DisplayBlockProps) {
     const displayStatus = detail?.status || selectedApp.status;
     const displayApplied = detail?.applied_at || selectedApp.applied_at;
 
+    const contact = [displayEmail, detail?.candidate_phone].filter(Boolean).join(' · ');
+    const fields: { label: string; value: ReactNode }[] = [];
+    if (displaySource) fields.push({ label: 'Source', value: displaySource });
+    if (displayApplied) fields.push({ label: 'Applied', value: new Date(displayApplied).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' }) });
+    if (detail?.hiring_lead) fields.push({ label: 'Hiring lead', value: detail.hiring_lead });
+    if (detail?.desired_salary) fields.push({ label: 'Desired salary', value: detail.desired_salary });
+    if (detail?.available_start_date) fields.push({ label: 'Available start', value: detail.available_start_date });
+    if (detail?.linkedin_url) fields.push({ label: 'LinkedIn', value: <a href={detail.linkedin_url} target="_blank" rel="noopener noreferrer" style={LINK}>View profile</a> });
+    if (detail?.website_url) fields.push({ label: 'Website', value: <a href={detail.website_url} target="_blank" rel="noopener noreferrer" style={LINK}>Visit</a> });
+    if (detail?.education) fields.push({ label: 'Education', value: detail.education });
+
+    const resumeButton = detail?.has_resume && detail.resume_file_id ? (
+      <Button
+        size={isPage ? 'md' : 'sm'}
+        icon={Download}
+        onClick={async (e) => {
+          e.stopPropagation();
+          const res = await apiFetch(`/api/connectors/bamboohr/files/${detail.resume_file_id}`);
+          if (!res.ok) return;
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          window.open(url, '_blank');
+        }}
+      >
+        Download resume
+      </Button>
+    ) : undefined;
+
     return (
-      <div>
+      <div ref={measure}>
         {breadcrumb}
-        <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, backgroundColor: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-          {/* Header */}
-          <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid #e5e7eb', background: 'linear-gradient(to bottom, #fafafa, #fff)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.3rem' }}>
-              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111' }}>{displayName}</div>
-              <StatusBadge status={displayStatus} />
-              {detail?.has_resume && detail.resume_file_id && (
-                <button
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const res = await apiFetch(`/api/connectors/bamboohr/files/${detail.resume_file_id}`);
-                    if (!res.ok) return;
-                    const blob = await res.blob();
-                    const url = URL.createObjectURL(blob);
-                    window.open(url, '_blank');
-                  }}
-                  style={{ fontSize: '0.68rem', fontWeight: 500, padding: '2px 8px', borderRadius: 10, backgroundColor: '#ede9fe', color: '#5b21b6', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
-                >
-                  Download Resume
-                </button>
-              )}
-            </div>
-            <div style={{ display: 'flex', gap: '1.5rem', fontSize: '0.82rem', color: '#555', flexWrap: 'wrap' }}>
-              {displayEmail && (
-                <div><span style={{ color: '#999', fontSize: '0.72rem' }}>Email </span><span style={{ fontWeight: 500 }}>{displayEmail}</span></div>
-              )}
-              {detail?.candidate_phone && (
-                <div><span style={{ color: '#999', fontSize: '0.72rem' }}>Phone </span><span style={{ fontWeight: 500 }}>{detail.candidate_phone}</span></div>
-              )}
-              {displaySource && (
-                <div><span style={{ color: '#999', fontSize: '0.72rem' }}>Source </span><span style={{ fontWeight: 500 }}>{displaySource}</span></div>
-              )}
-              {displayApplied && (
-                <div><span style={{ color: '#999', fontSize: '0.72rem' }}>Applied </span><span style={{ fontWeight: 500 }}>{new Date(displayApplied).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}</span></div>
-              )}
-            </div>
-          </div>
+        <Frame page={isPage}>
+          <Head
+            page={isPage}
+            titleOnPhone
+            title={displayName}
+            status={<StageBadge status={displayStatus} />}
+            meta={contact || undefined}
+            actions={resumeButton}
+          />
 
-          {loading && !detail && (
-            <div style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>Loading details...</div>
+          {fields.length > 0 && (
+            <Section page={isPage} title="Details">
+              {fields.map((f, i) => (
+                <Field key={f.label} label={f.label} stacked={narrow} first={i === 0}>{f.value}</Field>
+              ))}
+            </Section>
           )}
 
-          {detail && (
-            <div style={{ padding: '1rem 1.25rem' }}>
-              {/* Key info row */}
-              <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
-                {detail.hiring_lead && (
-                  <div>
-                    <div style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', marginBottom: 3 }}>Hiring Lead</div>
-                    <span style={{ fontSize: '0.82rem', color: '#333' }}>{detail.hiring_lead}</span>
-                  </div>
-                )}
-                {detail.desired_salary && (
-                  <div>
-                    <div style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', marginBottom: 3 }}>Desired Salary</div>
-                    <span style={{ fontSize: '0.82rem', color: '#333' }}>{detail.desired_salary}</span>
-                  </div>
-                )}
-                {detail.available_start_date && (
-                  <div>
-                    <div style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', marginBottom: 3 }}>Available Start</div>
-                    <span style={{ fontSize: '0.82rem', color: '#333' }}>{detail.available_start_date}</span>
-                  </div>
-                )}
-                {detail.linkedin_url && (
-                  <div>
-                    <div style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', marginBottom: 3 }}>LinkedIn</div>
-                    <a href={detail.linkedin_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.82rem', color: '#2563eb' }}>View Profile</a>
-                  </div>
-                )}
-                {detail.website_url && (
-                  <div>
-                    <div style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', marginBottom: 3 }}>Website</div>
-                    <a href={detail.website_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.82rem', color: '#2563eb' }}>Visit</a>
-                  </div>
-                )}
-                {detail.education && (
-                  <div>
-                    <div style={{ fontSize: '0.65rem', color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', marginBottom: 3 }}>Education</div>
-                    <span style={{ fontSize: '0.82rem', color: '#333' }}>{detail.education}</span>
-                  </div>
-                )}
-              </div>
+          {loading && !detail && <PageState kind="loading" title="Loading details…" />}
+          {errorState('Couldn’t load this application')}
 
-              {/* Questions & Answers */}
-              {detail.questions_and_answers.length > 0 && (
-                <div style={{ marginTop: '0.5rem' }}>
-                  <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#333', marginBottom: '0.5rem' }}>Screening Questions</div>
-                  {detail.questions_and_answers.map((qa, i) => (
-                    <div key={i} style={{
-                      padding: '0.5rem 0.75rem', marginBottom: '0.4rem',
-                      backgroundColor: '#f9fafb', borderRadius: 6, border: '1px solid #f3f4f6',
-                    }}>
-                      <div style={{ fontSize: '0.78rem', color: '#6b7280', marginBottom: 2 }}>{qa.question}</div>
-                      <div style={{ fontSize: '0.85rem', color: '#111', fontWeight: 500 }}>{qa.answer}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
+          {/* Questions & Answers */}
+          {detail && detail.questions_and_answers.length > 0 && (
+            <Section page={isPage} title="Screening questions">
+              {detail.questions_and_answers.map((qa, i) => (
+                <Field key={i} label={qa.question} stacked first={i === 0}>{qa.answer}</Field>
+              ))}
+            </Section>
+          )}
 
-              {/* Stats */}
-              {detail.comment_count > 0 && (
-                <div style={{ marginTop: '0.75rem', fontSize: '0.78rem', color: '#6b7280' }}>
-                  {detail.comment_count} comment{detail.comment_count !== 1 ? 's' : ''} on this application
-                </div>
-              )}
+          {detail && detail.comment_count > 0 && (
+            <div style={{ ...META, ...(isPage ? { marginTop: 4 } : { padding: '10px 16px 14px', borderTop: '1px solid var(--line)' }) }}>
+              {plural(detail.comment_count, 'comment')} on this application
             </div>
           )}
-        </div>
+        </Frame>
       </div>
     );
   }
 
   // Fallback loading
-  return <div style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>Loading...</div>;
+  return <div ref={measure}><PageState kind="loading" title="Loading…" /></div>;
 }

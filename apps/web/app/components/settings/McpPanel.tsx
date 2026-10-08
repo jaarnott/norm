@@ -14,7 +14,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { MousePointerClick } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import PageState from '../ui/PageState';
 
 interface Capability {
   kind: 'connector' | 'playbook';
@@ -33,6 +38,21 @@ interface Capability {
   reason: string | null;
 }
 interface Scope { name: string; label: string; access_level: string; }
+
+// Checkboxes tick in the accent, as on the approval card; tool names are mono
+// and may break anywhere so a long one can't push a phone row sideways.
+const checkboxStyle: React.CSSProperties = { width: 16, height: 16, margin: 0, flex: '0 0 auto', accentColor: 'var(--accent)', cursor: 'pointer' };
+const codeStyle: React.CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', overflowWrap: 'anywhere' };
+
+/** Marks a tool that renders a real Norm component inside Claude. */
+function InteractiveBadge({ title }: { title?: string }) {
+  return (
+    <Badge title={title}>
+      <Icon icon={MousePointerClick} size={12} />
+      Interactive
+    </Badge>
+  );
+}
 
 export default function McpPanel() {
   const [caps, setCaps] = useState<Capability[]>([]);
@@ -122,7 +142,7 @@ export default function McpPanel() {
     save(cap, { scopes, enabled: scopes.length > 0 });
   }
 
-  if (loading) return <p>Loading…</p>;
+  if (loading) return <PageState kind="loading" title="Loading MCP capabilities…" />;
 
   const connectors = caps.filter((c) => c.kind === 'connector');
   const playbooks = caps.filter((c) => c.kind === 'playbook');
@@ -130,48 +150,66 @@ export default function McpPanel() {
   const nonExposable = connectors.filter((c) => !c.exposable);
 
   return (
-    <div style={{ maxWidth: 900 }}>
-      <h3 style={{ margin: '0 0 0.25rem', fontSize: '1.1rem' }}>MCP — external AI access</h3>
-      <p style={{ color: '#666', fontSize: '0.85rem', margin: '0 0 1rem' }}>
+    <div style={{ maxWidth: 900, lineHeight: 1.45 }}>
+      <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>MCP — external AI access</h3>
+      <p style={{ margin: '4px 0 8px', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
         Choose which Norm capabilities Claude (and other MCP clients) can use on
         behalf of a signed-in user. Read tools return data; workflow tools run a
         playbook and create drafts for approval in Norm.
       </p>
-      <p style={{ color: '#666', fontSize: '0.8rem', margin: '-0.5rem 0 1rem' }}>
-        Anything marked <span style={{ fontSize: '0.68rem', background: '#e6efe6', color: '#4d7a4d', padding: '1px 6px', borderRadius: 4, fontWeight: 600 }}>◨ interactive</span>{' '}
+      <p style={{ margin: '0 0 20px', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+        Anything marked <InteractiveBadge />{' '}
         renders a real Norm component inside Claude that the user can act on.
         Everything else returns plain data, which Claude lays out itself — that&apos;s
         deliberate, it formats tables and charts better than we can embed them.
       </p>
-      {error && <p style={{ color: '#c0392b', fontSize: '0.85rem' }}>{error}</p>}
+      {error && (
+        <div style={{ marginBottom: 20 }}>
+          <PageState kind="error" title={error} />
+        </div>
+      )}
 
-      <Section title={`Workflow tools (${playbooks.filter((p) => p.enabled).length} of ${playbooks.length} enabled)`}>
-        {playbooks.map((c) => (
-          <Row key={c.tool_name} cap={c} scopes={scopes} scopeLabel={scopeLabel}
-               saving={saving === c.tool_name} onToggleEnabled={() => toggleEnabled(c)}
-               onToggleScope={(s) => toggleScope(c, s)} />
-        ))}
-      </Section>
+      {/* A failed load shows only the error above, never empty sections. */}
+      {caps.length === 0 && !error && (
+        <PageState kind="empty" title="No capabilities to expose yet." />
+      )}
 
-      <Section title={`Read tools (${exposableConnectors.filter((c) => c.enabled).length} of ${exposableConnectors.length} enabled)`}>
-        {exposableConnectors.map((c) => (
-          <Row key={c.tool_name} cap={c} scopes={scopes} scopeLabel={scopeLabel}
-               saving={saving === c.tool_name} onToggleEnabled={() => toggleEnabled(c)}
-               onToggleScope={(s) => toggleScope(c, s)} />
-        ))}
-      </Section>
+      {caps.length > 0 && (
+        <>
+          <Section title="Workflow tools" meta={`${playbooks.filter((p) => p.enabled).length} of ${playbooks.length} enabled`}>
+            {playbooks.map((c, i) => (
+              <Row key={c.tool_name} cap={c} scopes={scopes} scopeLabel={scopeLabel} divider={i > 0}
+                   saving={saving === c.tool_name} onToggleEnabled={() => toggleEnabled(c)}
+                   onToggleScope={(s) => toggleScope(c, s)} />
+            ))}
+          </Section>
+
+          <Section title="Read tools" meta={`${exposableConnectors.filter((c) => c.enabled).length} of ${exposableConnectors.length} enabled`}>
+            {exposableConnectors.map((c, i) => (
+              <Row key={c.tool_name} cap={c} scopes={scopes} scopeLabel={scopeLabel} divider={i > 0}
+                   saving={saving === c.tool_name} onToggleEnabled={() => toggleEnabled(c)}
+                   onToggleScope={(s) => toggleScope(c, s)} />
+            ))}
+          </Section>
+        </>
+      )}
 
       {nonExposable.length > 0 && (
-        <Section title={`Not exposable (${nonExposable.length})`}>
-          <p style={{ fontSize: '0.8rem', color: '#999', margin: '0 0 0.5rem' }}>
+        <Section
+          title="Not exposable"
+          meta={`${nonExposable.length} ${nonExposable.length === 1 ? 'tool' : 'tools'}`}
+          intro={<>
             These can&apos;t be direct MCP tools — write actions must go through a
             workflow, and some are conversation-only.
-          </p>
-          {nonExposable.map((c) => (
-            <div key={c.tool_name} style={{ padding: '0.5rem 0', borderBottom: '1px solid #f0ece6', opacity: 0.7 }}>
-              <code style={{ fontSize: '0.8rem' }}>{c.tool_name}</code>
-              <span style={{ marginLeft: 8, fontSize: '0.72rem', color: '#a0522d' }}>{c.method}</span>
-              <div style={{ fontSize: '0.75rem', color: '#999' }}>{c.reason}</div>
+          </>}
+        >
+          {nonExposable.map((c, i) => (
+            <div key={c.tool_name} style={{ padding: '10px 16px', borderTop: i > 0 ? '1px solid var(--line)' : 'none' }}>
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 4 }}>
+                <code style={{ ...codeStyle, color: 'var(--text-soft)' }}>{c.tool_name}</code>
+                <Badge>{c.method}</Badge>
+              </div>
+              <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{c.reason}</div>
             </div>
           ))}
         </Section>
@@ -180,18 +218,26 @@ export default function McpPanel() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/** A titled group of rows in one card; renders no empty card. */
+function Section({ title, meta, intro, children }: {
+  title: string; meta?: string; intro?: React.ReactNode; children: React.ReactNode;
+}) {
+  const hasRows = Array.isArray(children) ? children.length > 0 : !!children;
   return (
-    <div style={{ marginBottom: '2rem' }}>
-      <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 0.75rem' }}>{title}</h4>
-      {children}
-    </div>
+    <section style={{ marginBottom: 28 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, rowGap: 2, marginBottom: 8 }}>
+        <h4 style={{ margin: 0, fontSize: 'var(--fs-md)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</h4>
+        {meta && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{meta}</span>}
+      </div>
+      {intro && <p style={{ margin: '0 0 8px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{intro}</p>}
+      {hasRows && <div className="n-card" style={{ overflow: 'hidden' }}>{children}</div>}
+    </section>
   );
 }
 
-function Row({ cap, scopes, scopeLabel, saving, onToggleEnabled, onToggleScope }: {
+function Row({ cap, scopes, scopeLabel, saving, divider, onToggleEnabled, onToggleScope }: {
   cap: Capability; scopes: Scope[]; scopeLabel: Record<string, string>;
-  saving: boolean; onToggleEnabled: () => void; onToggleScope: (s: string) => void;
+  saving: boolean; divider: boolean; onToggleEnabled: () => void; onToggleScope: (s: string) => void;
 }) {
   const relevant = scopes.filter((s) =>
     cap.grantable_scopes.includes(s.name) &&
@@ -208,40 +254,41 @@ function Row({ cap, scopes, scopeLabel, saving, onToggleEnabled, onToggleScope }
   const [showScopes, setShowScopes] = useState(false);
 
   return (
-    <div style={{ padding: '0.6rem 0', borderBottom: '1px solid #f0ece6', opacity: saving ? 0.6 : 1 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-        <input type="checkbox" checked={cap.enabled} onChange={onToggleEnabled}
-               disabled={saving || relevant.length === 0} />
-        <code style={{ fontSize: '0.82rem', fontWeight: 600 }}>{cap.tool_name}</code>
-        {cap.access === 'draft' && <span style={{ fontSize: '0.68rem', background: '#f4e8d8', color: '#8a6d3b', padding: '1px 6px', borderRadius: 4 }}>draft</span>}
-        {cap.ui && (
-          <span title={`Renders the ${cap.ui.name} component in Claude${cap.ui.component ? ` (${cap.ui.component})` : ''} instead of plain data`}
-                style={{ fontSize: '0.68rem', background: '#e6efe6', color: '#4d7a4d', padding: '1px 6px', borderRadius: 4, fontWeight: 600, whiteSpace: 'nowrap' }}>
-            ◨ interactive
-          </span>
-        )}
-      </div>
-      <div style={{ fontSize: '0.78rem', color: '#777', margin: '0.2rem 0 0.3rem 1.6rem' }}>{cap.description}</div>
-      <div style={{ marginLeft: '1.6rem', fontSize: '0.72rem', color: '#888', display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
-        <span>Permission: <span style={{ color: cap.enabled ? '#5a7d5a' : '#888', fontWeight: cap.enabled ? 600 : 400 }}>{permissionText}</span></span>
-        {relevant.length > 0 && (
-          <button type="button" onClick={() => setShowScopes((v) => !v)}
-                  style={{ background: 'none', border: 'none', color: '#8a6d3b', cursor: 'pointer', fontSize: '0.72rem', padding: 0, textDecoration: 'underline' }}>
-            {showScopes ? 'Hide permissions' : 'Adjust permissions'}
-          </button>
-        )}
-      </div>
-      {showScopes && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginLeft: '1.6rem', marginTop: '0.35rem' }}>
-          {relevant.map((s) => (
-            <label key={s.name} style={{ fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer' }}>
-              <input type="checkbox" checked={cap.scopes.includes(s.name)} onChange={() => onToggleScope(s.name)} disabled={saving} />
-              {scopeLabel[s.name] || s.name}
-              {cap.suggested_scopes.includes(s.name) && <span style={{ color: '#5a7d5a' }}>· suggested</span>}
-            </label>
-          ))}
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px', borderTop: divider ? '1px solid var(--line)' : 'none', opacity: saving ? 0.6 : 1 }}>
+      <input type="checkbox" checked={cap.enabled} onChange={onToggleEnabled}
+             aria-label={`Expose ${cap.tool_name}`}
+             disabled={saving || relevant.length === 0}
+             style={{ ...checkboxStyle, marginTop: 2, cursor: saving || relevant.length === 0 ? 'default' : 'pointer' }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, rowGap: 4 }}>
+          <code style={{ ...codeStyle, fontWeight: 600, color: 'var(--text)', marginRight: 2 }}>{cap.tool_name}</code>
+          {cap.access === 'draft' && <Badge tone="info">Draft</Badge>}
+          {cap.ui && (
+            <InteractiveBadge title={`Renders the ${cap.ui.name} component in Claude${cap.ui.component ? ` (${cap.ui.component})` : ''} instead of plain data`} />
+          )}
         </div>
-      )}
+        <div style={{ margin: '4px 0 6px', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{cap.description}</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 12, rowGap: 4, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+          <span>Permission: <span style={{ color: cap.enabled ? 'var(--ok)' : 'var(--muted)', fontWeight: cap.enabled ? 600 : 400 }}>{permissionText}</span></span>
+          {relevant.length > 0 && (
+            <Button variant="link" onClick={() => setShowScopes((v) => !v)} style={{ fontSize: 'var(--fs-xs)' }}>
+              {showScopes ? 'Hide permissions' : 'Adjust permissions'}
+            </Button>
+          )}
+        </div>
+        {showScopes && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', columnGap: 16, rowGap: 6, marginTop: 8 }}>
+            {relevant.map((s) => (
+              <label key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={cap.scopes.includes(s.name)} onChange={() => onToggleScope(s.name)} disabled={saving}
+                       style={checkboxStyle} />
+                {scopeLabel[s.name] || s.name}
+                {cap.suggested_scopes.includes(s.name) && <span style={{ color: 'var(--ok)' }}>· suggested</span>}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

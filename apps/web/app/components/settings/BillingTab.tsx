@@ -1,10 +1,18 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import type { ReactNode } from 'react';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { Check, CreditCard, ExternalLink, TriangleAlert, X } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { BillingInfo, StripeInvoice } from '../../types';
+import Badge from '../ui/Badge';
+import type { BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || '');
 
@@ -22,6 +30,76 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
   return n.toLocaleString();
+}
+
+// ---------------------------------------------------------------------------
+// Presentation helpers
+// ---------------------------------------------------------------------------
+
+/** A status slug as words: "past_due" → "Past due". */
+function sentence(s: string): string {
+  const words = s.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Stripe invoice states: paid is done, open is still owed, uncollectible
+ *  failed, a draft is informational, void is neither. */
+function invoiceTone(status: string): BadgeTone {
+  if (status === 'paid') return 'ok';
+  if (status === 'open') return 'warn';
+  if (status === 'uncollectible') return 'error';
+  if (status === 'draft') return 'info';
+  return 'neutral';
+}
+
+function subscriptionTone(status: string): BadgeTone {
+  if (status === 'active') return 'ok';
+  if (status === 'past_due') return 'warn';
+  if (status === 'trialing') return 'info';
+  return 'neutral';
+}
+
+/** One settings section, as in the Settings design: an 18px title with a muted
+ *  meta beside it and actions on the right, an optional note under it, then
+ *  the content (usually a white card) and an optional footnote. */
+function Section({ title, meta, note, actions, footnote, children }: {
+  title: string;
+  meta?: ReactNode;
+  note?: ReactNode;
+  actions?: ReactNode;
+  footnote?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section style={{ marginBottom: 28 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: note ? 0 : 12 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</h2>
+          {meta && <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{meta}</span>}
+        </div>
+        {actions}
+      </div>
+      {note && <p style={{ margin: '2px 0 12px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{note}</p>}
+      {children}
+      {footnote && <p style={{ margin: '12px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{footnote}</p>}
+    </section>
+  );
+}
+
+/** A line of the monthly cost breakdown: label left, amount right. */
+function CostRow({ label, amount, total = false }: { label: ReactNode; amount: string; total?: boolean }) {
+  return (
+    <div style={{
+      display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 16, padding: '10px 16px',
+      borderBottom: total ? 'none' : '1px solid var(--line)',
+      background: total ? 'var(--surface)' : undefined,
+      fontWeight: total ? 600 : 400,
+      color: total ? 'var(--text)' : 'var(--text-soft)',
+    }}>
+      <span style={{ minWidth: 0 }}>{label}</span>
+      <span style={{ flex: '0 0 auto', color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{amount}</span>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -63,18 +141,20 @@ function PaymentMethodForm({ orgId, onSuccess }: { orgId: string; onSuccess: () 
 
   return (
     <form onSubmit={handleSubmit}>
-      <div style={{ padding: '0.5rem', border: '1px solid #e2e8f0', borderRadius: 6, backgroundColor: '#fff', marginBottom: '0.5rem' }}>
-        <CardElement options={{ style: { base: { fontSize: '14px', color: '#333' } } }} />
+      <span className="n-label">Card details</span>
+      {/* Edged like .n-input. Stripe draws the field in its own iframe, which
+          cannot read CSS variables: the literals below are --text, --muted
+          and --error. */}
+      <div style={{ padding: '9px 10px', border: '1px solid var(--field)', borderRadius: 'var(--radius)', backgroundColor: 'var(--bg)' }}>
+        <CardElement options={{ style: {
+          base: { fontSize: '14px', color: '#1a1a1a', '::placeholder': { color: '#69615a' } },
+          invalid: { color: '#a93a2a' },
+        } }} />
       </div>
-      {error && <p style={{ color: '#e53e3e', fontSize: '0.8rem', margin: '0.25rem 0' }}>{error}</p>}
-      <button
-        type="submit"
-        disabled={!stripe || loading || !clientSecret}
-        style={{
-          padding: '6px 16px', fontSize: '0.8rem', fontWeight: 600, border: 'none', borderRadius: 6,
-          backgroundColor: '#2563eb', color: '#fff', cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-        }}
-      >{loading ? 'Saving...' : 'Save Card'}</button>
+      {error && <p role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', margin: '6px 0 0' }}>{error}</p>}
+      <Button type="submit" variant="primary" size="sm" disabled={!stripe || loading || !clientSecret} style={{ marginTop: 12 }}>
+        {loading ? 'Saving…' : 'Save card'}
+      </Button>
     </form>
   );
 }
@@ -190,250 +270,271 @@ export default function BillingTab({ orgId }: { orgId: string }) {
     setActionLoading(null);
   };
 
-  if (loading) return <div style={{ padding: '1rem', color: '#888' }}>Loading billing...</div>;
-  if (fetchError) return <div style={{ padding: '1rem', color: '#c53030' }}>{fetchError} <button onClick={fetchBilling} style={{ color: '#2563eb', border: 'none', background: 'none', cursor: 'pointer', textDecoration: 'underline' }}>Retry</button></div>;
-  if (!billing) return <div style={{ padding: '1rem', color: '#888' }}>No billing information available.</div>;
+  if (loading) return <PageState kind="loading" title="Loading billing…" />;
+  if (fetchError) return <PageState kind="error" title={fetchError} action={<Button size="sm" onClick={fetchBilling}>Retry</Button>} />;
+  if (!billing) return <PageState kind="empty" title="No billing information available." />;
 
   const sub = billing.subscription;
   const usage = billing.usage;
   const usagePercent = usage.quota > 0 ? Math.min(100, (usage.used / usage.quota) * 100) : 0;
   const hasSubscription = sub && sub.status && sub.status !== 'trialing';
   const hasPaymentMethod = sub && sub.payment_method_last4;
-
-  const sectionStyle: React.CSSProperties = {
-    marginBottom: '1.25rem', padding: '1rem', backgroundColor: '#fff',
-    border: '1px solid #e2e8f0', borderRadius: 8,
-  };
-  const headingStyle: React.CSSProperties = {
-    fontSize: '0.82rem', fontWeight: 600, color: '#333', marginBottom: '0.75rem', margin: 0,
-  };
+  // The bar stays neutral until the "running low" point, then turns amber.
+  const nearLimit = usagePercent > 80;
+  const planName = PLANS.find(p => p.id === (sub?.token_plan || 'basic'))?.name ?? (sub?.token_plan || 'basic');
+  const teamRows = (billing.agent_apps ?? []).length + (billing.priced_apps ?? []).length;
 
   return (
-    <div data-testid="billing-tab">
+    <div data-testid="billing-tab" style={{ lineHeight: 1.45 }}>
       {error && (
-        <div style={{ padding: '0.5rem 0.75rem', backgroundColor: '#fff5f5', border: '1px solid #feb2b2', borderRadius: 6, color: '#c53030', fontSize: '0.8rem', marginBottom: '0.75rem' }}>
-          {error}
-          <button onClick={() => setError(null)} style={{ float: 'right', border: 'none', background: 'none', cursor: 'pointer', color: '#c53030' }}>&times;</button>
+        <div style={{ marginBottom: 16 }}>
+          <PageState
+            kind="error"
+            title={error}
+            action={<IconButton icon={X} label="Dismiss" iconSize={16} onClick={() => setError(null)} style={{ margin: '-6px -6px -6px 0' }} />}
+          />
         </div>
       )}
 
       {/* Usage */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Token Usage</h3>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', color: '#555', marginBottom: 4 }}>
-          <span>{formatTokens(usage.used)} used</span>
-          <span>{formatTokens(usage.remaining)} remaining of {formatTokens(usage.quota)}</span>
+      <Section title="Token usage">
+        <div className="n-card" style={{ padding: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 8, fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{formatTokens(usage.used)} used</span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{formatTokens(usage.remaining)} remaining of {formatTokens(usage.quota)}</span>
+          </div>
+          <div
+            role="progressbar"
+            aria-label="Token usage"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(usagePercent)}
+            style={{ height: 8, backgroundColor: 'var(--line-soft)', borderRadius: 999, overflow: 'hidden' }}
+          >
+            <div style={{
+              height: '100%', borderRadius: 999, transition: 'width 0.3s',
+              width: `${usagePercent}%`,
+              backgroundColor: nearLimit ? 'var(--warn)' : 'var(--text-soft)',
+            }} />
+          </div>
+          {usagePercent > 80 && (
+            <p style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--warn)', margin: '10px 0 0' }}>
+              <Icon icon={TriangleAlert} size="dense" style={{ marginTop: 2 }} />
+              Running low on tokens — consider upgrading your plan or purchasing a top-up.
+            </p>
+          )}
         </div>
-        <div style={{ height: 8, backgroundColor: '#e2e8f0', borderRadius: 4, overflow: 'hidden' }}>
-          <div style={{
-            height: '100%', borderRadius: 4, transition: 'width 0.3s',
-            width: `${usagePercent}%`,
-            backgroundColor: usagePercent > 90 ? '#e53e3e' : usagePercent > 70 ? '#ed8936' : '#48bb78',
-          }} />
-        </div>
-        {usagePercent > 80 && (
-          <p style={{ fontSize: '0.72rem', color: '#e53e3e', marginTop: 4, marginBottom: 0 }}>
-            Running low on tokens — consider upgrading your plan or purchasing a top-up.
-          </p>
-        )}
-      </div>
+      </Section>
 
       {/* Plans */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Token Plan</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
+      <Section
+        title="Token plan"
+        meta={sub?.status ? (
+          <>
+            <Badge tone={subscriptionTone(sub.status)}>{sentence(sub.status)}</Badge>
+            {sub.billing_cycle_start && <span>Billing cycle started {new Date(sub.billing_cycle_start).toLocaleDateString()}</span>}
+          </>
+        ) : undefined}
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12 }}>
           {PLANS.map(plan => {
             const isActive = sub?.token_plan === plan.id;
             return (
               <div
                 key={plan.id}
                 data-testid="plan-selector"
+                aria-current={isActive ? 'true' : undefined}
                 style={{
-                  padding: '0.75rem', borderRadius: 8, textAlign: 'center',
-                  border: isActive ? '2px solid #2563eb' : '1px solid #e2e8f0',
-                  backgroundColor: isActive ? '#eff6ff' : '#fff',
+                  display: 'flex', flexDirection: 'column', gap: 2,
+                  padding: 16, borderRadius: 'var(--radius-lg)',
+                  border: `1px solid ${isActive ? 'var(--brand-soft)' : 'var(--line)'}`,
+                  // A second pixel of the tan edge on the chosen plan, without shifting the layout.
+                  boxShadow: isActive ? 'inset 0 0 0 1px var(--brand-soft)' : undefined,
+                  backgroundColor: isActive ? 'var(--selected)' : 'var(--bg)',
                 }}
               >
-                <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333' }}>{plan.name}</div>
-                <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#2563eb', margin: '0.25rem 0' }}>${plan.price}</div>
-                <div style={{ fontSize: '0.72rem', color: '#888' }}>{plan.tokens} tokens/month</div>
-                {!isActive && (
-                  <button
-                    onClick={() => handleSelectPlan(plan.id)}
-                    disabled={actionLoading !== null}
-                    style={{
-                      marginTop: '0.5rem', padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600,
-                      border: '1px solid #2563eb', borderRadius: 5, backgroundColor: '#fff',
-                      color: '#2563eb', cursor: actionLoading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                    }}
-                  >{hasSubscription ? 'Switch' : 'Select'}</button>
-                )}
-                {isActive && <div style={{ marginTop: '0.5rem', fontSize: '0.72rem', color: '#2563eb', fontWeight: 600 }}>Current Plan</div>}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 30 }}>
+                  <span style={{ fontSize: 'var(--fs-base)', fontWeight: isActive ? 600 : 500, color: 'var(--text)' }}>{plan.name}</span>
+                  {isActive ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--accent-strong)' }}>
+                      <Icon icon={Check} size="dense" strokeWidth={2.25} />
+                      Current plan
+                    </span>
+                  ) : (
+                    <Button size="sm" onClick={() => handleSelectPlan(plan.id)} disabled={actionLoading !== null}>
+                      {hasSubscription ? 'Switch' : 'Select'}
+                    </Button>
+                  )}
+                </div>
+                <div style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, lineHeight: 1.3, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>${plan.price}</div>
+                <div style={{ fontSize: 'var(--fs-sm)', color: isActive ? 'var(--text-soft)' : 'var(--muted)' }}>{plan.tokens} tokens/month</div>
               </div>
             );
           })}
         </div>
-      </div>
+      </Section>
 
       {/* Monthly cost breakdown */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Monthly Cost</h3>
-        <div style={{ fontSize: '0.78rem', color: '#555' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #f0f0f0' }}>
-            <span>Token plan ({sub?.token_plan || 'basic'})</span>
-            <span>{formatCents(billing.cost_breakdown.plan)}/mo</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #f0f0f0' }}>
-            <span>Team ({(billing.agent_apps ?? []).filter(a => a.enabled).map(a => a.name).join(', ') || 'none'})</span>
-            <span>{formatCents(billing.cost_breakdown.agents)}/mo</span>
-          </div>
+      <Section title="Monthly cost">
+        <div className="n-card" style={{ overflow: 'hidden', fontSize: 'var(--fs-base)' }}>
+          <CostRow label={`Token plan (${planName})`} amount={`${formatCents(billing.cost_breakdown.plan)}/mo`} />
+          <CostRow
+            label={`Team (${(billing.agent_apps ?? []).filter(a => a.enabled).map(a => a.name).join(', ') || 'none'})`}
+            amount={`${formatCents(billing.cost_breakdown.agents)}/mo`}
+          />
           {(billing.cost_breakdown.apps ?? 0) > 0 && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #f0f0f0' }}>
-              <span>Apps ({(billing.priced_apps ?? []).map(a => a.name).join(', ')})</span>
-              <span>{formatCents(billing.cost_breakdown.apps ?? 0)}/mo</span>
-            </div>
+            <CostRow
+              label={`Apps (${(billing.priced_apps ?? []).map(a => a.name).join(', ')})`}
+              amount={`${formatCents(billing.cost_breakdown.apps ?? 0)}/mo`}
+            />
           )}
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #f0f0f0' }}>
-            <span>Venues ({billing.venue_count})</span>
-            <span>{formatCents(billing.cost_breakdown.venues)}/mo</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontWeight: 600, color: '#333' }}>
-            <span>Total</span>
-            <span>{formatCents(billing.monthly_cost_cents)}/mo</span>
-          </div>
+          <CostRow label={`Venues (${billing.venue_count})`} amount={`${formatCents(billing.cost_breakdown.venues)}/mo`} />
+          <CostRow total label="Total" amount={`${formatCents(billing.monthly_cost_cents)}/mo`} />
         </div>
-      </div>
+      </Section>
 
       {/* Your AI team — hired and paid state; managed on the team page */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Your AI Team</h3>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {(billing.agent_apps ?? []).map(a => (
-            <div key={a.slug} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem', color: a.enabled ? '#555' : '#aaa' }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: a.enabled ? '#2e7d4f' : '#d8d4cc' }} />
-              {a.name}
-              <span style={{ color: '#aaa' }}>
-                ({a.price_cents > 0 ? `${formatCents(a.price_cents)}/mo` : 'free'}{a.enabled ? '' : ' · not hired'})
-              </span>
-            </div>
-          ))}
-          {(billing.priced_apps ?? []).map(a => (
-            <div key={a.slug} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem', color: '#555' }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#2e7d4f' }} />
-              {a.name} <span style={{ color: '#aaa' }}>(App · {formatCents(a.price_cents)}/mo)</span>
-            </div>
-          ))}
-          <div style={{ fontSize: '0.7rem', color: '#8a8a8a', marginTop: 4 }}>
-            Hire and retire team members — and switch their Apps — on the team page (the + button in the sidebar).
+      <Section
+        title="Your AI team"
+        footnote="Hire and retire team members — and switch their Apps — on the team page (the + button in the sidebar)."
+      >
+        {teamRows > 0 && (
+          <div className="n-card" style={{ overflowX: 'auto' }}>
+            <table className="n-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th className="num">Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(billing.agent_apps ?? []).map(a => (
+                  <tr key={a.slug}>
+                    <td style={{ color: a.enabled ? 'var(--text)' : 'var(--muted)' }}>{a.name}</td>
+                    <td>{a.enabled ? <Badge tone="ok">Hired</Badge> : <Badge>Not hired</Badge>}</td>
+                    <td className="num" style={{ color: 'var(--text-soft)', whiteSpace: 'nowrap' }}>
+                      {a.price_cents > 0 ? `${formatCents(a.price_cents)}/mo` : 'Free'}
+                    </td>
+                  </tr>
+                ))}
+                {(billing.priced_apps ?? []).map(a => (
+                  <tr key={a.slug}>
+                    <td>
+                      {a.name}
+                      <span style={{ marginLeft: 8, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>App</span>
+                    </td>
+                    <td><Badge tone="ok">On</Badge></td>
+                    <td className="num" style={{ color: 'var(--text-soft)', whiteSpace: 'nowrap' }}>{formatCents(a.price_cents)}/mo</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </div>
-      </div>
+        )}
+      </Section>
 
       {/* Payment method */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Payment Method</h3>
-        {hasPaymentMethod ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: '0.82rem', color: '#333' }}>
-              {sub.payment_method_brand ? sub.payment_method_brand.toUpperCase() : 'Card'} ending in {sub.payment_method_last4}
-            </span>
-            <button
-              onClick={() => { setShowCardForm(!showCardForm); setPendingPlan(null); }}
-              style={{
-                padding: '3px 10px', fontSize: '0.72rem', border: '1px solid #cbd5e1', borderRadius: 5,
-                backgroundColor: '#fff', color: '#555', cursor: 'pointer', fontFamily: 'inherit',
-              }}
-            >{showCardForm ? 'Cancel' : 'Update'}</button>
-          </div>
-        ) : (
-          <p style={{ fontSize: '0.78rem', color: '#888', margin: '0 0 0.5rem' }}>
-            No payment method on file.{pendingPlan ? ' Add a card to activate your plan.' : ''}
-          </p>
-        )}
-        {(showCardForm || !hasPaymentMethod) && (
-          <div style={{ marginTop: '0.5rem' }}>
-            <Elements stripe={stripePromise}>
-              <PaymentMethodForm orgId={orgId} onSuccess={async () => {
-                setShowCardForm(false);
-                await fetchBilling();
-                // If user selected a plan before adding card, auto-subscribe now
-                if (pendingPlan) {
-                  subscribe(pendingPlan);
-                }
-              }} />
-            </Elements>
-          </div>
-        )}
-      </div>
+      <Section
+        title="Payment method"
+        actions={hasPaymentMethod ? (
+          <Button size="sm" onClick={() => { setShowCardForm(!showCardForm); setPendingPlan(null); }}>
+            {showCardForm ? 'Cancel' : 'Update'}
+          </Button>
+        ) : undefined}
+      >
+        <div className="n-card" style={{ padding: 16 }}>
+          {hasPaymentMethod ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', color: 'var(--text)' }}>
+              <Icon icon={CreditCard} tone="muted" />
+              <span>
+                {sub.payment_method_brand ? sub.payment_method_brand.toUpperCase() : 'Card'} ending in {sub.payment_method_last4}
+              </span>
+            </div>
+          ) : (
+            <p style={{ fontSize: 'var(--fs-base)', color: 'var(--text-soft)', margin: 0 }}>
+              No payment method on file.{pendingPlan ? ' Add a card to activate your plan.' : ''}
+            </p>
+          )}
+          {(showCardForm || !hasPaymentMethod) && (
+            <div style={{ marginTop: 14, maxWidth: 480 }}>
+              <Elements stripe={stripePromise}>
+                <PaymentMethodForm orgId={orgId} onSuccess={async () => {
+                  setShowCardForm(false);
+                  await fetchBilling();
+                  // If user selected a plan before adding card, auto-subscribe now
+                  if (pendingPlan) {
+                    subscribe(pendingPlan);
+                  }
+                }} />
+              </Elements>
+            </div>
+          )}
+        </div>
+      </Section>
 
       {/* Top-ups */}
-      <div style={sectionStyle}>
-        <h3 style={headingStyle}>Buy More Tokens</h3>
-        <p style={{ fontSize: '0.72rem', color: '#888', margin: '0 0 0.5rem' }}>
-          500K tokens per top-up at $10 each. Tokens expire at end of billing period.
-          {!hasPaymentMethod && <span style={{ color: '#e53e3e' }}> Add a payment method first.</span>}
-        </p>
-        <div style={{ display: 'flex', gap: 8 }}>
+      <Section
+        title="Buy more tokens"
+        note={(
+          <>
+            500K tokens per top-up at $10 each. Tokens expire at end of billing period.
+            {!hasPaymentMethod && <span style={{ color: 'var(--error)' }}> Add a payment method first.</span>}
+          </>
+        )}
+      >
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {[1, 2, 5].map(units => (
-            <button
+            <Button
               key={units}
               onClick={() => topUp(units)}
               disabled={actionLoading !== null || !hasPaymentMethod}
-              style={{
-                padding: '6px 14px', fontSize: '0.78rem', fontWeight: 600,
-                border: '1px solid #cbd5e1', borderRadius: 6, backgroundColor: '#fff',
-                color: '#333', cursor: (actionLoading || !hasPaymentMethod) ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-              }}
+              style={{ fontVariantNumeric: 'tabular-nums' }}
             >
               {formatTokens(units * 500_000)} — ${units * 10}
-            </button>
+            </Button>
           ))}
         </div>
-      </div>
+      </Section>
 
       {/* Invoices */}
       {invoices.length > 0 && (
-        <div style={sectionStyle}>
-          <h3 style={headingStyle}>Invoice History</h3>
-          <table style={{ width: '100%', fontSize: '0.75rem', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid #e2e8f0', color: '#888', textAlign: 'left' }}>
-                <th style={{ padding: '4px 0', fontWeight: 600 }}>Date</th>
-                <th style={{ padding: '4px 0', fontWeight: 600 }}>Amount</th>
-                <th style={{ padding: '4px 0', fontWeight: 600 }}>Status</th>
-                <th style={{ padding: '4px 0', fontWeight: 600 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {invoices.map(inv => (
-                <tr key={inv.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: '4px 0', color: '#555' }}>{new Date(inv.created * 1000).toLocaleDateString()}</td>
-                  <td style={{ padding: '4px 0', color: '#333' }}>${(inv.amount_paid / 100).toFixed(2)}</td>
-                  <td style={{ padding: '4px 0' }}>
-                    <span style={{
-                      fontSize: '0.65rem', fontWeight: 600, padding: '1px 6px', borderRadius: 3,
-                      backgroundColor: inv.status === 'paid' ? '#f0fff4' : '#fff5f5',
-                      color: inv.status === 'paid' ? '#22543d' : '#c53030',
-                    }}>{inv.status}</span>
-                  </td>
-                  <td style={{ padding: '4px 0' }}>
-                    {inv.hosted_invoice_url && (
-                      <a href={inv.hosted_invoice_url} target="_blank" rel="noreferrer" style={{ fontSize: '0.7rem', color: '#2563eb' }}>View</a>
-                    )}
-                  </td>
+        <Section title="Invoice history">
+          <div className="n-card" style={{ overflowX: 'auto' }}>
+            <table className="n-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th className="num">Amount</th>
+                  <th>Status</th>
+                  <th><span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' }}>Invoice</span></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Subscription status */}
-      {sub?.status && (
-        <div style={{ fontSize: '0.7rem', color: '#aaa', textAlign: 'center' }}>
-          Subscription status: {sub.status}
-          {sub.billing_cycle_start && ` · Billing cycle started ${new Date(sub.billing_cycle_start).toLocaleDateString()}`}
-        </div>
+              </thead>
+              <tbody>
+                {invoices.map(inv => (
+                  <tr key={inv.id}>
+                    <td style={{ whiteSpace: 'nowrap' }}>{new Date(inv.created * 1000).toLocaleDateString()}</td>
+                    <td className="num">${(inv.amount_paid / 100).toFixed(2)}</td>
+                    <td><Badge tone={invoiceTone(inv.status)}>{sentence(inv.status)}</Badge></td>
+                    <td className="num">
+                      {inv.hosted_invoice_url && (
+                        <a
+                          href={inv.hosted_invoice_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--accent)' }}
+                        >
+                          View
+                          <Icon icon={ExternalLink} size="meta" />
+                        </a>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
       )}
     </div>
   );

@@ -6,6 +6,7 @@ import ThreadList from '../components/threads/ThreadList';
 import ThreadDetail from '../components/threads/ThreadDetail';
 import HomePanel from '../components/home/HomePanel';
 import SettingsPanel from '../components/settings/SettingsPanel';
+import type { SettingsTab } from '../components/settings/SettingsPanel';
 import LoginForm from '../components/auth/LoginForm';
 import FunctionalPage from '../components/pages/FunctionalPage';
 import QuotaExceededModal from '../components/layout/QuotaExceededModal';
@@ -14,9 +15,14 @@ import { requestOpenRecipe } from '../components/display/RecipeEditor';
 import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../components/pages/pageRegistry';
 import type { SendOptions } from '../components/chat/AttachmentComposer';
 import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
+import { OPEN_APP_PAGE_EVENT } from '../components/apps/AppRunner';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
 import { getPageDocument } from '../lib/pageDocument';
-import { PanelLeft as PanelLeftIcon, ArrowLeft, Menu, Settings, LogOut, UserRoundPlus } from 'lucide-react';
+import { PanelLeft as PanelLeftIcon, Menu, Settings, LogOut, SquarePen, UserRoundPlus, X, type LucideIcon } from 'lucide-react';
+import Icon from '../components/ui/Icon';
+import Avatar from '../components/ui/Avatar';
+import Button from '../components/ui/Button';
+import IconButton from '../components/ui/IconButton';
 import { AGENTS } from '../components/layout/Sidebar';
 import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useActiveVenue } from '../hooks/useActiveVenue';
@@ -90,6 +96,16 @@ export default function Home() {
   // their own venue independent of this.
   const [activeVenueId, setActiveVenue] = useActiveVenue();
   const [quotaExceeded, setQuotaExceeded] = useState<{ used: number; quota: number } | null>(null);
+  // Which Settings tab to open on — set by "Top up" in the quota dialog.
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
+  // …only for that visit: leaving Settings forgets it.
+  useEffect(() => { if (activeAgent !== 'settings') setSettingsTab(undefined); }, [activeAgent]);
+  const openBilling = useCallback(() => {
+    setQuotaExceeded(null);
+    setSettingsTab('billing');
+    setActiveAgent('settings');
+    setMobileView('settings');
+  }, []);
   // The connector whose reconnect panel is currently shown in the content area.
   // Set when a page load fails on a dead token (via the norm:connector-auth
   // event from apiFetch) or from a ?connect=<connector> deep link (the MCP
@@ -916,6 +932,32 @@ export default function Home() {
     }
   }, []);
 
+  // "Open page" on an app card in a conversation: go to that app's menu page
+  // when it has one, else to the app's standalone page.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const slug = (e as CustomEvent).detail?.slug as string | undefined;
+      if (!slug) return;
+      const page = effectiveAppPages.find(p => p.id === `app:${slug}`);
+      if (!page) { window.location.assign(`/apps/${encodeURIComponent(slug)}`); return; }
+      setActiveAgent(team.pageMember?.[page.id] ?? page.agent);
+      setActivePage(page.id);
+      setSelectedThreadId(null);
+      setMobileView('detail');
+    };
+    window.addEventListener(OPEN_APP_PAGE_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_APP_PAGE_EVENT, onOpen);
+  }, [effectiveAppPages, team.pageMember]);
+
+  // Mobile member row: keep the active member in view when the menu opens or
+  // the member changes (the row scrolls sideways when many are hired).
+  const memberRowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!isMobile || mobileView !== 'list') return;
+    const el = memberRowRef.current?.querySelector<HTMLElement>(`[data-member="${activeAgent}"]`);
+    el?.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }, [isMobile, mobileView, activeAgent]);
+
   const handleMobileBack = useCallback(() => {
     setMobileView('home');
     setSelectedThreadId(null);
@@ -936,12 +978,12 @@ export default function Home() {
   // the user gets a graceful "reconnect here" state instead of a raw error, and
   // it works for every page through this one integration point.
   const connectPanel = connectConnector ? (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '2rem 1.5rem', fontFamily: 'system-ui, sans-serif' }}>
+    <div style={{ height: '100%', overflowY: 'auto', padding: '2rem 1.5rem', backgroundColor: 'var(--canvas)' }}>
       <div style={{ maxWidth: 560, margin: '0 auto' }}>
-        <div style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+        <h1 style={{ margin: '0 0 0.35rem', fontSize: 'var(--fs-xl)', fontWeight: 700, color: 'var(--text)' }}>
           This connection needs reconnecting
-        </div>
-        <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '1rem' }}>
+        </h1>
+        <div style={{ fontSize: 'var(--fs-base)', color: 'var(--text-soft)', marginBottom: '1rem' }}>
           We couldn&apos;t load this because the connection stopped working. Reconnect below to continue.
         </div>
         <ConnectorConnectCard
@@ -957,12 +999,9 @@ export default function Home() {
             return handleWidgetAction(selectedThreadId || '', action);
           }}
         />
-        <button
-          onClick={() => setConnectConnector(null)}
-          style={{ marginTop: '1rem', padding: '5px 12px', fontSize: '0.78rem', border: '1px solid #ddd', borderRadius: 6, background: '#fff', color: '#555', cursor: 'pointer', fontFamily: 'inherit' }}
-        >
+        <Button size="sm" variant="secondary" onClick={() => setConnectConnector(null)} style={{ marginTop: '1rem' }}>
           Dismiss
-        </button>
+        </Button>
       </div>
     </div>
   ) : null;
@@ -974,7 +1013,33 @@ export default function Home() {
     ));
 
     const mobileQuotaModal = quotaExceeded && (
-      <QuotaExceededModal used={quotaExceeded.used} quota={quotaExceeded.quota} onClose={() => setQuotaExceeded(null)} onTopUp={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} onUpgrade={() => { setQuotaExceeded(null); setActiveAgent('settings'); setMobileView('settings'); }} />
+      <QuotaExceededModal used={quotaExceeded.used} quota={quotaExceeded.quota} onClose={() => setQuotaExceeded(null)} onTopUp={openBilling} />
+    );
+
+    // Every mobile screen but the menu: a top bar (menu, the screen's title,
+    // new chat) above the content. It replaces the floating menu button that
+    // sat over page titles. The bar names the screen, so the page's own large
+    // title is hidden under .n-mobile-shell (globals.css).
+    const mobileShell = (title: string, content: React.ReactNode) => (
+      <div className="full-height n-mobile-shell" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: 'var(--canvas)' }}>
+        {mobileQuotaModal}
+        <header style={{
+          flex: '0 0 auto', boxSizing: 'content-box', height: 52, paddingTop: 'env(safe-area-inset-top, 0px)',
+          paddingLeft: 4, paddingRight: 4, display: 'flex', alignItems: 'center', gap: 4,
+          borderBottom: '1px solid var(--line)', backgroundColor: 'var(--canvas)',
+        }}>
+          <button type="button" aria-label="Open menu" aria-expanded={false} data-testid="mobile-menu-btn" onClick={() => setMobileView('list')} className="n-icon-btn" style={{ width: 44, height: 44 }}>
+            <Icon icon={Menu} size={22} tone="strong" />
+          </button>
+          <h1 style={{ flex: 1, minWidth: 0, margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 700, letterSpacing: '-0.01em', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>
+            {title}
+          </h1>
+          <button type="button" aria-label="New chat" onClick={() => { handleNewChat(); setMobileView('home'); }} className="n-icon-btn" style={{ width: 44, height: 44 }}>
+            <Icon icon={SquarePen} size={20} />
+          </button>
+        </header>
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>{content}</div>
+      </div>
     );
 
     // Thread detail view — back goes to home (conversation)
@@ -982,97 +1047,92 @@ export default function Home() {
       const content = connectPanel ? connectPanel : mobileView === 'detail' && activePage ? (() => {
         const pageConfig = findPage(activePage);
         if (!pageConfig) return null;
-        return <FunctionalPage config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} onVenueChange={setActiveVenue} />;
+        return <FunctionalPage key={pageConfig.id} config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} />;
       })() : selectedThread ? (
         <ThreadDetail thread={selectedThread} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} loading={loading} openThread={openThread || null} />
       ) : (
         <HomePanel onSend={sendMessage} loading={loading} />
       );
 
-      return (
-        <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
-          {mobileQuotaModal}
-          <button onClick={() => setMobileView('list')} style={{
-            position: 'absolute', top: 10, left: 10, zIndex: 10,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
-            backgroundColor: 'rgba(250, 248, 245, 0.85)', backdropFilter: 'blur(4px)',
-            cursor: 'pointer',
-          }}>
-            <Menu size={22} strokeWidth={1.75} />
-          </button>
-          <div style={{ flex: 1, overflow: 'auto' }}>{content}</div>
-        </div>
-      );
+      const title = connectPanel ? 'Reconnect'
+        : activePage ? (findPage(activePage)?.label ?? 'Norm')
+        : selectedThread ? (selectedThread.title || 'Conversation')
+        : 'Norm';
+      return mobileShell(title, content);
     }
 
     // Settings view
     if (mobileView === 'settings') {
-      return (
-        <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
-          {mobileQuotaModal}
-          <button onClick={() => setMobileView('list')} style={{
-            position: 'absolute', top: 10, left: 10, zIndex: 10,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
-            backgroundColor: 'rgba(250, 248, 245, 0.85)', backdropFilter: 'blur(4px)',
-            cursor: 'pointer',
-          }}>
-            <Menu size={22} strokeWidth={1.75} />
-          </button>
-          <div style={{ flex: 1, overflow: 'auto', paddingTop: '3rem' }}>
-            {activeAgent === 'team' ? <TeamPage user={user} /> : <SettingsPanel />}
-          </div>
-        </div>
+      return mobileShell(
+        activeAgent === 'team' ? 'Your AI team' : 'Settings',
+        activeAgent === 'team' ? <TeamPage user={user} /> : <SettingsPanel key={settingsTab} initialTab={settingsTab} />,
       );
     }
 
-    // List view (hamburger destination) — agent icons + thread list + user footer
+    // List view (hamburger destination) — team members + menu + user footer
     if (mobileView === 'list') {
+      const members = AGENTS.filter(a => a.id === 'home' || !team.hired || team.hired.has(a.id));
+      const footerButton = (testId: string, label: string, icon: LucideIcon, onClick: () => void) => (
+        <button
+          type="button"
+          data-testid={testId}
+          aria-label={label}
+          title={label}
+          onClick={onClick}
+          className="n-icon-btn"
+          style={{ width: 44, height: 44 }}
+        >
+          <Icon icon={icon} size={20} />
+        </button>
+      );
       return (
-        <div className="full-height" style={{ display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden', backgroundColor: '#faf8f5' }}>
+        <div className="full-height" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: 'var(--canvas)' }}>
           {mobileQuotaModal}
 
-          {/* Header: hamburger + logo, then agent icons row below */}
-          <div style={{ borderBottom: '1px solid #e2ddd7' }}>
-            <div style={{ display: 'flex', alignItems: 'center', padding: '0.5rem 0.75rem' }}>
-              <button onClick={() => setMobileView('home')} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
-                backgroundColor: 'transparent', cursor: 'pointer',
-              }}>
-                <Menu size={22} strokeWidth={1.75} />
-              </button>
-              <span style={{ fontSize: '1rem', fontWeight: 700, color: '#a08060' }}>Norm</span>
-            </div>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '0.25rem',
-              padding: '0.4rem 0.75rem',
-            }}>
-              {AGENTS.filter(a => a.id === 'home' || !team.hired || team.hired.has(a.id)).map((agent) => {
+          {/* Header: close + wordmark */}
+          <div style={{ flex: '0 0 auto', boxSizing: 'content-box', height: 52, padding: 'env(safe-area-inset-top, 0px) 8px 0', display: 'flex', alignItems: 'center', gap: 4, borderBottom: '1px solid var(--line)' }}>
+            <button type="button" aria-label="Close menu" onClick={() => setMobileView('home')} className="n-icon-btn" style={{ width: 44, height: 44 }}>
+              <Icon icon={X} size={22} tone="strong" />
+            </button>
+            <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--text)' }}>Norm</span>
+          </div>
+
+          {/* Team members: a row you swipe sideways — full-size icons, no
+              scrollbar. Items spread out when few are hired. */}
+          <nav aria-label="Team members" style={{ flex: '0 0 auto', position: 'relative', borderBottom: '1px solid var(--line)' }}>
+            <div
+              ref={memberRowRef}
+              className="no-scrollbar"
+              style={{ display: 'flex', gap: 4, padding: '8px 12px', overflowX: 'auto', overflowY: 'hidden', scrollSnapType: 'x proximity' }}
+            >
+              {members.map((agent) => {
                 const isActive = activeAgent === agent.id;
                 return (
                   <button
                     key={agent.id}
+                    type="button"
                     data-testid={`sidebar-${agent.id}`}
+                    data-member={agent.id}
+                    aria-current={isActive ? 'page' : undefined}
                     onClick={() => setActiveAgent(agent.id)}
                     style={{
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                      flex: 1, padding: '0.4rem 0', gap: 2,
-                      border: 'none', borderRadius: 8,
-                      backgroundColor: isActive ? '#f0ebe5' : 'transparent',
-                      cursor: 'pointer', fontFamily: 'inherit',
+                      flex: '1 0 auto', minWidth: 72, height: 64, padding: '6px 8px',
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
+                      border: 'none', borderRadius: 'var(--radius-lg)',
+                      backgroundColor: isActive ? 'var(--selected)' : 'transparent',
+                      scrollSnapAlign: 'start', cursor: 'pointer',
                     }}
                   >
-                    <agent.icon size={20} strokeWidth={1.75} color={isActive ? '#1a1a1a' : '#999'} />
-                    <span style={{ fontSize: '0.6rem', fontWeight: isActive ? 600 : 400, color: isActive ? '#1a1a1a' : '#999' }}>
+                    <Icon icon={agent.icon} size="mobileNav" tone={isActive ? 'strong' : 'muted'} duo={isActive} />
+                    <span style={{ fontSize: 12, lineHeight: '16px', whiteSpace: 'nowrap', fontWeight: isActive ? 600 : 500, color: isActive ? 'var(--text)' : 'var(--text-soft)' }}>
                       {agent.label}
                     </span>
                   </button>
                 );
               })}
             </div>
-          </div>
+            <div aria-hidden style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 36, pointerEvents: 'none', background: 'linear-gradient(to right, rgba(250, 248, 245, 0), var(--canvas))' }} />
+          </nav>
 
           {/* Thread list */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -1089,98 +1149,41 @@ export default function Home() {
               extraPages={effectiveAppPages}
               appsOn={team.appsOn}
               pageMember={team.pageMember}
+              activePage={activePage}
+              showBrand={false}
             />
           </div>
 
           {/* User footer */}
           {user && (
             <div className="safe-bottom" style={{
-              display: 'flex', alignItems: 'center', gap: '0.6rem',
-              padding: '0.6rem 0.75rem', borderTop: '1px solid #e2ddd7',
+              flex: '0 0 auto', minHeight: 60, padding: '0 12px 0 16px',
+              display: 'flex', alignItems: 'center', gap: 10, borderTop: '1px solid var(--line)',
             }}>
-              <div style={{
-                width: 28, height: 28, borderRadius: '50%',
-                backgroundColor: user.role === 'admin' ? '#1a1a1a' : '#b8e6cc',
-                color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: '0.65rem', fontWeight: 700,
-              }}>
-                {user.full_name.charAt(0).toUpperCase()}
-              </div>
-              <span style={{ fontSize: '0.8rem', color: '#666', flex: 1 }}>{user.full_name}</span>
-              <button
-                data-testid="sidebar-team-mobile"
-                onClick={() => { setActiveAgent('team'); setMobileView('settings'); }}
-                title="Your AI team"
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  minWidth: 36, minHeight: 36, border: 'none', borderRadius: 6,
-                  backgroundColor: 'transparent', cursor: 'pointer', color: '#bbb',
-                }}
-              >
-                <UserRoundPlus size={18} strokeWidth={1.75} />
-              </button>
-              {showSettings && (
-                <button
-                  data-testid="sidebar-settings"
-                  onClick={() => { setActiveAgent('settings'); setMobileView('settings'); }}
-                  title="Settings"
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    minWidth: 36, minHeight: 36, border: 'none', borderRadius: 6,
-                    backgroundColor: 'transparent', cursor: 'pointer', color: '#bbb',
-                  }}
-                >
-                  <Settings size={18} strokeWidth={1.75} />
-                </button>
-              )}
-              <button
-                data-testid="sidebar-logout"
-                onClick={handleLogout}
-                title="Sign out"
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  minWidth: 36, minHeight: 36, border: 'none', borderRadius: 6,
-                  backgroundColor: 'transparent', cursor: 'pointer', color: '#bbb',
-                }}
-              >
-                <LogOut size={16} strokeWidth={1.75} />
-              </button>
+              <Avatar name={user.full_name} />
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-base)', color: 'var(--text-soft)' }}>{user.full_name}</span>
+              {footerButton('sidebar-team-mobile', 'Your AI team', UserRoundPlus, () => { setActiveAgent('team'); setMobileView('settings'); })}
+              {showSettings && footerButton('sidebar-settings', 'Settings', Settings, () => { setActiveAgent('settings'); setMobileView('settings'); })}
+              {footerButton('sidebar-logout', 'Sign out', LogOut, handleLogout)}
             </div>
           )}
         </div>
       );
     }
 
-    // Home view (default) — conversation with floating hamburger
-    return (
-      <div className="full-height" style={{ position: 'relative', display: 'flex', flexDirection: 'column', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
-        {mobileQuotaModal}
-        <button onClick={() => setMobileView('list')} style={{
-          position: 'absolute', top: 10, left: 10, zIndex: 10,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          minWidth: 44, minHeight: 44, border: 'none', borderRadius: 8,
-          backgroundColor: 'rgba(250, 248, 245, 0.85)', backdropFilter: 'blur(4px)',
-          cursor: 'pointer',
-        }}>
-          <Menu size={22} strokeWidth={1.75} />
-        </button>
-        <div style={{ flex: 1, overflow: 'auto' }}>
-          <HomePanel onSend={sendMessage} loading={loading} />
-        </div>
-      </div>
-    );
+    // Home view (default)
+    return mobileShell('Norm', <HomePanel onSend={sendMessage} loading={loading} />);
   }
 
   // Desktop layout: three-panel
   return (
-    <div style={{ display: 'flex', height: '100dvh', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100dvh', overflow: 'hidden', backgroundColor: 'var(--canvas)' }}>
       {quotaExceeded && (
         <QuotaExceededModal
           used={quotaExceeded.used}
           quota={quotaExceeded.quota}
           onClose={() => setQuotaExceeded(null)}
-          onTopUp={() => { setQuotaExceeded(null); setActiveAgent('settings'); }}
-          onUpgrade={() => { setQuotaExceeded(null); setActiveAgent('settings'); }}
+          onTopUp={openBilling}
         />
       )}
       {/* Left Sidebar */}
@@ -1199,7 +1202,7 @@ export default function Home() {
         flexDirection: 'column',
         width: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 0 : 360,
         minWidth: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 0 : 360,
-        borderRight: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 'none' : '1px solid #e2ddd7',
+        borderRight: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 'none' : '1px solid var(--line)',
         overflow: 'hidden',
         transition: 'width 0.2s ease, min-width 0.2s ease',
       }}>
@@ -1216,29 +1219,24 @@ export default function Home() {
           extraPages={effectiveAppPages}
           onSelectPage={handleSelectPage}
           appsOn={team.appsOn}
-              pageMember={team.pageMember}
+          pageMember={team.pageMember}
+          activePage={activePage}
         />
       </div>
 
       {/* Right Panel */}
       <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
         {panelCollapsed && (
-          <button
+          <IconButton
+            icon={PanelLeftIcon}
+            label="Show panel"
+            iconSize={16}
             onClick={() => setPanelCollapsed(false)}
-            title="Show panel"
-            style={{
-              position: 'absolute', top: 12, left: 12, zIndex: 10,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 32, height: 32,
-              border: '1px solid #e2ddd7', borderRadius: 8,
-              backgroundColor: '#faf8f5', cursor: 'pointer', color: '#999',
-            }}
-          >
-            <PanelLeftIcon size={16} strokeWidth={1.75} />
-          </button>
+            style={{ position: 'absolute', top: 12, left: 12, zIndex: 10, border: '1px solid var(--line)', backgroundColor: 'var(--canvas)' }}
+          />
         )}
         {activeAgent === 'settings' ? (
-          <SettingsPanel />
+          <SettingsPanel key={settingsTab} initialTab={settingsTab} />
         ) : activeAgent === 'team' ? (
           <TeamPage user={user} />
         ) : connectPanel ? (
@@ -1248,13 +1246,13 @@ export default function Home() {
           if (!pageConfig) return null;
           return (
             <FunctionalPage
+              key={pageConfig.id}
               config={pageConfig}
               thread={selectedThread}
               onSend={sendMessage}
               loading={loading}
               onWidgetAction={handleWidgetAction}
               activeVenueId={activeVenueId}
-              onVenueChange={setActiveVenue}
             />
           );
         })() : selectedThread ? (

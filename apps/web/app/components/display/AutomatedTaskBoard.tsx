@@ -1,9 +1,16 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import type { CSSProperties } from 'react';
+import { Play, Trash2 } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch } from '../../lib/api';
 import type { AutomatedTask } from '../../types';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import IconButton from '../ui/IconButton';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
 
 const SCHEDULE_LABELS: Record<string, string> = {
   manual: 'Manual',
@@ -13,11 +20,30 @@ const SCHEDULE_LABELS: Record<string, string> = {
   monthly: 'Monthly',
 };
 
-const STATUS_STYLES: Record<string, { bg: string; color: string }> = {
-  active: { bg: '#d1fae5', color: '#065f46' },
-  paused: { bg: '#fef3c7', color: '#92400e' },
-  draft: { bg: '#f3f4f6', color: '#6b7280' },
+// active → ok · paused → warn · draft (and anything unexpected) → neutral.
+const STATUS_TONES: Record<string, BadgeTone> = {
+  active: 'ok',
+  paused: 'warn',
+  draft: 'neutral',
 };
+
+/** Below this width the table's columns crowd the task name, so the board
+ *  shows one card per task instead (phones, iPad portrait, a dashboard tile). */
+const TABLE_MIN_WIDTH = 720;
+
+const DESCRIPTION: CSSProperties = {
+  marginTop: 2,
+  fontSize: 'var(--fs-sm)',
+  color: 'var(--text-soft)',
+  display: '-webkit-box',
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: 'vertical',
+  overflow: 'hidden',
+};
+
+function sentenceCase(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 function formatSchedule(type: string, config: Record<string, unknown>): string {
   const hour = config.hour as number | undefined;
@@ -43,10 +69,26 @@ function timeAgo(dateStr: string | null): string {
   return `${days}d ago`;
 }
 
-export default function AutomatedTaskBoard({ data, onAction }: DisplayBlockProps) {
+export default function AutomatedTaskBoard({ data, props, onAction }: DisplayBlockProps) {
   const initialTasks = ((data as Record<string, unknown>)?.tasks as AutomatedTask[]) || [];
   const [tasks, setTasks] = useState<AutomatedTask[]>(initialTasks);
   const [runningId, setRunningId] = useState<string | null>(null);
+
+  // A PAGE instance (FunctionalPage marks it with persistVenue) draws the page
+  // header; in a conversation or a dashboard tile the board stays compact.
+  const isPage = !!props?.persistVenue;
+
+  // The board's own width decides table or cards — not the viewport, since
+  // the menu panel, a split conversation or a dashboard tile can all make it
+  // narrow on a wide screen.
+  const [width, setWidth] = useState(0);
+  const measure = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    setWidth(el.offsetWidth);
+    const ro = new ResizeObserver(() => setWidth(el.offsetWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => { setTasks(initialTasks); }, [data]);
 
@@ -99,95 +141,152 @@ export default function AutomatedTaskBoard({ data, onAction }: DisplayBlockProps
     }
   }, [onAction]);
 
+  const compactTitle = (meta?: string) => (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+      <h2 style={{ margin: 0, fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Automated Tasks</h2>
+      {meta && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{meta}</span>}
+    </div>
+  );
+
   if (tasks.length === 0) {
-    return (
-      <div style={{ padding: '0.5rem' }}>
-        <h2 style={{ margin: '0 0 1.5rem', fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>Automated Tasks</h2>
-        <div style={{ padding: '2rem', textAlign: 'center', color: '#9ca3af' }}>
-          <div style={{ fontSize: '1rem', marginBottom: '0.5rem' }}>No automated tasks yet</div>
-          <div style={{ fontSize: '0.82rem' }}>Ask Norm to create one — e.g., &ldquo;Set up a daily task to check BambooHR candidates&rdquo;</div>
+    const empty = (
+      <PageState
+        kind="empty"
+        title="No automated tasks yet"
+        detail={<>Ask Norm to create one — e.g., &ldquo;Set up a daily task to check BambooHR candidates&rdquo;</>}
+      />
+    );
+    if (isPage) {
+      return (
+        <div>
+          <PageHeader title="Automated Tasks" />
+          {empty}
         </div>
+      );
+    }
+    return (
+      <div style={{ padding: 8 }}>
+        {compactTitle()}
+        {empty}
       </div>
     );
   }
 
-  return (
-    <div data-testid="auto-task-board" style={{ padding: '0.5rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>Automated Tasks</h2>
-          <p style={{ margin: '0.15rem 0 0', fontSize: '0.78rem', color: '#999' }}>
-            {tasks.length} task{tasks.length !== 1 ? 's' : ''} configured
-          </p>
-        </div>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        {tasks.map(task => {
-          const ss = STATUS_STYLES[task.status] || STATUS_STYLES.draft;
-          const isRunning = runningId === task.id;
-          return (
-            <div
-              key={task.id}
-              data-testid={`auto-task-card-${task.id}`}
-              onClick={() => handleOpenTask(task)}
-              style={{
-                border: '1px solid #e5e7eb', borderRadius: 10,
-                backgroundColor: '#fff', padding: '0.75rem 1rem',
-                boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
-                cursor: 'pointer',
-                transition: 'border-color 0.15s',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.borderColor = '#111')}
-              onMouseLeave={e => (e.currentTarget.style.borderColor = '#e5e7eb')}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem' }}>
-                <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#111', flex: 1 }}>{task.title}</span>
-                {(task.waiting_for_approval ?? 0) > 0 && (
-                  <span style={{
-                    fontSize: '0.6rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-                    backgroundColor: '#e8daef', color: '#6c3483',
-                  }}>Waiting for your approval</span>
-                )}
-                <span style={{
-                  fontSize: '0.6rem', fontWeight: 600, padding: '2px 8px', borderRadius: 10,
-                  backgroundColor: ss.bg, color: ss.color,
-                }}>{task.status}</span>
-              </div>
+  const countLabel = `${tasks.length} task${tasks.length !== 1 ? 's' : ''} configured`;
+  const toolCount = (task: AutomatedTask) => task.tool_filter?.length ?? 0;
 
-              {task.description && (
-                <div style={{ fontSize: '0.78rem', color: '#6b7280', marginBottom: '0.3rem' }}>{task.description}</div>
+  const badges = (task: AutomatedTask) => (
+    <>
+      {task.status && <Badge tone={STATUS_TONES[task.status] ?? 'neutral'}>{sentenceCase(task.status)}</Badge>}
+      {(task.waiting_for_approval ?? 0) > 0 && (
+        <Badge tone="warn" title="A run is waiting for your approval">Approval needed</Badge>
+      )}
+    </>
+  );
+
+  // Run and pause are text buttons; delete is the icon at the end. One row of
+  // the board, so no primary: the page's one primary is the composer's Send.
+  const actions = (task: AutomatedTask, deleteAtEnd = false) => {
+    const isRunning = runningId === task.id;
+    return (
+      <>
+        <Button size="sm" icon={Play} onClick={(e) => handleRun(e, task.id)} disabled={isRunning}>
+          {isRunning ? 'Running…' : 'Run now'}
+        </Button>
+        <Button size="sm" variant="quiet" onClick={(e) => handlePauseResume(e, task)}>
+          {task.status === 'active' ? 'Pause' : 'Activate'}
+        </Button>
+        <IconButton
+          icon={Trash2}
+          label="Delete"
+          iconSize={16}
+          onClick={(e) => handleDelete(e, task.id)}
+          style={deleteAtEnd ? { marginLeft: 'auto' } : undefined}
+        />
+      </>
+    );
+  };
+
+  const table = (
+    <table className="n-table" aria-label="Automated tasks">
+      <thead>
+        <tr>
+          <th scope="col">Task</th>
+          <th scope="col">Schedule</th>
+          <th scope="col">Last run</th>
+          <th scope="col">Status</th>
+          <th scope="col" aria-label="Actions" />
+        </tr>
+      </thead>
+      <tbody>
+        {tasks.map(task => (
+          <tr
+            key={task.id}
+            data-testid={`auto-task-card-${task.id}`}
+            onClick={() => handleOpenTask(task)}
+            style={{ cursor: 'pointer' }}
+          >
+            <td style={{ minWidth: 200 }}>
+              <div style={{ fontWeight: 500, color: 'var(--text)' }}>{task.title}</div>
+              {task.description && <div style={DESCRIPTION} title={task.description}>{task.description}</div>}
+              {toolCount(task) > 0 && (
+                <div style={{ marginTop: 2, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>Tools: {toolCount(task)} filtered</div>
               )}
+            </td>
+            <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{formatSchedule(task.schedule_type, task.schedule_config)}</td>
+            <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{timeAgo(task.last_run_at)}</td>
+            <td>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{badges(task)}</div>
+            </td>
+            <td>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>{actions(task)}</div>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 
-              <div style={{ display: 'flex', gap: '1rem', fontSize: '0.72rem', color: '#9ca3af', marginBottom: '0.4rem' }}>
-                <span>{formatSchedule(task.schedule_type, task.schedule_config)}</span>
-                <span>Last run: {timeAgo(task.last_run_at)}</span>
-                {task.tool_filter && task.tool_filter.length > 0 && (
-                  <span style={{ color: '#6366f1' }}>Tools: {task.tool_filter.length} filtered</span>
-                )}
-              </div>
+  const cards = (
+    <ul role="list" aria-label="Automated tasks" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {tasks.map(task => (
+        <li
+          key={task.id}
+          data-testid={`auto-task-card-${task.id}`}
+          className="n-card"
+          onClick={() => handleOpenTask(task)}
+          onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--field)')}
+          onMouseLeave={e => (e.currentTarget.style.borderColor = '')}
+          style={{ padding: '14px 16px', cursor: 'pointer', transition: 'border-color 0.15s' }}
+        >
+          <div style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{task.title}</div>
+          {task.description && <div style={{ ...DESCRIPTION, marginTop: 4 }} title={task.description}>{task.description}</div>}
+          {/* Status first, then the muted schedule — the mobile page pattern. */}
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 10px', marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+            {badges(task)}
+            <span>{formatSchedule(task.schedule_type, task.schedule_config)}</span>
+            <span>Last run: {timeAgo(task.last_run_at)}</span>
+            {toolCount(task) > 0 && <span>Tools: {toolCount(task)} filtered</span>}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 }}>
+            {actions(task, true)}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
 
-              <div style={{ display: 'flex', gap: '0.3rem' }}>
-                <button onClick={(e) => handleRun(e, task.id)} disabled={isRunning} style={{
-                  padding: '3px 10px', fontSize: '0.68rem', fontWeight: 600,
-                  border: 'none', borderRadius: 6, backgroundColor: '#111', color: '#fff',
-                  cursor: isRunning ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-                }}>{isRunning ? 'Running...' : 'Run Now'}</button>
+  const wide = width >= TABLE_MIN_WIDTH;
 
-                <button onClick={(e) => handlePauseResume(e, task)} style={{
-                  padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
-                  border: '1px solid #d1d5db', borderRadius: 6, backgroundColor: '#fff', color: '#6b7280',
-                  cursor: 'pointer', fontFamily: 'inherit',
-                }}>{task.status === 'active' ? 'Pause' : 'Activate'}</button>
-
-                <button onClick={(e) => handleDelete(e, task.id)} style={{
-                  padding: '3px 10px', fontSize: '0.68rem', fontWeight: 500,
-                  border: '1px solid #fecaca', borderRadius: 6, backgroundColor: '#fff', color: '#dc2626',
-                  cursor: 'pointer', fontFamily: 'inherit', marginLeft: 'auto',
-                }}>Delete</button>
-              </div>
-            </div>
-          );
-        })}
+  return (
+    <div data-testid="auto-task-board" style={isPage ? undefined : { padding: 8 }}>
+      {isPage ? <PageHeader title="Automated Tasks" meta={countLabel} /> : compactTitle(countLabel)}
+      <div ref={measure}>
+        {!wide ? cards : isPage ? table : (
+          // In a conversation the table sits on its own white card; a wide
+          // row scrolls inside the card rather than losing its actions.
+          <div className="n-card" style={{ overflowX: 'auto' }}>{table}</div>
+        )}
       </div>
     </div>
   );

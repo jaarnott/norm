@@ -2,7 +2,14 @@
 
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../../../lib/api';
-import { Layout, BarChart3, Share2, Loader2, Check } from 'lucide-react';
+import { memberName } from '../../../lib/memberNames';
+import { Share2, LoaderCircle, Check, Trash2 } from 'lucide-react';
+import PageHeader from '../../ui/PageHeader';
+import PageState from '../../ui/PageState';
+import Badge from '../../ui/Badge';
+import Button from '../../ui/Button';
+import IconButton from '../../ui/IconButton';
+import Icon from '../../ui/Icon';
 
 interface Template {
   slug: string;
@@ -31,22 +38,25 @@ interface AvailableData {
 interface DashboardPickerProps {
   agentSlug: string;
   onDashboardSelected: () => void;
+  /** A menu PAGE (not a conversation): draw the page header. */
+  asPage?: boolean;
 }
 
-const AGENT_LABELS: Record<string, string> = { hr: 'HR', procurement: 'Procurement', reports: 'Reports' };
-const AGENT_COLORS: Record<string, string> = { hr: '#5b8abd', procurement: '#b07d4f', reports: '#4f8a5e' };
+const SPIN: React.CSSProperties = { animation: 'n-spin 1s linear infinite' };
 
-export default function DashboardPicker({ agentSlug, onDashboardSelected }: DashboardPickerProps) {
+export default function DashboardPicker({ agentSlug, onDashboardSelected, asPage = false }: DashboardPickerProps) {
   const [data, setData] = useState<AvailableData | null>(null);
   const [loading, setLoading] = useState(true);
+  // Display only: a failed load reads as an error, not as "no dashboards".
+  const [loadFailed, setLoadFailed] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetch(`/api/reports/dashboards/${agentSlug}/available`)
-      .then(r => r.ok ? r.json() : null)
+      .then(r => { if (!r.ok) setLoadFailed(true); return r.ok ? r.json() : null; })
       .then(d => { if (d) setData(d); })
-      .catch(() => {})
+      .catch(() => { setLoadFailed(true); })
       .finally(() => setLoading(false));
   }, [agentSlug]);
 
@@ -95,67 +105,74 @@ export default function DashboardPicker({ agentSlug, onDashboardSelected }: Dash
     setActing(null);
   };
 
-  if (loading) {
-    return (
-      <div style={{ padding: '3rem', textAlign: 'center', color: '#999' }}>
-        <Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} />
-        <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
-      </div>
-    );
-  }
-
-  const agentLabel = AGENT_LABELS[agentSlug] || agentSlug;
-  const color = AGENT_COLORS[agentSlug] || '#888';
+  // "time_attendance" reads as "Time & attendance dashboards", never the slug.
+  const title = agentSlug ? `${memberName(agentSlug)} dashboards` : 'Dashboards';
+  const intro = 'Choose a dashboard to display, or create one from a template.';
   const activeId = data?.active_id;
   const templates = data?.templates || [];
   const own = data?.own || [];
   const shared = data?.shared || [];
   const hasContent = templates.length > 0 || own.length > 0 || shared.length > 0;
+  const showIntro = !loading && !loadFailed && hasContent;
+
+  const header = asPage ? (
+    <PageHeader title={title} meta={showIntro ? intro : undefined} />
+  ) : (
+    <div style={{ marginBottom: 16 }}>
+      <h2 style={{ margin: 0, fontSize: 'var(--fs-md)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</h2>
+      {showIntro && <p style={{ margin: '2px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{intro}</p>}
+    </div>
+  );
+
+  if (loading) {
+    return (
+      <div style={asPage ? undefined : { padding: 8 }}>
+        {header}
+        <PageState kind="loading" title="Loading dashboards…" />
+      </div>
+    );
+  }
+
+  const cardGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 };
 
   return (
-    <div style={{ padding: '1.5rem', maxWidth: 900, margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#1a1a1a' }}>
-          {agentLabel} Dashboards
-        </h2>
-        <p style={{ margin: '0.3rem 0 0', fontSize: '0.78rem', color: '#999' }}>
-          Choose a dashboard to display, or create one from a template.
-        </p>
-      </div>
+    <div style={asPage ? undefined : { padding: 8 }}>
+      {header}
 
-      {!hasContent && (
-        <div style={{ textAlign: 'center', padding: '2rem', color: '#bbb', fontSize: '0.85rem' }}>
-          No dashboards available yet. Ask Norm to build a dashboard, or check the Templates tab in Settings.
-        </div>
+      {loadFailed ? (
+        <PageState kind="error" title="Couldn’t load dashboards" detail="Norm couldn’t reach the dashboard list. Try again in a moment." />
+      ) : !hasContent && (
+        <PageState kind="empty" title="No dashboards available yet." detail="Ask Norm to build a dashboard, or check the Templates tab in Settings." />
       )}
 
       {/* Templates */}
       {templates.length > 0 && (
-        <Section title="Templates" icon={<Layout size={14} />} count={templates.length}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '0.6rem' }}>
+        <Section title="Templates" count={templates.length} noun="template" large={asPage}>
+          <div style={cardGrid}>
             {templates.map(t => (
               <div
                 key={t.slug}
+                className="n-card"
                 onClick={() => instantiateTemplate(t.slug)}
-                style={{
-                  border: '1px solid #f0ebe5', borderRadius: 10, padding: '1rem',
-                  backgroundColor: '#faf8f5', cursor: 'pointer',
-                  transition: 'box-shadow 0.15s',
-                }}
-                onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 2px 10px rgba(0,0,0,0.06)')}
-                onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}
+                style={{ padding: 16, cursor: 'pointer', transition: 'border-color 0.12s' }}
+                onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--line-strong)')}
+                onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--line)')}
               >
-                <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#333' }}>{t.title}</div>
-                <div style={{ fontSize: '0.65rem', color: '#bbb', marginTop: 2 }}>{t.chart_count} chart{t.chart_count !== 1 ? 's' : ''}</div>
-                {t.description && <div style={{ fontSize: '0.72rem', color: '#999', marginTop: 4 }}>{t.description}</div>}
-                <div style={{ marginTop: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 'var(--fs-base)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{t.title}</div>
+                    <div style={{ marginTop: 2, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{t.chart_count} chart{t.chart_count !== 1 ? 's' : ''}</div>
+                  </div>
                   {acting === `tmpl-${t.slug}` ? (
-                    <span style={{ fontSize: '0.68rem', color: color }}><Loader2 size={12} style={{ animation: 'spin 1s linear infinite', verticalAlign: 'middle' }} /> Creating...</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto', height: 30, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                      <Icon icon={LoaderCircle} size="dense" tone="muted" style={SPIN} /> Creating…
+                    </span>
                   ) : (
-                    <span style={{ fontSize: '0.68rem', fontWeight: 600, color }}>Use Template</span>
+                    // No handler of its own: the click is the card's.
+                    <Button size="sm">Use template</Button>
                   )}
                 </div>
+                {t.description && <div style={{ marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{t.description}</div>}
               </div>
             ))}
           </div>
@@ -164,15 +181,14 @@ export default function DashboardPicker({ agentSlug, onDashboardSelected }: Dash
 
       {/* My Dashboards */}
       {own.length > 0 && (
-        <Section title="My Dashboards" icon={<BarChart3 size={14} />} count={own.length}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.6rem' }}>
+        <Section title="My dashboards" count={own.length} noun="dashboard" large={asPage}>
+          <div style={cardGrid}>
             {own.map(d => (
               <DashboardCard
                 key={d.id}
                 dashboard={d}
                 isActive={activeId === d.id}
                 acting={acting === d.id}
-                color={color}
                 onSetActive={() => setActive(d.id)}
                 onDelete={() => setConfirmDelete(d.id)}
               />
@@ -183,15 +199,14 @@ export default function DashboardPicker({ agentSlug, onDashboardSelected }: Dash
 
       {/* Shared Dashboards */}
       {shared.length > 0 && (
-        <Section title="Shared" icon={<Share2 size={14} />} count={shared.length}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.6rem' }}>
+        <Section title="Shared" count={shared.length} noun="dashboard" large={asPage}>
+          <div style={cardGrid}>
             {shared.map(d => (
               <DashboardCard
                 key={d.id}
                 dashboard={d}
                 isActive={activeId === d.id}
                 acting={acting === d.id}
-                color={color}
                 onSetActive={() => setActive(d.id)}
                 shared
               />
@@ -203,89 +218,94 @@ export default function DashboardPicker({ agentSlug, onDashboardSelected }: Dash
       {/* Delete confirmation */}
       {confirmDelete && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 9999, backgroundColor: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ backgroundColor: '#fff', borderRadius: 12, padding: '1.5rem', maxWidth: 360, width: '90%', boxShadow: '0 10px 40px rgba(0,0,0,0.15)', textAlign: 'center' }}>
-            <h3 style={{ fontSize: '0.95rem', fontWeight: 600, color: '#333', margin: '0 0 0.5rem' }}>Delete dashboard?</h3>
-            <p style={{ fontSize: '0.78rem', color: '#888', margin: '0 0 0.25rem' }}>
-              <strong style={{ color: '#555' }}>{own.find(d => d.id === confirmDelete)?.title}</strong>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dashboard-title"
+            className="n-card"
+            style={{ padding: 20, maxWidth: 380, width: 'calc(100% - 32px)', boxSizing: 'border-box', boxShadow: '0 10px 40px rgba(0,0,0,0.15)' }}
+          >
+            <h3 id="delete-dashboard-title" style={{ fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)', margin: '0 0 8px' }}>Delete dashboard?</h3>
+            <p style={{ fontSize: 'var(--fs-base)', color: 'var(--text)', margin: '0 0 4px' }}>
+              <strong style={{ fontWeight: 600 }}>{own.find(d => d.id === confirmDelete)?.title}</strong>
             </p>
-            <p style={{ fontSize: '0.75rem', color: '#aaa', margin: '0 0 1.25rem' }}>This will permanently delete this dashboard and all its charts.</p>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-              <button onClick={() => setConfirmDelete(null)} style={{ padding: '8px 20px', fontSize: '0.82rem', fontWeight: 500, border: '1px solid #ddd', borderRadius: 8, backgroundColor: '#fff', color: '#666', cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
-              <button onClick={() => deleteDashboard(confirmDelete)} style={{ padding: '8px 20px', fontSize: '0.82rem', fontWeight: 600, border: 'none', borderRadius: 8, backgroundColor: '#e53e3e', color: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>Delete</button>
+            <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', margin: '0 0 20px' }}>This will permanently delete this dashboard and all its charts.</p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+              <Button onClick={() => setConfirmDelete(null)}>Cancel</Button>
+              <Button variant="danger" icon={Trash2} onClick={() => deleteDashboard(confirmDelete)}>Delete</Button>
             </div>
           </div>
         </div>
       )}
-
-      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
 
-function Section({ title, icon, count, children }: {
-  title: string; icon: React.ReactNode; count: number; children: React.ReactNode;
+/** A group of cards. On a page its title is a section title (18px); in a
+ *  conversation it stays under the 16px view title. */
+function Section({ title, count, noun, large, children }: {
+  title: string; count: number; noun: string; large: boolean; children: React.ReactNode;
 }) {
   return (
-    <div style={{ marginBottom: '1.5rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: '0.6rem' }}>
-        <span style={{ color: '#bbb' }}>{icon}</span>
-        <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#555' }}>{title}</span>
-        <span style={{ fontSize: '0.62rem', color: '#bbb', backgroundColor: '#f5f5f5', padding: '1px 6px', borderRadius: 8 }}>{count}</span>
+    <section style={{ marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontSize: large ? 'var(--fs-lg)' : 'var(--fs-base)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</h3>
+        <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{count} {noun}{count !== 1 ? 's' : ''}</span>
       </div>
       {children}
-    </div>
+    </section>
   );
 }
 
-function DashboardCard({ dashboard, isActive, acting, color, onSetActive, onDelete, shared }: {
-  dashboard: DashboardSummary; isActive: boolean; acting: boolean; color: string;
+function DashboardCard({ dashboard, isActive, acting, onSetActive, onDelete, shared }: {
+  dashboard: DashboardSummary; isActive: boolean; acting: boolean;
   onSetActive: () => void; onDelete?: () => void; shared?: boolean;
 }) {
+  // The active dashboard wears the selected border (tan); others firm up on hover.
+  const restingBorder = isActive ? 'var(--brand-soft)' : 'var(--line)';
   return (
     <div
+      className="n-card"
       onClick={onSetActive}
       style={{
-        border: `1px solid ${isActive ? color : '#e2e8f0'}`,
-        borderRadius: 10, padding: '1rem', backgroundColor: isActive ? `${color}08` : '#fff',
-        cursor: acting ? 'not-allowed' : 'pointer', transition: 'border-color 0.15s, box-shadow 0.15s',
+        padding: 16, borderColor: restingBorder,
+        cursor: acting ? 'not-allowed' : 'pointer', transition: 'border-color 0.12s',
       }}
-      onMouseEnter={e => { if (!isActive) e.currentTarget.style.borderColor = color; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.06)'; }}
-      onMouseLeave={e => { if (!isActive) e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.boxShadow = 'none'; }}
+      onMouseEnter={e => { if (!isActive) e.currentTarget.style.borderColor = 'var(--line-strong)'; }}
+      onMouseLeave={e => { if (!isActive) e.currentTarget.style.borderColor = 'var(--line)'; }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-        <div>
-          <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#333' }}>{dashboard.title}</div>
-          <div style={{ fontSize: '0.65rem', color: '#aaa', display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 'var(--fs-base)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{dashboard.title}</div>
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' }}>
             {dashboard.charts.length} chart{dashboard.charts.length !== 1 ? 's' : ''}
-            {dashboard.status === 'saved' && <span style={{ color: '#48bb78' }}>Saved</span>}
-            {shared && <Share2 size={10} style={{ color: '#bbb' }} />}
+            {dashboard.status === 'saved' && <Badge tone="ok">Saved</Badge>}
+            {shared && <Icon icon={Share2} size="meta" tone="muted" label="Shared" />}
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: '0 0 auto' }}>
           {isActive ? (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.65rem', fontWeight: 600, color, padding: '2px 8px', borderRadius: 4, backgroundColor: `${color}14` }}>
-              <Check size={12} /> Active
-            </span>
+            <Badge tone="ok"><Icon icon={Check} size="meta" strokeWidth={2} /> Active</Badge>
           ) : acting ? (
-            <Loader2 size={14} style={{ color: '#bbb', animation: 'spin 1s linear infinite' }} />
+            <Icon icon={LoaderCircle} size="dense" tone="muted" style={SPIN} />
           ) : (
-            <span style={{ fontSize: '0.65rem', fontWeight: 600, color: '#bbb' }}>Set Active</span>
+            // No handler of its own: the click is the card's.
+            <Button size="sm">Set active</Button>
           )}
           {onDelete && (
-            <button
+            <IconButton
+              icon={Trash2}
+              label="Delete dashboard"
+              iconSize={16}
               onClick={e => { e.stopPropagation(); onDelete(); }}
-              onMouseEnter={e => (e.currentTarget.style.color = '#e53e3e')}
-              onMouseLeave={e => (e.currentTarget.style.color = '#ccc')}
-              style={{ border: 'none', background: 'none', color: '#ccc', cursor: 'pointer', fontSize: '0.85rem', padding: '0 4px', transition: 'color 0.15s' }}
-              title="Delete dashboard"
-            >&times;</button>
+            />
           )}
         </div>
       </div>
-      {dashboard.description && <div style={{ fontSize: '0.72rem', color: '#999', marginTop: 4 }}>{dashboard.description}</div>}
+      {dashboard.description && <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 8 }}>{dashboard.description}</div>}
       {dashboard.updated_at && (
-        <div style={{ fontSize: '0.6rem', color: '#ccc', marginTop: 6 }}>
-          {new Date(dashboard.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 8 }}>
+          Updated {new Date(dashboard.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
         </div>
       )}
     </div>

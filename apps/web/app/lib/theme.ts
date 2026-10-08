@@ -3,65 +3,80 @@ export const breakpoints = {
   tablet: 1024,
 };
 
+/**
+ * Colours as CSS variables from styles/tokens.css, so a restyle is one edit
+ * there rather than a hunt through inline styles. Keys are kept flat and
+ * string-valued: ThreadCard and AdminThreadsPanel look them up by domain name.
+ *
+ * Values are mapped by how each key is USED, not by its name — `primary` is
+ * the tan used for selected borders and focus, not the near-black primary
+ * button (--primary). The per-member accents are retired (one neutral accent);
+ * until their call sites move to the shared components they map to a neutral
+ * that still reads under white text where a page used them as a button fill.
+ *
+ * Inside Claude these resolve against the same tokens.css, which the MCP
+ * bundle imports. Never append alpha to these (`${colors.x}18`): use
+ * color-mix() or a token.
+ */
 export const colors = {
   // Brand
-  primary: '#c4a882',        // Warm tan (LoadedHub CTA)
-  primaryHover: '#b8976f',   // Slightly darker tan
-  sidebar: '#1a1a1a',        // Near-black (matches Loaded logo)
+  primary: 'var(--brand-soft)',      // tan: selected borders, focus, accents
+  primaryHover: 'var(--brand)',
+  sidebar: 'var(--text)',
 
   // Backgrounds
-  pageBg: '#faf8f5',         // Warm cream
-  cardBg: '#ffffff',
-  inputBg: '#ffffff',
-  selectedBg: '#f5f0ea',     // Warm light tan (selected states)
-  waitingBg: '#fdf6ee',      // Warm light (replaces purple tint)
+  pageBg: 'var(--canvas)',
+  cardBg: 'var(--bg)',
+  inputBg: 'var(--bg)',
+  selectedBg: 'var(--selected)',
+  waitingBg: 'var(--accent-soft)',
 
-  // Domain accents
-  procurement: '#e2b94e',    // Golden yellow
-  hr: '#7ca5c4',             // Soft blue
-  time_attendance: '#8b7ec8', // Purple
-  marketing: '#e07c5a',      // Coral orange
-  reports: '#7bc4a0',        // Green
-  executive_chef: '#b5654d', // Terracotta (kitchen)
-  app_builder: '#5a9e8f',    // Teal (builds things)
-  home: '#888',              // Neutral gray
-  norm: '#8a7356',           // Warm tan (Norm itself — used no App)
-  unknown: '#d4c4a8',        // Warm beige (unassigned)
+  // Former per-member accents — neutral now (see above)
+  procurement: 'var(--text-soft)',
+  hr: 'var(--text-soft)',
+  time_attendance: 'var(--text-soft)',
+  marketing: 'var(--text-soft)',
+  reports: 'var(--text-soft)',
+  executive_chef: 'var(--text-soft)',
+  app_builder: 'var(--text-soft)',
+  home: 'var(--muted)',
+  norm: 'var(--text-soft)',
+  unknown: 'var(--muted)',
 
   // Text
-  textPrimary: '#1a1a1a',
-  textSecondary: '#555',
-  textMuted: '#999',
-  textOnDark: '#fff',
-  textOnPrimary: '#fff',
+  textPrimary: 'var(--text)',
+  textSecondary: 'var(--text-soft)',
+  textMuted: 'var(--muted)',
+  textOnDark: 'var(--on-primary)',
+  textOnPrimary: 'var(--on-primary)',
 
   // Borders
-  border: '#e2ddd7',         // Warm gray border
-  borderLight: '#f0ebe5',    // Lighter warm border
+  border: 'var(--line)',
+  borderLight: 'var(--line-soft)',
 
   // Semantic
-  success: '#28a745',
-  error: '#dc3545',
-  warning: '#d69e2e',
-  info: '#4d65ff',           // LoadedHub blue for info/submitted
+  success: 'var(--ok)',
+  error: 'var(--error)',
+  warning: 'var(--warn)',
+  info: 'var(--info)',
 
   // Status dots
-  statusApproval: '#eab308',
-  statusInput: '#c4a882',    // Tan instead of purple
-  statusClarification: '#ef4444',
-  statusApproved: '#22c55e',
-  statusRejected: '#9ca3af',
-  statusSubmitted: '#4d65ff',
+  statusApproval: 'var(--warn)',
+  statusInput: 'var(--brand-soft)',
+  statusClarification: 'var(--error)',
+  statusApproved: 'var(--ok)',
+  statusRejected: 'var(--muted)',
+  statusSubmitted: 'var(--info)',
 
-  // Status badges
-  badgeApproval: { bg: '#fff3cd', text: '#856404' },
-  badgeInput: { bg: '#f5f0ea', text: '#8a7356' },
-  badgeClarification: { bg: '#f8d7da', text: '#721c24' },
-  badgeApproved: { bg: '#d4edda', text: '#155724' },
-  badgeRejected: { bg: '#e2e3e5', text: '#383d41' },
-  badgeSubmitted: { bg: '#cce5ff', text: '#004085' },
+  // Status badges (text on tint)
+  badgeApproval: { bg: 'var(--warn-bg)', text: 'var(--warn)' },
+  badgeInput: { bg: 'var(--accent-soft)', text: 'var(--accent)' },
+  badgeClarification: { bg: 'var(--error-bg)', text: 'var(--error)' },
+  badgeApproved: { bg: 'var(--ok-bg)', text: 'var(--ok)' },
+  badgeRejected: { bg: 'var(--line-soft)', text: 'var(--text-soft)' },
+  badgeSubmitted: { bg: 'var(--info-bg)', text: 'var(--info)' },
 
-  // Admin/Manager avatar
-  adminAvatar: '#1a1a1a',    // Black (matches Loaded logo)
-  managerAvatar: '#b8e6cc',  // Mint green
+  // Avatars
+  adminAvatar: 'var(--primary)',
+  managerAvatar: 'var(--selected)',
 };

@@ -1,11 +1,20 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { apiFetch } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
-import { colors } from '../../lib/theme';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { formatMoney } from '../../lib/format';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
+import BackLink from '../ui/BackLink';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import Tabs from '../ui/Tabs';
+import VenueSelect from '../ui/VenueSelect';
 
 // Supplier tenders from Loaded: agreed price lists with a supplier for a date
 // window, plus the review view — tendered price vs what each delivery actually
@@ -77,12 +86,46 @@ const dateInput = (iso?: string) => (iso ? iso.slice(0, 10) : '');
 const longDay = (iso?: string | null) =>
   iso ? new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
 
+const TITLE = 'Supplier Tenders';
+const INTRO = 'Agreed supplier price lists from Loaded. Ask Norm to create or change a tender — changes need your approval.';
+
+// Inside its date window today = active; otherwise it has lapsed.
+const statusBadge = (t: Tender) => (isLive(t) ? <Badge tone="ok">Active</Badge> : <Badge>Expired</Badge>);
+
+// Variance is tender minus paid: paying over the tender reads red, under it
+// green, level (or unknown) muted.
+const varianceColor = (v: number | null) =>
+  v === null || Math.abs(v) < 0.005 ? 'var(--muted)' : v < 0 ? 'var(--error)' : 'var(--ok)';
+
+// Review-period quick picks: neutral at rest, the tan tint when chosen.
+const chip = (active: boolean): React.CSSProperties => ({
+  flex: '0 0 auto', padding: '5px 12px', borderRadius: 999, cursor: 'pointer', whiteSpace: 'nowrap',
+  fontFamily: 'inherit', fontSize: 'var(--fs-sm)', fontWeight: active ? 600 : 500,
+  border: `1px solid ${active ? 'var(--brand-soft)' : 'var(--line)'}`,
+  background: active ? 'var(--accent-soft)' : 'var(--surface-alt)',
+  color: active ? 'var(--accent)' : 'var(--text)',
+});
+// A clickable row's label as a real button, so the row is reachable from the
+// keyboard. It has no onClick of its own: its click bubbles to the row's.
+// Block-level flex, so an icon beside the text can't shift its baseline.
+const rowLabel: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4 };
+const rowButton: React.CSSProperties = {
+  ...rowLabel, padding: 0, border: 'none', background: 'transparent',
+  font: 'inherit', color: 'inherit', textAlign: 'left', cursor: 'pointer',
+};
+const nowrap: React.CSSProperties = { whiteSpace: 'nowrap' };
+const soft: React.CSSProperties = { color: 'var(--text-soft)' };
+
 export default function SupplierTenders({ props }: DisplayBlockProps) {
   const persistVenue = !!props?.persistVenue;
   const [sharedVenue, setActiveVenue] = useActiveVenue();
   const rememberedVenue = persistVenue ? sharedVenue : null;
   const [venues, setVenues] = useState<VenueOption[]>([]);
   const [venueId, setVenueId] = useState<string | null>((props?.activeVenueId as string) || rememberedVenue || null);
+  // Phones, and tablets (whose content area sits beside the menu panel), get
+  // cards and a two-column lines table instead of wide tables.
+  const { isMobile, isTablet } = useBreakpoint();
+  const narrow = isMobile || isTablet;
 
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [open, setOpen] = useState<Tender | null>(null);
@@ -184,62 +227,81 @@ export default function SupplierTenders({ props }: DisplayBlockProps) {
     [tenders],
   );
 
-  const chip = (active: boolean): React.CSSProperties => ({
-    padding: '4px 12px', fontSize: '0.72rem', fontWeight: 600, borderRadius: 14,
-    border: `1px solid ${active ? colors.procurement : colors.border}`, cursor: 'pointer',
-    background: active ? colors.procurement : '#fff', color: active ? '#fff' : colors.textSecondary,
-  });
-  const th: React.CSSProperties = { padding: '8px 10px', textAlign: 'left', fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: colors.textMuted, borderBottom: `1px solid ${colors.border}`, whiteSpace: 'nowrap' };
-  const td: React.CSSProperties = { padding: '8px 10px', fontSize: '0.82rem', color: colors.textPrimary, borderBottom: `1px solid ${colors.borderLight}`, whiteSpace: 'nowrap' };
-  const right: React.CSSProperties = { textAlign: 'right' };
+  const openTender = (t: Tender) => {
+    setOpen(t); setTab('lines'); setReview(null); setReviewError(null);
+    setReviewStart(dateInput(t.datestampStart)); setReviewEnd(dateInput(t.datestampEnd));
+    setQuickPick('tender');
+  };
+  const closeTender = () => { setOpen(null); setReview(null); setReviewError(null); setTab('lines'); };
 
-  const header = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-      <h2 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0 }}>Supplier Tenders</h2>
-      {venues.length > 1 && (
-        <select value={venueId || ''} onChange={e => changeVenue(e.target.value)}
-          style={{ padding: '4px 8px', fontSize: '0.78rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit' }}>
-          {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-        </select>
-      )}
-      <span style={{ fontSize: '0.72rem', color: colors.textMuted }}>
-        Agreed supplier price lists from Loaded. Ask Norm to create or change a tender — changes need your approval.
-      </span>
+  const venuePicker = venues.length > 1
+    ? <VenueSelect venues={venues} value={venueId} onChange={changeVenue} />
+    : null;
+
+  // A page gets the page header and sits straight on the cream frame. In a
+  // conversation the same view is a compact card.
+  const frame = (body: React.ReactNode) => (persistVenue ? (
+    <div style={{ width: '100%' }}>
+      <PageHeader title={TITLE} meta={INTRO} actions={venuePicker} />
+      {body}
     </div>
-  );
+  ) : (
+    <div className="n-card" style={{ width: '100%', overflow: 'hidden', padding: '12px 14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+          <h2 style={{ margin: 0, fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{TITLE}</h2>
+          <div style={{ marginTop: 2, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{INTRO}</div>
+        </div>
+        {venuePicker}
+      </div>
+      {body}
+    </div>
+  ));
+  // Tables run edge to edge: on the page straight on the cream, in the card
+  // out to its border (the card's own edge closes the last row).
+  const tableWrap: React.CSSProperties = persistVenue
+    ? { overflowX: 'auto' }
+    : { overflowX: 'auto', marginLeft: -14, marginRight: -14, marginBottom: -12 };
 
-  if (loading) return <div>{header}<div style={{ padding: '1rem', color: colors.textMuted }}>Loading tenders…</div></div>;
-  if (error) return <div>{header}<div style={{ padding: '1rem', color: '#b91c1c', fontSize: '0.85rem' }}>{error}</div></div>;
+  if (loading) return frame(<PageState kind="loading" title="Loading tenders…" />);
+  if (error) return frame(<PageState kind="error" title="Couldn’t load tenders" detail={error} />);
 
   // ── detail view ──────────────────────────────────────────────────────────
   if (open) {
-    return (
-      <div style={{ width: '100%' }}>
-        {header}
-        <button onClick={() => { setOpen(null); setReview(null); setReviewError(null); setTab('lines'); }}
-          style={{ border: 'none', background: 'none', color: colors.textMuted, cursor: 'pointer', fontSize: '0.8rem', padding: 0, marginBottom: 8, fontFamily: 'inherit' }}>
-          ← All tenders
-        </button>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 4, flexWrap: 'wrap' }}>
-          <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>{open.name || 'Tender'}</h3>
-          <span style={{ fontSize: '0.8rem', color: colors.textSecondary }}>{open.supplierName}</span>
-          <span style={{ fontSize: '0.74rem', color: colors.textMuted }}>{day(open.datestampStart)} – {day(open.datestampEnd)}</span>
-          {isLive(open)
-            ? <span style={{ fontSize: '0.68rem', fontWeight: 700, color: '#065f46' }}>ACTIVE</span>
-            : <span style={{ fontSize: '0.68rem', fontWeight: 700, color: colors.textMuted }}>EXPIRED</span>}
+    const Heading = persistVenue ? 'h2' : 'h3';
+    const lines = open.lines || [];
+    return frame(
+      <>
+        <BackLink label="All tenders" onClick={closeTender} />
+        <div style={{ margin: '8px 0 12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <Heading style={{ margin: 0, fontSize: persistVenue ? 'var(--fs-lg)' : 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>
+              {open.name || 'Tender'}
+            </Heading>
+            {statusBadge(open)}
+          </div>
+          <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+            {[open.supplierName, `${day(open.datestampStart)} – ${day(open.datestampEnd)}`].filter(Boolean).join(' · ')}
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 8, margin: '10px 0', alignItems: 'center', flexWrap: 'wrap' }}>
-          <button style={chip(tab === 'lines')} onClick={() => setTab('lines')}>Lines</button>
-          <button style={chip(tab === 'review')} onClick={() => setTab('review')}>Price review</button>
-          {tab === 'review' && (
-            <>
-              <button style={chip(quickPick === 'tender')} onClick={() => {
+
+        <Tabs
+          label="Tender"
+          items={[{ id: 'lines', label: 'Lines' }, { id: 'review', label: 'Price review' }]}
+          value={tab}
+          onChange={id => setTab(id as 'lines' | 'review')}
+        />
+
+        {tab === 'review' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, margin: '12px 0' }}>
+            <div role="group" aria-label="Quick periods" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              <button type="button" aria-pressed={quickPick === 'tender'} style={chip(quickPick === 'tender')} onClick={() => {
                 const s = dateInput(open.datestampStart), e = dateInput(open.datestampEnd);
                 setQuickPick('tender'); setReviewStart(s); setReviewEnd(e);
                 if (venueId && open.id) loadReview(venueId, open.id, s, e);
               }}>Tender period</button>
               {[7, 30, 90].map(d => (
-                <button key={d} style={chip(quickPick === d)} onClick={() => {
+                <button key={d} type="button" aria-pressed={quickPick === d} style={chip(quickPick === d)} onClick={() => {
                   const now = new Date();
                   const e = now.toISOString().slice(0, 10);
                   const s = new Date(now.getTime() - d * 86400_000).toISOString().slice(0, 10);
@@ -247,63 +309,81 @@ export default function SupplierTenders({ props }: DisplayBlockProps) {
                   if (venueId && open.id) loadReview(venueId, open.id, s, e);
                 }}>Last {d} days</button>
               ))}
-              <span style={{ fontSize: '0.74rem', color: colors.textSecondary, marginLeft: 8 }}>Review period</span>
-              <input type="date" value={reviewStart} onChange={e => { setQuickPick(null); setReviewStart(e.target.value); }}
-                style={{ padding: '3px 6px', fontSize: '0.74rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit' }} />
-              <span style={{ color: colors.textMuted }}>–</span>
-              <input type="date" value={reviewEnd} onChange={e => { setQuickPick(null); setReviewEnd(e.target.value); }}
-                style={{ padding: '3px 6px', fontSize: '0.74rem', border: `1px solid ${colors.border}`, borderRadius: 6, fontFamily: 'inherit' }} />
-              <label style={{ fontSize: '0.74rem', color: colors.textSecondary, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-                <input type="checkbox" checked={includeCredits} onChange={e => setIncludeCredits(e.target.checked)} />
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 12, rowGap: 8 }}>
+              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>Review period</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, maxWidth: '100%' }}>
+                <input type="date" className="n-input" aria-label="Review period from" value={reviewStart}
+                  onChange={e => { setQuickPick(null); setReviewStart(e.target.value); }}
+                  style={{ flex: '1 1 auto', minWidth: 0 }} />
+                <span aria-hidden="true" style={{ color: 'var(--muted)' }}>–</span>
+                <input type="date" className="n-input" aria-label="Review period to" value={reviewEnd}
+                  onChange={e => { setQuickPick(null); setReviewEnd(e.target.value); }}
+                  style={{ flex: '1 1 auto', minWidth: 0 }} />
+              </span>
+              <Button
+                onClick={() => { if (venueId && open?.id && reviewStart && reviewEnd) loadReview(venueId, open.id, reviewStart, reviewEnd); }}>
+                Apply
+              </Button>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={includeCredits} onChange={e => setIncludeCredits(e.target.checked)}
+                  style={{ margin: 0, accentColor: 'var(--accent)', cursor: 'pointer' }} />
                 Include credits
               </label>
-              <button
-                onClick={() => { if (venueId && open?.id && reviewStart && reviewEnd) loadReview(venueId, open.id, reviewStart, reviewEnd); }}
-                style={{ padding: '4px 14px', fontSize: '0.74rem', fontWeight: 600, borderRadius: 6, border: 'none', cursor: 'pointer', background: colors.procurement, color: '#fff' }}>
-                Apply
-              </button>
-            </>
-          )}
-        </div>
-
-        {tab === 'lines' && (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-              <thead><tr>
-                <th style={th}>Item</th><th style={th}>Brand</th><th style={th}>Unit</th>
-                <th style={{ ...th, ...right }}>Tendered cost</th>
-              </tr></thead>
-              <tbody>
-                {(open.lines || []).map((l, i) => (
-                  <tr key={l.id || i}>
-                    <td style={td}>{l.stockItemName || '—'}</td>
-                    <td style={td}>{l.brandName || '—'}</td>
-                    <td style={td}>{l.unitName || '—'}</td>
-                    <td style={{ ...td, ...right, fontWeight: 600 }}>{formatMoney(l.unitCost ?? 0)}</td>
-                  </tr>
-                ))}
-                {!(open.lines || []).length && (
-                  <tr><td style={{ ...td, color: colors.textMuted }} colSpan={4}>No lines on this tender.</td></tr>
-                )}
-              </tbody>
-            </table>
+            </div>
           </div>
         )}
 
-        {tab === 'review' && (
-          reviewLoading ? <div style={{ padding: '1rem', color: colors.textMuted }}>Comparing against deliveries…</div> :
-          reviewError ? <div style={{ padding: '1rem', color: '#b91c1c', fontSize: '0.85rem' }}>{reviewError}</div> :
-          !review ? <div style={{ padding: '1rem', color: colors.textMuted }}>No review data for this period.</div> : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+        {tab === 'lines' && (
+          lines.length ? (
+            <div style={{ ...tableWrap, marginTop: 12 }}>
+              <table className="n-table">
                 <thead><tr>
-                  <th style={{ ...th, width: 28 }} />
-                  <th style={th}>Item Name</th><th style={th}>Unit</th>
-                  <th style={{ ...th, ...right }}>Unit Price</th>
-                  <th style={{ ...th, ...right }}>Tender Price</th>
-                  <th style={{ ...th, ...right }}>Variance</th>
-                  <th style={{ ...th, ...right }}>Quantity</th>
-                  <th style={{ ...th, ...right }}>Total Variance</th>
+                  <th>Item</th>
+                  {!narrow && <><th>Brand</th><th>Unit</th></>}
+                  <th className="num">Tendered cost</th>
+                </tr></thead>
+                <tbody>
+                  {lines.map((l, i) => {
+                    // Narrow screens fold brand and unit under the item name.
+                    const sub = [l.brandName, l.unitName].filter(Boolean).join(' · ');
+                    return (
+                      <tr key={l.id || i}>
+                        <td style={{ fontWeight: 500 }}>
+                          {l.stockItemName || '—'}
+                          {narrow && sub && (
+                            <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', fontWeight: 400, color: 'var(--muted)' }}>{sub}</div>
+                          )}
+                        </td>
+                        {!narrow && (
+                          <>
+                            <td style={soft}>{l.brandName || '—'}</td>
+                            <td style={{ ...soft, ...nowrap }}>{l.unitName || '—'}</td>
+                          </>
+                        )}
+                        <td className="num" style={{ ...nowrap, fontWeight: 500 }}>{formatMoney(l.unitCost ?? 0)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : <PageState kind="empty" title="No lines on this tender." />
+        )}
+
+        {tab === 'review' && (
+          reviewLoading ? <PageState kind="loading" title="Comparing against deliveries…" /> :
+          reviewError ? <PageState kind="error" title="Couldn’t load the price review" detail={reviewError} /> :
+          !review || !(review.lines || []).length ? <PageState kind="empty" title="No review data for this period." /> : (
+            <div style={tableWrap}>
+              <table className="n-table">
+                <thead><tr>
+                  <th>Item name</th><th>Unit</th>
+                  <th className="num">Unit price</th>
+                  <th className="num">Tender price</th>
+                  <th className="num">Variance</th>
+                  <th className="num">Quantity</th>
+                  <th className="num">Total variance</th>
                 </tr></thead>
                 <tbody>
                   {[...(review.lines || [])]
@@ -337,8 +417,11 @@ export default function SupplierTenders({ props }: DisplayBlockProps) {
                       const variance = avgPaid !== null ? tender - avgPaid : null;
                       const totalVariance = orders.reduce((s, x) => s + x.totalVariance, 0);
                       const isOpen = expanded.has(key);
-                      const vColor = (v: number | null) =>
-                        v === null || Math.abs(v) < 0.005 ? colors.textMuted : v < 0 ? '#b91c1c' : '#065f46';
+                      const canOpen = orders.length > 0;
+                      // The open row and its deliveries read as one block (the
+                      // Orders page's expanded row).
+                      const cell: React.CSSProperties = { ...nowrap, ...(isOpen && canOpen ? { background: 'var(--selected)' } : {}) };
+                      const sub: React.CSSProperties = { ...nowrap, background: 'var(--surface-alt)', fontSize: 'var(--fs-sm)', paddingTop: 7, paddingBottom: 7 };
                       return (
                         <React.Fragment key={key}>
                           <tr
@@ -347,36 +430,48 @@ export default function SupplierTenders({ props }: DisplayBlockProps) {
                               if (next.has(key)) next.delete(key); else next.add(key);
                               return next;
                             })}
-                            style={{ cursor: orders.length ? 'pointer' : 'default', background: isOpen ? '#faf8f5' : undefined }}
+                            style={{ cursor: canOpen ? 'pointer' : 'default' }}
                           >
-                            <td style={{ ...td, color: colors.textMuted }}>{orders.length ? (isOpen ? '▾' : '▸') : ''}</td>
-                            <td style={{ ...td, fontWeight: 600 }}>{l.stockItemName || '—'}</td>
-                            <td style={td}>{l.unitName || '—'}</td>
-                            <td style={{ ...td, ...right }}>{avgPaid !== null ? formatMoney(avgPaid) : '—'}</td>
-                            <td style={{ ...td, ...right }}>{formatMoney(tender)}</td>
-                            <td style={{ ...td, ...right, color: vColor(variance) }}>
+                            <td style={{ ...cell, fontWeight: 500 }}>
+                              {canOpen ? (
+                                <button type="button" aria-expanded={isOpen} style={rowButton}>
+                                  <Icon icon={isOpen ? ChevronDown : ChevronRight} size="dense" tone="muted"
+                                    style={isOpen ? { color: 'var(--text-soft)' } : undefined} />
+                                  {l.stockItemName || '—'}
+                                </button>
+                              ) : (
+                                <span style={rowLabel}>
+                                  <span aria-hidden="true" style={{ flex: '0 0 14px' }} />
+                                  {l.stockItemName || '—'}
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ ...cell, ...soft }}>{l.unitName || '—'}</td>
+                            <td className="num" style={cell}>{avgPaid !== null ? formatMoney(avgPaid) : '—'}</td>
+                            <td className="num" style={cell}>{formatMoney(tender)}</td>
+                            <td className="num" style={{ ...cell, color: varianceColor(variance) }}>
                               {variance !== null ? signedMoney(variance) : '—'}
                             </td>
-                            <td style={{ ...td, ...right }}>{totalQty ? +totalQty.toFixed(2) : '—'}</td>
-                            <td style={{ ...td, ...right, fontWeight: 700, color: vColor(totalVariance), textDecoration: 'underline' }}>
+                            <td className="num" style={cell}>{totalQty ? +totalQty.toFixed(2) : '—'}</td>
+                            <td className="num" style={{ ...cell, fontWeight: 600, color: varianceColor(totalVariance) }}>
                               {orders.length ? signedMoney(totalVariance) : '—'}
                             </td>
                           </tr>
                           {isOpen && orders.map((x, j) => (
-                            <tr key={`${key}-o${j}`} style={{ background: '#fbfaf8' }}>
-                              <td style={td} />
-                              <td style={{ ...td, paddingLeft: 24, fontSize: '0.76rem', color: '#2a6bb5' }}>
+                            <tr key={`${key}-o${j}`}>
+                              {/* Indented to the item name, past the chevron. */}
+                              <td style={{ ...sub, ...soft, paddingLeft: 30 }}>
                                 {longDay(x.o.invoicedAt || x.o.receivedAt)} – Invoice # {x.o.referenceNumber || '—'}
-                                {x.o.creditRequest ? <span style={{ marginLeft: 6, fontSize: '0.66rem', fontWeight: 700, color: '#8a6d3b' }}>CREDIT</span> : null}
+                                {x.o.creditRequest ? <span style={{ marginLeft: 6 }}><Badge tone="info">Credit</Badge></span> : null}
                               </td>
-                              <td style={{ ...td, fontSize: '0.76rem' }}>{x.o.unitName || l.unitName || '—'}</td>
-                              <td style={{ ...td, ...right, fontSize: '0.76rem' }}>{x.paid !== null ? formatMoney(x.paid) : '—'}</td>
-                              <td style={{ ...td, ...right, fontSize: '0.76rem' }}>{formatMoney(x.tenderInUnit)}</td>
-                              <td style={{ ...td, ...right, fontSize: '0.76rem', color: vColor(x.variance) }}>
+                              <td style={{ ...sub, ...soft }}>{x.o.unitName || l.unitName || '—'}</td>
+                              <td className="num" style={sub}>{x.paid !== null ? formatMoney(x.paid) : '—'}</td>
+                              <td className="num" style={sub}>{formatMoney(x.tenderInUnit)}</td>
+                              <td className="num" style={{ ...sub, color: varianceColor(x.variance) }}>
                                 {x.variance !== null ? signedMoney(x.variance) : '—'}
                               </td>
-                              <td style={{ ...td, ...right, fontSize: '0.76rem' }}>{x.qty}</td>
-                              <td style={{ ...td, ...right, fontSize: '0.76rem', color: vColor(x.totalVariance) }}>
+                              <td className="num" style={sub}>{x.qty}</td>
+                              <td className="num" style={{ ...sub, color: varianceColor(x.totalVariance) }}>
                                 {signedMoney(x.totalVariance)}
                               </td>
                             </tr>
@@ -389,49 +484,70 @@ export default function SupplierTenders({ props }: DisplayBlockProps) {
             </div>
           )
         )}
-      </div>
+      </>,
     );
   }
 
   // ── list view ────────────────────────────────────────────────────────────
-  return (
-    <div style={{ width: '100%' }}>
-      {header}
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-          <thead><tr>
-            <th style={th}>Tender</th><th style={th}>Supplier</th>
-            <th style={th}>From</th><th style={th}>To</th>
-            <th style={{ ...th, ...right }}>Lines</th><th style={th}>Status</th>
-          </tr></thead>
-          <tbody>
-            {sorted.map((t, i) => (
-              <tr key={t.id || i} onClick={() => {
-                setOpen(t); setTab('lines'); setReview(null); setReviewError(null);
-                setReviewStart(dateInput(t.datestampStart)); setReviewEnd(dateInput(t.datestampEnd));
-                setQuickPick('tender');
-              }}
-                style={{ cursor: 'pointer' }}
-                onMouseEnter={e => (e.currentTarget.style.background = '#faf8f5')}
-                onMouseLeave={e => (e.currentTarget.style.background = '')}>
-                <td style={{ ...td, fontWeight: 600 }}>{t.name || '—'}</td>
-                <td style={td}>{t.supplierName || '—'}</td>
-                <td style={td}>{day(t.datestampStart)}</td>
-                <td style={td}>{day(t.datestampEnd)}</td>
-                <td style={{ ...td, ...right }}>{(t.lines || []).length}</td>
-                <td style={td}>{isLive(t)
-                  ? <span style={{ fontSize: '0.68rem', fontWeight: 700, color: '#065f46' }}>ACTIVE</span>
-                  : <span style={{ fontSize: '0.68rem', fontWeight: 700, color: colors.textMuted }}>EXPIRED</span>}</td>
-              </tr>
-            ))}
-            {!sorted.length && (
-              <tr><td style={{ ...td, color: colors.textMuted }} colSpan={6}>
-                No tenders for this venue yet — ask Norm to create one from a supplier price list.
-              </td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
+  if (!sorted.length) {
+    return frame(
+      <PageState kind="empty" title="No tenders for this venue yet" detail="Ask Norm to create one from a supplier price list." />,
+    );
+  }
+
+  // Narrow page: one card per tender (the mobile page pattern), not a table.
+  if (persistVenue && narrow) {
+    return frame(
+      <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {sorted.map((t, i) => {
+          const n = (t.lines || []).length;
+          return (
+            <li key={t.id || i}>
+              <button type="button" onClick={() => openTender(t)} style={{
+                display: 'block', width: '100%', padding: '14px 16px', border: '1px solid var(--line)',
+                borderRadius: 'var(--radius-lg)', background: 'var(--bg)', font: 'inherit', color: 'var(--text)',
+                textAlign: 'left', cursor: 'pointer', fontVariantNumeric: 'tabular-nums',
+              }}>
+                <span style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+                  <span style={{ minWidth: 0, fontSize: 'var(--fs-base)', fontWeight: 600 }}>{t.name || '—'}</span>
+                  <span style={{ flex: '0 0 auto', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{n} {n === 1 ? 'line' : 'lines'}</span>
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', columnGap: 8, rowGap: 4, marginTop: 6, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                  {statusBadge(t)}
+                  <span>{t.supplierName || '—'}</span>
+                  <span style={nowrap}>{day(t.datestampStart)} – {day(t.datestampEnd)}</span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>,
+    );
+  }
+
+  return frame(
+    <div style={tableWrap}>
+      <table className="n-table">
+        <thead><tr>
+          <th>Tender</th><th>Supplier</th>
+          <th>From</th><th>To</th>
+          <th className="num">Lines</th><th>Status</th>
+        </tr></thead>
+        <tbody>
+          {sorted.map((t, i) => (
+            <tr key={t.id || i} onClick={() => openTender(t)} style={{ cursor: 'pointer' }}>
+              <td style={{ fontWeight: 500 }}>
+                <button type="button" style={rowButton}>{t.name || '—'}</button>
+              </td>
+              <td>{t.supplierName || '—'}</td>
+              <td style={{ ...nowrap, ...soft }}>{day(t.datestampStart)}</td>
+              <td style={{ ...nowrap, ...soft }}>{day(t.datestampEnd)}</td>
+              <td className="num">{(t.lines || []).length}</td>
+              <td>{statusBadge(t)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>,
   );
 }

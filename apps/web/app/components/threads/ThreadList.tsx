@@ -5,6 +5,9 @@ import ThreadCard from './ThreadCard';
 import { SquarePen, Search, PanelLeftClose } from 'lucide-react';
 import { FUNCTIONAL_PAGES, type FunctionalPageConfig } from '../pages/pageRegistry';
 import { threadMembers } from '../../lib/threadApps';
+import { memberName } from '../../lib/memberNames';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
 
 type FilterKey = 'all' | 'awaiting_approval' | 'awaiting_user_input' | 'completed';
 
@@ -52,190 +55,108 @@ interface ThreadListProps {
    *  App's pages show only in its member's menu; Norm Core pages (shared)
    *  keep their own per-member placement. */
   pageMember?: Record<string, string>;
+  /** The page open in the content area — its menu row shows as current. */
+  activePage?: string | null;
+  /** The Norm name block at the top (off on mobile, whose top bar shows it). */
+  showBrand?: boolean;
 }
 
-export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pageMember }: ThreadListProps) {
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pageMember, activePage, showBrand = true }: ThreadListProps) {
   // A member's section shows the threads that used its Apps (or, from before
   // there was one agent, were handled by it).
   const agentFiltered = activeAgent === 'home' ? threads : threads.filter(t => threadMembers(t).includes(activeAgent));
   // Apply status filter
   const filtered = applyFilter(agentFiltered, filter);
 
+  const pages = [...FUNCTIONAL_PAGES, ...(extraPages ?? [])]
+    .filter(p => (pageMember?.[p.id] ?? p.agent) === activeAgent)
+    .filter(p => !p.app || !appsOn || appsOn.has(p.app));
+
   return (
     <div style={{
       flex: 1,
       display: 'flex',
       flexDirection: 'column',
-      backgroundColor: '#faf8f5',
+      backgroundColor: 'var(--canvas)',
       overflow: 'hidden',
     }}>
-      <style>{`
-        .thread-list-scroll {
-          scrollbar-width: none;
-        }
-        .thread-list-scroll:hover {
-          scrollbar-width: thin;
-          scrollbar-color: #ddd transparent;
-        }
-        .thread-list-scroll::-webkit-scrollbar {
-          width: 6px;
-        }
-        .thread-list-scroll::-webkit-scrollbar-thumb {
-          background: transparent;
-          border-radius: 3px;
-        }
-        .thread-list-scroll:hover::-webkit-scrollbar-thumb {
-          background: #ddd;
-        }
-      `}</style>
       {/* Header */}
-      <div style={{
-        padding: '1rem 1rem 0.6rem',
-        borderBottom: '1px solid #f0f0f0',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.15rem' }}>
-          <div style={{ fontSize: '1.05rem', fontWeight: 700, color: '#111' }}>
-            Norm
+      <div style={{ padding: showBrand ? '16px 16px 12px' : '12px 16px', borderBottom: '1px solid var(--line)' }}>
+        {showBrand && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+            <div>
+              <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 700, lineHeight: 1.2, color: 'var(--text)' }}>Norm</div>
+              <div style={{ marginTop: 2, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>AI Operations Control</div>
+            </div>
+            {onCollapsePanel && <IconButton icon={PanelLeftClose} label="Hide panel" iconSize={16} onClick={onCollapsePanel} />}
           </div>
-          {onCollapsePanel && (
-            <button
-              onClick={onCollapsePanel}
-              title="Hide panel"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: 28,
-                height: 28,
-                border: 'none',
-                borderRadius: 6,
-                backgroundColor: 'transparent',
-                cursor: 'pointer',
-                color: '#999',
-              }}
-            >
-              <PanelLeftClose size={16} strokeWidth={1.75} />
-            </button>
-          )}
+        )}
+        <nav aria-label="Menu" style={{ display: 'flex', flexDirection: 'column', gap: 2, margin: showBrand ? '14px -8px 0' : '0 -8px' }}>
+          <button type="button" data-testid="new-chat-btn" className="n-row" onClick={onNewChat}>
+            <Icon icon={SquarePen} size="menu" tone="muted" /> New chat
+          </button>
+          <button type="button" data-testid="search-btn" className="n-row">
+            <Icon icon={Search} size="menu" tone="muted" /> Search
+          </button>
+          {pages.length > 0 && <div aria-hidden style={{ height: 6 }} />}
+          {pages.map(page => {
+            const current = activePage === page.id;
+            return (
+              <button
+                key={page.id}
+                type="button"
+                className="n-row"
+                aria-current={current ? 'page' : undefined}
+                onClick={() => onSelectPage?.(page.id)}
+              >
+                <Icon icon={page.icon} size="menu" tone={current ? 'strong' : 'muted'} duo={current} />
+                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{page.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+        <div style={{ margin: '14px 0 8px', fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>
+          {activeAgent === 'home' ? 'Recent threads' : `${memberName(activeAgent)} threads`}
         </div>
-        <div style={{ fontSize: '0.78rem', color: '#999', marginBottom: '0.6rem' }}>
-          AI Operations Control
-        </div>
-        <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
-        <button
-          data-testid="new-chat-btn"
-          onClick={onNewChat}
-          style={{
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            padding: '0.45rem 0',
-            marginBottom: 0,
-            fontSize: '0.95rem',
-            fontWeight: 600,
-            color: '#1a1a1a',
-            backgroundColor: 'transparent',
-            border: 'none',
-            borderRadius: 8,
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-            textAlign: 'left',
-          }}
-        >
-          <SquarePen size={20} strokeWidth={1.75} /> New chat
-        </button>
-        <button
-          data-testid="search-btn"
-          style={{
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            padding: '0.45rem 0',
-            marginBottom: 0,
-            fontSize: '0.95rem',
-            fontWeight: 600,
-            color: '#1a1a1a',
-            backgroundColor: 'transparent',
-            border: 'none',
-            borderRadius: 8,
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-            textAlign: 'left',
-          }}
-        >
-          <Search size={20} strokeWidth={1.75} /> Search
-        </button>
-        {[...FUNCTIONAL_PAGES, ...(extraPages ?? [])]
-          .filter(p => (pageMember?.[p.id] ?? p.agent) === activeAgent)
-          .filter(p => !p.app || !appsOn || appsOn.has(p.app))
-          .map((page, idx) => {
-          const Icon = page.icon;
-          return (
-            <button
-              key={page.id}
-              onClick={() => onSelectPage?.(page.id)}
-              style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                padding: '0.45rem 0',
-                marginTop: idx === 0 ? '0.5rem' : 0,
-                marginBottom: 0,
-                fontSize: '0.95rem',
-                fontWeight: 600,
-                color: '#1a1a1a',
-                backgroundColor: 'transparent',
-                border: 'none',
-                borderRadius: 8,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-                textAlign: 'left',
-              }}
-            >
-              <Icon size={20} strokeWidth={1.75} /> {page.label}
-            </button>
-          );
-        })}
-        </div>
-        <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#333', marginBottom: '0.5rem' }}>
-          {activeAgent === 'home' ? 'Recent threads' : `${activeAgent.charAt(0).toUpperCase() + activeAgent.slice(1)} Threads`}
-        </div>
-        {/* Filters */}
-        <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-          {FILTERS.map(f => (
-            <button
-              key={f.key}
-              data-testid={`filter-${f.key}`}
-              onClick={() => onFilterChange(f.key)}
-              style={{
-                fontSize: '0.75rem',
-                fontWeight: filter === f.key ? 600 : 400,
-                padding: '0.25rem 0.6rem',
-                borderRadius: 12,
-                border: filter === f.key ? '1px solid #c4a882' : '1px solid #e0e0e0',
-                backgroundColor: filter === f.key ? '#f5f0ea' : 'transparent',
-                color: filter === f.key ? '#c4a882' : '#666',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
-              {f.label}
-            </button>
-          ))}
+        {/* Filters — one row; it scrolls sideways rather than wrap when narrow */}
+        <div role="group" aria-label="Filter threads" className="no-scrollbar" style={{ display: 'flex', gap: 4, overflowX: 'auto' }}>
+          {FILTERS.map(f => {
+            const on = filter === f.key;
+            return (
+              <button
+                key={f.key}
+                type="button"
+                data-testid={`filter-${f.key}`}
+                aria-pressed={on}
+                onClick={() => onFilterChange(f.key)}
+                style={{
+                  flex: '0 0 auto',
+                  whiteSpace: 'nowrap',
+                  padding: '4px 8px',
+                  fontSize: 'var(--fs-xs)',
+                  fontWeight: on ? 600 : 500,
+                  color: on ? 'var(--text)' : 'var(--text-soft)',
+                  backgroundColor: on ? 'var(--selected)' : 'transparent',
+                  border: `1px solid ${on ? 'var(--brand-soft)' : 'var(--line)'}`,
+                  borderRadius: 999,
+                  cursor: 'pointer',
+                }}
+              >
+                {f.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Thread list */}
-      <div className="task-list-scroll" style={{ flex: 1, overflowY: 'auto' }}>
+      {/* The thumb shows only while the pointer is over the list (tokens.css). */}
+      <div className="scroll-quiet" style={{ flex: 1 }}>
         {filtered.length === 0 ? (
           <div style={{
             padding: '3rem 1.5rem',
             textAlign: 'center',
-            color: '#bbb',
-            fontSize: '0.85rem',
+            color: 'var(--muted)',
+            fontSize: 'var(--fs-sm)',
             lineHeight: 1.6,
           }}>
             No threads yet. Try asking me to order stock, check a roster, or generate a report.

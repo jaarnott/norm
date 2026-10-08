@@ -1,9 +1,15 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type CSSProperties } from 'react';
+import { ArrowLeft, ArrowRight, ChevronRight, Play, Plus, X } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { ComponentApiConfig } from '../../types';
 import { REGISTERED_COMPONENTS } from '../display/DisplayBlockRenderer';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
+import PageState from '../ui/PageState';
 
 interface ComponentField { name: string; required: boolean }
 
@@ -146,6 +152,9 @@ const COMPONENTS: { key: string; label: string; description: string; internal: b
       fields: COMPONENT_META[key]?.fields ?? [],
     }))
     .sort((a, b) => Number(a.internal) - Number(b.internal));
+// The component picker groups the two kinds instead of marking each option.
+const EXTERNAL_COMPONENTS = COMPONENTS.filter((c) => !c.internal);
+const INTERNAL_COMPONENTS = COMPONENTS.filter((c) => c.internal);
 
 /** Extract {{ placeholder }} names from a Jinja2 template string */
 function extractPlaceholders(template: string | null | undefined): string[] {
@@ -193,27 +202,42 @@ function extractApiFields(data: unknown): string[] {
 
 interface ConnectorOption { connector_name: string; display_name: string }
 
-const inputStyle: React.CSSProperties = {
-  padding: '6px 8px', border: '1px solid #e2ddd7', borderRadius: 6,
-  fontSize: '0.78rem', fontFamily: 'inherit', outline: 'none', width: '100%',
-  boxSizing: 'border-box',
+// Dense admin form: fields (.n-input / .n-select) at 13px; templates, params
+// and field names in monospace.
+const field: CSSProperties = { width: '100%', fontSize: 'var(--fs-sm)' };
+const codeField: CSSProperties = { ...field, fontFamily: 'var(--font-mono)' };
+const summaryStyle: CSSProperties = {
+  padding: '4px 0', fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)', cursor: 'pointer',
+};
+const colHead: CSSProperties = { fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-soft)' };
+const paramName: CSSProperties = {
+  fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--muted)', overflowWrap: 'anywhere',
+};
+const codeBlock: CSSProperties = {
+  margin: 0, padding: '10px 12px', borderRadius: 'var(--radius)',
+  background: 'var(--code-bg)', color: 'var(--code-text)',
+  fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', lineHeight: 1.5,
+  overflow: 'auto', maxHeight: 300, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
 };
 
-const methodColors: Record<string, { bg: string; color: string }> = {
-  GET: { bg: '#e8f0fe', color: '#1a56db' },
-  POST: { bg: '#d4edda', color: '#155724' },
-  PUT: { bg: '#fff3cd', color: '#856404' },
-  DELETE: { bg: '#f8d7da', color: '#721c24' },
-  PATCH: { bg: '#e2e3e5', color: '#383d41' },
+// HTTP method pill: reads → info, creates → ok, updates → warn, deletes → error.
+const methodTones: Record<string, BadgeTone> = {
+  GET: 'info',
+  POST: 'ok',
+  PUT: 'warn',
+  DELETE: 'error',
+  PATCH: 'neutral',
 };
 
 function EndpointForm({
-  data, onChange, onSave, onDelete, saving, componentFields, allConfigs,
+  data, onChange, onSave, onDelete, onCancel, saving, componentFields, allConfigs,
 }: {
   data: Partial<ComponentApiConfig>;
   onChange: (patch: Partial<ComponentApiConfig>) => void;
   onSave: () => void;
   onDelete?: () => void;
+  /** A new endpoint's Cancel, shown beside Create. */
+  onCancel?: () => void;
   saving: boolean;
   componentFields: ComponentField[];
   allConfigs: ComponentApiConfig[];
@@ -291,31 +315,31 @@ function EndpointForm({
     setFetching(false);
   };
   return (
-    <div style={{ padding: '0.6rem 0.75rem 0.75rem', borderTop: '1px solid #eee', backgroundColor: '#fdf8f3' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 80px', gap: 6, marginBottom: '0.4rem' }}>
-        <input value={data.action_name || ''} onChange={e => onChange({ action_name: e.target.value })} placeholder="action_name" style={{ ...inputStyle, fontSize: '0.75rem' }} />
-        <input value={data.display_label || ''} onChange={e => onChange({ display_label: e.target.value })} placeholder="Label (optional)" style={{ ...inputStyle, fontSize: '0.75rem' }} />
-        <select value={data.method || 'GET'} onChange={e => onChange({ method: e.target.value })} style={{ ...inputStyle, fontSize: '0.75rem' }}>
+    <div style={{ padding: '12px 14px 14px', borderTop: '1px solid var(--line)', background: 'var(--surface)' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+        <input className="n-input" aria-label="Action name" value={data.action_name || ''} onChange={e => onChange({ action_name: e.target.value })} placeholder="action_name" style={{ ...field, flex: '1 1 160px', width: 'auto', minWidth: 0 }} />
+        <input className="n-input" aria-label="Label" value={data.display_label || ''} onChange={e => onChange({ display_label: e.target.value })} placeholder="Label (optional)" style={{ ...field, flex: '1 1 160px', width: 'auto', minWidth: 0 }} />
+        <select className="n-select" aria-label="Method" value={data.method || 'GET'} onChange={e => onChange({ method: e.target.value })} style={{ ...field, flex: '0 0 112px', width: 112 }}>
           {['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       </div>
 
-      <input value={data.path_template || ''} onChange={e => onChange({ path_template: e.target.value })} placeholder="URL template" style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace', marginBottom: '0.4rem' }} />
+      <input className="n-input" aria-label="URL template" value={data.path_template || ''} onChange={e => onChange({ path_template: e.target.value })} placeholder="URL template" style={{ ...codeField, display: 'block', marginBottom: 8 }} />
 
       {data.method !== 'GET' && data.method !== 'DELETE' && (
-        <textarea value={data.request_body_template || ''} onChange={e => onChange({ request_body_template: e.target.value })} placeholder="Request body template (Jinja2)" rows={2} style={{ ...inputStyle, fontSize: '0.72rem', fontFamily: 'monospace', marginBottom: '0.4rem', resize: 'vertical' }} />
+        <textarea className="n-input" aria-label="Request body template" value={data.request_body_template || ''} onChange={e => onChange({ request_body_template: e.target.value })} placeholder="Request body template (Jinja2)" rows={2} style={{ ...codeField, display: 'block', marginBottom: 8 }} />
       )}
 
       {/* Response field mapping (for GET/load endpoints) */}
       {(data.method === 'GET') && (
-        <details style={{ marginBottom: '0.4rem' }} open={apiFields.length > 0 || Object.values(data.response_field_mapping || {}).some(v => !!v)}>
-          <summary style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', cursor: 'pointer', marginBottom: 4 }}>Response Field Mapping (Component ← API)</summary>
-          <div style={{ paddingLeft: 8 }}>
+        <details style={{ marginBottom: 8 }} open={apiFields.length > 0 || Object.values(data.response_field_mapping || {}).some(v => !!v)}>
+          <summary style={summaryStyle}>Response field mapping (component ← API)</summary>
+          <div style={{ padding: '6px 0 4px 14px' }}>
             {/* Venue selector for fetch */}
             {venues.length > 0 && (
-              <div style={{ marginBottom: 6 }}>
-                <span style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase' }}>Venue</span>
-                <select value={fetchVenue} onChange={e => setFetchVenue(e.target.value)} style={{ ...inputStyle, fontSize: '0.68rem', marginTop: 2 }}>
+              <div style={{ marginBottom: 10, maxWidth: 360 }}>
+                <span className="n-label">Venue</span>
+                <select className="n-select" aria-label="Venue" value={fetchVenue} onChange={e => setFetchVenue(e.target.value)} style={field}>
                   {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                 </select>
               </div>
@@ -323,36 +347,35 @@ function EndpointForm({
 
             {/* Params needed for fetch */}
             {requiredParams.length > 0 && (
-              <div style={{ marginBottom: 6 }}>
-                <span style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase' }}>Parameters</span>
+              <div style={{ marginBottom: 10 }}>
+                <span className="n-label">Parameters</span>
                 {requiredParams.map(p => (
-                  <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                    <span style={{ fontSize: '0.68rem', fontFamily: 'monospace', color: '#888', minWidth: 120 }}>{p}</span>
+                  <div key={p} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 8px', marginTop: 4 }}>
+                    <span style={{ ...paramName, minWidth: 120 }}>{p}</span>
                     <input
+                      className="n-input"
+                      aria-label={p}
                       value={fetchParams[p] || ''}
                       onChange={e => setFetchParams(prev => ({ ...prev, [p]: e.target.value }))}
                       placeholder={p.includes('date') || p.includes('time') || p.includes('Time') ? 'ISO 8601 datetime' : 'value'}
-                      style={{ ...inputStyle, fontSize: '0.68rem', fontFamily: 'monospace' }}
+                      style={{ ...codeField, flex: '1 1 220px', width: 'auto', minWidth: 0 }}
                     />
                   </div>
                 ))}
               </div>
             )}
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <button onClick={handleFetchSample} disabled={fetching} style={{
-                padding: '3px 10px', fontSize: '0.68rem', border: '1px solid #c4a882', borderRadius: 4,
-                backgroundColor: '#fff', color: '#a08060', cursor: fetching ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontWeight: 500,
-              }}>{fetching ? 'Fetching...' : 'Fetch API Fields'}</button>
-              {apiFields.length > 0 && <span style={{ fontSize: '0.62rem', color: '#999' }}>{apiFields.length} fields discovered</span>}
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+              <Button size="sm" onClick={handleFetchSample} disabled={fetching}>{fetching ? 'Fetching...' : 'Fetch API fields'}</Button>
+              {apiFields.length > 0 && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{apiFields.length} fields discovered</span>}
             </div>
 
             {/* Header */}
             {componentFields.length > 0 && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 20px 1fr', gap: 4, marginBottom: 4 }}>
-                <span style={{ fontSize: '0.6rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase' }}>Component Field</span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 20px minmax(0, 1fr)', gap: 6, marginBottom: 4 }}>
+                <span style={colHead}>Component field</span>
                 <span />
-                <span style={{ fontSize: '0.6rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase' }}>API Field (from response)</span>
+                <span style={colHead}>API field (from response)</span>
               </div>
             )}
 
@@ -360,26 +383,28 @@ function EndpointForm({
               const mapped = (data.response_field_mapping || {})[cf.name] || '';
               const isMapped = !!mapped;
               return (
-                <div key={cf.name} style={{ display: 'grid', gridTemplateColumns: '1fr 20px 1fr', gap: 4, alignItems: 'center', marginBottom: 2 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0' }}>
+                <div key={cf.name} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 20px minmax(0, 1fr)', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0', minWidth: 0 }}>
                     <span style={{
-                      fontSize: '0.7rem', fontFamily: 'monospace',
-                      color: cf.required ? '#333' : '#888',
+                      fontSize: 'var(--fs-sm)', fontFamily: 'var(--font-mono)', overflowWrap: 'anywhere',
+                      color: cf.required ? 'var(--text)' : 'var(--muted)',
                       fontWeight: cf.required ? 600 : 400,
                     }}>
                       {cf.name}
                     </span>
                     {cf.required && (
-                      <span style={{ fontSize: '0.55rem', fontWeight: 700, color: '#e53e3e' }}>*</span>
+                      <span title="Required" style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--error)' }}>*</span>
                     )}
                   </div>
-                  <span style={{ textAlign: 'center', color: '#ccc', fontSize: '0.7rem' }}>←</span>
+                  <Icon icon={ArrowLeft} size="dense" tone="muted" style={{ justifySelf: 'center' }} />
                   {(() => {
                     // Build dropdown options: fetched API fields + any saved mapped values
                     const savedValues = Object.values(data.response_field_mapping || {}).filter(v => !!v) as string[];
                     const allOptions = Array.from(new Set([...apiFields, ...savedValues])).sort();
                     return (
                       <select
+                        className="n-select"
+                        aria-label={`API field for ${cf.name}`}
                         value={mapped}
                         onChange={e => {
                           const next = { ...(data.response_field_mapping || {}) };
@@ -387,9 +412,9 @@ function EndpointForm({
                           onChange({ response_field_mapping: next });
                         }}
                         style={{
-                          ...inputStyle, fontSize: '0.7rem',
-                          color: isMapped ? '#333' : '#bbb',
-                          borderColor: cf.required && !isMapped ? '#e53e3e' : '#e2ddd7',
+                          ...field,
+                          color: isMapped ? 'var(--text)' : 'var(--muted)',
+                          borderColor: cf.required && !isMapped ? 'var(--error)' : undefined,
                         }}
                       >
                         <option value="">(unmapped)</option>
@@ -402,7 +427,7 @@ function EndpointForm({
             })}
 
             {apiFields.length === 0 && (
-              <p style={{ fontSize: '0.62rem', color: '#bbb', fontStyle: 'italic', margin: '4px 0 0' }}>Click &quot;Fetch API Fields&quot; to populate the API field dropdowns.</p>
+              <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', margin: '6px 0 0' }}>Click &quot;Fetch API fields&quot; to populate the API field dropdowns.</p>
             )}
           </div>
         </details>
@@ -410,34 +435,34 @@ function EndpointForm({
 
       {/* Outbound field mapping (for write endpoints) */}
       {(data.method !== 'GET') && (
-        <details style={{ marginBottom: '0.4rem' }}>
-          <summary style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', cursor: 'pointer', marginBottom: 4 }}>Field Mapping (Component → API)</summary>
-          <div style={{ paddingLeft: 8 }}>
-            <p style={{ fontSize: '0.62rem', color: '#aaa', margin: '0 0 4px' }}>Map component field names to API parameter names for document sync.</p>
+        <details style={{ marginBottom: 8 }}>
+          <summary style={summaryStyle}>Field mapping (component → API)</summary>
+          <div style={{ padding: '6px 0 4px 14px' }}>
+            <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', margin: '0 0 8px' }}>Map component field names to API parameter names for document sync.</p>
             {Object.entries(data.field_mapping || {}).map(([k, v], i) => (
-              <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 20px 1fr auto', gap: 4, alignItems: 'center', marginBottom: 2 }}>
-                <input value={k} onChange={e => {
+              <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 20px minmax(0, 1fr) auto', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+                <input className="n-input" aria-label="Component field" value={k} onChange={e => {
                   const entries = Object.entries(data.field_mapping || {});
                   entries[i] = [e.target.value, v];
                   onChange({ field_mapping: Object.fromEntries(entries) });
-                }} placeholder="component field" style={{ ...inputStyle, fontSize: '0.7rem', fontFamily: 'monospace' }} />
-                <span style={{ textAlign: 'center', color: '#ccc', fontSize: '0.7rem' }}>→</span>
-                <input value={v as string} onChange={e => {
+                }} placeholder="component field" style={codeField} />
+                <Icon icon={ArrowRight} size="dense" tone="muted" style={{ justifySelf: 'center' }} />
+                <input className="n-input" aria-label="API parameter" value={v as string} onChange={e => {
                   const entries = Object.entries(data.field_mapping || {});
                   entries[i] = [k, e.target.value];
                   onChange({ field_mapping: Object.fromEntries(entries) });
-                }} placeholder="API param" style={{ ...inputStyle, fontSize: '0.7rem', fontFamily: 'monospace' }} />
-                <button onClick={() => {
+                }} placeholder="API param" style={codeField} />
+                <IconButton icon={X} label="Remove field" iconSize={14} onClick={() => {
                   const next = { ...(data.field_mapping || {}) };
                   delete next[k];
                   onChange({ field_mapping: next });
-                }} style={{ border: 'none', background: 'none', color: '#ddd', cursor: 'pointer', fontSize: '0.7rem' }}>✕</button>
+                }} />
               </div>
             ))}
-            <button onClick={() => onChange({ field_mapping: { ...(data.field_mapping || {}), '': '' } })} style={{ border: 'none', background: 'none', fontSize: '0.62rem', color: '#999', cursor: 'pointer' }}>+ field</button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-              <span style={{ fontSize: '0.62rem', fontWeight: 600, color: '#888' }}>ID Field:</span>
-              <input value={data.id_field || ''} onChange={e => onChange({ id_field: e.target.value || null })} placeholder="e.g. shift_id" style={{ ...inputStyle, fontSize: '0.7rem', fontFamily: 'monospace', width: 130 }} />
+            <Button variant="quiet" size="sm" icon={Plus} onClick={() => onChange({ field_mapping: { ...(data.field_mapping || {}), '': '' } })} style={{ marginLeft: -12 }}>Add field</Button>
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>ID field</span>
+              <input className="n-input" aria-label="ID field" value={data.id_field || ''} onChange={e => onChange({ id_field: e.target.value || null })} placeholder="e.g. shift_id" style={{ ...codeField, width: 160 }} />
             </div>
           </div>
         </details>
@@ -448,13 +473,13 @@ function EndpointForm({
         <TestSection configId={data.id as string} method={data.method || 'GET'} pathTemplate={data.path_template || ''} bodyTemplate={data.request_body_template || ''} />
       )}
 
-      <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-        <button disabled={saving || !data.action_name || !data.path_template} onClick={onSave} style={{
-          padding: '4px 12px', fontSize: '0.75rem', fontWeight: 500, border: 'none', borderRadius: 6,
-          backgroundColor: '#c4a882', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-        }}>{saving ? '...' : data.id ? 'Update' : 'Create'}</button>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 12 }}>
+        <Button variant="primary" size="sm" disabled={saving || !data.action_name || !data.path_template} onClick={onSave}>
+          {saving ? 'Saving…' : data.id ? 'Update' : 'Create'}
+        </Button>
+        {onCancel && <Button variant="quiet" size="sm" onClick={onCancel}>Cancel</Button>}
         {onDelete && (
-          <button onClick={onDelete} style={{ padding: '4px 12px', fontSize: '0.75rem', border: '1px solid #e53e3e', borderRadius: 6, backgroundColor: '#fff', color: '#e53e3e', cursor: 'pointer', fontFamily: 'inherit' }}>Delete</button>
+          <Button variant="danger" size="sm" onClick={onDelete} style={{ marginLeft: 'auto' }}>Delete</Button>
         )}
       </div>
     </div>
@@ -545,14 +570,14 @@ function TestSection({ configId, method, pathTemplate, bodyTemplate }: {
   };
 
   return (
-    <details style={{ marginBottom: '0.4rem' }}>
-      <summary style={{ fontSize: '0.68rem', fontWeight: 600, color: '#888', cursor: 'pointer', marginBottom: 4 }}>Test Endpoint</summary>
-      <div style={{ paddingLeft: 8 }}>
+    <details style={{ marginBottom: 8 }}>
+      <summary style={summaryStyle}>Test endpoint</summary>
+      <div style={{ padding: '6px 0 4px 14px' }}>
         {/* Venue */}
         {venues.length > 0 && (
-          <div style={{ marginBottom: 6 }}>
-            <span style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase' }}>Venue</span>
-            <select value={venueId} onChange={e => setVenueId(e.target.value)} style={{ ...inputStyle, fontSize: '0.68rem', marginTop: 2 }}>
+          <div style={{ marginBottom: 10, maxWidth: 360 }}>
+            <span className="n-label">Venue</span>
+            <select className="n-select" aria-label="Venue" value={venueId} onChange={e => setVenueId(e.target.value)} style={field}>
               {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
             </select>
           </div>
@@ -560,16 +585,18 @@ function TestSection({ configId, method, pathTemplate, bodyTemplate }: {
 
         {/* Params */}
         {allPlaceholders.length > 0 && (
-          <div style={{ marginBottom: 6 }}>
-            <span style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase' }}>Parameters</span>
+          <div style={{ marginBottom: 10 }}>
+            <span className="n-label">Parameters</span>
             {allPlaceholders.map(p => (
-              <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                <span style={{ fontSize: '0.68rem', fontFamily: 'monospace', color: '#888', minWidth: 130 }}>{p}</span>
+              <div key={p} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 8px', marginTop: 4 }}>
+                <span style={{ ...paramName, minWidth: 130 }}>{p}</span>
                 <input
+                  className="n-input"
+                  aria-label={p}
                   value={testParams[p] || ''}
                   onChange={e => setTestParams(prev => ({ ...prev, [p]: e.target.value }))}
                   placeholder="value"
-                  style={{ ...inputStyle, fontSize: '0.68rem', fontFamily: 'monospace' }}
+                  style={{ ...codeField, flex: '1 1 220px', width: 'auto', minWidth: 0 }}
                 />
               </div>
             ))}
@@ -577,30 +604,21 @@ function TestSection({ configId, method, pathTemplate, bodyTemplate }: {
         )}
 
         {/* Buttons */}
-        <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-          <button onClick={handlePreview} disabled={loading} style={{
-            padding: '3px 10px', fontSize: '0.68rem', border: '1px solid #c4a882', borderRadius: 4,
-            backgroundColor: '#fff', color: '#a08060', cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontWeight: 500,
-          }}>{loading ? '...' : 'Preview Request'}</button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+          <Button size="sm" onClick={handlePreview} disabled={loading}>{loading ? '…' : 'Preview request'}</Button>
           {preview && (
-            <button onClick={handleExecute} disabled={loading} style={{
-              padding: '3px 10px', fontSize: '0.68rem', border: '1px solid #28a745', borderRadius: 4,
-              backgroundColor: '#fff', color: '#28a745', cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontWeight: 500,
-            }}>{loading ? '...' : 'Execute'}</button>
+            <Button size="sm" icon={Play} onClick={handleExecute} disabled={loading}>{loading ? '…' : 'Execute'}</Button>
           )}
         </div>
 
-        {error && <div style={{ fontSize: '0.68rem', color: '#e53e3e', marginBottom: 4 }}>{error}</div>}
+        {error && <div role="alert" style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)', marginBottom: 8 }}>{error}</div>}
 
         {/* Preview */}
         {preview && (
-          <div style={{ marginBottom: 6 }}>
-            <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', marginBottom: 2 }}>Request Preview</div>
-            <pre style={{
-              fontSize: '0.65rem', backgroundColor: '#1a202c', color: '#e2e8f0', padding: '0.6rem',
-              borderRadius: 6, overflow: 'auto', maxHeight: 300, lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            }}>
-              <span style={{ color: '#68d391' }}>{preview.method}</span> {preview.url}{'\n\n'}
+          <div style={{ marginBottom: 10 }}>
+            <span className="n-label">Request preview</span>
+            <pre style={codeBlock}>
+              <span style={{ fontWeight: 600 }}>{preview.method}</span> {preview.url}{'\n\n'}
               {Object.entries(preview.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}{'\n\n'}
               {preview.body ? JSON.stringify(preview.body, null, 2) : '(no body)'}
             </pre>
@@ -610,14 +628,11 @@ function TestSection({ configId, method, pathTemplate, bodyTemplate }: {
         {/* Response */}
         {response && (
           <div>
-            <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#aaa', textTransform: 'uppercase', marginBottom: 2 }}>
-              Response <span style={{ color: response.status_code < 400 ? '#28a745' : '#e53e3e' }}>{response.status_code}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <span className="n-label" style={{ marginBottom: 0 }}>Response</span>
+              <Badge tone={response.status_code < 400 ? 'ok' : 'error'}>{response.status_code}</Badge>
             </div>
-            <pre style={{
-              fontSize: '0.65rem', backgroundColor: '#f7fafc', color: '#333', padding: '0.6rem',
-              borderRadius: 6, overflow: 'auto', maxHeight: 300, lineHeight: 1.4, border: '1px solid #e2e8f0',
-              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            }}>
+            <pre style={codeBlock}>
               {typeof response.data === 'string' ? response.data : JSON.stringify(response.data, null, 2)}
             </pre>
           </div>
@@ -728,24 +743,31 @@ export default function ComponentsPanel() {
 
   return (
     <div>
-      <h3 style={{ margin: '0 0 0.5rem', fontSize: '0.85rem', fontWeight: 600, color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        Components
-      </h3>
-      <p style={{ color: '#999', fontSize: '0.78rem', margin: '0 0 1rem', lineHeight: 1.5 }}>
-        Configure external API endpoints for each component. Field mappings define how component data maps to API parameters for real-time sync.
-      </p>
+      <div style={{ marginBottom: 16 }}>
+        <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>
+          Components
+        </h3>
+        <p style={{ margin: '2px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--muted)', lineHeight: 1.5 }}>
+          Configure external API endpoints for each component. Field mappings define how component data maps to API parameters for real-time sync.
+        </p>
+      </div>
 
-      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <div>
-          <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: 600, color: '#888', marginBottom: 4, textTransform: 'uppercase' }}>Component</label>
-          <select value={selectedComponent} onChange={e => { setSelectedComponent(e.target.value); setExpandedId(null); }} style={{ ...inputStyle, width: 220 }}>
-            {COMPONENTS.map(c => <option key={c.key} value={c.key}>{c.internal ? '○ ' : '● '}{c.label}</option>)}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ width: 280, maxWidth: '100%' }}>
+          <label className="n-label" htmlFor="components-panel-component">Component</label>
+          <select id="components-panel-component" className="n-select" value={selectedComponent} onChange={e => { setSelectedComponent(e.target.value); setExpandedId(null); }} style={{ width: '100%' }}>
+            <optgroup label="External">
+              {EXTERNAL_COMPONENTS.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </optgroup>
+            <optgroup label="Internal">
+              {INTERNAL_COMPONENTS.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </optgroup>
           </select>
         </div>
         {!selectedComponentDef?.internal && (
-          <div>
-            <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: 600, color: '#888', marginBottom: 4, textTransform: 'uppercase' }}>Connector</label>
-            <select value={selectedConnector || ''} onChange={e => { setSelectedConnector(e.target.value); setExpandedId(null); }} style={{ ...inputStyle, width: 200 }}>
+          <div style={{ width: 220, maxWidth: '100%' }}>
+            <label className="n-label" htmlFor="components-panel-connector">Connector</label>
+            <select id="components-panel-connector" className="n-select" value={selectedConnector || ''} onChange={e => { setSelectedConnector(e.target.value); setExpandedId(null); }} style={{ width: '100%' }}>
               {connectors.map(c => <option key={c.connector_name} value={c.connector_name}>{c.display_name || c.connector_name}</option>)}
             </select>
           </div>
@@ -754,27 +776,18 @@ export default function ComponentsPanel() {
 
       {/* Component info */}
       {selectedComponentDef && (
-        <div style={{
-          padding: '0.6rem 0.75rem', marginBottom: '1rem', borderRadius: 8,
-          backgroundColor: selectedComponentDef.internal ? '#f7f7f8' : '#fafafa',
-          border: `1px solid ${selectedComponentDef.internal ? '#e2e3e5' : '#e8e4de'}`,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.25rem' }}>
-            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#333' }}>{selectedComponentDef.label}</span>
+        <div className="n-card" style={{ padding: '14px 16px', marginBottom: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 8px', marginBottom: 4 }}>
+            <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{selectedComponentDef.label}</span>
             {catalogInfo[selectedComponentDef.key] && (
-              <span title="the marketplace App this component belongs to"
-                style={{ fontSize: '0.58rem', fontWeight: 700, padding: '1px 6px', borderRadius: 3, backgroundColor: '#eef4ee', color: '#2e7d4f' }}>
+              <Badge title="the marketplace App this component belongs to">
                 App: {catalogInfo[selectedComponentDef.key].app}
-              </span>
+              </Badge>
             )}
-            <span style={{
-              fontSize: '0.58rem', fontWeight: 600, padding: '1px 5px', borderRadius: 3,
-              backgroundColor: selectedComponentDef.internal ? '#e2e3e5' : '#d4edda',
-              color: selectedComponentDef.internal ? '#666' : '#155724',
-            }}>{selectedComponentDef.internal ? 'Internal' : 'External'}</span>
-            <span style={{ fontSize: '0.62rem', fontFamily: 'monospace', color: '#aaa' }}>{selectedComponentDef.key}</span>
+            <Badge tone={selectedComponentDef.internal ? 'neutral' : 'info'}>{selectedComponentDef.internal ? 'Internal' : 'External'}</Badge>
+            <span style={{ fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>{selectedComponentDef.key}</span>
           </div>
-          <p style={{ fontSize: '0.72rem', color: '#888', margin: 0, lineHeight: 1.5 }}>
+          <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', margin: 0, lineHeight: 1.5 }}>
             {catalogInfo[selectedComponentDef.key]?.description ?? selectedComponentDef.description}
           </p>
         </div>
@@ -782,53 +795,63 @@ export default function ComponentsPanel() {
 
       {/* Endpoints section — only for external components */}
       {selectedComponentDef && !selectedComponentDef.internal && (<>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-        <h4 style={{ margin: 0, fontSize: '0.78rem', fontWeight: 600, color: '#555' }}>Endpoints</h4>
-        <button
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+        <h4 style={{ margin: 0, fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Endpoints</h4>
+        <Button
+          size="sm"
+          icon={Plus}
           onClick={() => setAddingNew({
             component_key: selectedComponent,
             connector_name: selectedConnector || '',
             action_name: '', method: 'GET', path_template: '', enabled: true,
           })}
-          style={{ padding: '3px 10px', fontSize: '0.75rem', border: '1px solid #ddd', borderRadius: 4, backgroundColor: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}
-        >+ Add Endpoint</button>
+        >Add endpoint</Button>
       </div>
 
       {filtered.length === 0 && !addingNew && (
-        <p style={{ color: '#bbb', fontSize: '0.78rem', fontStyle: 'italic', margin: '0 0 1rem' }}>No endpoints configured.</p>
+        <div className="n-card" style={{ marginBottom: 16 }}>
+          <PageState kind="empty" title="No endpoints configured" />
+        </div>
       )}
 
       {filtered.map(cfg => {
-        const mc = methodColors[cfg.method] || methodColors.GET;
+        const tone = methodTones[cfg.method] || methodTones.GET;
         const hasMapping = cfg.field_mapping && Object.keys(cfg.field_mapping).length > 0;
         const isExpanded = expandedId === cfg.id;
 
         return (
-          <div key={cfg.id} style={{
-            border: `1px solid ${isExpanded ? '#c4a882' : '#e8e4de'}`,
-            borderRadius: 8, marginBottom: '0.4rem', backgroundColor: '#fafafa', overflow: 'hidden',
+          <div key={cfg.id} className="n-card" style={{
+            borderColor: isExpanded ? 'var(--brand-soft)' : undefined,
+            marginBottom: 8, overflow: 'hidden',
           }}>
             {/* Card header */}
-            <div
+            <button
+              type="button"
+              aria-expanded={isExpanded}
               onClick={() => toggleExpand(cfg.id)}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 0.75rem', cursor: 'pointer' }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '10px 14px',
+                border: 'none', background: 'none', fontFamily: 'inherit', textAlign: 'left', color: 'var(--text)',
+                cursor: 'pointer', outlineOffset: -2,
+              }}
             >
-              <span style={{ fontSize: '0.6rem', fontWeight: 600, padding: '1px 6px', borderRadius: 4, backgroundColor: mc.bg, color: mc.color }}>{cfg.method}</span>
-              <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#333' }}>{cfg.action_name}</span>
-              {cfg.display_label && <span style={{ fontSize: '0.72rem', color: '#999' }}>— {cfg.display_label}</span>}
-              {hasMapping && (
-                <span style={{ fontSize: '0.58rem', fontWeight: 600, padding: '1px 5px', borderRadius: 3, backgroundColor: '#e8daef', color: '#6c3483' }}>sync</span>
-              )}
-              <span style={{ flex: 1 }} />
-              <span style={{
-                display: 'inline-block', fontSize: '0.65rem', color: '#aaa',
-                transition: 'transform 0.15s', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-              }}>&#9654;</span>
-            </div>
+              <Badge tone={tone}>{cfg.method}</Badge>
+              <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '2px 8px' }}>
+                <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)', overflowWrap: 'anywhere' }}>{cfg.action_name}</span>
+                {cfg.display_label && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{cfg.display_label}</span>}
+              </span>
+              {hasMapping && <Badge>Sync</Badge>}
+              <Icon
+                icon={ChevronRight}
+                size="dense"
+                tone="muted"
+                style={{ transition: 'transform 0.15s', transform: isExpanded ? 'rotate(90deg)' : 'none' }}
+              />
+            </button>
 
             {/* URL preview (collapsed) */}
             {!isExpanded && (
-              <div style={{ fontSize: '0.68rem', color: '#bbb', fontFamily: 'monospace', padding: '0 0.75rem 0.5rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', fontFamily: 'var(--font-mono)', padding: '0 14px 10px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {cfg.path_template}
               </div>
             )}
@@ -851,19 +874,17 @@ export default function ComponentsPanel() {
 
       {/* New endpoint form */}
       {addingNew && (
-        <div style={{ border: '1px solid #c4a882', borderRadius: 8, marginBottom: '0.4rem', overflow: 'hidden' }}>
-          <div style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', fontWeight: 600, color: '#a08060' }}>New Endpoint</div>
+        <div className="n-card" style={{ borderColor: 'var(--brand-soft)', marginBottom: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '10px 14px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>New endpoint</div>
           <EndpointForm
             data={addingNew}
             onChange={patch => setAddingNew(prev => prev ? { ...prev, ...patch } : prev)}
             onSave={handleSaveNew}
+            onCancel={() => setAddingNew(null)}
             saving={saving}
             componentFields={componentFields}
             allConfigs={configs}
           />
-          <div style={{ padding: '0 0.75rem 0.5rem' }}>
-            <button onClick={() => setAddingNew(null)} style={{ border: 'none', background: 'none', fontSize: '0.7rem', color: '#999', cursor: 'pointer' }}>Cancel</button>
-          </div>
         </div>
       )}
       </>)}

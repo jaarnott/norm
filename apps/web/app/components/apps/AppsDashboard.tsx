@@ -15,11 +15,21 @@
  * page list without a reload.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { apiFetch, getStoredUser } from '../../lib/api';
 import { setPageDocument } from '../../lib/pageDocument';
 import { AGENTS } from '../layout/Sidebar';
 import AppRunner from './AppRunner';
+import AppIcon from '../ui/AppIcon';
+import type { AppIconSource } from '../ui/appIcons';
+import { useRequestPageFill } from '../pages/pageFill';
+import BackLink from '../ui/BackLink';
+import Badge, { type BadgeTone } from '../ui/Badge';
+import Button from '../ui/Button';
+import Icon from '../ui/Icon';
+import PageHeader from '../ui/PageHeader';
+import PageState from '../ui/PageState';
 import type { DisplayBlockProps } from '../display/DisplayBlockRenderer';
 
 export const APP_PAGES_CHANGED_EVENT = 'norm:app-pages-changed';
@@ -76,11 +86,41 @@ const TIER_LABEL: Record<string, string> = {
   user: 'Community',
 };
 
-const STATUS_DOT: Record<string, string> = {
-  connected: '#2e7d4f',
-  needs_reconnect: '#b8860b',
-  not_connected: '#b0aca4',
+/** A venue's connection state, as the tone of its badge. */
+const CONN_TONE: Record<string, BadgeTone> = {
+  connected: 'ok',
+  needs_reconnect: 'warn',
+  not_connected: 'neutral',
 };
+
+// One row look for both lists (and the standalone /apps route): the app's
+// line icon on a tile, name 14/600, a 13px muted description, actions right.
+// The row wraps on a phone, so the actions drop under the name.
+const ROW: CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px 12px', padding: '12px 16px' };
+const ROW_TEXT: CSSProperties = { flex: '1 1 220px', minWidth: 0 };
+const NAME_LINE: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
+const NAME: CSSProperties = { fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' };
+const DESCRIPTION: CSSProperties = { marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+const ACTIONS: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: '8px 12px', marginLeft: 'auto' };
+const DIVIDER = '1px solid var(--line)';
+
+function IconTile({ app }: { app: AppIconSource }) {
+  return (
+    <span aria-hidden style={{ flex: '0 0 auto', width: 32, height: 32, borderRadius: 'var(--radius)', background: 'var(--surface-alt)', color: 'var(--text-soft)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+      <AppIcon app={app} size="menu" tone="inherit" />
+    </span>
+  );
+}
+
+/** A list's title with its one muted line; smaller in a conversation. */
+function SectionHead({ title, meta, page }: { title: string; meta?: ReactNode; page: boolean }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+      <h2 style={{ margin: 0, fontSize: page ? 'var(--fs-lg)' : 'var(--fs-md)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</h2>
+      {meta && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{meta}</span>}
+    </div>
+  );
+}
 
 export default function AppsDashboard({ props }: DisplayBlockProps) {
   const [apps, setApps] = useState<AppRow[] | null>(null);
@@ -88,10 +128,17 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
   const [openSlug, setOpenSlug] = useState<string | null>(
     (props?.openSlug as string) || null,
   );
+  // A page instance (FunctionalPage marks it) hands an open app the whole area.
+  const isPage = !!props?.persistVenue;
+  useRequestPageFill(isPage && !!openSlug);
   const [busy, setBusy] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [connInfo, setConnInfo] = useState<Record<string, ConnVenue[] | 'loading'>>({});
   const [notice, setNotice] = useState<string | null>(null);
+  // A failed load still leaves an empty list (as before); these only let the
+  // page say it failed instead of showing "No apps yet".
+  const [appsFailed, setAppsFailed] = useState(false);
+  const [catalogFailed, setCatalogFailed] = useState(false);
   const isAdmin = getStoredUser()?.role === 'admin';
   // Settings → Apps mounts just the marketplace half: no team-apps section,
   // and no page-document publishing (that belongs to the conversation panel).
@@ -112,18 +159,18 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
 
   const load = useCallback(() => {
     apiFetch('/api/apps')
-      .then((r) => (r.ok ? r.json() : { apps: [] }))
+      .then((r) => { setAppsFailed(!r.ok); return r.ok ? r.json() : { apps: [] }; })
       // Norm's built-in apps (Hiring, Training) aren't built by the team —
       // they live in their team member's menu and on the Team page.
       .then((d) => setApps(((d.apps ?? []) as AppRow[]).filter((a) => !a.builtin)))
-      .catch(() => setApps([]));
+      .catch(() => { setAppsFailed(true); setApps([]); });
     apiFetch('/api/marketplace')
-      .then((r) => (r.ok ? r.json() : { apps: [] }))
+      .then((r) => { setCatalogFailed(!r.ok); return r.ok ? r.json() : { apps: [] }; })
       // Hierarchy v2: team members (tier 'agent') and their Apps (tier 'app')
       // are hired/managed on the team page — this hub keeps the community
       // shelf and the team's own apps only.
       .then((d) => setCatalog(((d.apps ?? []) as CatalogApp[]).filter((a) => a.tier !== 'agent' && a.tier !== 'app')))
-      .catch(() => setCatalog([]));
+      .catch(() => { setCatalogFailed(true); setCatalog([]); });
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -211,187 +258,223 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
     (catalog ?? []).find((c) => c.tier === 'user' && c.composition.app_slug === slug);
 
   if (openSlug) {
-    return (
+    // On the Apps page the app takes the whole area, like any app page; in a
+    // conversation it is a card with a way back to the list.
+    return isPage ? (
+      <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <AppRunner slug={openSlug} variant="page" back={{ label: 'All apps', onClick: () => setOpenSlug(null) }} />
+      </div>
+    ) : (
       <div>
-        <button type="button" onClick={() => setOpenSlug(null)}
-          style={{ margin: '0.6rem 1rem 0', fontSize: '0.72rem', border: '1px solid #d8d4cc', borderRadius: 5, background: '#fff', color: '#6b6b6b', cursor: 'pointer', padding: '3px 10px', fontFamily: 'inherit' }}>
-          ← All apps
-        </button>
-        <AppRunner slug={openSlug} />
+        <div style={{ marginBottom: 8 }}><BackLink label="All apps" onClick={() => setOpenSlug(null)} /></div>
+        <AppRunner slug={openSlug} variant="embedded" />
       </div>
     );
   }
 
-  const badge = (text: string, color: string, bg: string) => (
-    <span style={{ fontSize: '0.6rem', fontWeight: 700, color, background: bg, borderRadius: 8, padding: '2px 8px', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.03em' }}>{text}</span>
-  );
+  const catalogList = catalog ?? [];
+  const appList = apps ?? [];
+  const showTeam = !marketplaceOnly;
+  const loading = catalog === null || (showTeam && apps === null);
+  // The marketplace keeps its heading only when it has something to show.
+  const showMarketplace = catalogFailed || catalogList.length > 0;
 
-  return (
-    <div style={{ maxWidth: 860, margin: '0 auto', padding: '1.2rem 1rem' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Marketplace</h2>
-        <span style={{ fontSize: '0.72rem', color: '#8a8a8a' }}>
-          apps for your organisation — owners enable them; connections are managed per venue
-        </span>
-      </div>
-      {notice && (
-        <div style={{ margin: '8px 0', padding: '6px 12px', borderRadius: 8, background: '#fdf6ec', color: '#8a6d3b', fontSize: '0.76rem' }}>{notice}</div>
-      )}
-
-      {catalog === null ? (
-        <div style={{ color: '#888', padding: '1rem 0' }}>Loading marketplace…</div>
+  const marketplace = (
+    <section style={{ marginBottom: 28 }}>
+      <SectionHead
+        title="Marketplace"
+        meta="Apps for your organisation — owners enable them; connections are managed per venue"
+        page={isPage}
+      />
+      {catalogFailed ? (
+        <PageState kind="error" title="Couldn’t load the marketplace" detail="Refresh the page to try again." />
       ) : (
-        catalog.map((app) => {
-          const comp = app.composition || {};
-          const pages = (comp.components || []).filter((c) => c.page);
-          const isOpen = expanded === app.slug;
-          return (
-            <div key={app.slug} style={{ border: '1px solid #e5e2dc', borderRadius: 10, marginTop: 10, background: '#fff' }}>
-              <div style={{ padding: '0.7rem 1rem', display: 'flex', gap: 12, alignItems: 'center', cursor: 'pointer' }} onClick={() => expand(app)}>
-                <span style={{ fontSize: '1.2rem' }}>{app.icon}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <strong style={{ fontSize: '0.92rem' }}>{app.name}</strong>
-                    {badge(TIER_LABEL[app.tier] ?? app.tier, '#6b655c', '#f2efe9')}
-                    {app.status === 'pending' && badge('pending approval', '#8a6d3b', '#fdf6ec')}
-                    {app.price_cents > 0 && (
-                      <span style={{ fontSize: '0.68rem', color: '#6b655c' }}>${(app.price_cents / 100).toFixed(0)}/mo</span>
+        <div className="n-card" style={{ overflow: 'hidden' }}>
+          {catalogList.map((app, i) => {
+            const comp = app.composition || {};
+            const pages = (comp.components || []).filter((c) => c.page);
+            const isOpen = expanded === app.slug;
+            return (
+              <div key={app.slug} style={{ borderTop: i ? DIVIDER : undefined }}>
+                <div style={{ ...ROW, cursor: 'pointer', background: isOpen ? 'var(--surface)' : undefined }} onClick={() => expand(app)}>
+                  <IconTile app={app} />
+                  <div style={ROW_TEXT}>
+                    <div style={NAME_LINE}>
+                      <span style={NAME}>{app.name}</span>
+                      <Badge>{TIER_LABEL[app.tier] ?? app.tier}</Badge>
+                      {app.status === 'active' && app.enabled && <Badge tone="ok">Enabled</Badge>}
+                      {app.status === 'pending' && <Badge tone="warn">Pending approval</Badge>}
+                      {app.price_cents > 0 && (
+                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>${(app.price_cents / 100).toFixed(0)}/mo</span>
+                      )}
+                    </div>
+                    {app.description && <div style={DESCRIPTION}>{app.description}</div>}
+                  </div>
+                  <div style={ACTIONS}>
+                    {app.status === 'pending' && isAdmin && (
+                      <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); void approveApp(app); }}>
+                        Approve
+                      </Button>
+                    )}
+                    {app.status === 'active' && (
+                      app.enabled ? (
+                        <Button size="sm" variant="secondary" disabled={busy === app.slug}
+                          onClick={(e) => { e.stopPropagation(); void setEnabled(app, false); }}>
+                          Disable
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="secondary" disabled={busy === app.slug}
+                          onClick={(e) => { e.stopPropagation(); void setEnabled(app, true); }}>
+                          Enable
+                        </Button>
+                      )
+                    )}
+                    <Icon icon={isOpen ? ChevronDown : ChevronRight} size={16} tone="muted" />
+                  </div>
+                </div>
+
+                {isOpen && (
+                  <div style={{ display: 'grid', gap: 12, padding: '4px 16px 14px 60px', background: 'var(--surface)', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                    {pages.length > 0 && (
+                      <div>
+                        <div className="n-eyebrow" style={{ marginBottom: 4 }}>Pages</div>
+                        {pages.map((c) => (
+                          <div key={c.key} style={{ padding: '2px 0' }}>
+                            <span style={{ fontWeight: 500, color: 'var(--text)' }}>{c.page!.label}</span>
+                            <span style={{ color: 'var(--muted)' }}> — under {agentLabel(c.agent)}</span>
+                            {c.description ? <span style={{ color: 'var(--muted)' }}> · {c.description}</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(comp.connections || []).length > 0 && (
+                      <div>
+                        <div className="n-eyebrow" style={{ marginBottom: 4 }}>Connections this app uses</div>
+                        {(comp.connections || []).map((conn) => {
+                          const info = connInfo[conn];
+                          return (
+                            <div key={conn} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '3px 0' }}>
+                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--text)', marginRight: 2 }}>{conn}</span>
+                              {info === 'loading' || !info ? (
+                                <span style={{ color: 'var(--muted)' }}>Checking…</span>
+                              ) : (
+                                <>
+                                  {(info as ConnVenue[]).map((v) => (
+                                    <Badge key={v.venue_id} tone={CONN_TONE[v.status] ?? 'neutral'} title={v.status.replace('_', ' ')}>
+                                      {v.venue_name}
+                                    </Badge>
+                                  ))}
+                                  {(info as ConnVenue[]).some((v) => v.status !== 'connected') && (
+                                    <span style={{ color: 'var(--warn)' }}>Connect in Settings → Connections</span>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {pages.length === 0 && (comp.connections || []).length === 0 && (
+                      <div style={{ color: 'var(--muted)' }}>No pages or connections.</div>
                     )}
                   </div>
-                  <div style={{ fontSize: '0.72rem', color: '#8a8a8a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {app.description}
-                  </div>
-                </div>
-                {app.status === 'pending' && isAdmin && (
-                  <button type="button" onClick={(e) => { e.stopPropagation(); void approveApp(app); }}
-                    style={{ fontSize: '0.7rem', border: 'none', borderRadius: 5, background: '#8a6d3b', color: '#fff', cursor: 'pointer', padding: '4px 12px', fontFamily: 'inherit' }}>
-                    Approve
-                  </button>
                 )}
-                {app.status === 'active' && (
-                  app.enabled ? (
-                    <button type="button" disabled={busy === app.slug}
-                      onClick={(e) => { e.stopPropagation(); void setEnabled(app, false); }}
-                      style={{ fontSize: '0.7rem', border: '1px solid #d8d4cc', borderRadius: 5, background: '#fff', color: '#6b6b6b', cursor: 'pointer', padding: '4px 12px', fontFamily: 'inherit' }}>
-                      Disable
-                    </button>
-                  ) : (
-                    <button type="button" disabled={busy === app.slug}
-                      onClick={(e) => { e.stopPropagation(); void setEnabled(app, true); }}
-                      style={{ fontSize: '0.7rem', border: 'none', borderRadius: 5, background: '#2e7d4f', color: '#fff', cursor: 'pointer', padding: '4px 12px', fontFamily: 'inherit' }}>
-                      Enable
-                    </button>
-                  )
-                )}
-                <span style={{ color: '#b0aca4' }}>{isOpen ? '▾' : '▸'}</span>
               </div>
-
-              {isOpen && (
-                <div style={{ borderTop: '1px solid #f0ede8', padding: '0.7rem 1rem 0.9rem', fontSize: '0.76rem', color: '#555' }}>
-                  {pages.length > 0 && (
-                    <div style={{ marginBottom: 8 }}>
-                      <div style={{ fontWeight: 700, fontSize: '0.66rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: '#8a8a8a', marginBottom: 3 }}>Pages</div>
-                      {pages.map((c) => (
-                        <div key={c.key}>
-                          {c.page!.label} <span style={{ color: '#8a8a8a' }}>— under {agentLabel(c.agent)}</span>
-                          {c.description ? <span style={{ color: '#b0aca4' }}> · {c.description}</span> : null}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {(comp.connections || []).length > 0 && (
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: '0.66rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: '#8a8a8a', marginBottom: 3 }}>
-                        Connections this app uses
-                      </div>
-                      {(comp.connections || []).map((conn) => {
-                        const info = connInfo[conn];
-                        return (
-                          <div key={conn} style={{ marginBottom: 4 }}>
-                            <span style={{ fontFamily: 'monospace', fontSize: '0.72rem' }}>{conn}</span>
-                            {info === 'loading' || !info ? (
-                              <span style={{ color: '#b0aca4' }}> — checking…</span>
-                            ) : (
-                              <span>
-                                {(info as ConnVenue[]).map((v) => (
-                                  <span key={v.venue_id} title={v.status.replace('_', ' ')}
-                                    style={{ marginLeft: 8, whiteSpace: 'nowrap' }}>
-                                    <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: 4, background: STATUS_DOT[v.status] ?? '#b0aca4', marginRight: 3 }} />
-                                    {v.venue_name}
-                                  </span>
-                                ))}
-                                {(info as ConnVenue[]).some((v) => v.status !== 'connected') && (
-                                  <span style={{ color: '#8a6d3b', marginLeft: 8 }}>· connect in Settings → Connections</span>
-                                )}
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })
-      )}
-
-      {!marketplaceOnly && (<>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '1.6rem 0 4px' }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Built by your team</h2>
-        <span style={{ fontSize: '0.72rem', color: '#8a8a8a' }}>
-          describe a new one to the App Builder in chat
-        </span>
-      </div>
-      {apps === null ? (
-        <div style={{ color: '#888', padding: '1.5rem 0' }}>Loading…</div>
-      ) : apps.length === 0 ? (
-        <div style={{ border: '1px dashed #d8d4cc', borderRadius: 10, padding: '2rem', color: '#8a8a8a', fontSize: '0.85rem', marginTop: 10 }}>
-          No apps yet. Tell the App Builder what you want — &ldquo;build me a weekly
-          venue performance dashboard&rdquo; — and it will appear here.
+            );
+          })}
         </div>
+      )}
+    </section>
+  );
+
+  const teamApps = (
+    <section>
+      <SectionHead
+        title="Built by your team"
+        // On the page the header already says how to build one.
+        meta={isPage ? undefined : 'Describe a new one to the App Builder in chat'}
+        page={isPage}
+      />
+      {appsFailed ? (
+        <PageState kind="error" title="Couldn’t load your team’s apps" detail="Refresh the page to try again." />
+      ) : appList.length === 0 ? (
+        <PageState
+          kind="empty"
+          title="No apps yet"
+          detail={<>Try &ldquo;build me a weekly venue performance dashboard&rdquo;.</>}
+        />
       ) : (
-        apps.map((a) => {
-          const sub = submissionFor(a.slug);
-          return (
-            <div key={a.slug}
-              style={{ border: '1px solid #e5e2dc', borderRadius: 10, padding: '0.8rem 1rem', marginTop: 10, background: '#fff', display: 'flex', gap: 12, alignItems: 'center' }}>
-              <div style={{ flex: 1, minWidth: 0, cursor: 'pointer' }} onClick={() => setOpenSlug(a.slug)}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
-                  <strong style={{ fontSize: '0.92rem' }}>{a.icon} {a.name}</strong>
-                  <span style={{ fontSize: '0.62rem', color: a.mine ? '#2e7d4f' : '#8a6d3b', whiteSpace: 'nowrap' }}>
-                    {a.builtin ? 'built into Norm' : a.mine ? 'yours' : `shared · ${a.access}`}
-                    {!a.builtin && a.visibility !== 'private' && ` · ${a.visibility}`}
-                  </span>
-                  {sub && badge(sub.status === 'pending' ? 'in review' : 'in marketplace', '#6b655c', '#f2efe9')}
+        <div className="n-card" style={{ overflow: 'hidden' }}>
+          {appList.map((a, i) => {
+            const sub = submissionFor(a.slug);
+            return (
+              <div key={a.slug} style={{ ...ROW, borderTop: i ? DIVIDER : undefined }}>
+                <IconTile app={a} />
+                <div style={{ ...ROW_TEXT, cursor: 'pointer' }} onClick={() => setOpenSlug(a.slug)}>
+                  <div style={NAME_LINE}>
+                    <span style={NAME}>{a.name}</span>
+                    <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                      {a.builtin ? 'Built into Norm' : a.mine ? 'Yours' : `Shared · ${a.access}`}
+                      {!a.builtin && a.visibility !== 'private' && ` · ${a.visibility}`}
+                    </span>
+                    {sub && (
+                      <Badge tone={sub.status === 'pending' ? 'warn' : 'ok'}>
+                        {sub.status === 'pending' ? 'In review' : 'In marketplace'}
+                      </Badge>
+                    )}
+                  </div>
+                  {a.description && <div style={DESCRIPTION}>{a.description}</div>}
                 </div>
-                <div style={{ fontSize: '0.72rem', color: '#8a8a8a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {a.description}
+                <div style={ACTIONS}>
+                  {!sub && !a.builtin && (
+                    <Button size="sm" variant="quiet" title="Publish this app to the marketplace (owners only)"
+                      onClick={() => { void submitApp(a); }} disabled={busy === a.slug}>
+                      Publish
+                    </Button>
+                  )}
+                  <label title={`Show this app as a page link under ${agentLabel(a.agent)} (only for you)`}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', whiteSpace: 'nowrap', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={a.pinned} disabled={busy === a.slug}
+                      onChange={() => { void togglePin(a); }}
+                      style={{ width: 16, height: 16, margin: 0, accentColor: 'var(--accent)', cursor: 'pointer' }} />
+                    Show in {agentLabel(a.agent)}
+                  </label>
+                  <Button size="sm" variant="secondary" onClick={() => setOpenSlug(a.slug)}>
+                    Open
+                  </Button>
                 </div>
               </div>
-              {!sub && !a.builtin && (
-                <button type="button" title="Publish this app to the marketplace (owners only)"
-                  onClick={() => { void submitApp(a); }} disabled={busy === a.slug}
-                  style={{ fontSize: '0.68rem', border: '1px solid #d8d4cc', borderRadius: 5, background: '#fff', color: '#6b6b6b', cursor: 'pointer', padding: '4px 10px', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-                  Publish
-                </button>
-              )}
-              <label title={`show this app as a page link under ${agentLabel(a.agent)} (only for you)`}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.66rem', color: '#6b655c', whiteSpace: 'nowrap', cursor: 'pointer' }}>
-                <input type="checkbox" checked={a.pinned} disabled={busy === a.slug}
-                  onChange={() => { void togglePin(a); }} />
-                in {agentLabel(a.agent)}
-              </label>
-              <button type="button" onClick={() => setOpenSlug(a.slug)}
-                style={{ fontSize: '0.72rem', border: 'none', borderRadius: 5, background: '#2e7d4f', color: '#fff', cursor: 'pointer', padding: '4px 14px', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-                Open
-              </button>
-            </div>
-          );
-        })
+            );
+          })}
+        </div>
       )}
-      </>)}
+    </section>
+  );
+
+  // A page sits straight on the page frame (FunctionalPage's gutters); in a
+  // conversation there is no page header, just the lists.
+  return (
+    <div>
+      {isPage && (
+        <PageHeader
+          title="Apps"
+          meta={showTeam ? 'Describe a new app to the App Builder in chat, and it appears here.' : undefined}
+        />
+      )}
+      {notice && (
+        <div role="status" style={{ margin: '0 0 16px', padding: '8px 12px', borderRadius: 'var(--radius)', background: 'var(--warn-bg)', color: 'var(--warn)', fontSize: 'var(--fs-sm)' }}>
+          {notice}
+        </div>
+      )}
+      {loading ? (
+        <PageState kind="loading" title="Loading apps…" />
+      ) : (
+        <>
+          {showMarketplace && marketplace}
+          {marketplaceOnly && !showMarketplace && <PageState kind="empty" title="No apps in the marketplace yet" />}
+          {showTeam && teamApps}
+        </>
+      )}
     </div>
   );
 }
