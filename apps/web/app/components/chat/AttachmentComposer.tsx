@@ -8,8 +8,10 @@
 // model.
 
 import { useState, useRef, useCallback } from 'react';
-import { Paperclip, FileText, X } from 'lucide-react';
+import { Paperclip, FileText, TriangleAlert, X } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import Icon from '../ui/Icon';
+import IconButton from '../ui/IconButton';
 
 export interface PendingAttachment {
   upload_id: string;
@@ -40,14 +42,17 @@ export const ATTACH_ACCEPT = [
 /** Upload-and-track the files a composer has staged for its next send. */
 export function useComposerAttachments(venueId?: string | null) {
   const [items, setItems] = useState<PendingAttachment[]>([]);
-  const [uploading, setUploading] = useState(false);
+  // A count, not a flag: a second pick while the first is still uploading
+  // must not read as "done" when the first one finishes — the composer holds
+  // sends until every file is in, or a late file lands on the NEXT message.
+  const [inFlight, setInFlight] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const addFiles = useCallback(async (files: FileList | File[] | null) => {
     const list = files ? Array.from(files) : [];
     if (list.length === 0) return;
     setError(null);
-    setUploading(true);
+    setInFlight(n => n + 1);
     try {
       for (const file of list) {
         const fd = new FormData();
@@ -69,7 +74,7 @@ export function useComposerAttachments(venueId?: string | null) {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Upload failed');
     } finally {
-      setUploading(false);
+      setInFlight(n => n - 1);
     }
   }, [venueId]);
 
@@ -77,8 +82,9 @@ export function useComposerAttachments(venueId?: string | null) {
     setItems(prev => prev.filter(a => a.upload_id !== id));
   }, []);
   const clear = useCallback(() => setItems([]), []);
+  const clearError = useCallback(() => setError(null), []);
 
-  return { items, uploading, error, addFiles, remove, clear };
+  return { items, uploading: inFlight > 0, error, addFiles, remove, clear, clearError };
 }
 
 /** The paperclip button + its own hidden file input. */
@@ -149,6 +155,31 @@ export function AttachmentChips({ items, remove, uploading }: {
         </span>
       ))}
       {uploading && <span style={{ ...chipStyle, color: 'var(--muted)' }}>Uploading…</span>}
+    </div>
+  );
+}
+
+/** Why the last pick didn't attach — stays until dismissed or the next pick. */
+export function AttachmentError({ error, onDismiss }: {
+  error: string | null;
+  onDismiss: () => void;
+}) {
+  if (!error) return null;
+  return (
+    <div
+      role="alert"
+      data-testid="attach-error"
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        maxWidth: 768, margin: '0 auto 8px', width: '100%', boxSizing: 'border-box',
+        padding: '2px 2px 2px 12px',
+        fontSize: 'var(--fs-sm)', lineHeight: 1.4, color: 'var(--error)',
+        backgroundColor: 'var(--error-bg)', borderRadius: 'var(--radius)',
+      }}
+    >
+      <Icon icon={TriangleAlert} size="dense" />
+      <span style={{ flex: 1, minWidth: 0, padding: '6px 0', overflowWrap: 'anywhere' }}>{error}</span>
+      <IconButton icon={X} label="Dismiss" iconSize={16} onClick={onDismiss} style={{ color: 'inherit' }} />
     </div>
   );
 }

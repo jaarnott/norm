@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type KeyboardEvent } from 'react';
 import { MessageCircle, Timer, X, type LucideIcon } from 'lucide-react';
 import type { Thread, ProcurementThread, HrThread } from '../../types';
 import { threadAccent, threadLabel } from '../../lib/threadApps';
@@ -98,6 +98,21 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
     backgroundColor: isSelected ? 'var(--selected)' : undefined,
     boxShadow: isSelected ? 'inset 3px 0 0 var(--accent)' : undefined,
   };
+  // The row is a button to the keyboard too: Tab reaches it, Enter or Space
+  // opens it. Keys pressed on the remove button inside it are that button's.
+  const rowProps = {
+    role: 'button',
+    tabIndex: 0,
+    'aria-current': isSelected || undefined,
+    'data-testid': testId,
+    onClick,
+    onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault(); // Space would otherwise scroll the list
+      onClick();
+    },
+  };
   const removeButton = (
     <button
       type="button"
@@ -129,13 +144,14 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
   }
 
   if (compact) {
-    // Home's list: one line per thread — icon, title, then when (or a
-    // scheduled run that is waiting on an approval).
+    // Home's list: one line per thread — icon, title, then what needs
+    // someone (the thread's own status, or a scheduled run waiting on an
+    // approval), else when.
+    const pill = runWaiting ? { tone: 'warn' as const, label: 'Approval needed' } : badge;
     return (
       <div
-        onClick={onClick}
+        {...rowProps}
         className="compact-card n-thread-row"
-        data-testid={testId}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -152,8 +168,10 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
         }}>
           {isAutomated ? (thread.automated_task?.title || getThreadTitle(thread)) : (getThreadSummary(thread) || getThreadTitle(thread))}
         </span>
-        {runWaiting ? (
-          <span title="A run is waiting for your approval"><Badge tone="warn">Approval needed</Badge></span>
+        {pill ? (
+          <span style={{ flexShrink: 0 }} title={runWaiting ? 'A run is waiting for your approval' : undefined}>
+            <Badge tone={pill.tone}>{pill.label}</Badge>
+          </span>
         ) : (
           <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{timeAgo(thread.created_at)}</span>
         )}
@@ -164,8 +182,7 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
 
   return (
     <div
-      onClick={onClick}
-      data-testid={testId}
+      {...rowProps}
       className="n-thread-row"
       style={{
         padding: '12px 12px 12px 16px',

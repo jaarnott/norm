@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import { parseThinkingStep } from '../../lib/thinkingSteps';
 import type { ConversationMessage, LlmCall, ToolCallRecord } from '../../types';
 import Badge, { type BadgeTone } from '../ui/Badge';
 import Button from '../ui/Button';
@@ -578,20 +579,18 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
     });
   }
 
-  // Thinking steps — SSE events captured during processing.
-  // Steps may have an embedded timestamp prefix: "[ts:ISO8601] text"
+  // Thinking steps — SSE events captured during processing. Saved steps carry
+  // [ts:…], [reasoning] and [test] tags (lib/thinkingSteps strips them all).
   const firstLlmTime = llmEvents.length > 0 ? llmEvents[0].sortKey : createdAt;
-  const TS_PREFIX_RE = /^\[ts:([^\]]+)\]\s*/;
   const thinkingEvents = (thinkingSteps || []).map((step, idx) => {
-    const tsMatch = step.match(TS_PREFIX_RE);
-    const stepTime = tsMatch ? tsMatch[1] : '';
-    const stepText = tsMatch ? step.slice(tsMatch[0].length) : step;
-    const isReasoning = stepText.startsWith('[reasoning] ');
+    const { time: stepTime = '', kind, text } = parseThinkingStep(step);
+    const isReasoning = kind === 'reasoning';
     return {
       type: 'thinking' as const,
-      label: isReasoning ? stepText.slice('[reasoning] '.length) : stepText,
+      label: text,
       icon: isReasoning ? MessageSquareText : Zap,
       isReasoning,
+      isTest: kind === 'test',
       time: stepTime ? formatTime(stepTime) : '',
       sortKey: stepTime || firstLlmTime,
       sortOrder: stepTime ? 0 : 2 + idx,
@@ -757,7 +756,7 @@ export default function ActivityTimeline({ messages, createdAt, domain, threadId
               <TimelineRow key={`thinking-${evt.idx}`} secondary spacing={6} dotColor="var(--muted-soft)" time={evt.time}>
                 <EventLabel icon={evt.icon} style={{ color: 'var(--muted)' }}>{evt.label}</EventLabel>
                 <Badge tone={evt.isReasoning ? 'info' : 'neutral'}>
-                  {evt.isReasoning ? 'Reasoning' : 'Event'}
+                  {evt.isReasoning ? 'Reasoning' : evt.isTest ? 'Test' : 'Event'}
                 </Badge>
               </TimelineRow>
             );

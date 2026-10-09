@@ -6,6 +6,7 @@ import { apiFetch } from '../../lib/api';
 import Button from '../ui/Button';
 import Icon from '../ui/Icon';
 import PageState from '../ui/PageState';
+import { ConfirmDialog } from '../ui/Dialog';
 
 interface Secret {
   key: string;
@@ -26,6 +27,8 @@ export default function SecretsPanel() {
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  // The secret whose delete is waiting on the confirmation dialog.
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
 
   // Create form state
   const [newKey, setNewKey] = useState('');
@@ -119,22 +122,22 @@ export default function SecretsPanel() {
     setSaving(false);
   };
 
+  // Throws on failure: the confirmation dialog shows why and stays open.
   const handleDelete = async (key: string) => {
-    if (!confirm(`Delete secret "${key}"? This cannot be undone.`)) return;
+    let res: Response;
     try {
-      const res = await apiFetch(`/api/admin/secrets/${encodeURIComponent(key)}`, {
+      res = await apiFetch(`/api/admin/secrets/${encodeURIComponent(key)}`, {
         method: 'DELETE',
       });
-      if (res.ok) {
-        showFeedback('success', `Secret "${key}" deleted`);
-        await fetchSecrets();
-      } else {
-        const text = await res.text();
-        showFeedback('error', `Failed to delete secret: ${text}`);
-      }
     } catch {
-      showFeedback('error', 'Failed to delete secret');
+      throw new Error('Failed to delete secret — check your connection and try again.');
     }
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(`Failed to delete secret: ${typeof body?.detail === 'string' ? body.detail : `error ${res.status}`}`);
+    }
+    showFeedback('success', `Secret "${key}" deleted`);
+    await fetchSecrets();
   };
 
   if (loading) {
@@ -159,6 +162,21 @@ export default function SecretsPanel() {
             </div>
           )}
         </div>
+      )}
+
+      {deletingKey && (
+        <ConfirmDialog
+          title={`Delete ${deletingKey}?`}
+          confirmLabel="Delete secret"
+          busyLabel="Deleting…"
+          danger
+          onConfirm={() => handleDelete(deletingKey)}
+          onClose={() => setDeletingKey(null)}
+        >
+          <p style={{ margin: 0 }}>
+            Every environment shares this secret, and each one stops loading it from its next restart. This can’t be undone.
+          </p>
+        </ConfirmDialog>
       )}
 
       {/* Header */}
@@ -317,7 +335,7 @@ export default function SecretsPanel() {
                       <Button size="sm" onClick={() => openEdit(secret)}>
                         Edit
                       </Button>
-                      <Button size="sm" variant="danger" onClick={() => handleDelete(secret.key)}>
+                      <Button size="sm" variant="danger" onClick={() => setDeletingKey(secret.key)}>
                         Delete
                       </Button>
                     </div>

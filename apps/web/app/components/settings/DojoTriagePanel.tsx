@@ -8,6 +8,7 @@ import BackLink from '../ui/BackLink';
 import Button from '../ui/Button';
 import Icon from '../ui/Icon';
 import PageState from '../ui/PageState';
+import { ConfirmDialog } from '../ui/Dialog';
 import DojoSampleView, { type DojoDiff, type ExtractionDoc, type ReplicaDoc } from './DojoSampleView';
 import InvoicePdfPane from './InvoicePdfPane';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
@@ -116,6 +117,9 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
   const [analysing, setAnalysing] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [busy, setBusy] = useState<string | null>(null); // promote/discard in flight
+  // Deletes waiting on the confirmation dialog: the open draft, or a listed sample.
+  const [discarding, setDiscarding] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<PendingRow | null>(null);
 
   // Two fetches, deliberately split (16 Aug 2026): the awaiting-review list
   // is the part of the page people came for and is a cheap config-DB read —
@@ -339,11 +343,19 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
     }
   };
 
+  // Throws on failure: the confirmation dialog shows why and stays open.
+  const deleteSample = async (sampleId: string) => {
+    const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
+    }
+  };
+
   const discard = async (sampleId: string) => {
-    if (!window.confirm('Discard this draft? The staged copy and any analysis on it are deleted.')) return;
     setBusy(sampleId);
     try {
-      await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}`, { method: 'DELETE' });
+      await deleteSample(sampleId);
       setOpen(null);
       setAnalysisView(null);
       load();
@@ -356,10 +368,9 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
   // the row itself. The invoice stays cannot-receive in Loaded, so it shows
   // up under Outstanding invoices again on the next sweep.
   const removeSample = async (sampleId: string) => {
-    if (!window.confirm('Remove this invoice from the dojo? The staged copy, its baseline and any sensei analysis are deleted. The invoice itself stays in Loaded and reappears under Outstanding invoices.')) return;
     setBusy(sampleId);
     try {
-      await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}`, { method: 'DELETE' });
+      await deleteSample(sampleId);
       setOpen((o) => (o && o.sampleId === sampleId ? null : o));
       setAnalysisView((v) => (v && v.sampleId === sampleId ? null : v));
       loadPending();
@@ -455,7 +466,7 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
               </Button>
             )}
             {open?.draft && (
-              <Button size="sm" variant="danger" onClick={() => discard(sampleId)} disabled={busy === sampleId}
+              <Button size="sm" variant="danger" onClick={() => setDiscarding(sampleId)} disabled={busy === sampleId}
                 style={busy ? { cursor: 'wait' } : undefined}>
                 Discard draft
               </Button>
@@ -496,6 +507,36 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
         supplier spec, and apply its proposal to keep the invoice as a regression sample.
       </div>
       {error && <div style={{ marginBottom: 12 }}><PageState kind="error" title={error} /></div>}
+
+      {discarding && (
+        <ConfirmDialog
+          title="Discard this draft?"
+          confirmLabel="Discard draft"
+          busyLabel="Discarding…"
+          danger
+          onConfirm={() => discard(discarding)}
+          onClose={() => setDiscarding(null)}
+        >
+          <p style={{ margin: 0 }}>
+            The staged copy and any sensei analysis on it are deleted; the invoice stays in Loaded, under Outstanding invoices.
+          </p>
+        </ConfirmDialog>
+      )}
+      {removing && (
+        <ConfirmDialog
+          title="Remove this invoice from the dojo?"
+          confirmLabel="Remove"
+          busyLabel="Removing…"
+          danger
+          onConfirm={() => removeSample(removing.id)}
+          onClose={() => setRemoving(null)}
+        >
+          <p style={{ margin: 0 }}>
+            The staged copy of {removing.label || removing.spec_name}, its baseline and any sensei analysis are deleted. The invoice
+            itself stays in Loaded and reappears under Outstanding invoices.
+          </p>
+        </ConfirmDialog>
+      )}
 
       {/* ---- In the dojo, awaiting review -------------------------------- */}
       {(overview?.pending_review.length ?? 0) > 0 && (
@@ -556,7 +597,7 @@ export default function DojoTriagePanel({ onBack }: { onBack: () => void }) {
                         {analysing === s.id ? 'Queueing…' : s.analysis_status ? 'Re-run sensei' : 'Run sensei'}
                       </Button>
                       <Button size="sm" variant="danger"
-                        onClick={() => removeSample(s.id)}
+                        onClick={() => setRemoving(s)}
                         disabled={busy === s.id}
                         title="Remove this invoice from the dojo — deletes the staged copy, its baseline and any sensei analysis"
                         style={busy === s.id ? { cursor: 'wait' } : undefined}>

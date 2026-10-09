@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, memo } from 'react';
-import { ChevronRight, Timer, X } from 'lucide-react';
+import { ChevronRight, RotateCcw, Timer, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -19,6 +19,7 @@ function isFullWidthBlock(b: DisplayBlock): boolean {
 import SplitDragHandle from '../layout/SplitDragHandle';
 import { useSplitPane } from '../../hooks/useSplitPane';
 import { getStoredUser } from '../../lib/api';
+import { parseThinkingStep } from '../../lib/thinkingSteps';
 import { SentAttachmentChips, type SendOptions } from '../chat/AttachmentComposer';
 import Composer from '../chat/Composer';
 import Button from '../ui/Button';
@@ -74,18 +75,17 @@ function ThinkingSteps({ steps, isStreaming }: { steps: string[]; isStreaming: b
       </button>
       {showSteps && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.3rem' }}>
-          {steps.map((step, i) => {
-            const display = step.replace(/^\[ts:[^\]]+\]\s*/, '');
-            return (
-              <div key={i} style={{
-                fontSize: 'var(--fs-sm)',
-                color: 'var(--muted)',
-                lineHeight: 1.5,
-              }}>
-                {display}
-              </div>
-            );
-          })}
+          {steps.map((step, i) => (
+            // Tags ([ts:], [reasoning], [test]) are bookkeeping; a test step's
+            // own words already say "(simulated)", so it needs no badge here.
+            <div key={i} style={{
+              fontSize: 'var(--fs-sm)',
+              color: 'var(--muted)',
+              lineHeight: 1.5,
+            }}>
+              {parseThinkingStep(step).text}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -742,12 +742,14 @@ interface ThreadDetailProps {
   onAction: (threadId: string, action: string) => void;
   onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
   onSend?: (message: string, opts?: SendOptions) => void;
+  /** Set when the last send in this conversation failed: re-sends it. */
+  onRetry?: () => void;
   loading: boolean;
   openThread?: Thread | null;
   readOnly?: boolean;
 }
 
-export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend, loading, openThread, readOnly }: ThreadDetailProps) {
+export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend, onRetry, loading, openThread, readOnly }: ThreadDetailProps) {
   const storedUser = getStoredUser();
   const isAdmin = storedUser?.role === 'admin';
   const [activeTab, setActiveTab] = useState<TabKey>('conversation');
@@ -795,6 +797,12 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
   );
 
   const inputBar = !readOnly && onSend ? <InputBar onSend={onSend} loading={loading} highlight={!!openThread} /> : null;
+  // Under the failure note of a send that didn't go through.
+  const retryRow = !readOnly && onRetry && !loading ? (
+    <div style={{ marginTop: '0.25rem' }}>
+      <Button size="sm" variant="secondary" icon={RotateCcw} onClick={onRetry} data-testid="retry-send-btn">Try again</Button>
+    </div>
+  ) : null;
 
   return (
     <div ref={containerRef} style={{
@@ -869,6 +877,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
                     hideFullWidthBlocks
                   />
                   <div style={{ maxWidth: 768, margin: '0 auto' }}>
+                    {retryRow}
                     <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} isAdmin={!!isAdmin} />
                   </div>
                 </>
@@ -897,6 +906,7 @@ export default function ThreadDetail({ thread, onAction, onWidgetAction, onSend,
                   threadId={thread.id}
                 />
                 <div style={{ maxWidth: 768, margin: '0 auto' }}>
+                  {retryRow}
                   <ConversationExtras task={thread} loading={loading} onAction={onAction} isProcurement={isProcurement} isHr={isHr} isTerminal={isTerminal} isAdmin={!!isAdmin} />
                 </div>
               </>

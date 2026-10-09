@@ -38,6 +38,12 @@ PERMISSION_SCOPES: set[str] = {
     # Connector / agent settings (org-level)
     "settings:connectors",
     "settings:agents",
+    # Email — your own connected mailboxes and the organisation's sent mail.
+    # The routers gated on these for months while no role could hold them, so
+    # owners got 403 on the Email tab. Platform-wide email (the shared
+    # templates, test sends from Norm's address) stays admin-only.
+    "email:read",
+    "email:manage",
     # Apps — building one is open to anyone with this scope; SHARING it beyond
     # yourself is separate, because a share is what puts your app in front of
     # someone else's data with their permissions.
@@ -106,7 +112,10 @@ STANDARD_ROLES: dict[str, dict] = {
     },
 }
 
-# Permission scope groupings for the UI
+# Permission scope groupings for the UI — the custom-role editor offers only
+# what is in a group, so every org scope belongs in exactly one (apps:* were
+# missing until Oct 2026, so no custom role could build or share an app).
+# Platform-admin scopes stay out: they are checked on User.role, never a role.
 PERMISSION_GROUPS: dict[str, list[str]] = {
     "Tasks": ["tasks:read", "tasks:write", "tasks:approve"],
     "Orders": ["orders:read", "orders:write", "orders:approve", "orders:submit"],
@@ -122,4 +131,6 @@ PERMISSION_GROUPS: dict[str, list[str]] = {
         "org:venues",
     ],
     "Settings": ["settings:connectors", "settings:agents"],
+    "Email": ["email:read", "email:manage"],
+    "Apps": ["apps:build", "apps:share"],
 }

@@ -10,6 +10,7 @@ import BackLink from '../ui/BackLink';
 import Button from '../ui/Button';
 import Icon from '../ui/Icon';
 import PageState from '../ui/PageState';
+import { ConfirmDialog } from '../ui/Dialog';
 
 // The small help line under a field label.
 const helpStyle: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)' };
@@ -26,6 +27,7 @@ export default function AgentsPanel() {
   // Unified mode: one Norm prompt (the base row) + a personality per member.
   const [unified, setUnified] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [confirmingClear, setConfirmingClear] = useState(false);
   // Apps v3: an agent's reach is the Apps bound to it (the App Map), not the
   // retired per-agent connection bindings.
   const [mapApps, setMapApps] = useState<TeamApp[] | null>(null);
@@ -77,20 +79,23 @@ export default function AgentsPanel() {
     setSaving(false);
   };
 
-  const handleReset = async () => {
+  // Throws on failure, so the confirmation dialog can say why.
+  const resetPrompt = async (slug: string) => {
+    const res = await apiFetch(`/api/agents/${slug}/reset-prompt`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(typeof data.detail === 'string' ? data.detail : `The prompt wasn’t cleared (error ${res.status})`);
+    }
+    await fetchAgents();
+    setEditing(null);
+  };
+
+  const handleReset = () => {
     if (!editing) return;
     // Clearing the base row's prompt switches EVERY conversation back to the
     // per-agent prompts, in every environment — worth a second click.
-    if (editing.slug === 'base' && !window.confirm(
-      'Clear the Norm prompt? Every conversation, in every environment, falls back to the old per-agent prompts.',
-    )) return;
-    try {
-      const res = await apiFetch(`/api/agents/${editing.slug}/reset-prompt`, { method: 'POST' });
-      if (res.ok) {
-        await fetchAgents();
-        setEditing(null);
-      }
-    } catch { /* ignore */ }
+    if (editing.slug === 'base') { setConfirmingClear(true); return; }
+    resetPrompt(editing.slug).catch(() => { /* ignore */ });
   };
 
   if (loading) return <PageState kind="loading" title="Loading agents…" />;
@@ -194,6 +199,21 @@ export default function AgentsPanel() {
             </>
           )}
         </div>
+
+        {confirmingClear && (
+          <ConfirmDialog
+            title="Clear the Norm prompt?"
+            confirmLabel="Clear prompt"
+            busyLabel="Clearing…"
+            danger
+            onConfirm={() => resetPrompt(editing.slug)}
+            onClose={() => setConfirmingClear(false)}
+          >
+            <p style={{ margin: 0 }}>
+              Every conversation, in every environment, falls back to the old per-agent prompts.
+            </p>
+          </ConfirmDialog>
+        )}
 
         {/* Actions */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>

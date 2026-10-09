@@ -9,6 +9,7 @@ import Badge, { type BadgeTone } from '../ui/Badge';
 import BackLink from '../ui/BackLink';
 import Icon from '../ui/Icon';
 import PageState from '../ui/PageState';
+import { ConfirmDialog } from '../ui/Dialog';
 import DojoSampleView, { type DojoDiff, type ExtractionDoc, type ReplicaDoc } from './DojoSampleView';
 import ReceiveInvoiceEditor from '../display/ReceiveInvoiceEditor';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
@@ -118,6 +119,9 @@ export default function SupplierSpecsPanel() {
   // Sample view tab: the extraction compare vs the resolved replica.
   const [dojoRunning, setDojoRunning] = useState(false);
   const [dojoSummary, setDojoSummary] = useState<Record<string, DojoSummaryRow>>({});
+  // Deletes waiting on the confirmation dialog: the open spec, or one sample.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deletingSample, setDeletingSample] = useState<DojoSample | null>(null);
 
   // Returns whether the list loaded, so the FIRST load can show loading/failed
   // instead of "No supplier specs yet." (display only; reloads ignore it).
@@ -342,10 +346,14 @@ export default function SupplierSpecsPanel() {
     return () => clearInterval(t);
   }, [editing?.id, samples, loadSamples]);
 
+  // Throws on failure: the confirmation dialog shows why and stays open.
   const deleteSample = async (sampleId: string) => {
     if (!editing?.id) return;
-    if (!window.confirm('Delete this sample invoice?')) return;
-    await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}`, { method: 'DELETE' }).catch(() => {});
+    const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
+    }
     if (dojoView?.sampleId === sampleId) setDojoView(null);
     await loadSamples(editing.id);
     loadSummary();
@@ -396,10 +404,18 @@ export default function SupplierSpecsPanel() {
     }
   };
 
+  // Throws on failure: the confirmation dialog shows why and stays open.
   const handleDelete = async (spec: SupplierSpec) => {
-    if (!window.confirm(`Delete the spec for ${spec.name}?`)) return;
-    await apiFetch(`/api/supplier-invoice-specs/${spec.id}`, { method: 'DELETE' }).catch(() => {});
+    const res = await apiFetch(`/api/supplier-invoice-specs/${spec.id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${res.status}`);
+    }
     await load();
+    // Back to the list: the editor would otherwise stay on the deleted spec,
+    // and a Save from it would PUT to an id that no longer exists.
+    setConfirmingDelete(false);
+    setEditing(null);
   };
 
   if (editing) {
@@ -413,6 +429,34 @@ export default function SupplierSpecsPanel() {
         </div>
         <h3 style={{ margin: '0 0 12px', fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{isNew ? 'New supplier spec' : main ? 'Edit — Main prompt (all suppliers)' : `Edit — ${editing.name}`}</h3>
         {error && <div role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', marginBottom: 10 }}>{error}</div>}
+        {confirmingDelete && (
+          <ConfirmDialog
+            title={`Delete the spec for ${editing.name}?`}
+            confirmLabel="Delete spec"
+            busyLabel="Deleting…"
+            danger
+            onConfirm={() => handleDelete(editing)}
+            onClose={() => setConfirmingDelete(false)}
+          >
+            <p style={{ margin: 0 }}>
+              Invoices from {editing.name} are read with the main prompt alone from now on, in every environment. This can’t be undone.
+            </p>
+          </ConfirmDialog>
+        )}
+        {deletingSample && (
+          <ConfirmDialog
+            title="Delete this sample invoice?"
+            confirmLabel="Delete sample"
+            busyLabel="Deleting…"
+            danger
+            onConfirm={() => deleteSample(deletingSample.id)}
+            onClose={() => setDeletingSample(null)}
+          >
+            <p style={{ margin: 0 }}>
+              {deletingSample.label} leaves the dojo: its stored copy, baseline and any sensei analysis are deleted. This can’t be undone.
+            </p>
+          </ConfirmDialog>
+        )}
         {!main && (
           <div style={{ marginBottom: 12 }}>
             <label className="n-label" htmlFor="supplier-spec-name">Supplier name</label>
@@ -478,7 +522,7 @@ export default function SupplierSpecsPanel() {
             Cancel
           </Button>
           {!isNew && !main && (
-            <Button variant="danger" onClick={() => handleDelete(editing)} style={{ marginLeft: 'auto' }}>
+            <Button variant="danger" onClick={() => setConfirmingDelete(true)} style={{ marginLeft: 'auto' }}>
               Delete
             </Button>
           )}
@@ -555,7 +599,7 @@ export default function SupplierSpecsPanel() {
                     {dojoView?.sampleId === s.id ? 'Close' : 'View'}
                   </Button>
                 )}
-                <IconButton icon={Trash2} label="Delete sample" iconSize={16} onClick={() => deleteSample(s.id)} />
+                <IconButton icon={Trash2} label="Delete sample" iconSize={16} onClick={() => setDeletingSample(s)} />
               </div>
             ))}
             </div>

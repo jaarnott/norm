@@ -2,7 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback, useId, useRef } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { ChevronDown, ChevronRight, Info, Plus, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Info, Plus } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { AgentConfig, AgentBinding, VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
@@ -26,6 +26,8 @@ import ApprovalPreferences from './ApprovalPreferences';
 import MemoryTab from './MemoryTab';
 import AddressSearch from './AddressSearch';
 import { getStoredUser } from '../../lib/api';
+// can(user, scope): what the signed-in user may do — shared with the tabs.
+import { can } from '../../lib/permissions';
 import type { User } from '../../types';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import PageHeader from '../ui/PageHeader';
@@ -35,6 +37,8 @@ import IconButton from '../ui/IconButton';
 import Badge from '../ui/Badge';
 import Avatar from '../ui/Avatar';
 import PageState from '../ui/PageState';
+import Dialog, { ConfirmDialog } from '../ui/Dialog';
+import SubNav, { type SubNavGroup } from '../ui/SubNav';
 
 interface ConnectorField {
   key: string;
@@ -90,34 +94,22 @@ function Stat({ label, value, unit, large = false }: { label: string; value: Rea
   );
 }
 
-/** A modal over a dimmed page; a click outside the box closes it. */
-function Dialog({ title, width, onClose, closeButton = false, children }: {
-  title: string;
-  width: number;
-  onClose: () => void;
-  closeButton?: boolean;
-  children: ReactNode;
-}) {
-  const titleId = useId();
-  return (
-    <div onClick={onClose} style={{
-      position: 'fixed', inset: 0, zIndex: 1000, padding: 16,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      backgroundColor: 'rgba(26, 26, 26, 0.35)',
-    }}>
-      <div role="dialog" aria-modal="true" aria-labelledby={titleId} onClick={e => e.stopPropagation()} style={{
-        width, maxWidth: '100%', maxHeight: '80vh', overflowY: 'auto', boxSizing: 'border-box',
-        padding: 24, borderRadius: 'var(--radius-lg)', backgroundColor: 'var(--bg)',
-        boxShadow: '0 12px 40px rgba(26, 26, 26, 0.18)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
-          <h3 id={titleId} style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>{title}</h3>
-          {closeButton && <IconButton icon={X} label="Close" onClick={onClose} style={{ margin: '-6px -8px -6px 0' }} />}
-        </div>
-        {children}
-      </div>
-    </div>
-  );
+/**
+ * Runs a write and throws when it fails, with the API's reason — what a
+ * ConfirmDialog shows in place of failing silently.
+ */
+async function mustSucceed(call: () => Promise<Response>, failed: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await call();
+  } catch {
+    throw new Error(`${failed} — check your connection and try again.`);
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const detail = typeof body?.detail === 'string' ? body.detail : `error ${res.status}`;
+    throw new Error(`${failed}: ${detail}`);
+  }
 }
 
 /** Text for screen readers only (an icon column's header). */
@@ -154,8 +146,15 @@ interface VenueConnector {
  * settings, its connections and the delete button. `isLast` rounds the
  * bottom corners: the card can't clip them, because the address
  * suggestions have to hang out of it.
+ *
+ * `canManage` (org:venues) shows Edit and Delete; `canConnect`
+ * (settings:connectors) the connection buttons. Without them the row is
+ * read-only rather than offering buttons the API would refuse.
  */
-function VenueCard({ venue, onDelete, onUpdate, compact, isLast }: { venue: VenueDetail; onDelete: () => void; onUpdate: () => void; compact: boolean; isLast: boolean }) {
+function VenueCard({ venue, onDelete, onUpdate, compact, isLast, canManage, canConnect }: {
+  venue: VenueDetail; onDelete: () => void; onUpdate: () => void; compact: boolean; isLast: boolean;
+  canManage: boolean; canConnect: boolean;
+}) {
   const fieldId = useId();
   const [expanded, setExpanded] = useState(false);
   const [connectors, setConnectors] = useState<VenueConnector[]>([]);
@@ -247,7 +246,7 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast }: { venue: Venu
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
           <span className="n-eyebrow">Venue settings</span>
-          {!editingVenue && (
+          {canManage && !editingVenue && (
             <Button size="sm" onClick={() => { setVenueForm({ location: venue.location || '', timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' }); setEditingVenue(true); }}>
               Edit
             </Button>
@@ -315,7 +314,14 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast }: { venue: Venu
                 <div key={c.name} style={i > 0 ? { borderTop: '1px solid var(--line-soft)' } : undefined}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px' }}>
                     <span style={{ flex: '1 1 140px', minWidth: 0, fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>{c.label}</span>
-                    {c.auth_type === 'oauth2' ? (
+                    {/* Without settings:connectors, the status alone. */}
+                    {!canConnect ? (
+                      c.auth_type === 'oauth2' ? (
+                        c.oauth_connected && c.needs_reconnect ? <Badge tone="error">Reconnect needed</Badge>
+                          : c.oauth_connected ? <Badge tone="ok">Connected</Badge>
+                          : <Badge>Not connected</Badge>
+                      ) : c.configured ? <Badge tone="ok">Configured</Badge> : <Badge>Not configured</Badge>
+                    ) : c.auth_type === 'oauth2' ? (
                       c.oauth_connected && c.needs_reconnect ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={c.last_auth_error || 'This connection stopped working and needs to be reconnected.'}>
                           <Badge tone="error">Reconnect needed</Badge>
@@ -376,10 +382,12 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast }: { venue: Venu
         )}
       </div>
 
-      {/* Delete venue */}
-      <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
-        <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); onDelete(); }}>Delete venue</Button>
-      </div>
+      {/* Delete venue (asks first — see VenuesTab) */}
+      {canManage && (
+        <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+          <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); onDelete(); }}>Delete venue</Button>
+        </div>
+      )}
     </div>
   );
 
@@ -435,7 +443,8 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast }: { venue: Venu
   );
 }
 
-function VenuesTab() {
+/** `canManage` = org:venues (add, edit, delete); `canConnect` = settings:connectors. */
+function VenuesTab({ canManage, canConnect }: { canManage: boolean; canConnect: boolean }) {
   const [org, setOrg] = useState<Organization | null>(null);
   const [venues, setVenues] = useState<VenueDetail[]>([]);
   const [loading, setLoading] = useState(true);
@@ -445,6 +454,8 @@ function VenuesTab() {
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The venue waiting on "Delete venue?" — nothing is deleted until confirmed.
+  const [deleting, setDeleting] = useState<VenueDetail | null>(null);
   const fieldId = useId();
   const { isMobile } = useBreakpoint();
 
@@ -499,8 +510,9 @@ function VenuesTab() {
     }
   };
 
+  // Throws on failure, so the confirmation stays open and says why.
   const handleDelete = async (venueId: string) => {
-    await apiFetch(`/api/venues/${venueId}`, { method: 'DELETE' });
+    await mustSucceed(() => apiFetch(`/api/venues/${venueId}`, { method: 'DELETE' }), 'The venue wasn’t deleted');
     loadData();
   };
 
@@ -511,13 +523,31 @@ function VenuesTab() {
       <SectionHeader
         title="Venues"
         meta={venues.length > 0 ? `${venues.length} ${venues.length === 1 ? 'venue' : 'venues'}` : undefined}
-        actions={
+        actions={canManage ? (
           // Secondary while the form is open, so its Add is the one primary.
           <Button variant={adding ? 'secondary' : 'primary'} icon={Plus} onClick={() => setAdding(!adding)}>Add venue</Button>
-        }
+        ) : undefined}
       />
 
-      {adding && (
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete ${deleting.name}?`}
+          confirmLabel="Delete venue"
+          busyLabel="Deleting…"
+          danger
+          onConfirm={() => handleDelete(deleting.id)}
+          onClose={() => setDeleting(null)}
+        >
+          <p style={{ margin: '0 0 8px' }}>
+            Everyone loses access to this venue, and its connections are removed — saved sign-ins included.
+          </p>
+          <p style={{ margin: 0 }}>
+            Its history stays: conversations, orders and reports are kept, no longer linked to a venue. This can’t be undone.
+          </p>
+        </ConfirmDialog>
+      )}
+
+      {canManage && adding && (
         <div className="n-card" style={{ padding: 16, marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
             <div style={{ flex: '1 1 180px', minWidth: 0 }}>
@@ -556,13 +586,13 @@ function VenuesTab() {
 
       {venues.length === 0 ? (
         org
-          ? <PageState kind="empty" title="No venues yet" detail='Click "Add venue" to create one.' />
+          ? <PageState kind="empty" title="No venues yet" detail={canManage ? 'Click "Add venue" to create one.' : 'An owner or manager can add one.'} />
           : <PageState kind="empty" title="No organization linked" detail="Your account isn’t linked to an organization yet, so venues can’t be created. Contact your administrator." />
       ) : isMobile ? (
         <div className="n-card">
           {venues.map((v, i) => (
             <div key={v.id} style={i > 0 ? { borderTop: '1px solid var(--line)' } : undefined}>
-              <VenueCard venue={v} onDelete={() => handleDelete(v.id)} onUpdate={loadData} compact isLast={i === venues.length - 1} />
+              <VenueCard venue={v} onDelete={() => setDeleting(v)} onUpdate={loadData} compact isLast={i === venues.length - 1} canManage={canManage} canConnect={canConnect} />
             </div>
           ))}
         </div>
@@ -582,7 +612,7 @@ function VenuesTab() {
             </thead>
             <tbody>
               {venues.map((v, i) => (
-                <VenueCard key={v.id} venue={v} onDelete={() => handleDelete(v.id)} onUpdate={loadData} compact={false} isLast={i === venues.length - 1} />
+                <VenueCard key={v.id} venue={v} onDelete={() => setDeleting(v)} onUpdate={loadData} compact={false} isLast={i === venues.length - 1} canManage={canManage} canConnect={canConnect} />
               ))}
             </tbody>
           </table>
@@ -696,7 +726,12 @@ function UsageBreakdownPanel({ data }: { data: UsageBreakdown | null }) {
   );
 }
 
-function UsersTab() {
+/**
+ * `canManage` = org:members: inviting, changing someone's role or venues,
+ * removing them. Without it the list is read-only — no buttons the API would
+ * refuse.
+ */
+function UsersTab({ canManage }: { canManage: boolean }) {
   const [org, setOrg] = useState<Organization | null>(null);
   const [members, setMembers] = useState<OrgMember[]>([]);
   const [venues, setVenues] = useState<VenueDetail[]>([]);
@@ -713,6 +748,11 @@ function UsersTab() {
   const [addError, setAddError] = useState('');
   const [addSuccess, setAddSuccess] = useState('');
   const [showInviteModal, setShowInviteModal] = useState(false);
+  // The person waiting on "Remove …?" — nobody is removed until confirmed.
+  const [removing, setRemoving] = useState<OrgMember | null>(null);
+  // Why the last role or venue change didn't stick, shown beside that control
+  // until the next attempt.
+  const [changeError, setChangeError] = useState<{ userId: string; field: 'role' | 'venues'; message: string } | null>(null);
   const [resendStatus, setResendStatus] = useState<Record<string, 'sending' | 'sent' | 'failed'>>({});
   const [viewingRoleId, setViewingRoleId] = useState<string | null>(null);
   const [availableRoles, setAvailableRoles] = useState<{ id: string; name: string; display_name: string; is_system: boolean; permissions: string[] }[]>([]);
@@ -819,30 +859,65 @@ function UsersTab() {
     }
   };
 
+  // Throws on failure, so the confirmation stays open and says why.
   const handleRemove = async (userId: string) => {
-    if (!org) return;
-    await apiFetch(`/api/organizations/${org.id}/members/${userId}`, { method: 'DELETE' });
+    if (!org) throw new Error('No organization found for your account.');
+    await mustSucceed(
+      () => apiFetch(`/api/organizations/${org.id}/members/${userId}`, { method: 'DELETE' }),
+      'They weren’t removed',
+    );
+    setExpandedMember(null);
     loadData();
   };
 
+  // Ticks at once; if the API refuses, the box flips back and says why.
   const handleToggleVenue = async (userId: string, venueId: string, checked: boolean) => {
+    setChangeError(null);
     const current = memberVenues[userId] || [];
     const updated = checked ? [...current, venueId] : current.filter(id => id !== venueId);
-    await apiFetch(`/api/users/${userId}/venues`, {
-      method: 'PUT',
-      body: JSON.stringify({ venue_ids: updated }),
-    });
     setMemberVenues(prev => ({ ...prev, [userId]: updated }));
+    try {
+      await mustSucceed(
+        () => apiFetch(`/api/users/${userId}/venues`, { method: 'PUT', body: JSON.stringify({ venue_ids: updated }) }),
+        'Venue access wasn’t changed',
+      );
+    } catch (e) {
+      // Undo just this venue, not any other box ticked meanwhile.
+      setMemberVenues(prev => {
+        const ids = prev[userId] || [];
+        return { ...prev, [userId]: checked ? ids.filter(id => id !== venueId) : [...ids, venueId] };
+      });
+      setChangeError({ userId, field: 'venues', message: (e as Error).message });
+    }
   };
 
+  // The picker shows the new role at once; a refusal puts the old one back.
   const handleRoleChange = async (userId: string, roleId: string) => {
     if (!org) return;
-    await apiFetch(`/api/organizations/${org.id}/members/${userId}/role`, {
-      method: 'PUT',
-      body: JSON.stringify({ role_id: roleId }),
-    });
-    loadData();
+    setChangeError(null);
+    const before = members.find(m => m.user_id === userId);
+    const role = availableRoles.find(r => r.id === roleId);
+    if (!before || !role) return;
+    const withRole = (m: OrgMember): OrgMember => ({ ...m, role_id: role.id, role: role.name, role_name: role.name, role_display_name: role.display_name });
+    setMembers(prev => prev.map(m => (m.user_id === userId ? withRole(m) : m)));
+    try {
+      await mustSucceed(
+        () => apiFetch(`/api/organizations/${org.id}/members/${userId}/role`, { method: 'PUT', body: JSON.stringify({ role_id: roleId }) }),
+        'The role wasn’t changed',
+      );
+    } catch (e) {
+      setMembers(prev => prev.map(m => (m.user_id === userId ? before : m)));
+      setChangeError({ userId, field: 'role', message: (e as Error).message });
+    }
   };
+
+  /** Why a change just failed, in small error text under the control. */
+  const changeFailure = (m: OrgMember, field: 'role' | 'venues') =>
+    changeError?.userId === m.user_id && changeError.field === field ? (
+      <div role="alert" style={{ marginTop: 6, fontSize: 'var(--fs-sm)', color: 'var(--error)', maxWidth: 320 }}>
+        {changeError.message}
+      </div>
+    ) : null;
 
   if (loading) return <PageState kind="loading" title="Loading users…" />;
 
@@ -876,29 +951,36 @@ function UsersTab() {
 
   // Role picker and the permissions button. Clicks here don't open the row.
   const roleControl = (m: OrgMember) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }} onClick={e => e.stopPropagation()}>
-      {availableRoles.length > 0 ? (
-        <select
-          className="n-select"
-          aria-label={`Role for ${m.full_name || m.email}`}
-          value={m.role_id || ''}
-          onChange={e => handleRoleChange(m.user_id, e.target.value)}
-          style={{ fontSize: 'var(--fs-sm)' }}
-        >
-          {!m.role_id && <option value="">— Unassigned —</option>}
-          {availableRoles.map(r => (
-            <option key={r.id} value={r.id}>{r.display_name}</option>
-          ))}
-        </select>
-      ) : (
-        <Badge>{m.role_display_name || m.role}</Badge>
-      )}
-      <IconButton
-        icon={Info}
-        iconSize={16}
-        label="View role permissions"
-        onClick={() => setViewingRoleId(viewingRoleId === (m.role_id || '') ? null : (m.role_id || ''))}
-      />
+    <div onClick={e => e.stopPropagation()}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        {!canManage ? (
+          <span style={{ color: m.role_display_name || m.role ? 'var(--text)' : 'var(--muted)', whiteSpace: 'nowrap' }}>
+            {m.role_display_name || m.role || 'Unassigned'}
+          </span>
+        ) : availableRoles.length > 0 ? (
+          <select
+            className="n-select"
+            aria-label={`Role for ${m.full_name || m.email}`}
+            value={m.role_id || ''}
+            onChange={e => handleRoleChange(m.user_id, e.target.value)}
+            style={{ fontSize: 'var(--fs-sm)' }}
+          >
+            {!m.role_id && <option value="">— Unassigned —</option>}
+            {availableRoles.map(r => (
+              <option key={r.id} value={r.id}>{r.display_name}</option>
+            ))}
+          </select>
+        ) : (
+          <Badge>{m.role_display_name || m.role}</Badge>
+        )}
+        <IconButton
+          icon={Info}
+          iconSize={16}
+          label="View role permissions"
+          onClick={() => setViewingRoleId(viewingRoleId === (m.role_id || '') ? null : (m.role_id || ''))}
+        />
+      </div>
+      {changeFailure(m, 'role')}
     </div>
   );
 
@@ -914,9 +996,9 @@ function UsersTab() {
           <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--ok)' }}>Sent!</span>
         ) : status === 'failed' ? (
           <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--error)' }}>Failed</span>
-        ) : (
+        ) : canManage ? (
           <Button variant="link" size="sm" onClick={e => { e.stopPropagation(); handleResendInvite(m.email); }}>Resend invite</Button>
-        )}
+        ) : null}
       </div>
     );
   };
@@ -969,26 +1051,31 @@ function UsersTab() {
           </div>
         )}
 
-        {/* Venues */}
+        {/* Venues — ticked here by someone who may change them, listed otherwise */}
         <div>
           <div className="n-eyebrow" style={{ marginBottom: 6 }}>Venue access</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
-            {venues.map(v => (
-              <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text)', cursor: 'pointer' }}>
-                <input type="checkbox" checked={userVenues.includes(v.id)}
-                  onChange={e => { e.stopPropagation(); handleToggleVenue(m.user_id, v.id, e.target.checked); }}
-                  style={{ accentColor: 'var(--accent)' }} />
-                {v.name}
-              </label>
-            ))}
-            {venues.length === 0 && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No venues created yet</span>}
-          </div>
+          {!canManage ? venueAccess(m) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
+              {venues.map(v => (
+                <label key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text)', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={userVenues.includes(v.id)}
+                    onChange={e => { e.stopPropagation(); handleToggleVenue(m.user_id, v.id, e.target.checked); }}
+                    style={{ accentColor: 'var(--accent)' }} />
+                  {v.name}
+                </label>
+              ))}
+              {venues.length === 0 && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No venues created yet</span>}
+            </div>
+          )}
+          {changeFailure(m, 'venues')}
         </div>
 
-        {/* Delete */}
-        <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
-          <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleRemove(m.user_id); }}>Remove from organization</Button>
-        </div>
+        {/* Remove (asks first) */}
+        {canManage && (
+          <div style={{ paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+            <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); setRemoving(m); }}>Remove from organization</Button>
+          </div>
+        )}
       </div>
     );
   };
@@ -998,12 +1085,27 @@ function UsersTab() {
       <SectionHeader
         title="Users"
         meta={peopleMeta}
-        actions={
+        actions={canManage ? (
           <Button variant="primary" icon={Plus} onClick={() => { setShowInviteModal(true); setAddError(''); setAddSuccess(''); setAddEmail(''); setAddVenueIds([]); }}>
             Invite user
           </Button>
-        }
+        ) : undefined}
       />
+
+      {removing && (
+        <ConfirmDialog
+          title={`Remove ${removing.full_name || removing.email}?`}
+          confirmLabel="Remove"
+          busyLabel="Removing…"
+          danger
+          onConfirm={() => handleRemove(removing.user_id)}
+          onClose={() => setRemoving(null)}
+        >
+          <p style={{ margin: 0 }}>
+            They lose access to {org?.name || 'this organization'} straight away. Their conversations are kept.
+          </p>
+        </ConfirmDialog>
+      )}
 
       {/* Invite User Modal */}
       {showInviteModal && (
@@ -1222,14 +1324,12 @@ function UsersTab() {
 export type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
-  if (!user) return false;
-  if (user.role === 'admin') return true;
-  return perms.some(p => user.permissions?.includes(p));
+  return perms.some(p => can(user, p));
 }
 
 export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab } = {}) {
   // Opens on a given tab when asked (the quota dialog's "Top up" → Billing).
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'venues');
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'preferences');
   const [orgId, setOrgId] = useState<string | null>(null);
   const storedUser = getStoredUser() as User | null;
   const isAdmin = storedUser?.role === 'admin';
@@ -1250,6 +1350,10 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
   const showSecrets = isAdmin;
   const showMcp = isAdmin;
   const showThreads = isAdmin;
+  // Billing and Email are listed only for someone who can read them.
+  const showBilling = can(storedUser, 'billing:read');
+  const showEmail = can(storedUser, 'email:read');
+  const { isMobile } = useBreakpoint();
   // The organisation's name, shown beside the page title.
   const [orgName, setOrgName] = useState<string | null>(null);
   const fieldId = useId();
@@ -1273,6 +1377,8 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
     const list = tabsRef.current?.querySelector<HTMLElement>('[role="tablist"]');
     if (list) setTabsMore(list.scrollLeft + list.clientWidth < list.scrollWidth - 1);
   }, []);
+  // Phones only (wider screens have the side nav), so re-measure when the
+  // strip appears.
   useEffect(() => {
     const frame = requestAnimationFrame(measureTabs);
     document.fonts?.ready.then(measureTabs).catch(() => {});
@@ -1281,7 +1387,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
       cancelAnimationFrame(frame);
       window.removeEventListener('resize', measureTabs);
     };
-  }, [measureTabs]);
+  }, [measureTabs, isMobile]);
 
   // --- Connector state ---
   const [connectors, setConnectors] = useState<ConnectorMeta[]>([]);
@@ -1539,33 +1645,46 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
     }
   };
 
-  // The tab strip, in groups (everyone · admin config · admin operations).
-  // Every tab keeps its settings-tab-<id> test id and its permission check.
-  const tabItems: TabEntry[] = [];
-  const addTab = (show: boolean, id: SettingsTab, label: string) => {
-    if (show) tabItems.push({ id, label, testId: `settings-tab-${id}` });
+  // The sections, in groups: a side nav on tablets and up, one tab strip on
+  // phones. Every section keeps its settings-tab-<id> test id (saved E2E
+  // tests click them) and its permission check; an empty group is left out.
+  const groups: SubNavGroup[] = [];
+  const addGroup = (label: string, entries: [show: boolean, id: SettingsTab, text: string][]) => {
+    groups.push({ label, items: entries.filter(([show]) => show).map(([, id, text]) => ({ id, label: text, testId: `settings-tab-${id}` })) });
   };
-  addTab(true, 'preferences', 'Preferences');
-  addTab(true, 'venues', 'Venues');
-  addTab(true, 'members', 'Users');
-  addTab(showRoles, 'roles', 'Roles');
-  addTab(true, 'billing', 'Billing');
-  addTab(true, 'email', 'Email');
-  if (showAgents || showConnectors || showComponents) tabItems.push('divider');
-  addTab(showAgents, 'agents', 'Agents');
-  addTab(showConnections, 'connections', 'Connections');
-  addTab(isAdmin, 'app-map', 'App map');
-  addTab(showConnectors, 'connectors', 'Connector specs');
-  addTab(showComponents, 'components', 'Components');
-  addTab(showPlaybooks, 'playbooks', 'Playbooks');
-  addTab(showSupplierSpecs, 'supplier-specs', 'Supplier specs');
-  addTab(showPlaybooks, 'templates', 'Templates');
-  if (showDeployments || showTests || showSecrets) tabItems.push('divider');
-  addTab(showDeployments, 'deployments', 'Deployments');
-  addTab(showTests, 'tests', 'Tests');
-  addTab(showSecrets, 'secrets', 'Secrets');
-  addTab(showMcp, 'mcp', 'MCP');
-  addTab(showThreads, 'threads', 'Threads');
+  addGroup('You', [[true, 'preferences', 'Preferences']]);
+  addGroup('Organisation', [
+    [true, 'venues', 'Venues'],
+    [true, 'members', 'Users'],
+    [showRoles, 'roles', 'Roles'],
+    [showBilling, 'billing', 'Billing'],
+    [showEmail, 'email', 'Email'],
+    [showConnections, 'connections', 'Connections'],
+  ]);
+  addGroup('AI team', [
+    [showAgents, 'agents', 'Agents'],
+    [showPlaybooks, 'playbooks', 'Playbooks'],
+    [showPlaybooks, 'templates', 'Templates'],
+    [showComponents, 'components', 'Components'],
+    [showConnectors, 'connectors', 'Connector specs'],
+    [showSupplierSpecs, 'supplier-specs', 'Supplier specs'],
+    [isAdmin, 'app-map', 'App map'],
+  ]);
+  addGroup('Platform', [
+    [showDeployments, 'deployments', 'Deployments'],
+    [showTests, 'tests', 'Tests'],
+    [showSecrets, 'secrets', 'Secrets'],
+    [showMcp, 'mcp', 'MCP'],
+    [showThreads, 'threads', 'Threads'],
+  ]);
+  const shownGroups = groups.filter(g => g.items.length > 0);
+  const visibleTabs = shownGroups.flatMap(g => g.items.map(i => i.id as SettingsTab));
+  // A section this user can't open — the quota dialog's "Top up" sends
+  // everyone to Billing — shows Preferences (everyone has it) instead of a
+  // page that would 403.
+  const tab: SettingsTab = visibleTabs.includes(activeTab) ? activeTab : visibleTabs.includes('preferences') ? 'preferences' : visibleTabs[0];
+  // Phones: the same groups in one strip, a thin rule between them.
+  const tabItems: TabEntry[] = shownGroups.flatMap((g, i) => (i === 0 ? g.items : ['divider' as const, ...g.items]));
 
   // A 1px gap under the fade keeps the strip's rule unbroken.
   const tabsFade: CSSProperties = {
@@ -1577,7 +1696,15 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
     backgroundColor: 'var(--code-bg)', color: 'var(--code-text)',
     fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', lineHeight: 1.4,
   };
-  const threadsTab = activeTab === 'threads';
+  const threadsTab = tab === 'threads';
+  // Tablets and up: the section list down the left, the section beside it.
+  // Each column scrolls on its own, so the list stays put.
+  // Threads fills its column edge to edge (its list keeps its own rule).
+  const contentStyle: CSSProperties = threadsTab
+    ? { flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden', borderLeft: isMobile ? undefined : '1px solid var(--line)' }
+    : isMobile
+      ? { flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto', paddingTop: 8, paddingBottom: 40 }
+      : { flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto', padding: '4px 24px 40px 20px' };
 
   return (
     // Fills the area it is given and scrolls inside it — no viewport units, so
@@ -1588,293 +1715,299 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
           title="Settings"
           status={orgName ? <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{orgName}</span> : undefined}
         >
-          <div ref={tabsRef} style={{ position: 'relative' }} onScrollCapture={measureTabs}>
-            <Tabs label="Settings sections" items={tabItems} value={activeTab} onChange={id => setActiveTab(id as SettingsTab)} />
-            {tabsMore && <div aria-hidden="true" style={tabsFade} />}
-          </div>
+          {isMobile && (
+            <div ref={tabsRef} style={{ position: 'relative' }} onScrollCapture={measureTabs}>
+              <Tabs label="Settings sections" items={tabItems} value={tab} onChange={id => setActiveTab(id as SettingsTab)} />
+              {tabsMore && <div aria-hidden="true" style={tabsFade} />}
+            </div>
+          )}
         </PageHeader>
       </div>
 
-      <div
-        className={threadsTab ? undefined : 'n-page'}
-        style={threadsTab
-          ? { flex: 1, minHeight: 0, overflow: 'hidden' }
-          : { flex: 1, minHeight: 0, overflowY: 'auto', paddingTop: 8, paddingBottom: 40 }}
-      >
-        {/* ============ THREADS TAB (admin) ============ */}
-        {activeTab === 'threads' && <AdminThreadsPanel />}
-
-        {/* ============ MCP TAB ============ */}
-        {activeTab === 'mcp' && <McpPanel />}
-
-        {/* ============ PREFERENCES TAB (all users) ============ */}
-        {activeTab === 'preferences' && (
-          <>
-            {/* What Norm may do without asking — every write, receiving and
-                reconciling included. One home for one question. */}
-            <ApprovalPreferences />
-            <div style={{ height: 32 }} />
-            <MemoryTab />
-          </>
-        )}
-
-        {/* ============ VENUES TAB ============ */}
-        {activeTab === 'venues' && <VenuesTab />}
-
-        {/* ============ MEMBERS TAB ============ */}
-        {activeTab === 'members' && <UsersTab />}
-
-        {/* ============ CONNECTORS TAB ============ */}
-        {activeTab === 'app-map' && isAdmin && <AppMapPanel />}
-        {activeTab === 'connections' && (
-          <div style={{ width: '100%' }}>
-            <SectionHeader title="Connections" />
-            <ConnectionsMatrix />
+      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        {!isMobile && (
+          // Item text lines up with the page title: 14px here + the row's 10px.
+          <div className="scroll-quiet" style={{ flex: '0 0 auto', width: 220, boxSizing: 'border-box', padding: '4px 6px 40px 14px' }}>
+            <SubNav label="Settings sections" groups={groups} value={tab} onChange={id => setActiveTab(id as SettingsTab)} />
           </div>
         )}
-        {activeTab === 'connectors' && (
-          <>
-            <ConnectorSpecsPanel onViewModeChange={setSpecEditing} />
 
-            {!specEditing && <ConsolidatorCoveragePanel />}
+        <div className={threadsTab ? undefined : 'n-page'} style={contentStyle}>
+          {/* ============ THREADS TAB (admin) ============ */}
+          {tab === 'threads' && <AdminThreadsPanel />}
 
-            {!specEditing && <section style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
-            <SectionHeader
-              title="Platform connectors"
-              meta={connectors.length > 0 ? `${connectors.length} ${connectors.length === 1 ? 'connector' : 'connectors'}` : undefined}
-            />
-            <div className="n-card" style={{
-              display: 'flex', alignItems: 'center', gap: '4px 12px', flexWrap: 'wrap',
-              marginBottom: 16, padding: '10px 16px',
-            }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', color: 'var(--text)', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={(() => { try { return localStorage.getItem('norm_show_tool_details') !== 'false'; } catch { return true; } })()}
-                  onChange={e => {
-                    localStorage.setItem('norm_show_tool_details', String(e.target.checked));
-                    // Force re-render
-                    setConnectors(c => [...c]);
-                  }}
-                  style={{ cursor: 'pointer', accentColor: 'var(--accent)' }}
-                />
-                Show tool call details in conversations
-              </label>
-              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-                Toggle request/response cards in the chat view
-              </span>
+          {/* ============ MCP TAB ============ */}
+          {tab === 'mcp' && <McpPanel />}
+
+          {/* ============ PREFERENCES TAB (all users) ============ */}
+          {tab === 'preferences' && (
+            <>
+              {/* What Norm may do without asking — every write, receiving and
+                  reconciling included. One home for one question. */}
+              <ApprovalPreferences />
+              <div style={{ height: 32 }} />
+              <MemoryTab />
+            </>
+          )}
+
+          {/* ============ VENUES TAB ============ */}
+          {tab === 'venues' && <VenuesTab canManage={can(storedUser, 'org:venues')} canConnect={can(storedUser, 'settings:connectors')} />}
+
+          {/* ============ MEMBERS TAB ============ */}
+          {tab === 'members' && <UsersTab canManage={can(storedUser, 'org:members')} />}
+
+          {/* ============ CONNECTORS TAB ============ */}
+          {tab === 'app-map' && isAdmin && <AppMapPanel />}
+          {tab === 'connections' && (
+            <div style={{ width: '100%' }}>
+              <SectionHeader title="Connections" />
+              <ConnectionsMatrix />
             </div>
+          )}
+          {tab === 'connectors' && (
+            <>
+              <ConnectorSpecsPanel onViewModeChange={setSpecEditing} />
 
-            {connectors.map(c => {
-              const status = testStatus[c.name] || 'idle';
-              return (
-                <div key={c.name} className="n-card" style={{
-                  padding: 16,
-                  marginBottom: 12,
-                  opacity: c.configured && !c.enabled ? 0.6 : 1,
-                  transition: 'opacity 0.2s',
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                      <span style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)' }}>{c.label}</span>
-                      {c.configured && <Badge tone="ok">Configured</Badge>}
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                      {c.configured && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={c.enabled}
-                            aria-label={`${c.label} active`}
-                            onClick={() => handleToggleEnabled(c.name)}
-                            style={{
-                              display: 'flex', alignItems: 'center', justifyContent: c.enabled ? 'flex-end' : 'flex-start',
-                              width: 36, height: 20, boxSizing: 'border-box', padding: 2,
-                              border: 'none', borderRadius: 999, cursor: 'pointer',
-                              backgroundColor: c.enabled ? 'var(--primary)' : 'var(--field)',
-                              transition: 'background-color 0.2s',
-                            }}
-                          >
-                            <span style={{ width: 16, height: 16, borderRadius: '50%', backgroundColor: 'var(--bg)' }} />
-                          </button>
-                          {c.enabled ? 'Active' : 'Inactive'}
-                        </div>
-                      )}
-                      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{c.domain}</span>
-                    </div>
-                  </div>
+              {!specEditing && <ConsolidatorCoveragePanel />}
 
-                  {/* OAuth2 connectors: show Connect button instead of manual fields */}
-                  {c.auth_type === 'oauth2' ? (
-                    <>
-                      {c.oauth_connected && c.needs_reconnect ? (
-                        <div style={{
-                          display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
-                          fontSize: 'var(--fs-sm)', color: 'var(--error)',
-                        }} title={c.last_auth_error || undefined}>
-                          <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: 'var(--error)', flex: '0 0 auto' }} />
-                          Reconnect needed — this connection stopped working
-                        </div>
-                      ) : c.oauth_connected ? (
-                        <div style={{
-                          display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
-                          fontSize: 'var(--fs-sm)', color: 'var(--ok)',
-                        }}>
-                          <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: 'var(--ok)', flex: '0 0 auto' }} />
-                          OAuth connected
-                        </div>
-                      ) : null}
+              {!specEditing && <section style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
+              <SectionHeader
+                title="Platform connectors"
+                meta={connectors.length > 0 ? `${connectors.length} ${connectors.length === 1 ? 'connector' : 'connectors'}` : undefined}
+              />
+              <div className="n-card" style={{
+                display: 'flex', alignItems: 'center', gap: '4px 12px', flexWrap: 'wrap',
+                marginBottom: 16, padding: '10px 16px',
+              }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', color: 'var(--text)', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={(() => { try { return localStorage.getItem('norm_show_tool_details') !== 'false'; } catch { return true; } })()}
+                    onChange={e => {
+                      localStorage.setItem('norm_show_tool_details', String(e.target.checked));
+                      // Force re-render
+                      setConnectors(c => [...c]);
+                    }}
+                    style={{ cursor: 'pointer', accentColor: 'var(--accent)' }}
+                  />
+                  Show tool call details in conversations
+                </label>
+                <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                  Toggle request/response cards in the chat view
+                </span>
+              </div>
 
-                      {/* Still show non-secret credential fields (e.g. subdomain) */}
-                      {c.fields.filter(f => !f.secret).map(f => (
-                        <div key={f.key} style={{ marginBottom: 12 }}>
-                          <label className="n-label" htmlFor={`${fieldId}-${c.name}-${f.key}`}>{f.label}</label>
-                          <input
-                            id={`${fieldId}-${c.name}-${f.key}`}
-                            className="n-input"
-                            type="text"
-                            value={forms[c.name]?.[f.key] || ''}
-                            onChange={e => updateField(c.name, f.key, e.target.value)}
-                            placeholder={`Enter ${f.label.toLowerCase()}`}
-                            style={{ width: '100%' }}
-                          />
-                        </div>
-                      ))}
-                    </>
-                  ) : (
-                    <>
-                      {c.fields.map(f => (
-                        <div key={f.key} style={{ marginBottom: 12 }}>
-                          <label className="n-label" htmlFor={`${fieldId}-${c.name}-${f.key}`}>{f.label}</label>
-                          {f.type === 'select' && f.options ? (
-                            <select
-                              id={`${fieldId}-${c.name}-${f.key}`}
-                              className="n-select"
-                              value={forms[c.name]?.[f.key] || f.default || ''}
-                              onChange={e => updateField(c.name, f.key, e.target.value)}
-                              style={{ width: '100%' }}
+              {connectors.map(c => {
+                const status = testStatus[c.name] || 'idle';
+                return (
+                  <div key={c.name} className="n-card" style={{
+                    padding: 16,
+                    marginBottom: 12,
+                    opacity: c.configured && !c.enabled ? 0.6 : 1,
+                    transition: 'opacity 0.2s',
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <span style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)' }}>{c.label}</span>
+                        {c.configured && <Badge tone="ok">Configured</Badge>}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        {c.configured && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={c.enabled}
+                              aria-label={`${c.label} active`}
+                              onClick={() => handleToggleEnabled(c.name)}
+                              style={{
+                                display: 'flex', alignItems: 'center', justifyContent: c.enabled ? 'flex-end' : 'flex-start',
+                                width: 36, height: 20, boxSizing: 'border-box', padding: 2,
+                                border: 'none', borderRadius: 999, cursor: 'pointer',
+                                backgroundColor: c.enabled ? 'var(--primary)' : 'var(--field)',
+                                transition: 'background-color 0.2s',
+                              }}
                             >
-                              {f.options.map(opt => (
-                                <option key={opt.id} value={opt.id}>{opt.label}</option>
-                              ))}
-                            </select>
-                          ) : (
+                              <span style={{ width: 16, height: 16, borderRadius: '50%', backgroundColor: 'var(--bg)' }} />
+                            </button>
+                            {c.enabled ? 'Active' : 'Inactive'}
+                          </div>
+                        )}
+                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{c.domain}</span>
+                      </div>
+                    </div>
+
+                    {/* OAuth2 connectors: show Connect button instead of manual fields */}
+                    {c.auth_type === 'oauth2' ? (
+                      <>
+                        {c.oauth_connected && c.needs_reconnect ? (
+                          <div style={{
+                            display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
+                            fontSize: 'var(--fs-sm)', color: 'var(--error)',
+                          }} title={c.last_auth_error || undefined}>
+                            <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: 'var(--error)', flex: '0 0 auto' }} />
+                            Reconnect needed — this connection stopped working
+                          </div>
+                        ) : c.oauth_connected ? (
+                          <div style={{
+                            display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
+                            fontSize: 'var(--fs-sm)', color: 'var(--ok)',
+                          }}>
+                            <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: 'var(--ok)', flex: '0 0 auto' }} />
+                            OAuth connected
+                          </div>
+                        ) : null}
+
+                        {/* Still show non-secret credential fields (e.g. subdomain) */}
+                        {c.fields.filter(f => !f.secret).map(f => (
+                          <div key={f.key} style={{ marginBottom: 12 }}>
+                            <label className="n-label" htmlFor={`${fieldId}-${c.name}-${f.key}`}>{f.label}</label>
                             <input
                               id={`${fieldId}-${c.name}-${f.key}`}
                               className="n-input"
-                              type={f.secret ? 'password' : 'text'}
+                              type="text"
                               value={forms[c.name]?.[f.key] || ''}
                               onChange={e => updateField(c.name, f.key, e.target.value)}
-                              placeholder={f.secret ? '••••••••' : `Enter ${f.label.toLowerCase()}`}
+                              placeholder={`Enter ${f.label.toLowerCase()}`}
                               style={{ width: '100%' }}
                             />
-                          )}
-                        </div>
-                      ))}
-                    </>
-                  )}
-
-                  {status !== 'idle' && (
-                    <div role="status" style={{
-                      display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
-                      fontSize: 'var(--fs-sm)', color: statusColor(status),
-                    }}>
-                      <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: statusColor(status), flex: '0 0 auto' }} />
-                      {status === 'testing' ? 'Testing connection…' : testMessage[c.name]}
-                    </div>
-                  )}
-
-                  {testDetail[c.name] && (status === 'success' || status === 'error') && (
-                    <details style={{ marginBottom: 12, fontSize: 'var(--fs-sm)' }}>
-                      <summary style={{ cursor: 'pointer', color: 'var(--text-soft)', marginBottom: 6 }}>
-                        Show request &amp; response
-                      </summary>
-                      {testDetail[c.name]?.rendered_request && (
-                        <div style={{ marginBottom: 8 }}>
-                          <div className="n-eyebrow" style={{ marginBottom: 4 }}>Request</div>
-                          <pre style={preStyle}>
-                            {JSON.stringify(testDetail[c.name]?.rendered_request, null, 2)}
-                          </pre>
-                        </div>
-                      )}
-                      {testDetail[c.name]?.response && (
-                        <div>
-                          <div className="n-eyebrow" style={{ marginBottom: 4 }}>Response</div>
-                          <pre style={preStyle}>
-                            {JSON.stringify(testDetail[c.name]?.response, null, 2)}
-                          </pre>
-                        </div>
-                      )}
-                    </details>
-                  )}
-
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {c.auth_type === 'oauth2' ? (
-                      <>
-                        {!c.oauth_connected ? (
-                          <Button variant="primary" size="sm" onClick={() => handleOAuthConnect(c.name)}>
-                            Connect with OAuth
-                          </Button>
-                        ) : (
-                          <Button variant="danger" size="sm" onClick={() => handleOAuthDisconnect(c.name)}>
-                            Disconnect
-                          </Button>
-                        )}
-                        {/* Save non-secret fields if any exist */}
-                        {c.fields.some(f => !f.secret) && (
-                          <Button size="sm" onClick={() => handleSave(c.name)} disabled={saving[c.name]}>
-                            {saving[c.name] ? 'Saving…' : 'Save'}
-                          </Button>
-                        )}
+                          </div>
+                        ))}
                       </>
                     ) : (
                       <>
-                        <Button size="sm" onClick={() => handleTest(c.name)} disabled={status === 'testing'}>
-                          Test
-                        </Button>
-                        <Button variant="primary" size="sm" onClick={() => handleSave(c.name)} disabled={saving[c.name]}>
-                          {saving[c.name] ? 'Saving…' : 'Save'}
-                        </Button>
-                        {c.configured && (
-                          <Button variant="danger" size="sm" onClick={() => handleDelete(c.name)}>
-                            Remove
-                          </Button>
-                        )}
+                        {c.fields.map(f => (
+                          <div key={f.key} style={{ marginBottom: 12 }}>
+                            <label className="n-label" htmlFor={`${fieldId}-${c.name}-${f.key}`}>{f.label}</label>
+                            {f.type === 'select' && f.options ? (
+                              <select
+                                id={`${fieldId}-${c.name}-${f.key}`}
+                                className="n-select"
+                                value={forms[c.name]?.[f.key] || f.default || ''}
+                                onChange={e => updateField(c.name, f.key, e.target.value)}
+                                style={{ width: '100%' }}
+                              >
+                                {f.options.map(opt => (
+                                  <option key={opt.id} value={opt.id}>{opt.label}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                id={`${fieldId}-${c.name}-${f.key}`}
+                                className="n-input"
+                                type={f.secret ? 'password' : 'text'}
+                                value={forms[c.name]?.[f.key] || ''}
+                                onChange={e => updateField(c.name, f.key, e.target.value)}
+                                placeholder={f.secret ? '••••••••' : `Enter ${f.label.toLowerCase()}`}
+                                style={{ width: '100%' }}
+                              />
+                            )}
+                          </div>
+                        ))}
                       </>
                     )}
+
+                    {status !== 'idle' && (
+                      <div role="status" style={{
+                        display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12,
+                        fontSize: 'var(--fs-sm)', color: statusColor(status),
+                      }}>
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: statusColor(status), flex: '0 0 auto' }} />
+                        {status === 'testing' ? 'Testing connection…' : testMessage[c.name]}
+                      </div>
+                    )}
+
+                    {testDetail[c.name] && (status === 'success' || status === 'error') && (
+                      <details style={{ marginBottom: 12, fontSize: 'var(--fs-sm)' }}>
+                        <summary style={{ cursor: 'pointer', color: 'var(--text-soft)', marginBottom: 6 }}>
+                          Show request &amp; response
+                        </summary>
+                        {testDetail[c.name]?.rendered_request && (
+                          <div style={{ marginBottom: 8 }}>
+                            <div className="n-eyebrow" style={{ marginBottom: 4 }}>Request</div>
+                            <pre style={preStyle}>
+                              {JSON.stringify(testDetail[c.name]?.rendered_request, null, 2)}
+                            </pre>
+                          </div>
+                        )}
+                        {testDetail[c.name]?.response && (
+                          <div>
+                            <div className="n-eyebrow" style={{ marginBottom: 4 }}>Response</div>
+                            <pre style={preStyle}>
+                              {JSON.stringify(testDetail[c.name]?.response, null, 2)}
+                            </pre>
+                          </div>
+                        )}
+                      </details>
+                    )}
+
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {c.auth_type === 'oauth2' ? (
+                        <>
+                          {!c.oauth_connected ? (
+                            <Button variant="primary" size="sm" onClick={() => handleOAuthConnect(c.name)}>
+                              Connect with OAuth
+                            </Button>
+                          ) : (
+                            <Button variant="danger" size="sm" onClick={() => handleOAuthDisconnect(c.name)}>
+                              Disconnect
+                            </Button>
+                          )}
+                          {/* Save non-secret fields if any exist */}
+                          {c.fields.some(f => !f.secret) && (
+                            <Button size="sm" onClick={() => handleSave(c.name)} disabled={saving[c.name]}>
+                              {saving[c.name] ? 'Saving…' : 'Save'}
+                            </Button>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <Button size="sm" onClick={() => handleTest(c.name)} disabled={status === 'testing'}>
+                            Test
+                          </Button>
+                          <Button variant="primary" size="sm" onClick={() => handleSave(c.name)} disabled={saving[c.name]}>
+                            {saving[c.name] ? 'Saving…' : 'Save'}
+                          </Button>
+                          {c.configured && (
+                            <Button variant="danger" size="sm" onClick={() => handleDelete(c.name)}>
+                              Remove
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-            </section>}
-          </>
-        )}
+                );
+              })}
+              </section>}
+            </>
+          )}
 
-        {/* ============ AGENTS TAB ============ */}
-        {activeTab === 'agents' && <AgentsPanel />}
+          {/* ============ AGENTS TAB ============ */}
+          {tab === 'agents' && <AgentsPanel />}
 
-        {/* ============ BILLING TAB ============ */}
-        {activeTab === 'billing' && orgId && <BillingTab orgId={orgId} />}
+          {/* ============ BILLING TAB ============ */}
+          {tab === 'billing' && orgId && <BillingTab orgId={orgId} />}
 
-        {/* ============ EMAIL TAB ============ */}
-        {activeTab === 'email' && <EmailTab />}
+          {/* ============ EMAIL TAB ============ */}
+          {tab === 'email' && <EmailTab canManage={can(storedUser, 'email:manage')} canSendTest={isAdmin} />}
 
-        {/* ============ DEPLOYMENTS TAB ============ */}
-        {activeTab === 'deployments' && <DeploymentsPanel />}
+          {/* ============ DEPLOYMENTS TAB ============ */}
+          {tab === 'deployments' && <DeploymentsPanel />}
 
-        {/* ============ TESTS TAB ============ */}
-        {activeTab === 'tests' && <TestsPanel />}
+          {/* ============ TESTS TAB ============ */}
+          {tab === 'tests' && <TestsPanel />}
 
-        {/* ============ ROLES TAB ============ */}
-        {activeTab === 'roles' && orgId && <RolesPanel orgId={orgId} />}
+          {/* ============ ROLES TAB ============ */}
+          {tab === 'roles' && orgId && <RolesPanel orgId={orgId} />}
 
-        {/* ============ SECRETS TAB ============ */}
-        {activeTab === 'components' && <ComponentsPanel />}
-        {activeTab === 'playbooks' && <PlaybooksPanel />}
-        {activeTab === 'supplier-specs' && <SupplierSpecsPanel />}
-        {activeTab === 'templates' && <TemplatesPanel />}
-        {activeTab === 'secrets' && <SecretsPanel />}
+          {/* ============ SECRETS TAB ============ */}
+          {tab === 'components' && <ComponentsPanel />}
+          {tab === 'playbooks' && <PlaybooksPanel />}
+          {tab === 'supplier-specs' && <SupplierSpecsPanel />}
+          {tab === 'templates' && <TemplatesPanel />}
+          {tab === 'secrets' && <SecretsPanel />}
+        </div>
       </div>
     </div>
   );

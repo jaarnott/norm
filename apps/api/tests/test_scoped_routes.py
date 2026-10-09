@@ -173,7 +173,82 @@ class TestFromConnector:
             json={"connector_name": "readhub", "action": "list"},
             headers=world.headers,
         )
-        assert r.status_code == 400 and "No credentials" in r.text
+        assert r.status_code == 400
+        assert r.json()["detail"] == "venue_id is required for readhub"
+
+    def test_a_missing_venue_is_not_worded_as_a_dead_connection(
+        self, client, world, db_session
+    ):
+        """Oct 2026: a page loaded before sign-in had picked its venue, got "No
+        credentials configured for loadedhub", and the web app — which matches
+        that wording (lib/api.ts CONNECTOR_FAILURE_PATTERNS) — replaced the
+        page with "This connection needs reconnecting". The connection was
+        fine; the request just named no venue."""
+        import re
+
+        from app.db.config_models import ConnectionSpec
+
+        db_session.add(
+            ConnectionSpec(
+                id=str(uuid.uuid4()),
+                connector_name="venuehub",
+                display_name="V",
+                auth_type="none",
+                auth_config={},
+                tools=[],
+                endpoints=[{"action": "list", "method": "GET", "path_template": "/x"}],
+                enabled=True,
+            )
+        )
+        db_session.add(
+            Connection(
+                id=str(uuid.uuid4()),
+                connector_name="venuehub",
+                venue_id=world.mine.id,
+                config={},
+                enabled="true",
+            )
+        )
+        db_session.flush()
+        r = client.post(
+            "/api/working-documents/from-connector",
+            json={"connector_name": "venuehub", "action": "list"},
+            headers=world.headers,
+        )
+        assert r.status_code == 400
+        # The web app's reconnect patterns, verbatim from lib/api.ts.
+        reconnect_patterns = [
+            r"reconnect\s+([a-z0-9_]+)\s+in\s+settings",
+            r"no credentials(?:\s+configured)?\s+for\s+([a-z0-9_]+)",
+            r"no\s+([a-z0-9_]+)\s+access token",
+            r"([a-z0-9_]+)\s+authorization failed",
+        ]
+        assert not any(re.search(p, r.text, re.I) for p in reconnect_patterns)
+
+    def test_a_connector_never_set_up_still_says_so(self, client, world, db_session):
+        """No login anywhere — that one IS a missing connection."""
+        from app.db.config_models import ConnectionSpec
+
+        db_session.add(
+            ConnectionSpec(
+                id=str(uuid.uuid4()),
+                connector_name="emptyhub",
+                display_name="E",
+                auth_type="none",
+                auth_config={},
+                tools=[],
+                endpoints=[{"action": "list", "method": "GET", "path_template": "/x"}],
+                enabled=True,
+            )
+        )
+        db_session.flush()
+        r = client.post(
+            "/api/working-documents/from-connector",
+            json={"connector_name": "emptyhub", "action": "list"},
+            headers=world.headers,
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "No credentials configured for emptyhub"
 
     def test_a_chat_card_document_belongs_to_its_thread(
         self, client, world, db_session, monkeypatch

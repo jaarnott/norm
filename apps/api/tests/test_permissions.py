@@ -3,7 +3,12 @@
 import uuid
 
 
-from app.auth.permissions import STANDARD_ROLES
+from app.auth.permissions import (
+    PERMISSION_GROUPS,
+    PERMISSION_SCOPES,
+    PLATFORM_ADMIN_SCOPES,
+    STANDARD_ROLES,
+)
 from app.auth.security import create_access_token
 from app.db.models import (
     Role,
@@ -329,6 +334,31 @@ class TestMemberRoleAssignment:
             headers=_auth(admin),
         )
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Tests: the permission catalogue the custom-role editor reads
+# ---------------------------------------------------------------------------
+
+
+class TestPermissionCatalogue:
+    def test_every_org_scope_is_in_exactly_one_group(self):
+        """The editor offers only grouped scopes: apps:build / apps:share were
+        in no group, so no custom role could ever be given them (Oct 2026)."""
+        grouped = [s for scopes in PERMISSION_GROUPS.values() for s in scopes]
+        assert len(grouped) == len(set(grouped))
+        assert set(grouped) == PERMISSION_SCOPES - PLATFORM_ADMIN_SCOPES
+
+    def test_shape_is_scope_keys_and_named_groups(self, client, db_session):
+        """Keys, not objects: the editor read `group.permissions` off a list
+        of strings and crashed the page when a group was opened (Oct 2026)."""
+        user = _make_user(db_session, role="user")
+        resp = client.get("/api/permissions", headers=_auth(user))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["permissions"] == sorted(PERMISSION_SCOPES)
+        assert data["groups"] == PERMISSION_GROUPS
+        assert all(isinstance(s, str) for s in data["groups"]["Apps"])
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { LoaderCircle } from 'lucide-react';
-import { useComposerAttachments, AttachButton, AttachmentChips, type PendingAttachment } from './AttachmentComposer';
+import { useComposerAttachments, AttachButton, AttachmentChips, AttachmentError, type PendingAttachment } from './AttachmentComposer';
 
 const MAX_HEIGHT = 150;
 
@@ -37,19 +37,24 @@ export default function Composer({ onSend, loading, venueId, highlight = false, 
   const att = useComposerAttachments(venueId);
 
   // A message needs text (routing keys off it); attachments ride alongside.
+  // Held while a reply is still coming (Enter would otherwise send again —
+  // only the button was disabled) and while a file is still uploading (the
+  // clear below would drop it, then it would land on the next message).
+  const busy = loading || att.uploading;
   const submit = useCallback(() => {
-    if (!value.trim()) return;
+    if (busy || !value.trim()) return;
     onSend(value, att.items);
     setValue('');
     att.clear();
     requestAnimationFrame(() => fit(ref.current));
-  }, [value, onSend, att]);
+  }, [busy, value, onSend, att]);
 
   return (
     // pointer-events: the composer may float over a page whose fade lets
     // clicks through; the composer itself always takes them.
     <div style={{ maxWidth: 768, margin: '0 auto', width: '100%', pointerEvents: 'auto' }}>
       <AttachmentChips items={att.items} remove={att.remove} uploading={att.uploading} />
+      <AttachmentError error={att.error} onDismiss={att.clearError} />
       <form
         onSubmit={(e) => { e.preventDefault(); submit(); }}
         style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}
@@ -89,7 +94,7 @@ export default function Composer({ onSend, loading, venueId, highlight = false, 
         <button
           type="submit"
           data-testid={sendTestId}
-          disabled={loading}
+          disabled={busy}
           aria-label={loading ? 'Sending' : undefined}
           style={{
             flex: '0 0 auto',
@@ -105,7 +110,9 @@ export default function Composer({ onSend, loading, venueId, highlight = false, 
             background: 'var(--primary)',
             border: 'none',
             borderRadius: 24,
-            cursor: loading ? 'not-allowed' : 'pointer',
+            cursor: busy ? 'not-allowed' : 'pointer',
+            // The spinner already says "sending"; an upload just greys it.
+            opacity: att.uploading && !loading ? 0.45 : 1,
           }}
         >
           {loading

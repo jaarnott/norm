@@ -1,6 +1,6 @@
 """The ``mcp:*`` scope vocabulary.
 
-A dedicated vocabulary, mapped onto — but distinct from — the 23 org
+A dedicated vocabulary, mapped onto — but distinct from — the org
 permission scopes in ``app.auth.permissions``. Four reasons it isn't just a
 reuse of those:
 
@@ -234,8 +234,9 @@ def validate_scope_vocabulary() -> list[str]:
     A `requires` entry that isn't in PERMISSION_SCOPES can never be satisfied
     by any role, so the scope silently becomes ungrantable and its tools become
     invisible — surfacing only as one confused user. This is the same failure
-    class as the `email:read` / `email:manage` drift, where routers gate on
-    scopes that PERMISSION_SCOPES doesn't define and no role can hold.
+    class as the `email:read` / `email:manage` drift (fixed Oct 2026), where
+    routers gated on scopes that PERMISSION_SCOPES didn't define and no role
+    could hold.
 
     Called at import time (below) so it fails at boot, not at authz time.
     """

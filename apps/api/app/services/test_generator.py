@@ -36,6 +36,7 @@ AVAILABLE_SELECTORS = {
     "tasks": [
         "new-chat-btn",
         "search-btn",
+        "search-input",
         "filter-all",
         "filter-awaiting_approval",
         "filter-awaiting_user_input",

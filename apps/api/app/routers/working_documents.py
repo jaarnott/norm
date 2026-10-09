@@ -334,6 +334,20 @@ async def create_from_connector(
             config_query = config_query.filter(Connection.venue_id.is_(None))
         config_row = config_query.first()
         if not config_row:
+            venue_logins = db.query(Connection.id).filter(
+                Connection.connector_name == body.connector_name,
+                Connection.enabled == "true",
+                Connection.venue_id.isnot(None),
+            )
+            if not body.venue_id and venue_logins.first() is not None:
+                # The connector logs in per venue (LoadedHub), so a load that
+                # names none has nothing to use — the caller's mistake, not a
+                # dead connection. "No credentials configured" here is what the
+                # web app reads as "reconnect", and it flashed the reconnect
+                # panel on every fresh sign-in, before the page had its venue.
+                raise HTTPException(
+                    400, f"venue_id is required for {body.connector_name}"
+                )
             raise HTTPException(
                 400, f"No credentials configured for {body.connector_name}"
             )

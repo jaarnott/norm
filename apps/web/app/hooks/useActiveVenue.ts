@@ -17,7 +17,10 @@ const KEY = 'norm_active_venue';
 // `storage` events only fire in *other* tabs, so we need our own event too.
 const EVENT = 'norm:active-venue';
 
-function read(): string | null {
+/** The remembered venue for the stored user, straight from storage. The hook
+ *  reads it once, on mount — before a sign-in on the same screen has stored
+ *  who the user is — so the app reads it again once its venues arrive. */
+export function readActiveVenue(): string | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = localStorage.getItem(KEY);
@@ -52,12 +55,12 @@ export function useActiveVenue(): [string | null, (venueId: string) => void] {
   // Lazy init is safe here: these selectors only mount client-side behind the
   // auth gate, never during the server render of the login screen, so there is
   // no server/client first-paint to mismatch.
-  const [venueId, setVenueId] = useState<string | null>(() => read());
+  const [venueId, setVenueId] = useState<string | null>(() => readActiveVenue());
 
   useEffect(() => {
     const onLocal = (e: Event) => setVenueId((e as CustomEvent).detail as string);
     const onStorage = (e: StorageEvent) => {
-      if (e.key === KEY) setVenueId(read());
+      if (e.key === KEY) setVenueId(readActiveVenue());
     };
     window.addEventListener(EVENT, onLocal);
     window.addEventListener('storage', onStorage);

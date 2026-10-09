@@ -9,6 +9,7 @@ import Button from '../ui/Button';
 import IconButton from '../ui/IconButton';
 import Badge, { type BadgeTone } from '../ui/Badge';
 import PageState from '../ui/PageState';
+import { ConfirmDialog } from '../ui/Dialog';
 
 type ViewMode = 'list' | 'create' | 'edit';
 
@@ -31,7 +32,8 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
   }, []);
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [editingSpec, setEditingSpec] = useState<ConnectorSpecFull | null>(null);
-  const [deleting, setDeleting] = useState<string | null>(null);
+  // The spec whose delete is waiting on the confirmation dialog.
+  const [deleting, setDeleting] = useState<ConnectorSpecSummary | null>(null);
 
   useEffect(() => {
     onViewModeChange?.(viewMode !== 'list');
@@ -62,18 +64,19 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { fetchSpecs().finally(() => setLoaded(true)); }, [fetchSpecs]);
 
+  // Throws on failure: the confirmation dialog shows why and stays open.
   const handleDelete = async (name: string) => {
-    if (!confirm(`Delete connection spec "${name}"?`)) return;
-    setDeleting(name);
+    let res: Response;
     try {
-      const res = await apiFetch(`/api/connector-specs/${name}`, { method: 'DELETE' });
-      if (!res.ok) { setErrorBanner(`Failed to delete "${name}" (${res.status})`); }
-      await fetchSpecs();
+      res = await apiFetch(`/api/connector-specs/${name}`, { method: 'DELETE' });
     } catch (err) {
-      setErrorBanner(`Network error deleting "${name}": ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setDeleting(null);
+      throw new Error(`Network error deleting "${name}": ${err instanceof Error ? err.message : String(err)}`);
     }
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(typeof body?.detail === 'string' ? body.detail : `Failed to delete "${name}" (${res.status})`);
+    }
+    await fetchSpecs();
   };
 
   const handleEdit = async (name: string) => {
@@ -244,6 +247,22 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
         </div>
       </div>
 
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete ${deleting.display_name || deleting.connector_name}?`}
+          confirmLabel="Delete spec"
+          busyLabel="Deleting…"
+          danger
+          onConfirm={() => handleDelete(deleting.connector_name)}
+          onClose={() => setDeleting(null)}
+        >
+          <p style={{ margin: 0 }}>
+            The {deleting.connector_name} connection spec and its endpoints and tools are removed from the shared config,
+            so no environment can use them. This can’t be undone.
+          </p>
+        </ConfirmDialog>
+      )}
+
       {/* AI Generate Modal */}
       {generateOpen && (
         <div className="n-card" style={{ padding: 16, marginBottom: 16 }}>
@@ -357,7 +376,7 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
 
           {/* Per-venue OAuth connections (only for oauth2 specs) */}
           {spec.auth_type === 'oauth2' && (
-            <VenueOAuthSection connectorName={spec.connector_name} />
+            <VenueOAuthSection connectorName={spec.connector_name} displayName={spec.display_name || spec.connector_name} />
           )}
 
           {/* Actions */}
@@ -365,13 +384,8 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
             <Button size="sm" onClick={() => handleEdit(spec.connector_name)}>
               Edit
             </Button>
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => handleDelete(spec.connector_name)}
-              disabled={deleting === spec.connector_name}
-            >
-              {deleting === spec.connector_name ? 'Deleting...' : 'Delete'}
+            <Button variant="danger" size="sm" onClick={() => setDeleting(spec)}>
+              Delete
             </Button>
           </div>
 
@@ -392,11 +406,13 @@ interface VenueOAuthRow {
   expires_at: string | null;
 }
 
-function VenueOAuthSection({ connectorName }: { connectorName: string }) {
+function VenueOAuthSection({ connectorName, displayName }: { connectorName: string; displayName: string }) {
   const [rows, setRows] = useState<VenueOAuthRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);  // venue_id currently in flight
   const [error, setError] = useState<string | null>(null);
+  // The venue whose disconnect is waiting on the confirmation dialog.
+  const [disconnecting, setDisconnecting] = useState<VenueOAuthRow | null>(null);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -469,15 +485,18 @@ function VenueOAuthSection({ connectorName }: { connectorName: string }) {
     }
   };
 
-  const handleDisconnect = async (venueId: string, venueName: string) => {
-    if (!confirm(`Disconnect ${connectorName} for ${venueName}?`)) return;
+  // Throws on failure: the confirmation dialog shows why and stays open.
+  const handleDisconnect = async (venueId: string) => {
     setBusy(venueId);
     try {
       const res = await apiFetch(
         `/api/oauth/disconnect/${connectorName}?venue_id=${encodeURIComponent(venueId)}`,
         { method: 'POST' }
       );
-      if (!res.ok) setError(`Failed to disconnect (${res.status})`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(typeof body?.detail === 'string' ? body.detail : `Failed to disconnect (${res.status})`);
+      }
       await fetchStatus();
     } finally {
       setBusy(null);
@@ -518,6 +537,21 @@ function VenueOAuthSection({ connectorName }: { connectorName: string }) {
       {error && (
         <div role="alert" style={{ color: 'var(--error)', marginBottom: 6 }}>{error}</div>
       )}
+      {disconnecting && (
+        <ConfirmDialog
+          title={`Disconnect ${disconnecting.venue_name}?`}
+          confirmLabel="Disconnect"
+          busyLabel="Disconnecting…"
+          danger
+          onConfirm={() => handleDisconnect(disconnecting.venue_id)}
+          onClose={() => setDisconnecting(null)}
+        >
+          <p style={{ margin: 0 }}>
+            The saved {displayName} sign-in for {disconnecting.venue_name} is removed, so Norm can’t use {displayName} there
+            until someone connects the venue again.
+          </p>
+        </ConfirmDialog>
+      )}
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 8 }}>
         Click <strong>Connect a venue</strong> to start the OAuth flow.
         The venue is selected inside LoadedHub; tokens are stored against the matching
@@ -547,7 +581,7 @@ function VenueOAuthSection({ connectorName }: { connectorName: string }) {
                       <Button
                         variant="danger"
                         size="sm"
-                        onClick={() => handleDisconnect(r.venue_id, r.venue_name)}
+                        onClick={() => setDisconnecting(r)}
                         disabled={busy === r.venue_id}
                       >
                         Disconnect

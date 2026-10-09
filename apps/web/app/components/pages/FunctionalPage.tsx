@@ -22,6 +22,11 @@ interface FunctionalPageProps {
   loading: boolean;
   onWidgetAction?: (threadId: string, action: WidgetAction) => Promise<Record<string, unknown> | void>;
   activeVenueId?: string | null;
+  /** False until the app's venue list has settled. The page shows its loading
+   *  state meanwhile and loads nothing: before it, `activeVenueId` may only be
+   *  missing because it hasn't arrived yet, and a venue-scoped connector
+   *  refuses a load that names no venue. */
+  venuesLoaded?: boolean;
 }
 
 // Fades the page out under the floating composer — from cream, the page's own
@@ -37,7 +42,7 @@ const COMPOSER_FADE = 'linear-gradient(to bottom, rgba(250, 248, 245, 0) 0%, var
  * page.tsx keys this by page id, so moving between pages never shows the last
  * page's data under the next page's title.
  */
-export default function FunctionalPage({ config, thread, onSend, loading, onWidgetAction, activeVenueId }: FunctionalPageProps) {
+export default function FunctionalPage({ config, thread, onSend, loading, onWidgetAction, activeVenueId, venuesLoaded = true }: FunctionalPageProps) {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingData, setLoadingData] = useState(config.loadAction.connector !== '_none');
@@ -45,7 +50,9 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   // A page component can ask for the whole area (the Apps page, once it has
   // opened an app). App pages always have it.
   const [fillRequested, setFillRequested] = useState(false);
-  const fill = config.component === 'app_runner' || fillRequested;
+  // An open saved report fills too: it scrolls itself, and the composer (or
+  // the conversation) docks under it like any other page.
+  const fill = config.component === 'app_runner' || fillRequested || !!activeReportId;
   const { containerRef, topPaneHeight, isDragging, handleDragStart, handleSplitDoubleClick } = useSplitPane();
 
   // The floating composer covers the bottom of the page; pad the page by its
@@ -68,6 +75,10 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       setLoadingData(false);
       return;
     }
+    // Wait for the venue list (see venuesLoaded). Loading with no venue right
+    // after sign-in got "no credentials" for LoadedHub, which logs in per
+    // venue, and the app swapped the page for the reconnect panel.
+    if (!venuesLoaded) return;
     setLoadingData(true);
     setLoadError(null);
     const params = config.loadAction.defaultParams();
@@ -97,7 +108,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
       })
       .catch(err => setLoadError(err.message))
       .finally(() => setLoadingData(false));
-  }, [config.id, activeVenueId]);
+  }, [config.id, activeVenueId, venuesLoaded]);
 
   const handleAction = useCallback(async (action: WidgetAction): Promise<Record<string, unknown> | void> => {
     // Handle report builder open locally
@@ -155,32 +166,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
     </div>
   );
 
-  // If a report is open, show the Report Builder full-screen
-  if (activeReportId) {
-    return (
-      <div style={{ height: '100%', position: 'relative', backgroundColor: 'var(--canvas)' }}>
-        <div style={{ height: '100%', overflowY: 'auto', paddingBottom: dockHeight + 16 }}>
-          <div style={{ padding: '14px 24px 8px' }}>
-            <BackLink label="Reports" onClick={() => setActiveReportId(null)} />
-          </div>
-          <div style={{ height: 'calc(100dvh - 150px)' }}>
-            <DisplayBlockRenderer
-              block={{
-                component: 'report_builder',
-                data: { report_id: activeReportId },
-                props: {},
-              }}
-              onAction={handleAction}
-              threadId={thread?.id}
-            />
-          </div>
-        </div>
-        {floatingComposer}
-      </div>
-    );
-  }
-
-  const componentBlock = (data || config.loadAction.connector === '_none') ? (
+  const componentBlock = venuesLoaded && (data || config.loadAction.connector === '_none') ? (
     <DisplayBlockRenderer
       block={{
         component: config.component,
@@ -196,13 +182,38 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
     />
   ) : null;
 
-  // While FunctionalPage itself is loading the page's data, it shows the
-  // page's title; once loaded, the component draws its own header.
-  const pageBody = loadingData ? (
+  // An open saved report: a way back to the board above the report, which
+  // takes the rest of the height (ReportBuilder fills its parent).
+  const reportBody = activeReportId ? (
+    <>
+      <div style={{ padding: '14px 24px 8px' }}>
+        <BackLink label="Reports" onClick={() => setActiveReportId(null)} />
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <DisplayBlockRenderer
+          block={{
+            component: 'report_builder',
+            data: { report_id: activeReportId },
+            props: {},
+          }}
+          onAction={handleAction}
+          threadId={thread?.id}
+        />
+      </div>
+    </>
+  ) : null;
+
+  // While FunctionalPage itself is loading the page's data (or waiting for the
+  // venues), it shows the page's title; once loaded, the component draws its
+  // own header.
+  const pageBody = reportBody ?? (loadingData || !venuesLoaded ? (
     <><PageHeader title={config.label} /><PageState kind="loading" title="Loading…" /></>
   ) : loadError ? (
     <><PageHeader title={config.label} /><PageState kind="error" title={`Couldn’t load ${config.label}`} detail={loadError} /></>
-  ) : componentBlock;
+  ) : componentBlock);
+  // The component and an open report bring their own gutters; a loading or
+  // error state on a filling page still wants the page's.
+  const ownGutters = pageBody === componentBlock || pageBody === reportBody;
 
   // ONE layout for both states. The with-conversation and without-conversation
   // views used to be two different element trees, so the FIRST message from a
@@ -232,7 +243,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
               ? { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }
               : { paddingBottom: hasConversation ? 20 : dockHeight + 16 }}
           >
-            {fill && pageBody !== componentBlock ? <div className="n-page">{pageBody}</div> : pageBody}
+            {fill && !ownGutters ? <div className="n-page">{pageBody}</div> : pageBody}
           </div>
         </div>
 

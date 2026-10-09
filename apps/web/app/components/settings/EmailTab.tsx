@@ -59,7 +59,11 @@ function Section({ title, note, children }: { title: string; note?: ReactNode; c
   );
 }
 
-export default function EmailTab() {
+/**
+ * `canManage` (email:manage) shows Retry on a failed email. `canSendTest` is
+ * for platform admins only: a test goes out from Norm's own address.
+ */
+export default function EmailTab({ canManage, canSendTest }: { canManage: boolean; canSendTest: boolean }) {
   const [logs, setLogs] = useState<EmailLogEntry[]>([]);
   const [connections, setConnections] = useState<EmailConnection[]>([]);
   const [loading, setLoading] = useState(true);
@@ -178,33 +182,35 @@ export default function EmailTab() {
       </Section>
 
       {/* Test Email */}
-      <Section title="Send test email">
-        <div className="n-card" style={{ padding: 16 }}>
-          <label className="n-label" htmlFor="email-test-to">Recipient</label>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input
-              id="email-test-to"
-              className="n-input"
-              value={testTo}
-              onChange={e => setTestTo(e.target.value)}
-              placeholder="recipient@example.com"
-              style={{ flex: '1 1 220px', minWidth: 0, maxWidth: 420 }}
-            />
-            <Button onClick={handleTestSend} disabled={testSending || !testTo}>
-              {testSending ? 'Sending…' : 'Send test'}
-            </Button>
-          </div>
-          {testResult && (
-            <div role="status" style={{
-              display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 10, fontSize: 'var(--fs-sm)',
-              color: testSent ? 'var(--ok)' : 'var(--error)',
-            }}>
-              <Icon icon={testSent ? Check : TriangleAlert} size="dense" style={{ marginTop: 2 }} />
-              <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{testResult}</span>
+      {canSendTest && (
+        <Section title="Send test email">
+          <div className="n-card" style={{ padding: 16 }}>
+            <label className="n-label" htmlFor="email-test-to">Recipient</label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                id="email-test-to"
+                className="n-input"
+                value={testTo}
+                onChange={e => setTestTo(e.target.value)}
+                placeholder="recipient@example.com"
+                style={{ flex: '1 1 220px', minWidth: 0, maxWidth: 420 }}
+              />
+              <Button onClick={handleTestSend} disabled={testSending || !testTo}>
+                {testSending ? 'Sending…' : 'Send test'}
+              </Button>
             </div>
-          )}
-        </div>
-      </Section>
+            {testResult && (
+              <div role="status" style={{
+                display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 10, fontSize: 'var(--fs-sm)',
+                color: testSent ? 'var(--ok)' : 'var(--error)',
+              }}>
+                <Icon icon={testSent ? Check : TriangleAlert} size="dense" style={{ marginTop: 2 }} />
+                <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{testResult}</span>
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
 
       {/* Email Logs */}
       <Section title="Recent emails">
@@ -235,7 +241,7 @@ export default function EmailTab() {
                         {log.created_at ? new Date(log.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
                       </td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {log.status === 'failed' && (
+                        {canManage && log.status === 'failed' && (
                           <Button variant="link" size="sm" onClick={() => handleRetry(log.id)}>Retry</Button>
                         )}
                       </td>

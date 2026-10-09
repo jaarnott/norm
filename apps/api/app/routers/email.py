@@ -1,14 +1,71 @@
-"""Email management endpoints — logs, templates, connections, test send."""
+"""Email management endpoints — logs, templates, connections, test send.
+
+Two kinds of thing live here. An organisation's own mail — its sent-email
+log, retrying a failed send, your own connected mailboxes — is gated on
+``email:read`` / ``email:manage``, which Owners and Managers hold. The
+platform's mail — the email templates every organisation shares, and test
+sends from Norm's own address — is ``admin:system`` only.
+"""
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import Query, Session
 
 from app.db.engine import get_db
-from app.db.models import EmailLog, EmailTemplate, Connection, User
+from app.db.models import (
+    Connection,
+    EmailLog,
+    EmailTemplate,
+    OrganizationMembership,
+    Thread,
+    User,
+    Venue,
+)
 from app.auth.dependencies import require_permission
 
 router = APIRouter(prefix="/email", tags=["email"])
+
+
+def _visible_logs(db: Session, user: User, scope: str) -> Query:
+    """The email logs this caller may see: all of them for a platform admin,
+    otherwise only mail belonging to an organisation where they hold
+    ``scope`` — sent by one of its members, or from one of its venues or
+    threads (a thread with no venue counts by who started it).
+
+    ``email_logs`` is one table for every organisation, and system mail with
+    none of those links — invites and password resets — carries a live
+    sign-in link in its body. Unscoped, granting ``email:read`` to owners
+    would have let any owner read any user's password-reset link.
+    """
+    query = db.query(EmailLog)
+    if user.role == "admin":
+        return query
+    org_ids = [
+        m.organization_id
+        for m in db.query(OrganizationMembership)
+        .filter(OrganizationMembership.user_id == user.id)
+        .all()
+        if m.role_obj and scope in (m.role_obj.permissions or [])
+    ]
+    members = select(OrganizationMembership.user_id).where(
+        OrganizationMembership.organization_id.in_(org_ids)
+    )
+    venues = select(Venue.id).where(Venue.organization_id.in_(org_ids))
+    threads = select(Thread.id).where(
+        or_(
+            Thread.venue_id.in_(venues),
+            and_(Thread.venue_id.is_(None), Thread.user_id.in_(members)),
+        )
+    )
+    return query.filter(
+        or_(
+            EmailLog.organization_id.in_(org_ids),
+            EmailLog.venue_id.in_(venues),
+            EmailLog.sender_user_id.in_(members),
+            EmailLog.thread_id.in_(threads),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -23,8 +80,8 @@ async def list_email_logs(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("email:read")),
 ):
-    """List recent email logs."""
-    query = db.query(EmailLog).order_by(EmailLog.created_at.desc())
+    """List recent email logs (the caller's organisation's — see above)."""
+    query = _visible_logs(db, user, "email:read").order_by(EmailLog.created_at.desc())
     if status:
         query = query.filter(EmailLog.status == status)
     logs = query.limit(limit).all()
@@ -55,7 +112,7 @@ async def get_email_log(
     user: User = Depends(require_permission("email:read")),
 ):
     """Get a single email log with full details."""
-    log = db.query(EmailLog).filter(EmailLog.id == log_id).first()
+    log = _visible_logs(db, user, "email:read").filter(EmailLog.id == log_id).first()
     if not log:
         raise HTTPException(404, "Email log not found")
     return {
@@ -85,7 +142,7 @@ async def retry_email(
     user: User = Depends(require_permission("email:manage")),
 ):
     """Retry a failed email."""
-    log = db.query(EmailLog).filter(EmailLog.id == log_id).first()
+    log = _visible_logs(db, user, "email:manage").filter(EmailLog.id == log_id).first()
     if not log:
         raise HTTPException(404, "Email log not found")
     if log.status != "failed":
@@ -168,9 +225,10 @@ async def update_template(
     name: str,
     body: UpdateTemplateBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("email:manage")),
+    user: User = Depends(require_permission("admin:system")),
 ):
-    """Update an email template."""
+    """Update an email template. Platform admin only: the templates are shared
+    by every organisation (an invite or password reset renders from them)."""
     tpl = db.query(EmailTemplate).filter(EmailTemplate.name == name).first()
     if not tpl:
         raise HTTPException(404, "Template not found")
@@ -228,9 +286,10 @@ class TestSendBody(BaseModel):
 async def send_test_email(
     body: TestSendBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("email:manage")),
+    user: User = Depends(require_permission("admin:system")),
 ):
-    """Send a test email (admin only)."""
+    """Send a test email (admin only): it goes out from Norm's own address, to
+    any recipient, with caller-supplied template context."""
     from app.services.email_service import send_system_email
 
     context = {

@@ -392,7 +392,7 @@ Use it to visually verify UI changes on `http://localhost:3000`:
 - **Org roles**: Owner, Manager, Team Member, Payroll Admin (stored in `roles` table)
 - **Custom roles**: Created per-org with specific permission scopes
 - **Permission check**: `require_permission("scope")` dependency in FastAPI
-- 23 permission scopes across 8 categories (defined in `app/auth/permissions.py`)
+- 30 permission scopes — 27 an org role can hold, 3 platform-admin (defined in `app/auth/permissions.py`)
 
 ## Key Files
 

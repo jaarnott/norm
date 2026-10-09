@@ -60,6 +60,13 @@ button, input, select, textarea {
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 .compact-card:hover .compact-remove { opacity: 1 !important; }
+/* Keyboard focus shows the remove button as hover does — on the row or on the
+   button itself. :focus-visible, not :focus-within, so a row clicked with the
+   mouse (which takes focus) doesn't keep its button showing. */
+.compact-card:focus-visible .compact-remove,
+.compact-remove:focus-visible { opacity: 1 !important; }
+/* Thread rows sit in a scrolling list: keep the focus ring inside the row. */
+.n-thread-row:focus-visible { outline-offset: -2px; }
 /* Hover for rows and rail tiles whose resting background is set inline. */
 .n-rail-tile:not([aria-current="page"]):hover { background-color: var(--surface-alt) !important; color: var(--text) !important; }
 .n-thread-row:hover { background-color: var(--surface-alt); }

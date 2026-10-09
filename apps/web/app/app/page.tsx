@@ -25,7 +25,7 @@ import Button from '../components/ui/Button';
 import IconButton from '../components/ui/IconButton';
 import { AGENTS } from '../components/layout/Sidebar';
 import { useBreakpoint } from '../hooks/useBreakpoint';
-import { useActiveVenue } from '../hooks/useActiveVenue';
+import { useActiveVenue, readActiveVenue } from '../hooks/useActiveVenue';
 import { useTeam } from '../hooks/useTeam';
 import { threadMembers } from '../lib/threadApps';
 import TeamPage from '../components/team/TeamPage';
@@ -95,6 +95,11 @@ export default function Home() {
   // Page-scoped only — never passed into sendMessage, so conversations keep
   // their own venue independent of this.
   const [activeVenueId, setActiveVenue] = useActiveVenue();
+  // True once the venue list has settled (loaded or failed). Until then the
+  // page venue may still be unknown, and FunctionalPage holds its first load —
+  // a venue-scoped page loaded with no venue at all used to put up the
+  // reconnect panel on every fresh sign-in.
+  const [venuesLoaded, setVenuesLoaded] = useState(false);
   const [quotaExceeded, setQuotaExceeded] = useState<{ used: number; quota: number } | null>(null);
   // Which Settings tab to open on — set by "Top up" in the quota dialog.
   const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
@@ -111,7 +116,10 @@ export default function Home() {
   // event from apiFetch) or from a ?connect=<connector> deep link (the MCP
   // hand-off). Rendered inline in the page, not as a popup.
   const [connectConnector, setConnectConnector] = useState<string | null>(null);
-  const { isMobile } = useBreakpoint();
+  // Whether the panel came from a failed load (not a ?connect= deep link):
+  // only that kind belongs to the venue it failed at.
+  const connectFromLoad = useRef(false);
+  const { isMobile, isTablet } = useBreakpoint();
   const [mobileView, setMobileView] = useState<'list' | 'detail' | 'home' | 'settings'>('home');
   // Hierarchy v2: which team members are hired and which Apps are on. null
   // sets = show everything (gating inactive / fetch failed — fail-open).
@@ -194,7 +202,10 @@ export default function Home() {
         if (isMobile) setMobileView('detail');
       }
       const connect = params.get('connect');
-      if (connect) setConnectConnector(connect);
+      if (connect) {
+        connectFromLoad.current = false;
+        setConnectConnector(connect);
+      }
     } catch {
       /* no-op */
     }
@@ -207,7 +218,10 @@ export default function Home() {
   useEffect(() => {
     const onAuthFail = (e: Event) => {
       const connector = (e as CustomEvent).detail?.connector;
-      if (connector) setConnectConnector(connector);
+      if (connector) {
+        connectFromLoad.current = true;
+        setConnectConnector(connector);
+      }
     };
     window.addEventListener('norm:connector-auth', onAuthFail);
     return () => window.removeEventListener('norm:connector-auth', onAuthFail);
@@ -225,13 +239,27 @@ export default function Home() {
     setConnectConnector(null);
   }, [activeAgent, activePage, selectedThreadId]);
 
+  // …and a panel from a failed load is stale once the venue changes — above
+  // all when the venue arrives after a load that went out without one. The
+  // page under it loads again for the new venue.
+  useEffect(() => {
+    if (connectFromLoad.current) setConnectConnector(null);
+  }, [activeVenueId]);
+
   // Load threads when authenticated
   useEffect(() => {
     if (!token) return;
     apiFetch('/api/threads')
       .then(res => res.ok ? res.json() : null)
       .then(data => {
-        if (data?.threads?.length) setThreads(data.threads);
+        // Merge, never replace: a chat started before the list landed (a
+        // quick first message on a cold load) isn't in it — least of all one
+        // whose first send failed, which the server never saw. Replacing the
+        // list dropped that conversation and put the user back on Home.
+        if (data?.threads?.length) {
+          const listed = new Set(data.threads.map((t: Thread) => t.id));
+          setThreads(prev => [...prev.filter(t => !listed.has(t.id)), ...data.threads]);
+        }
       })
       .catch(() => {});
   }, [token]);
@@ -246,16 +274,28 @@ export default function Home() {
           setVenues(data.venues);
           // Keep the remembered venue if the user still has access to it;
           // otherwise fall back to the first. Covers a stale stored venue and
-          // a different account signing in on the same browser.
-          if (data.venues.length > 0 && !data.venues.some((v: VenueDetail) => v.id === activeVenueId)) {
+          // a different account signing in on the same browser. Storage is
+          // read again here: after a sign-in on this screen the hook's own
+          // value was read before anyone was signed in.
+          const has = (id: string | null) => !!id && data.venues.some((v: VenueDetail) => v.id === id);
+          const remembered = [activeVenueId, readActiveVenue()].find(has);
+          if (remembered) {
+            if (remembered !== activeVenueId) setActiveVenue(remembered);
+          } else if (data.venues.length > 0) {
             setActiveVenue(data.venues[0].id);
           }
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setVenuesLoaded(true));
   }, [token]);
 
   const handleAuthSuccess = useCallback((newToken: string, newUser: { id: string; email: string; full_name: string; role: string }) => {
+    // Store who signed in BEFORE the token: the venue effect starts the moment
+    // the token lands, and the page venue is remembered per user — with no
+    // stored user the first venue chosen was silently never saved (/login
+    // stores it the same way). /me then replaces it with the full profile.
+    setStoredUser(newUser);
     setToken(newToken);
     setTokenState(newToken);
     // Login response has basic user info; fetch /me for full profile with permissions
@@ -280,6 +320,7 @@ export default function Home() {
     setThreads([]);
     setSelectedThreadId(null);
     setActiveAgent('home');
+    setVenuesLoaded(false);
   }, []);
 
   const selectedThread = threads.find(t => t.id === selectedThreadId) || null;
@@ -353,17 +394,35 @@ export default function Home() {
     return counts;
   }, [threads]);
 
-  const sendMessage = useCallback(async (messageText: string, opts?: SendOptions) => {
+  // One turn at a time. The composer stops a second send itself; this is the
+  // backstop for every other caller (a card's send_message, an MCP action). A
+  // ref rather than `loading`: callers can hold a stale copy of this callback,
+  // and two sends inside one render would both read loading as false.
+  const sendingRef = useRef(false);
+
+  // The send that just failed, for "Try again" under it. Any new send clears it.
+  const [failedSend, setFailedSend] = useState<{ threadId: string; text: string; opts?: SendOptions } | null>(null);
+
+  const sendMessage = useCallback(async (messageText: string, opts?: SendOptions & { retry?: boolean }) => {
     if (!messageText.trim()) return;
+    if (sendingRef.current) return;
 
     const pageContext = opts?.pageContext;
     const attachments = opts?.attachments;
-    const threadIdForRequest = selectedThreadId;
+    // A chat whose first message never reached the server keeps its
+    // placeholder id, which the server has never heard of. The next send in it
+    // (Try again, or a new message) starts the conversation server-side — in
+    // the same placeholder, so the screen carries on where it was.
+    const unsavedId = selectedThreadId?.startsWith('_pending_') ? selectedThreadId : null;
+    const threadIdForRequest = unsavedId ? null : selectedThreadId;
+    sendingRef.current = true;
     setLoading(true);
+    setFailedSend(null);
 
     // Create an optimistic thread so the conversation view appears immediately
-    const optimisticId = `_pending_${Date.now()}`;
-    if (!threadIdForRequest) {
+    const optimisticId = unsavedId ?? `_pending_${Date.now()}`;
+    const currentId = threadIdForRequest || optimisticId;
+    if (!threadIdForRequest && !unsavedId) {
       const optimistic: Thread = {
         id: optimisticId,
         domain: 'norm',
@@ -380,17 +439,29 @@ export default function Home() {
       setSelectedThreadId(optimisticId);
       setMobileView('detail');
     } else {
-      // Existing thread — append user message optimistically
-      setThreads(prev => prev.map(t =>
-        t.id === threadIdForRequest
-          ? { ...t, conversation: [...(t.conversation || []), { role: 'user', text: messageText, attachments }], thinking_steps: ['Working on it\u2026'] }
-          : t
-      ));
+      // Existing thread — append user message optimistically. Try again
+      // re-sends the message already on screen: drop the failure note under
+      // it rather than show the message twice.
+      setThreads(prev => prev.map(t => {
+        if (t.id !== currentId) return t;
+        const conv = t.conversation || [];
+        const n = conv.length;
+        const resend = opts?.retry && conv[n - 1]?.role === 'assistant'
+          && conv[n - 2]?.role === 'user' && conv[n - 2].text === messageText;
+        return {
+          ...t,
+          conversation: resend ? conv.slice(0, -1) : [...conv, { role: 'user', text: messageText, attachments }],
+          thinking_steps: ['Working on it\u2026'],
+        };
+      }));
     }
 
-    const currentId = threadIdForRequest || optimisticId;
     // realThreadId is the confirmed backend ID — used for recovery re-fetches.
     let realThreadId: string | null = threadIdForRequest;
+    // Where the conversation ends up (a recovery can move it), and whether
+    // this send failed — together they place the Try again button.
+    let settledId = currentId;
+    let failed = false;
 
     // Fold a re-fetched thread back into the list after a stream error.
     // realThreadId comes from thread_created, which is not always the thread
@@ -409,7 +480,21 @@ export default function Home() {
           : [freshThread, ...prev];
       });
       setSelectedThreadId(freshThread.id);
+      settledId = freshThread.id;
     };
+
+    // Whether the server's copy holds THIS turn, and if so whether it's
+    // answered. A follow-up's thread already ends in the previous turn's
+    // answer, which must not pass for this one: taking it wiped the user's
+    // new message off the screen with no error.
+    const turnState = (fresh: Thread): 'missing' | 'running' | 'answered' => {
+      const conv = fresh.conversation || [];
+      let i = conv.length - 1;
+      while (i >= 0 && conv[i].role !== 'user') i--;
+      if (i < 0 || conv[i].text !== messageText) return 'missing';
+      return threadHasSettledAnswer({ ...fresh, conversation: conv.slice(i) }) ? 'answered' : 'running';
+    };
+
     let streamErrored = false;
     let streamDropped = false;
     let tokenBuffer = '';
@@ -488,7 +573,12 @@ export default function Home() {
           const res = await apiFetch(`/api/threads/${realThreadId}`);
           if (res.ok) {
             const fresh: Thread = await res.json();
-            if (threadHasSettledAnswer(fresh)) {
+            const turn = turnState(fresh);
+            // The server commits the user's message before the turn's first
+            // event, so a copy without it means the message never arrived:
+            // there is no answer coming to wait for.
+            if (turn === 'missing') return false;
+            if (turn === 'answered') {
               stopTypewriter();
               applyFreshThread(fresh);
               return true;
@@ -674,11 +764,13 @@ export default function Home() {
           if (res.ok) {
             applyFreshThread(withUserMessage(await res.json()));
             streamErrored = false;
+            failed = true;
           }
         } catch (e) { console.error(e); }
       }
 
       if (streamErrored) {
+        failed = true;
         setThreads(prev => prev.map(t =>
           t.id === currentId
             ? {
@@ -702,8 +794,9 @@ export default function Home() {
       const recovered = await recoverByPolling();
       if (!recovered) {
         // No server thread to fall back on (the connection died before
-        // thread_created). Keep the optimistic bubble and settle the thread
-        // so it doesn't spin forever.
+        // thread_created), or the message never reached it. Keep the
+        // optimistic bubble and settle the thread so it doesn't spin forever.
+        failed = true;
         setThreads(prev => prev.map(t =>
           t.id === currentId
             ? {
@@ -719,14 +812,25 @@ export default function Home() {
         ));
       }
     } finally {
+      sendingRef.current = false;
       setLoading(false);
+      if (failed) setFailedSend({ threadId: settledId, text: messageText, opts: { pageContext, attachments } });
     }
   }, [selectedThreadId]);
+
+  // Try again under a failed send, in the conversation it failed in.
+  const retryFailedSend = failedSend && failedSend.threadId === selectedThreadId
+    ? () => sendMessage(failedSend.text, { ...failedSend.opts, retry: true })
+    : undefined;
 
   const handleNewChat = useCallback(() => {
     setSelectedThreadId(null);
     setActivePage(null);
-    setActiveAgent('home');
+    // Stay with the current team member: the main pane is the new-chat box
+    // whenever no thread or page is open, whoever is selected — jumping to
+    // Home only lost the member's menu. Settings and Your AI team fill the
+    // whole pane, so those (reachable from the phone's top bar) give way.
+    setActiveAgent(a => (a === 'settings' || a === 'team' ? 'home' : a));
     setMobileView('home');
   }, []);
 
@@ -958,6 +1062,29 @@ export default function Home() {
     el?.scrollIntoView({ inline: 'center', block: 'nearest' });
   }, [isMobile, mobileView, activeAgent]);
 
+  // Tablet (768–1023px): the menu panel is a drawer over the content, not a
+  // column beside it — at 820px a fixed 360px column left the page about
+  // 400px. It starts closed; a rail member or "Show panel" opens it, and
+  // choosing something in it, the scrim or Escape closes it. Settings and
+  // Your AI team have no panel at all.
+  const panelHidden = activeAgent === 'settings' || activeAgent === 'team';
+  const drawerOpen = isTablet && !panelCollapsed && !panelHidden;
+  useEffect(() => { setPanelCollapsed(isTablet); }, [isTablet]);
+  // Focus moves into the drawer when it opens, so the next Tab is its first
+  // item rather than the dimmed page behind it.
+  const drawerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (drawerOpen) drawerRef.current?.focus({ preventScroll: true });
+  }, [drawerOpen]);
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) setPanelCollapsed(true);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawerOpen]);
+
   const handleMobileBack = useCallback(() => {
     setMobileView('home');
     setSelectedThreadId(null);
@@ -1047,9 +1174,9 @@ export default function Home() {
       const content = connectPanel ? connectPanel : mobileView === 'detail' && activePage ? (() => {
         const pageConfig = findPage(activePage);
         if (!pageConfig) return null;
-        return <FunctionalPage key={pageConfig.id} config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} />;
+        return <FunctionalPage key={pageConfig.id} config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} venuesLoaded={venuesLoaded} />;
       })() : selectedThread ? (
-        <ThreadDetail thread={selectedThread} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} loading={loading} openThread={openThread || null} />
+        <ThreadDetail thread={selectedThread} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} onRetry={retryFailedSend} loading={loading} openThread={openThread || null} />
       ) : (
         <HomePanel onSend={sendMessage} loading={loading} />
       );
@@ -1175,9 +1302,12 @@ export default function Home() {
     return mobileShell('Norm', <HomePanel onSend={sendMessage} loading={loading} />);
   }
 
-  // Desktop layout: three-panel
+  // Choosing something in the tablet drawer closes it.
+  const closeDrawer = () => { if (isTablet) setPanelCollapsed(true); };
+
+  // Desktop layout: three-panel. On a tablet the middle panel is a drawer.
   return (
-    <div style={{ display: 'flex', height: '100dvh', overflow: 'hidden', backgroundColor: 'var(--canvas)' }}>
+    <div style={{ display: 'flex', height: '100dvh', overflow: 'hidden', position: 'relative', backgroundColor: 'var(--canvas)' }}>
       {quotaExceeded && (
         <QuotaExceededModal
           used={quotaExceeded.used}
@@ -1189,87 +1319,129 @@ export default function Home() {
       {/* Left Sidebar */}
       <Sidebar
         selected={activeAgent}
-        onSelect={setActiveAgent}
+        onSelect={(id) => {
+          setActiveAgent(id);
+          // On a tablet a member's menu lives in the drawer: choosing the
+          // member opens it.
+          if (isTablet && id !== 'settings' && id !== 'team') setPanelCollapsed(false);
+        }}
         threadCounts={threadCounts}
         user={user}
         onLogout={handleLogout}
         hired={team.hired}
       />
 
-      {/* Center Panel */}
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        width: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 0 : 360,
-        minWidth: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 0 : 360,
-        borderRight: (panelCollapsed || activeAgent === 'settings' || activeAgent === 'team') ? 'none' : '1px solid var(--line)',
-        overflow: 'hidden',
-        transition: 'width 0.2s ease, min-width 0.2s ease',
-      }}>
+      {/* Center Panel — a column beside the content on desktop; on a tablet a
+          drawer over it, from the rail's edge (60px), above the page's own
+          dropdowns (≤100) and below dialogs (1000). */}
+      <div
+        ref={drawerRef}
+        tabIndex={isTablet ? -1 : undefined}
+        style={isTablet ? {
+          position: 'absolute', top: 0, bottom: 0, left: 60, zIndex: 210,
+          width: 360, maxWidth: 'calc(100% - 60px)',
+          display: 'flex', flexDirection: 'column', overflow: 'hidden', outline: 'none',
+          backgroundColor: 'var(--canvas)', borderRight: '1px solid var(--line)',
+          boxShadow: '0 12px 40px rgba(26, 26, 26, 0.18)',
+          visibility: drawerOpen ? 'visible' : 'hidden',
+          opacity: drawerOpen ? 1 : 0,
+          transform: drawerOpen ? 'none' : 'translateX(-8px)',
+          transition: 'opacity 0.15s ease, transform 0.15s ease, visibility 0.15s',
+        } : {
+          display: 'flex',
+          flexDirection: 'column',
+          width: (panelCollapsed || panelHidden) ? 0 : 360,
+          minWidth: (panelCollapsed || panelHidden) ? 0 : 360,
+          borderRight: (panelCollapsed || panelHidden) ? 'none' : '1px solid var(--line)',
+          overflow: 'hidden',
+          transition: 'width 0.2s ease, min-width 0.2s ease',
+        }}
+      >
         <ThreadList
           threads={threads}
           selectedId={selectedThreadId}
-          onSelectThread={(id) => { setSelectedThreadId(id); if (activePage) setActivePage(null); }}
+          onSelectThread={(id) => { setSelectedThreadId(id); if (activePage) setActivePage(null); closeDrawer(); }}
           onRemoveThread={removeThread}
           activeAgent={activeAgent}
           filter={filter}
           onFilterChange={setFilter}
-          onNewChat={handleNewChat}
+          onNewChat={() => { handleNewChat(); closeDrawer(); }}
           onCollapsePanel={() => setPanelCollapsed(true)}
           extraPages={effectiveAppPages}
-          onSelectPage={handleSelectPage}
+          onSelectPage={(pageId) => { handleSelectPage(pageId); closeDrawer(); }}
           appsOn={team.appsOn}
           pageMember={team.pageMember}
           activePage={activePage}
         />
       </div>
 
+      {/* The drawer's scrim: dims the content and closes the drawer on a
+          click. The rail stays clear, so another member is one tap away. */}
+      {drawerOpen && (
+        <div
+          aria-hidden
+          data-testid="drawer-scrim"
+          onClick={() => setPanelCollapsed(true)}
+          style={{ position: 'absolute', top: 0, bottom: 0, left: 60, right: 0, zIndex: 200, backgroundColor: 'rgba(26, 26, 26, 0.2)' }}
+        />
+      )}
+
       {/* Right Panel */}
-      <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
-        {panelCollapsed && (
-          <IconButton
-            icon={PanelLeftIcon}
-            label="Show panel"
-            iconSize={16}
-            onClick={() => setPanelCollapsed(false)}
-            style={{ position: 'absolute', top: 12, left: 12, zIndex: 10, border: '1px solid var(--line)', backgroundColor: 'var(--canvas)' }}
-          />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* "Show panel" has its own strip above the content: floating over
+            the corner, it sat on the start of every page title. On a tablet
+            the strip stays while the drawer is open, so nothing jumps. */}
+        {!panelHidden && (isTablet || panelCollapsed) && (
+          <div style={{ flex: '0 0 auto', padding: '8px 16px 0' }}>
+            <IconButton
+              icon={PanelLeftIcon}
+              label="Show panel"
+              iconSize={16}
+              aria-expanded={isTablet ? drawerOpen : false}
+              onClick={() => setPanelCollapsed(false)}
+              style={{ border: '1px solid var(--line)', backgroundColor: 'var(--canvas)' }}
+            />
+          </div>
         )}
-        {activeAgent === 'settings' ? (
-          <SettingsPanel key={settingsTab} initialTab={settingsTab} />
-        ) : activeAgent === 'team' ? (
-          <TeamPage user={user} />
-        ) : connectPanel ? (
-          connectPanel
-        ) : activePage ? (() => {
-          const pageConfig = findPage(activePage);
-          if (!pageConfig) return null;
-          return (
-            <FunctionalPage
-              key={pageConfig.id}
-              config={pageConfig}
+        <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+          {activeAgent === 'settings' ? (
+            <SettingsPanel key={settingsTab} initialTab={settingsTab} />
+          ) : activeAgent === 'team' ? (
+            <TeamPage user={user} />
+          ) : connectPanel ? (
+            connectPanel
+          ) : activePage ? (() => {
+            const pageConfig = findPage(activePage);
+            if (!pageConfig) return null;
+            return (
+              <FunctionalPage
+                key={pageConfig.id}
+                config={pageConfig}
+                thread={selectedThread}
+                onSend={sendMessage}
+                loading={loading}
+                onWidgetAction={handleWidgetAction}
+                activeVenueId={activeVenueId}
+                venuesLoaded={venuesLoaded}
+              />
+            );
+          })() : selectedThread ? (
+            <ThreadDetail
               thread={selectedThread}
+              onAction={handleAction}
+              onWidgetAction={handleWidgetAction}
+              onSend={sendMessage}
+              onRetry={retryFailedSend}
+              loading={loading}
+              openThread={openThread || null}
+            />
+          ) : (
+            <HomePanel
               onSend={sendMessage}
               loading={loading}
-              onWidgetAction={handleWidgetAction}
-              activeVenueId={activeVenueId}
             />
-          );
-        })() : selectedThread ? (
-          <ThreadDetail
-            thread={selectedThread}
-            onAction={handleAction}
-            onWidgetAction={handleWidgetAction}
-            onSend={sendMessage}
-            loading={loading}
-            openThread={openThread || null}
-          />
-        ) : (
-          <HomePanel
-            onSend={sendMessage}
-            loading={loading}
-          />
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

@@ -5,11 +5,13 @@ import type { ReactNode } from 'react';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { Check, CreditCard, ExternalLink, TriangleAlert, X } from 'lucide-react';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, getStoredUser } from '../../lib/api';
+import { can } from '../../lib/permissions';
 import type { BillingInfo, StripeInvoice } from '../../types';
 import Badge from '../ui/Badge';
 import type { BadgeTone } from '../ui/Badge';
 import Button from '../ui/Button';
+import { ConfirmDialog } from '../ui/Dialog';
 import Icon from '../ui/Icon';
 import IconButton from '../ui/IconButton';
 import PageState from '../ui/PageState';
@@ -30,6 +32,25 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
   return n.toLocaleString();
+}
+
+/**
+ * Runs a billing write and hands back the response when it worked; when it
+ * didn't, throws with the API's reason — what a ConfirmDialog shows.
+ */
+async function send(call: () => Promise<Response>, failed: string): Promise<Response> {
+  let res: Response;
+  try {
+    res = await call();
+  } catch {
+    throw new Error(`${failed} — check your connection and try again.`);
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const detail = typeof body?.detail === 'string' ? body.detail : `error ${res.status}`;
+    throw new Error(`${failed}: ${detail}`);
+  }
+  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +194,13 @@ export default function BillingTab({ orgId }: { orgId: string }) {
 
   const [pendingPlan, setPendingPlan] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // A plan switch or a top-up waiting on "are you sure?" — both cost money.
+  const [confirming, setConfirming] = useState<
+    { kind: 'plan'; plan: string } | { kind: 'start'; plan: string } | { kind: 'topup'; units: number } | null
+  >(null);
+  // Anyone who can read billing sees the plan, usage and invoices; changing
+  // what the organisation pays for needs billing:manage (owners).
+  const canManage = can(getStoredUser(), 'billing:manage');
 
   const fetchBilling = useCallback(async () => {
     try {
@@ -195,25 +223,15 @@ export default function BillingTab({ orgId }: { orgId: string }) {
 
   useEffect(() => { fetchBilling(); fetchInvoices(); }, [fetchBilling, fetchInvoices]);
 
+  // Confirmed in the dialog, which shows the reason if it fails.
   const changePlan = async (plan: string) => {
-    if (!confirm(`Switch to the ${plan} plan? Your billing will be prorated.`)) return;
-    setActionLoading('plan');
-    setError(null);
-    try {
-      const res = await apiFetch(`/api/billing/${orgId}/plan`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token_plan: plan }),
-      });
-      if (res.ok) {
-        setBilling(await res.json());
-        fetchInvoices();
-      } else {
-        const d = await res.json();
-        setError(d.detail || 'Failed to change plan');
-      }
-    } catch (e) { setError(String(e)); }
-    setActionLoading(null);
+    const res = await send(() => apiFetch(`/api/billing/${orgId}/plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token_plan: plan }),
+    }), 'The plan wasn’t changed');
+    setBilling(await res.json());
+    fetchInvoices();
   };
 
   const subscribe = async (plan: string) => {
@@ -237,11 +255,24 @@ export default function BillingTab({ orgId }: { orgId: string }) {
     setActionLoading(null);
   };
 
+  // Confirmed in the dialog: with a card on file, starting a plan charges it
+  // straight away.
+  const startPlan = async (plan: string) => {
+    const res = await send(() => apiFetch(`/api/billing/${orgId}/subscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token_plan: plan }),
+    }), 'The plan wasn’t started');
+    setBilling(await res.json());
+    setPendingPlan(null);
+    fetchInvoices();
+  };
+
   const handleSelectPlan = (plan: string) => {
     if (hasSubscription) {
-      changePlan(plan);
+      setConfirming({ kind: 'plan', plan });
     } else if (hasPaymentMethod) {
-      subscribe(plan);
+      setConfirming({ kind: 'start', plan });
     } else {
       // No payment method — show card form first, then subscribe
       setPendingPlan(plan);
@@ -249,25 +280,16 @@ export default function BillingTab({ orgId }: { orgId: string }) {
     }
   };
 
+  // Confirmed in the dialog, which shows the reason if it fails.
   const topUp = async (units: number) => {
-    if (!confirm(`Purchase ${formatTokens(units * 500_000)} tokens for $${units * 10}?`)) return;
-    setActionLoading('topup');
-    setError(null);
-    try {
-      const res = await apiFetch(`/api/billing/${orgId}/topup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ units }),
-      });
-      if (res.ok) {
-        await fetchBilling();
-        fetchInvoices();
-      } else {
-        const d = await res.json();
-        setError(d.detail || 'Top-up failed');
-      }
-    } catch (e) { setError(String(e)); }
-    setActionLoading(null);
+    await send(() => apiFetch(`/api/billing/${orgId}/topup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ units }),
+    }), 'No tokens were bought');
+    // Paid: close now; the new quota and invoice follow when they load.
+    fetchBilling();
+    fetchInvoices();
   };
 
   if (loading) return <PageState kind="loading" title="Loading billing…" />;
@@ -283,6 +305,67 @@ export default function BillingTab({ orgId }: { orgId: string }) {
   const nearLimit = usagePercent > 80;
   const planName = PLANS.find(p => p.id === (sub?.token_plan || 'basic'))?.name ?? (sub?.token_plan || 'basic');
   const teamRows = (billing.agent_apps ?? []).length + (billing.priced_apps ?? []).length;
+  const currentPlan = PLANS.find(p => p.id === sub?.token_plan);
+  const card = hasPaymentMethod
+    ? `the ${sub.payment_method_brand ? `${sub.payment_method_brand.toUpperCase()} ` : ''}card ending ${sub.payment_method_last4}`
+    : 'your card';
+
+  // What the open "are you sure?" says and does.
+  const confirmation = (() => {
+    if (confirming?.kind === 'plan') {
+      const target = PLANS.find(p => p.id === confirming.plan);
+      const name = target?.name ?? confirming.plan;
+      return (
+        <ConfirmDialog
+          title={`Switch to the ${name} plan?`}
+          confirmLabel="Switch plan"
+          busyLabel="Switching…"
+          onConfirm={() => changePlan(confirming.plan)}
+          onClose={() => setConfirming(null)}
+        >
+          <p style={{ margin: 0 }}>
+            {target ? `$${target.price} a month for ${target.tokens} tokens` : 'The new plan'}
+            {currentPlan ? `, instead of ${currentPlan.name} at $${currentPlan.price} for ${currentPlan.tokens}` : ''}.
+            {' '}It starts now, and this month’s bill is prorated for the change.
+          </p>
+        </ConfirmDialog>
+      );
+    }
+    if (confirming?.kind === 'start') {
+      const target = PLANS.find(p => p.id === confirming.plan);
+      const name = target?.name ?? confirming.plan;
+      return (
+        <ConfirmDialog
+          title={`Start the ${name} plan?`}
+          confirmLabel="Start plan"
+          busyLabel="Starting…"
+          onConfirm={() => startPlan(confirming.plan)}
+          onClose={() => setConfirming(null)}
+        >
+          <p style={{ margin: 0 }}>
+            Billing starts today on {card}: {target ? `$${target.price} a month for ${target.tokens} tokens` : 'the plan’s monthly price'}, plus the venue and team charges shown on this page.
+          </p>
+        </ConfirmDialog>
+      );
+    }
+    if (confirming?.kind === 'topup') {
+      const { units } = confirming;
+      return (
+        <ConfirmDialog
+          title={`Buy ${formatTokens(units * 500_000)} tokens for $${units * 10}?`}
+          confirmLabel={`Pay $${units * 10}`}
+          busyLabel="Paying…"
+          onConfirm={() => topUp(units)}
+          onClose={() => setConfirming(null)}
+        >
+          <p style={{ margin: 0 }}>
+            ${units * 10} is charged to {card} now and the tokens are added straight away. They expire at the end of this billing period.
+          </p>
+        </ConfirmDialog>
+      );
+    }
+    return null;
+  })();
 
   return (
     <div data-testid="billing-tab" style={{ lineHeight: 1.45 }}>
@@ -295,6 +378,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
           />
         </div>
       )}
+      {confirmation}
 
       {/* Usage */}
       <Section title="Token usage">
@@ -320,7 +404,9 @@ export default function BillingTab({ orgId }: { orgId: string }) {
           {usagePercent > 80 && (
             <p style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--warn)', margin: '10px 0 0' }}>
               <Icon icon={TriangleAlert} size="dense" style={{ marginTop: 2 }} />
-              Running low on tokens — consider upgrading your plan or purchasing a top-up.
+              {canManage
+                ? 'Running low on tokens — consider upgrading your plan or purchasing a top-up.'
+                : 'Running low on tokens — ask whoever manages billing to upgrade the plan or buy a top-up.'}
             </p>
           )}
         </div>
@@ -335,6 +421,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
             {sub.billing_cycle_start && <span>Billing cycle started {new Date(sub.billing_cycle_start).toLocaleDateString()}</span>}
           </>
         ) : undefined}
+        note={canManage ? undefined : 'Only someone who manages billing — usually the owner — can change the plan or the card, or buy more tokens.'}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12 }}>
           {PLANS.map(plan => {
@@ -360,11 +447,11 @@ export default function BillingTab({ orgId }: { orgId: string }) {
                       <Icon icon={Check} size="dense" strokeWidth={2.25} />
                       Current plan
                     </span>
-                  ) : (
+                  ) : canManage ? (
                     <Button size="sm" onClick={() => handleSelectPlan(plan.id)} disabled={actionLoading !== null}>
                       {hasSubscription ? 'Switch' : 'Select'}
                     </Button>
-                  )}
+                  ) : null}
                 </div>
                 <div style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, lineHeight: 1.3, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>${plan.price}</div>
                 <div style={{ fontSize: 'var(--fs-sm)', color: isActive ? 'var(--text-soft)' : 'var(--muted)' }}>{plan.tokens} tokens/month</div>
@@ -437,7 +524,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
       {/* Payment method */}
       <Section
         title="Payment method"
-        actions={hasPaymentMethod ? (
+        actions={hasPaymentMethod && canManage ? (
           <Button size="sm" onClick={() => { setShowCardForm(!showCardForm); setPendingPlan(null); }}>
             {showCardForm ? 'Cancel' : 'Update'}
           </Button>
@@ -456,7 +543,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
               No payment method on file.{pendingPlan ? ' Add a card to activate your plan.' : ''}
             </p>
           )}
-          {(showCardForm || !hasPaymentMethod) && (
+          {canManage && (showCardForm || !hasPaymentMethod) && (
             <div style={{ marginTop: 14, maxWidth: 480 }}>
               <Elements stripe={stripePromise}>
                 <PaymentMethodForm orgId={orgId} onSuccess={async () => {
@@ -473,29 +560,31 @@ export default function BillingTab({ orgId }: { orgId: string }) {
         </div>
       </Section>
 
-      {/* Top-ups */}
-      <Section
-        title="Buy more tokens"
-        note={(
-          <>
-            500K tokens per top-up at $10 each. Tokens expire at end of billing period.
-            {!hasPaymentMethod && <span style={{ color: 'var(--error)' }}> Add a payment method first.</span>}
-          </>
-        )}
-      >
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {[1, 2, 5].map(units => (
-            <Button
-              key={units}
-              onClick={() => topUp(units)}
-              disabled={actionLoading !== null || !hasPaymentMethod}
-              style={{ fontVariantNumeric: 'tabular-nums' }}
-            >
-              {formatTokens(units * 500_000)} — ${units * 10}
-            </Button>
-          ))}
-        </div>
-      </Section>
+      {/* Top-ups — only for someone who may buy them */}
+      {canManage && (
+        <Section
+          title="Buy more tokens"
+          note={(
+            <>
+              500K tokens per top-up at $10 each. Tokens expire at end of billing period.
+              {!hasPaymentMethod && <span style={{ color: 'var(--error)' }}> Add a payment method first.</span>}
+            </>
+          )}
+        >
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {[1, 2, 5].map(units => (
+              <Button
+                key={units}
+                onClick={() => setConfirming({ kind: 'topup', units })}
+                disabled={actionLoading !== null || !hasPaymentMethod}
+                style={{ fontVariantNumeric: 'tabular-nums' }}
+              >
+                {formatTokens(units * 500_000)} — ${units * 10}
+              </Button>
+            ))}
+          </div>
+        </Section>
+      )}
 
       {/* Invoices */}
       {invoices.length > 0 && (

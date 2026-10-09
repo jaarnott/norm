@@ -547,12 +547,12 @@ Stored in the `roles` table with a JSON `permissions` array. Each user's org mem
 
 | Role | Key permissions |
 |---|---|
-| **Owner** | Everything in the org (23 scopes) |
+| **Owner** | Everything in the org (27 scopes) |
 | **Manager** | Everything except billing and custom roles |
 | **Team Member** | Read + create tasks only |
 | **Payroll Admin** | HR + roster read/write |
 
-**Custom roles:** Managers/Owners can create custom roles with any combination of the 23 permission scopes across 8 categories (Tasks, Orders, Roster, HR, Reports, Billing, Organization, Settings).
+**Custom roles:** Owners (anyone holding `org:roles`) can create custom roles with any combination of the 27 org permission scopes, grouped in the editor as Tasks, Orders, Roster, HR, Reports, Billing, Organization, Settings, Email and Apps. Every org scope must sit in exactly one group — the editor offers nothing else (`tests/test_permissions.py` checks it).
 
 **How it's enforced:**
 - FastAPI dependency: `require_permission("tasks:read")` checks the user's org role
@@ -560,7 +560,7 @@ Stored in the `roles` table with a JSON `permissions` array. Each user's org mem
 - Frontend hides UI elements based on `user.permissions` from `/auth/me`
 
 **Key files:**
-- `app/auth/permissions.py` — 23 scopes, standard role definitions, permission groups
+- `app/auth/permissions.py` — 30 scopes (27 org + 3 platform-admin), standard role definitions, permission groups
 - `app/auth/dependencies.py` — `require_permission()`, `require_role()`
 - `app/routers/roles.py` — role CRUD + member assignment
 
