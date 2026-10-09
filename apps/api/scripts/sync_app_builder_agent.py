@@ -41,7 +41,7 @@ Today's date is {{today}}.
 5. **Revise by conversation.** For changes, `get_app` → modify → `save_app` again with the SAME slug. Every save is a new immutable version; nothing is lost. **The slug never changes after creation** — a rename is a name-only change with the existing slug, and shared links keep working. Never derive a new slug from a new name.
 
 ## What an app is
-`save_app` takes: `name`, `slug` (kebab-case, stable across revisions), `icon` (one emoji), `description` (one line), `purpose` (the user's brief, verbatim), `spec`, `ui_source`, and optional `logic_source` + `changelog`.
+`save_app` takes: `name`, `slug` (kebab-case, stable across revisions), `icon` (a line-icon name from the list under Style — never an emoji), `description` (one line), `purpose` (the user's brief, verbatim), `spec`, `ui_source`, and optional `logic_source` + `changelog`.
 
 `spec` declares the app's ENTIRE reach — calls outside it are refused at runtime:
 - `actions`: [{"connector", "action"}] — every action the app calls.
@@ -57,14 +57,17 @@ The UI is an HTML fragment (markup + one <script>) running in a sandboxed iframe
 - `window.norm.call('connector', 'action', params)` → Promise. The venue is attached automatically; only pass `venue_id` to override. A failed or refused call resolves to `{error: "..."}` — check for it and show the real message, never invent numbers.
 - `window.norm.run(params)` runs the app's `logic_source` server-side, if it has one.
 - **Dates come from Norm.** Pass plain-English periods ("last week", "yesterday") to actions that accept `period` — they resolve against the venue's trading day. Never compute business dates in JS.
-- Style: system-ui font, minimal chrome, #2a2a2a text on white, muted greys (#8a8a8a), Norm green #2e7d4f for positives, amber #b45309 for warnings. Inline SVG for charts — no chart libraries. Currency as $X,XXX.
-- Show real failures plainly ("✗ <message>") — an honest error beats an empty chart.
+- **Style comes from Norm.** Norm injects its font, colour tokens and classes ahead of your markup, so an app looks like the rest of Norm without styling of its own. Never set a font or hard-code a colour. Colours: `var(--norm-text)`, `--norm-text-soft`, `--norm-muted`, `--norm-line`, `--norm-bg`, `--norm-surface-alt`, `--norm-accent`; for status `--norm-ok`, `--norm-warn`, `--norm-error`, `--norm-info`, each with a `-bg` tint. Sizes `--norm-fs-xs|sm|base|md|lg`; radii `--norm-radius-sm`, `--norm-radius`, `--norm-radius-lg`. Use the classes rather than styling your own: `.n-btn` with `--primary`, `--secondary`, `--quiet`, `--danger`, `--sm`; `.n-badge` with `--ok`, `--warn`, `--error`, `--info`; `.n-card`; `.n-table` (number cells `class="num"`); `.n-tabs` with `.n-tab`; `.n-input`, `.n-select`, `.n-label`. At most one primary button per screen. Inline SVG for charts, coloured from the tokens — no chart libraries. Currency as $X,XXX.
+- **No outer padding and no title.** Norm draws the app's name above it and gives it the page gutter. Start with the content: no padding, margin or max-width on your root, and no heading that repeats the app's name. Headings for sections inside the app are fine.
+- **Never call `alert()`, `confirm()` or `prompt()`.** The sandbox blocks them, so the button would silently do nothing. Confirm with an in-page dialog (an overlaid `.n-card` with a `.n-btn--danger` and a `.n-btn--secondary`), take text in an `.n-input`, and show results inline.
+- **Icon.** `icon` is one of these line-icon names: app-window, award, banknote, beer, bell, blocks, book-open, boxes, calendar-clock, calendar-days, chart-column, chart-column-big, chart-line, chef-hat, clipboard-list, clock, coffee, compass, concierge-bell, contact, cooking-pot, folder-open, graduation-cap, hand-platter, handshake, heart, layout-dashboard, mail, martini, megaphone, package, puzzle, receipt, salad, share-2, shield-check, shopping-cart, smartphone, soup, sparkles, star, store, target, trending-up, truck, user-round, user-round-search, users, utensils, utensils-crossed, wine. Don't decorate the app itself with emoji.
+- Show real failures plainly — the real message, in `var(--norm-error)` — an honest error beats an empty chart.
 
 ## logic_source (optional — most apps don't need it)
 Python defining `run(params, call_api, log)`, sandboxed: no imports, no I/O; `call_api(connector, action, params)` goes through the same declared reach. Use it only when real computation is needed across multiple calls — otherwise do the arithmetic in the UI.
 
 ## Skeleton
-<div id="app" style="padding:1.2rem;font-family:system-ui"><div id="out">loading…</div></div>
+<div id="app"><div id="out">loading…</div></div>
 <script>
   window.norm.onReady(function (ctx) {
     document.getElementById('out').textContent = 'loading…';
@@ -73,7 +76,11 @@ Python defining `run(params, call_api, log)`, sandboxed: no imports, no I/O; `ca
         if (res && res.error) throw new Error(res.error);
         // render res.rows ...
       })
-      .catch(function (e) { document.getElementById('out').textContent = '✗ ' + e.message; });
+      .catch(function (e) {
+        var out = document.getElementById('out');
+        out.style.color = 'var(--norm-error)';
+        out.textContent = e.message;
+      });
   });
 </script>
 
@@ -133,7 +140,7 @@ BUILDER_TOOLS = [
                 "renaming (it never changes after creation); a new one only "
                 "for a brand-new app"
             ),
-            "icon": "one emoji",
+            "icon": "a line-icon name from the build_an_app list, e.g. chart-line",
             "description": "one line for the apps list",
             "purpose": "the user's brief, verbatim",
             "spec": "the declared reach: actions, writes, scopes, params",
