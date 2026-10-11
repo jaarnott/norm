@@ -25,8 +25,8 @@ export default async function OpenGraphImage() {
           flexDirection: 'column',
           justifyContent: 'space-between',
           padding: 72,
-          background: '#faf8f5',
-          color: '#1a1a1a',
+          background: '#1f4a36',
+          color: '#f6f1e8',
           fontFamily: 'Figtree',
         }}
       >
@@ -36,8 +36,8 @@ export default async function OpenGraphImage() {
               width: 64,
               height: 64,
               borderRadius: 16,
-              background: '#1a1a1a',
-              color: '#ffffff',
+              background: '#f6f1e8',
+              color: '#1f4a36',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -52,11 +52,9 @@ export default async function OpenGraphImage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 72, fontWeight: 800, lineHeight: 1.05, letterSpacing: -2 }}>
           <div style={{ display: 'flex' }}>The best hospitality manager</div>
           <div style={{ display: 'flex' }}>you&apos;ve ever had.</div>
-          <div style={{ display: 'flex' }}>
-            <div style={{ display: 'flex', background: '#f2a93b', padding: '0 12px', borderRadius: 6 }}>Working 24/7.</div>
-          </div>
+          <div style={{ display: 'flex', color: '#f2a93b' }}>Working 24/7.</div>
         </div>
-        <div style={{ fontSize: 30, fontWeight: 500, color: '#4f4943' }}>The AI operations team for hospitality</div>
+        <div style={{ fontSize: 30, fontWeight: 500, color: '#cfdccf' }}>The AI operations team for hospitality</div>
       </div>
     ),
     {
