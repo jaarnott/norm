@@ -177,13 +177,72 @@ def run(params, call_api, log):
     if problems:
         return {"error": "nothing written — " + "; ".join(problems)}
 
-    preview(lambda: _card(body, mode, call_api))
+    # An edit without the version: Orbit treats recipe_id-without-version_id
+    # as a create and refuses it ("name and yield_unit_id are required") —
+    # 14 times in one production thread (aad94383). Read the recipe once and
+    # edit its current version; the same read feeds the preview card.
+    now = None
+    if body.get("recipe_id") and not body.get("version_id"):
+        now = _current(body, call_api)
+        if now is None:
+            return {
+                "error": f"Couldn't read recipe {body['recipe_id']} to find its current version."
+            }
+        # The version's id as the read names it; a read that carries none
+        # leaves the edit to Orbit's own resolution, as before.
+        version = now[1] or {}
+        version_id = version.get("version_id") or version.get("id")
+        if version_id:
+            body["version_id"] = version_id
+
+    preview(lambda: _card(body, mode, call_api, now))
     log(
         f"record_recipe: {'edit ' + str(body['recipe_id']) if body.get('recipe_id') else 'create ' + repr(body.get('name'))}"
         f", {len(body.get('ingredients') or [])} ingredient line(s)"
         + (f", mode {mode}" if mode else "")
     )
-    return call_api("cook_brothers_app", "kitchen_record_recipe", body)
+    out = call_api("cook_brothers_app", "kitchen_record_recipe", body)
+    if not body.get("recipe_id"):
+        out = _with_created_ids(out, body.get("name"), call_api, log)
+    return out
+
+
+def _with_created_ids(out, name, call_api, log):
+    """Orbit's create response carries null ids (verified live, Aug 2026).
+    Read Loaded's recipe list and fill them in: the newest live recipe with
+    this name is the one just made. The model then has the id to open or
+    edit it, instead of searching by name."""
+    if not isinstance(out, dict) or out.get("error"):
+        return out
+    data = out.get("data") if isinstance(out.get("data"), dict) else out
+    if data.get("recipe_id"):
+        return out
+    rows = call_api("loadedhub", "get_all_recipes", {})
+    rows = rows.get("data") if isinstance(rows, dict) else rows
+    want = " ".join(str(name or "").split()).lower()
+    same = [
+        r
+        for r in (rows if isinstance(rows, list) else [])
+        if isinstance(r, dict)
+        and r.get("id")
+        and not r.get("deletedAt")
+        and " ".join(str(r.get("name") or "").split()).lower() == want
+    ]
+    if not same:
+        log(f"record_recipe: created {name!r} but it was not found by name")
+        return out
+    same.sort(key=lambda r: str(r.get("createdAt") or ""), reverse=True)
+    r = same[0]
+    versions = [v for v in (r.get("versions") or []) if isinstance(v, dict)]
+    current = versions[-1] if versions else {}
+    for v in versions:  # the open-ended version is the current one
+        if not v.get("validTo"):
+            current = v
+            break
+    data["recipe_id"] = r["id"]
+    data["version_id"] = current.get("id")
+    data["name"] = r.get("name")
+    return out
 
 
 # ------------------------------------------------------------- preview ----
@@ -242,14 +301,14 @@ def _match(line, existing):
     return None
 
 
-def _card(body, mode, call_api):
+def _card(body, mode, call_api, now=None):
     """What this call changes, for the approval card — from the recipe as it
-    is now when editing one."""
+    is now when editing one (``now``: that read, when run() already made it)."""
     changes, warnings = [], []
     head, version, allergens = {}, {}, []
     editing = bool(body.get("recipe_id"))
     if editing:
-        now = _current(body, call_api)
+        now = now or _current(body, call_api)
         if now is None:
             warnings.append(
                 "Couldn't read the recipe as it is now — showing the changes as sent."

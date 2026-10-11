@@ -383,7 +383,7 @@ APPS = [
     _app(
         "loaded-kitchen",
         note=(
-            "Recipes, menus and stock items live in Loaded. A recipe create needs a name, yield unit and at least one line; an update needs the recipe id and version_id from get_recipes. A draft recipe can be extracted from an uploaded PDF, image or Word document."
+            "Recipes, menus and stock items live in Loaded. New recipes: draft_recipe opens each one as a card the chef completes and saves (no approval card); record_recipe writes one directly when asked to skip the card. An edit needs the recipe id from get_recipes."
         ),
         name="Loaded Kitchen",
         member="executive_chef",
@@ -391,6 +391,7 @@ APPS = [
         description="Recipes, menus and menu engineering in Loaded.",
         tools=[
             "loadedhub.get_recipes",
+            "loadedhub.draft_recipe",
             "loadedhub.edit_recipe",
             "loadedhub.get_menus",
             "loadedhub.manage_menu",
@@ -402,7 +403,7 @@ APPS = [
             _c(
                 "recipe_editor",
                 page=_p("recipes", "Recipes", "BookOpen"),
-                full_width=True,
+                full_width=False,  # in chat: one inline card per recipe (Oct 2026)
                 description="Recipe editor with live Loaded costs; Save writes to Loaded.",
                 connections=["cook_brothers_app"],
             ),
@@ -419,7 +420,7 @@ APPS = [
                 description="Popularity × profitability quadrants from the COGS report.",
             ),
         ],
-        skills=["create_recipe_from_ingredients"],
+        skills=["create_recipes"],
     ),
     _app(
         "loaded-time",

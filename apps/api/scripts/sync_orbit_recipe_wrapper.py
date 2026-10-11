@@ -11,7 +11,7 @@ wrapper (config/consolidators/record_recipe.py) and moves every reference over:
    replaces the whole list and would wipe the wrapper);
 2. the Loaded Kitchen App's claim (composition.tools);
 3. the executive_chef binding capability (unattended-task scope);
-4. the create_recipe_from_ingredients playbook's instructions.
+4. the create_recipes playbook's instructions.
 
 The endpoint stays — the recipe editor (app/services/recipe_save.py) calls it.
 
@@ -33,7 +33,7 @@ ENDPOINT = "kitchen_record_recipe"
 TOOL = "record_recipe"
 APP = "loaded-kitchen"
 BINDING_AGENT = "executive_chef"
-PLAYBOOK = "create_recipe_from_ingredients"
+PLAYBOOK = "create_recipes"
 CODE = (
     pathlib.Path(__file__).resolve().parents[1]
     / "config/consolidators/record_recipe.py"

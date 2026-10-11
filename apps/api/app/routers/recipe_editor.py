@@ -87,6 +87,61 @@ def open_recipe_route(
     return _doc_to_dict(doc)
 
 
+@router.get("/recipe-editor/stock-groups")
+def recipe_stock_groups_route(
+    venue_id: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Loaded stock groups, for the card's create-stock-item form."""
+    from app.services import card_actions
+    from app.services.item_match import _fetch_stock_groups
+    from app.services.received_invoice import LoadedInvoiceClient
+
+    card_actions.venue_for(db, user, venue_id)
+    return {"groups": _fetch_stock_groups(LoadedInvoiceClient(db, config_db, venue_id))}
+
+
+class CreateRecipeItemRequest(BaseModel):
+    venue_id: str
+    name: str
+    group_id: str
+    unit_id: str
+
+
+@router.post("/recipe-editor/create-item")
+def create_recipe_item_route(
+    req: CreateRecipeItemRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Create a stock item from the recipe card, for a line that matches
+    nothing — the way the received-invoice card creates one, minus the
+    supplier (a recipe line has none; it is added when the item is first
+    received). Returns the item and the unit the line should use."""
+    from app.services import card_actions
+    from app.services.stock_items import create_stock_item
+
+    card_actions.venue_for(db, user, req.venue_id)
+    try:
+        created = create_stock_item(
+            req.venue_id, req.name, req.group_id, req.unit_id, db, config_db
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    card_actions.record(
+        db,
+        user,
+        req.venue_id,
+        "created a stock item",
+        f"'{created['item_name']}' ({created['item_id']})",
+    )
+    db.commit()
+    return created
+
+
 @router.post("/recipe-editor/save")
 def save_recipe_route(
     req: SaveRecipeRequest,

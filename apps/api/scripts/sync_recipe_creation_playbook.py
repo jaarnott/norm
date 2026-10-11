@@ -31,7 +31,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 PLAYBOOK = {
-    "slug": "create_recipe_from_ingredients",
+    "slug": "create_recipes",
     "agent_slug": "executive_chef",
     "display_name": "Create a Recipe in Loaded",
     "description": (
@@ -62,7 +62,7 @@ Never claim the recipe is saved before the approved write has returned success, 
 
 def main() -> None:
     # Superseded (Aug 2026) by scripts/sync_cb_recipe_write_binding.py, which
-    # owns the live create_recipe_from_ingredients text. Re-running this would
+    # owns the live create_recipes text. Re-running this would
     # overwrite it with prose naming three RETIRED tools (get_stock_items,
     # get_stock_units, get_all_recipes). Kept for the facts in its docstring.
     raise SystemExit(

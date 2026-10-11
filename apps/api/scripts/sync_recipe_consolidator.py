@@ -19,7 +19,7 @@ After:
   ``get_recipes`` row (same mcp:orders:read scope) is enabled, so claude.ai
   swaps surfaces too.
 - Live config rows that named the raws are needle-patched in place — the
-  executive_chef prompt, the create_recipe_from_ingredients playbook
+  executive_chef prompt, the create_recipes playbook
   (instructions), the edit_recipe description, and the CB
   kitchen_loadedhub_update_recipe description/field_descriptions. Those
   rows' canonical sync scripts belong to another session's in-flight work;
@@ -276,11 +276,7 @@ def main(dry_run: bool = False) -> None:
                 changed.append("prompt executive_chef: raw recipe reads → get_recipes")
 
         # 7. The recipe-creation playbook filtered in both raws.
-        pb = (
-            db.query(Playbook)
-            .filter(Playbook.slug == "create_recipe_from_ingredients")
-            .first()
-        )
+        pb = db.query(Playbook).filter(Playbook.slug == "create_recipes").first()
         if pb:
             if pb.instructions and (
                 "get_all_recipes" in pb.instructions

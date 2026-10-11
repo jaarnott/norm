@@ -43,7 +43,11 @@ export interface DisplayBlockProps {
  * `full_width` copy for documentation only — nothing reads it; this Set is
  * the authority.
  */
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'recipe_editor', 'menu_engineering', 'supplier_tenders', 'dashboard_view', 'apps_dashboard', 'app_runner']);
+// recipe_editor left this set in Oct 2026: the thread shows ONE full-width
+// block (the latest), and a draft_recipe call opens one card per recipe —
+// they need to sit inline, each its own card. The Recipes page is unaffected
+// (it is a functional page, not a block).
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'menu_engineering', 'supplier_tenders', 'dashboard_view', 'apps_dashboard', 'app_runner']);
 
 // The single source of truth for which display components EXIST. The admin
 // Settings → Components panel derives its catalogue from these keys (with a

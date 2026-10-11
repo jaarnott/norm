@@ -163,10 +163,15 @@ def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) ->
     if recipe.get("yield_unit_id") is not None:
         fields["yield_unit"] = recipe["yield_unit_id"]
     if lines is not None:
+        # The id the editor chose goes with the name. Until Oct 2026 only the
+        # name went, and the CB App resolved it again — so a line the chef
+        # had pinned to one of three "POLENTA" sub-recipes could land on
+        # another (prod thread aad94383).
         fields["ingredients"] = [
             {
                 "kind": ln.get("kind") or "item",
                 "name": (ln.get("name") or "").strip(),
+                **({"ref_id": ln["ref_id"]} if ln.get("ref_id") else {}),
                 "quantity": ln.get("quantity"),
                 "unit": ln.get("unit_id") or ln.get("unit_name") or "",
             }
@@ -194,9 +199,11 @@ def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) ->
     if not result.success:
         raise RecipeSaveError(result.error_message or "Loaded rejected the save.")
 
-    # A create returns the new ids; surface them so the caller can open the saved
-    # recipe. (The CB response otherwise echoes a placeholder, so for an update
-    # callers should still re-read rather than trust the body.)
+    # A create should return the new ids; surface them so the caller can open
+    # the saved recipe. The CB App's create response carries null ids (its
+    # body echoes a placeholder — verified live, Aug 2026), so when they are
+    # missing the recipe is found in Loaded by name: the newest recipe with
+    # that name, which the write just made.
     payload = result.response_payload or {}
     src = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(src, dict):
@@ -207,6 +214,10 @@ def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) ->
     new_version_id = (
         src.get("version_id") or src.get("versionId") or recipe.get("version_id")
     )
+    if is_create and not new_recipe_id:
+        new_recipe_id, new_version_id = find_created(
+            venue_id, str(recipe.get("name") or ""), db, config_db
+        )
     return {
         "saved": True,
         "created": is_create,
@@ -214,3 +225,52 @@ def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) ->
         "version_id": new_version_id,
         "detail": result.response_payload,
     }
+
+
+def pick_created(rows: list, name: str) -> tuple[str | None, str | None]:
+    """The recipe a create just made: the newest live recipe called ``name``
+    (case-insensitive), with its current version's id."""
+    want = " ".join(str(name or "").split()).lower()
+    if not want:
+        return None, None
+    same = [
+        r
+        for r in rows
+        if isinstance(r, dict)
+        and r.get("id")
+        and not r.get("deletedAt")
+        and " ".join(str(r.get("name") or "").split()).lower() == want
+    ]
+    if not same:
+        return None, None
+    same.sort(key=lambda r: str(r.get("createdAt") or ""), reverse=True)
+    r = same[0]
+    cv = r.get("currentVersion") if isinstance(r.get("currentVersion"), dict) else None
+    versions = [v for v in (r.get("versions") or []) if isinstance(v, dict)]
+    current = (
+        cv
+        or next((v for v in versions if not v.get("validTo")), None)
+        or (versions[-1] if versions else None)
+    )
+    return r["id"], (current or {}).get("id")
+
+
+def find_created(
+    venue_id: str, name: str, db: Session, config_db: Session
+) -> tuple[str | None, str | None]:
+    """Read Loaded's recipe list (the recipe editor's own read) and pick the
+    recipe a create just made. Best effort: a failed read returns no ids."""
+    from app.services.component_api import execute_component_action
+
+    try:
+        out = execute_component_action(
+            "recipe_editor", "list_recipes", {}, venue_id, db, config_db
+        )
+    except Exception as exc:  # noqa: BLE001 — the save itself succeeded
+        logger.warning("recipe created but its id could not be read back: %s", exc)
+        return None, None
+    rows = out.get("data") if isinstance(out, dict) else out
+    found = pick_created(rows if isinstance(rows, list) else [], name)
+    if not found[0]:
+        logger.warning("recipe created but not found by name %r in Loaded", name)
+    return found

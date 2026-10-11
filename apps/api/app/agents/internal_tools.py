@@ -3413,6 +3413,83 @@ def _edit_recipe(params: dict, db: Session, thread_id: str | None) -> dict:
     return {"success": True, "data": draft, "error": None}
 
 
+@register("loadedhub", "draft_recipe")
+def _draft_recipe(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Draft one or more NEW recipes as recipe-editor cards, lines matched by
+    Norm (app/services/recipe_draft.py).
+
+    Never writes to LoadedHub. Each draft becomes its own working document and
+    its own card (the tool row's ``working_document.items_path`` fans
+    ``data.recipes`` out), so a batch of components opens as one card each.
+    The chef settles the amber lines on the card and presses Save — that Save
+    is the approval, so there is no approval card here.
+    """
+    from app.db.engine import _ConfigSessionLocal
+    from app.services.recipe_draft import draft_recipes, load_catalogue, summarise
+    from app.services.venue_service import resolve_venue_id
+
+    recipes = params.get("recipes")
+    if isinstance(recipes, str):
+        import json
+
+        try:
+            recipes = json.loads(recipes)
+        except ValueError:
+            recipes = None
+    if isinstance(recipes, dict):
+        recipes = [recipes]
+    if not isinstance(recipes, list) or not recipes:
+        return {
+            "success": False,
+            "data": None,
+            "error": "recipes must be a list of {name, kind, yield_quantity, yield_unit, method, lines}.",
+        }
+    if len(recipes) > 20:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Draft at most 20 recipes in one call.",
+        }
+
+    venue_id = params.get("venue_id") or resolve_venue_id(
+        params.get("venue") or params.get("venue_name"), db
+    )
+    if not venue_id:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Say which venue (venue name or venue_id).",
+        }
+    cfg = _ConfigSessionLocal()
+    try:
+        cat = load_catalogue(venue_id, db, cfg)
+    except Exception as exc:  # noqa: BLE001 — surface a clean message
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Couldn't read the venue's stock items, recipes and units: {exc}",
+        }
+    finally:
+        cfg.close()
+
+    drafts = draft_recipes(recipes, cat, venue_id)
+    return {
+        "success": True,
+        "data": {
+            "venue_id": venue_id,
+            "cards": summarise(drafts),
+            "recipes": drafts,
+            "note": (
+                "Each recipe is open as a card below. Lines in amber need the "
+                "chef: a candidate to pick, a stock item to create, or a "
+                "quantity. Save on a card creates that recipe in Loaded — "
+                "nothing is saved until then. Don't repeat the drafts in text."
+            ),
+        },
+        "error": None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # App-builder handlers — the App Builder agent's three tools
 # ---------------------------------------------------------------------------

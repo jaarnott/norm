@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronRight, FileUp, GripVertical, History, LoaderCircle, Plus, Search, X } from 'lucide-react';
+import { Check, ChevronRight, FileUp, GripVertical, History, LoaderCircle, Plus, Search, TriangleAlert, X } from 'lucide-react';
 import { apiFetch, callComponentApi } from '../../lib/api';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import Badge from '../ui/Badge';
@@ -35,6 +35,15 @@ interface Unit { id: string; name: string; ratio: number; type?: string }
 interface Opt { id: string; name: string; kind: 'item' | 'recipe' }
 // A row in the recipes table — summarised from the list payload's currentVersion.
 interface RecipeRow { id: string; name: string; prep: boolean; ingredients: number; yieldText: string }
+// How Norm matched a drafted line (app/services/recipe_draft.py): what the
+// recipe said, what it found, and — while unresolved — why and what it offers.
+interface LineMatch {
+  status: 'matched' | 'unresolved';
+  reasons: string[];
+  candidates: Array<{ id: string; name: string; kind: 'item' | 'recipe' }>;
+  as_written: { name?: string; quantity?: unknown; unit?: string };
+}
+interface StockGroup { id: string; name: string; category?: string | null }
 interface EditLine {
   key: string;
   kind: 'item' | 'recipe';
@@ -51,6 +60,9 @@ interface EditLine {
   // The stock item/component has been deleted in Loaded, but the line remains on
   // the recipe (Loaded keeps costing it). Shown as a normal line, flagged.
   item_deleted: boolean;
+  // Present on a line the agent drafted; the card shows an unresolved one in
+  // amber with its candidates until the chef settles it.
+  match?: LineMatch;
 }
 // A recipe version for the read-only viewer. Loaded returns a `versions` array
 // plus a `currentVersion`; only the current one is editable, the rest are history.
@@ -72,6 +84,13 @@ interface Draft {
   yield_unit_id: string | null;
   lines: EditLine[];
   versions: RecipeVersion[];
+  // A component (prep recipe, counted in stocktake) or a dish (plated, not
+  // counted). Set by the toggle; an older recipe derives it from the flag.
+  recipe_type?: 'component' | 'dish';
+  // From a draft the agent made: a recipe already carrying this name, and
+  // anything the draft lacked (a yield unit Loaded doesn't have, no lines).
+  duplicate_of?: { id: string; name: string } | null;
+  problems?: string[];
 }
 interface VenueOpt { id: string; name: string }
 
@@ -237,10 +256,12 @@ function fdLine(l: Record<string, unknown>): EditLine {
     stock_unit_name: (l.stock_unit_name as string) ?? null,
     stock_unit_ratio: num(l.stock_unit_ratio) || 1,
     item_deleted: !!l.item_deleted,
+    ...(l.match && typeof l.match === 'object' ? { match: l.match as LineMatch } : {}),
   };
 }
 function fromDoc(d: Record<string, unknown>): Draft {
   const arr = (v: unknown) => (Array.isArray(v) ? (v as Array<Record<string, unknown>>) : []);
+  const dup = d.duplicate_of && typeof d.duplicate_of === 'object' ? (d.duplicate_of as { id: string; name: string }) : null;
   return {
     recipe_id: (d.recipe_id as string) || '',
     version_id: (d.version_id as string) || '',
@@ -249,6 +270,9 @@ function fromDoc(d: Record<string, unknown>): Draft {
     is_counted_in_stocktake: !!d.is_counted_in_stocktake,
     yield_quantity: num(d.yield_quantity),
     yield_unit_id: (d.yield_unit_id as string) || null,
+    ...(d.recipe_type === 'component' || d.recipe_type === 'dish' ? { recipe_type: d.recipe_type } : {}),
+    duplicate_of: dup,
+    problems: Array.isArray(d.problems) ? (d.problems as string[]) : [],
     lines: arr(d.lines).map(fdLine),
     versions: arr(d.versions).map((v) => ({
       id: (v.id as string) || uid(),
@@ -263,6 +287,13 @@ function fromDoc(d: Record<string, unknown>): Draft {
 
 export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   const embedded = !!props?.embedded;
+  // A card opened from a tool result (draft_recipe, edit_recipe) carries the
+  // working document it shows. Until Oct 2026 the card ignored it and showed
+  // the recipes list, so the agent's "opened for review" cards were empty.
+  // Such a card owns its own draft: it never touches the page session or the
+  // page document, so several can sit in one conversation.
+  const initialDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
+  const fromBlock = !!initialDocId && !embedded;
   // The tool result may be a raw Loaded recipe (has currentVersion) or the
   // get_recipes consolidator envelope {recipe: <summary|raw>, ...}. A raw
   // payload opens directly; a summary carries names but not the line/unit ids
@@ -305,15 +336,20 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   // open recipe (e.g. after switching recipes), so no reset effect is needed.
   const [viewVersionId, setViewVersionId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(() =>
-    embedded && initialRecipe ? toDraft(initialRecipe) : openSession?.draft ?? null,
+    fromBlock ? null : embedded && initialRecipe ? toDraft(initialRecipe) : openSession?.draft ?? null,
   );
   // Working-document backing (web/page only): the open recipe is a shared draft
   // the agent can also edit. Restored from the session so the remount doesn't
   // drop the doc id/version the poll needs.
-  const [workingDocId, setWorkingDocId] = useState<string | null>(() => (embedded ? null : openSession?.workingDocId ?? null));
-  const [docVersion, setDocVersion] = useState<number>(() => (embedded ? 0 : openSession?.docVersion ?? 0));
-  const lastVersionRef = useRef<number>(openSession?.docVersion ?? 0);
+  const [workingDocId, setWorkingDocId] = useState<string | null>(() => (fromBlock ? initialDocId! : embedded ? null : openSession?.workingDocId ?? null));
+  const [docVersion, setDocVersion] = useState<number>(() => (embedded || fromBlock ? 0 : openSession?.docVersion ?? 0));
+  const lastVersionRef = useRef<number>(fromBlock ? 0 : openSession?.docVersion ?? 0);
   const lastEditRef = useRef<number>(0);
+  // Creating a stock item for a line that matches nothing (the received-invoice
+  // card's "Link or create", minus the supplier). Groups load on first use.
+  const [groups, setGroups] = useState<StockGroup[] | null>(null);
+  const [itemForm, setItemForm] = useState<{ key: string; name: string; groupId: string } | null>(null);
+  const [creatingItem, setCreatingItem] = useState(false);
 
   // Layout only: how much room the component has — its OWN width, since a chat
   // column or Claude's frame is narrower than the window. Below 720px the
@@ -477,7 +513,7 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   // happens the moment you send a chat message) restores it instead of dropping
   // you back on the list. Page instance only — the embedded card owns its own.
   useEffect(() => {
-    if (embedded) return;
+    if (embedded || fromBlock) return;
     openSession = draft ? { venueId, draft, workingDocId, docVersion } : null;
     // Publish the open recipe so a chat message can tell the agent exactly what
     // the user is editing (which recipe, which venue, and the current lines so it
@@ -495,11 +531,35 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
           }
         : null,
     );
-  }, [draft, venueId, embedded, workingDocId, docVersion]);
+  }, [draft, venueId, embedded, fromBlock, workingDocId, docVersion]);
 
   // Clear the published document when the editor unmounts for good (navigating to
   // another page), so a stale recipe isn't attached to an unrelated page's chat.
-  useEffect(() => () => { if (!embedded) setPageDocument(null); }, [embedded]);
+  useEffect(() => () => { if (!embedded && !fromBlock) setPageDocument(null); }, [embedded, fromBlock]);
+
+  // A card from a tool result: load the document it names. The venue comes
+  // with the block (props.activeVenueId) or sits in the draft itself.
+  useEffect(() => {
+    if (!fromBlock || !initialDocId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(`/api/working-documents/${initialDocId}`);
+        if (!res.ok) throw new Error(res.status === 404 ? 'This draft is no longer available.' : `Couldn't load the draft (${res.status})`);
+        const doc = await res.json();
+        if (cancelled) return;
+        lastVersionRef.current = doc.version ?? 0;
+        setDocVersion(doc.version ?? 0);
+        setDraft(fromDoc(doc.data || {}));
+        const dv = (doc.data as Record<string, unknown> | undefined)?.venue_id;
+        if (typeof dv === 'string' && dv) setVenueId((v) => v || dv);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Couldn\'t load the draft');
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromBlock, initialDocId]);
 
   // Catch-up poll: while a recipe is open as a working document, re-read it so an
   // edit the agent made (it patches the same {recipe_id, venue} doc) appears here.
@@ -547,7 +607,9 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   // with no cost yet (endpoint not returned, or a brand-new ingredient) is
   // incomplete, so the total shows a "~".
   const lineCostOf = (l: EditLine): { cost: number; complete: boolean } | null => {
-    if (!l.ref_id) return null;
+    // No unit yet (a drafted line the chef still has to settle): the quantity
+    // means nothing, so no cost rather than one in the item's base unit.
+    if (!l.ref_id || !l.unit_id) return null;
     const c = costsById.get(l.ref_id);
     if (!c) return { cost: 0, complete: false };
     return { cost: l.quantity * l.unit_ratio * c.cost, complete: true };
@@ -684,15 +746,69 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   };
   // Picking an ingredient sets the ref + a sensible default unit (a stock item's
   // own counting unit), so cost shows immediately and the unit is the right type.
+  const setType = (t: 'component' | 'dish') => {
+    touch();
+    setDraft((d) => (d ? { ...d, recipe_type: t, is_counted_in_stocktake: t === 'component' } : d));
+  };
+
+  // Create a stock item for a drafted line that matches nothing. The new item
+  // is created in the line's unit (its counting unit is that unit's base), so
+  // the unit must be picked first.
+  const openItemForm = async (l: EditLine) => {
+    setError(null);
+    setItemForm({ key: l.key, name: (l.match?.as_written?.name || l.name || '').toUpperCase(), groupId: '' });
+    if (!groups && venueId) {
+      try {
+        const r = await apiFetch(`/api/recipe-editor/stock-groups?venue_id=${encodeURIComponent(venueId)}`);
+        if (r.ok) setGroups((((await r.json()) as { groups?: StockGroup[] }).groups) || []);
+      } catch { /* the select stays empty; the error shows on submit */ }
+    }
+  };
+  const createItem = async () => {
+    if (!itemForm || !venueId || !draft) return;
+    const l = draft.lines.find((x) => x.key === itemForm.key);
+    if (!l) return;
+    if (!l.unit_id) { setError("Pick the line's unit first — the new item is created in it."); return; }
+    setCreatingItem(true);
+    setError(null);
+    try {
+      const res = await apiFetch('/api/recipe-editor/create-item', {
+        method: 'POST',
+        body: JSON.stringify({ venue_id: venueId, name: itemForm.name, group_id: itemForm.groupId, unit_id: l.unit_id }),
+      });
+      if (!res.ok) {
+        const t = await res.json().catch(() => ({}));
+        throw new Error((t as { detail?: string }).detail || `Couldn't create the item (${res.status})`);
+      }
+      const out = (await res.json()) as { item_id: string; item_name: string; unit_id: string; unit_name: string | null; unit_ratio: unknown; counting_unit_name?: string | null; counting_unit_ratio?: unknown };
+      setOpts((prev) => [...prev, { id: out.item_id, name: out.item_name, kind: 'item' }]);
+      updateLine(l.key, {
+        kind: 'item', ref_id: out.item_id, name: out.item_name,
+        unit_id: out.unit_id, unit_name: out.unit_name, unit_ratio: num(out.unit_ratio) || 1,
+        stock_unit_name: out.counting_unit_name ?? null, stock_unit_ratio: num(out.counting_unit_ratio) || 1,
+      });
+      setItemForm(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not create the stock item');
+    }
+    setCreatingItem(false);
+  };
+
   const pickIngredient = (key: string, o: ComboOption) => {
     const patch: Partial<EditLine> = { kind: (o.kind as 'item' | 'recipe') || 'item', ref_id: o.id, name: o.name };
     if (o.kind !== 'recipe') {
       const it = costTables?.items.get(o.id);
       const u = it?.countingUnitId ? unitById.get(it.countingUnitId) : undefined;
       if (u) {
-        patch.unit_id = u.id; patch.unit_name = u.name; patch.unit_ratio = u.ratio;
         // A stock item's stock unit IS its counting unit (Stock Cost columns).
         patch.stock_unit_name = u.name; patch.stock_unit_ratio = u.ratio;
+        // The line keeps a unit it already has of the right kind ("800 g" then
+        // picking BUTTER UNSALTED stays 800 g); otherwise the item's own unit.
+        const line = draft?.lines.find((x) => x.key === key);
+        const cur = line?.unit_id ? unitById.get(line.unit_id) : undefined;
+        if (!cur || (u.type && cur.type && cur.type !== u.type)) {
+          patch.unit_id = u.id; patch.unit_name = u.name; patch.unit_ratio = u.ratio;
+        }
       }
     }
     updateLine(key, patch);
@@ -736,8 +852,24 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
         const t = await res.json().catch(() => ({}));
         throw new Error((t as { detail?: string }).detail || `Save failed (${res.status})`);
       }
+      const out = (await res.json().catch(() => ({}))) as { recipe_id?: string | null };
       setSavedNote(isNew ? 'Recipe created in Loaded.' : 'Recipe saved to Loaded.');
-      if (!embedded) { closeEditor(); if (venueId) loadRefs(venueId); }
+      if (fromBlock) {
+        // Stay on the card and show what Loaded now holds (the save returns
+        // the recipe's id — resolved server-side for a create).
+        const newId = draft.recipe_id || out.recipe_id || null;
+        if (isNew && workingDocId) {
+          // Mark the draft's document saved, so the agent can see it landed.
+          try {
+            await apiFetch(`/api/working-documents/${workingDocId}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ ops: [{ op: 'update_header', fields: { status: 'saved', saved_recipe_id: newId } }], version: docVersion }),
+            });
+          } catch { /* best effort */ }
+        }
+        if (newId) await openRecipe(newId);
+        if (venueId) loadRefs(venueId);
+      } else if (!embedded) { closeEditor(); if (venueId) loadRefs(venueId); }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
     }
@@ -803,7 +935,18 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     const showTotals = !!viewTotal && viewLines.some((l) => l.ref_id);
 
     const title = draft.recipe_id ? 'Edit recipe' : 'New recipe';
-    const meta = draft.recipe_id ? undefined : 'This will be created in Loaded when you save.';
+    // A drafted line the chef still has to settle: no ingredient, no unit, or
+    // a quantity the recipe never gave as a number.
+    const needsChef = (l: EditLine) =>
+      !l.ref_id || !l.unit_id
+      || (!!l.match && l.match.status === 'unresolved' && !(l.quantity > 0) && l.match.reasons.some((r) => r.includes('number')));
+    const unresolvedCount = draft.recipe_id ? 0 : draft.lines.filter(needsChef).length;
+    const meta = draft.recipe_id
+      ? undefined
+      : unresolvedCount
+        ? `${unresolvedCount} line${unresolvedCount === 1 ? '' : 's'} in amber need${unresolvedCount === 1 ? 's' : ''} you before this can be created in Loaded.`
+        : 'This will be created in Loaded when you save.';
+    const recipeType: 'component' | 'dish' = draft.recipe_type ?? (draft.is_counted_in_stocktake ? 'component' : 'dish');
     // Same as the old disabled back button: does nothing while a save runs.
     const back = () => { if (!saving) closeEditor(); };
     const versionSelect = draft.recipe_id && draft.versions.length > 0 && (
@@ -817,7 +960,7 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
         {venuePicker}
         {versionSelect}
         <Button variant="primary" onClick={save} disabled={saving || viewingPast || !draft.name.trim()} title={viewingPast ? 'Switch to Current to edit' : undefined}>
-          {saving ? 'Saving…' : draft.recipe_id ? 'Save to Loaded' : 'Create in Loaded'}
+          {saving ? 'Saving…' : draft.recipe_id ? 'Save to Loaded' : draft.duplicate_of ? 'Create anyway' : 'Create in Loaded'}
         </Button>
       </>
     );
@@ -827,10 +970,55 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     // One ingredient line's pieces — laid out below as a table row when there
     // is room, else as stacked lines. A past version renders read-only text.
     const editable = !viewingPast;
+    // A drafted line the chef still has to settle: no ingredient, no unit, or
+    // a quantity the recipe never gave as a number. Shown in amber with what
+    // Norm found, until it is resolved.
+    const lineHelp = (l: EditLine) => {
+      if (!editable || !needsChef(l)) return null;
+      const missing = [!l.ref_id && 'ingredient', !l.unit_id && 'unit'].filter(Boolean) as string[];
+      const reasons = l.match?.status === 'unresolved' ? l.match.reasons : [];
+      const cands = !l.ref_id ? l.match?.candidates || [] : [];
+      const form = itemForm?.key === l.key ? itemForm : null;
+      return (
+        <div style={{ marginTop: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+          {reasons.length > 0 && <div>{reasons.join('; ')}.</div>}
+          {reasons.length === 0 && missing.length > 0 && <div>Needs {missing.join(' and ')}.</div>}
+          {(cands.length > 0 || !l.ref_id) && !form && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 4 }}>
+              {cands.map((c) => (
+                <Button key={c.id} size="sm" onClick={() => pickIngredient(l.key, { id: c.id, name: c.name, kind: c.kind })} title={c.kind === 'recipe' ? 'Sub-recipe' : 'Stock item'}>
+                  {c.name}
+                </Button>
+              ))}
+              {!l.ref_id && (
+                <Button size="sm" variant="secondary" icon={Plus} onClick={() => openItemForm(l)}>Create stock item</Button>
+              )}
+            </div>
+          )}
+          {form && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 6 }}>
+              <input className="n-input" aria-label="New stock item name" value={form.name} onChange={(e) => setItemForm({ ...form, name: e.target.value })} style={{ flex: '1 1 160px', minWidth: 0 }} />
+              <select className="n-select" aria-label="Stock group" value={form.groupId} onChange={(e) => setItemForm({ ...form, groupId: e.target.value })} style={{ flex: '1 1 140px' }}>
+                <option value="">{groups ? 'Stock group' : 'Loading groups…'}</option>
+                {(groups || []).map((g) => <option key={g.id} value={g.id}>{g.category ? `${g.category} · ${g.name}` : g.name}</option>)}
+              </select>
+              <Button size="sm" variant="primary" onClick={createItem} disabled={creatingItem || !form.name.trim() || !form.groupId || !l.unit_id} title={!l.unit_id ? "Pick the line's unit first" : undefined}>
+                {creatingItem ? 'Creating…' : 'Create & use'}
+              </Button>
+              <Button size="sm" onClick={() => setItemForm(null)} disabled={creatingItem}>Cancel</Button>
+              {!l.unit_id && <span style={{ color: 'var(--muted)' }}>Pick the line&apos;s unit first.</span>}
+            </div>
+          )}
+        </div>
+      );
+    };
     const linePieces = (l: EditLine) => {
       const lc = lineCostOf(l);
       const sc = stockCostOf(l);
+      const help = lineHelp(l);
       return {
+        help,
+        rowStyle: (help ? { background: 'var(--warn-bg)' } : l.item_deleted ? { background: 'var(--error-bg)' } : undefined) as React.CSSProperties | undefined,
         grip: editable ? (
           <span
             draggable
@@ -909,7 +1097,7 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
           {viewLines.map((l) => {
             const p = linePieces(l);
             return (
-              <tr key={l.key} {...p.dnd} style={l.item_deleted ? { background: 'var(--error-bg)' } : undefined}>
+              <tr key={l.key} {...p.dnd} style={p.rowStyle}>
                 {editable && <td style={gripCell}>{p.grip}</td>}
                 <td className="num" style={firstCell}>{p.qty}</td>
                 <td style={cell}>{p.unit}</td>
@@ -918,6 +1106,7 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
                     <div style={{ flex: 1, minWidth: 0 }}>{p.ingredient}</div>
                     {p.deleted}
                   </div>
+                  {p.help}
                 </td>
                 <td style={{ ...cell, color: 'var(--muted)' }}>{p.stockUnit}</td>
                 <td className="num" style={{ ...cell, color: 'var(--muted)' }} title={editable ? 'Cost per stock unit' : undefined}>{p.stockCost}</td>
@@ -946,7 +1135,7 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
               {...p.dnd}
               style={{
                 padding: '10px 0', borderBottom: '1px solid var(--line)',
-                ...(l.item_deleted ? { background: 'var(--error-bg)', margin: '0 -8px', paddingLeft: 8, paddingRight: 8 } : {}),
+                ...(p.rowStyle ? { ...p.rowStyle, margin: '0 -8px', paddingLeft: 8, paddingRight: 8 } : {}),
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -954,6 +1143,7 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
                 <div style={{ flex: 1, minWidth: 0, fontWeight: editable ? undefined : 500, overflowWrap: 'anywhere' }}>{p.ingredient}</div>
                 {p.remove}
               </div>
+              {p.help && <div style={{ paddingLeft: indent }}>{p.help}</div>}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: editable ? 8 : 2, paddingLeft: indent }}>
                 {editable ? (
                   <>
@@ -989,6 +1179,19 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
             <span>Viewing a past version — read-only. Switch to <strong>Current</strong> to edit.</span>
           </div>
         )}
+        {!draft.recipe_id && draft.duplicate_of && (
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, padding: '10px 12px', marginBottom: 16, borderRadius: 'var(--radius)', background: 'var(--warn-bg)', color: 'var(--warn)', fontSize: 'var(--fs-sm)' }}>
+            <Icon icon={TriangleAlert} size={16} />
+            <span style={{ flex: '1 1 240px' }}>A recipe called <strong>{draft.duplicate_of.name}</strong> already exists at this venue.</span>
+            <Button size="sm" onClick={() => openRecipe(draft.duplicate_of!.id)}>Open it instead</Button>
+          </div>
+        )}
+        {!draft.recipe_id && !!draft.problems?.length && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', marginBottom: 16, borderRadius: 'var(--radius)', background: 'var(--warn-bg)', color: 'var(--warn)', fontSize: 'var(--fs-sm)' }}>
+            <Icon icon={TriangleAlert} size={16} style={{ marginTop: 1 }} />
+            <span>The draft {draft.problems.join('; ')}.</span>
+          </div>
+        )}
 
         {/* Details: name · yield */}
         <div style={{ marginBottom: 24 }}>
@@ -1003,16 +1206,36 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
               style={{ width: '100%', height: 40, fontSize: 'var(--fs-lg)', fontWeight: 600, ...(viewingPast ? { background: 'var(--surface)', borderColor: 'var(--line)' } : {}) }}
             />
           </label>
-          <div style={{ marginTop: 12 }}>
-            <span className="n-label">Yield</span>
-            {viewingPast ? (
-              <div style={{ color: 'var(--text)', ...tabular }}>{+viewYieldQty.toFixed(2)} {viewYieldUnit}</div>
-            ) : (
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input type="number" step="0.01" min="0" className="n-input" aria-label="Yield quantity" value={draft.yield_quantity} onChange={(e) => setYieldQty(parseFloat(e.target.value))} style={{ width: 88, ...numInput }} />
-                {unitSelect(draft.yield_unit_id, setYieldUnit, undefined, { width: 160 }, 'Yield unit')}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px 32px', marginTop: 12 }}>
+            <div>
+              <span className="n-label">Yield</span>
+              {viewingPast ? (
+                <div style={{ color: 'var(--text)', ...tabular }}>{+viewYieldQty.toFixed(2)} {viewYieldUnit}</div>
+              ) : (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input type="number" step="0.01" min="0" className="n-input" aria-label="Yield quantity" value={draft.yield_quantity} onChange={(e) => setYieldQty(parseFloat(e.target.value))} style={{ width: 88, ...numInput }} />
+                  {unitSelect(draft.yield_unit_id, setYieldUnit, undefined, { width: 160 }, 'Yield unit')}
+                </div>
+              )}
+            </div>
+            {/* Component or dish — the one kind every recipe is. A component
+                (prep recipe used in others) is counted in stocktake; a plated
+                dish is not. The toggle sets that flag. */}
+            <div>
+              <span className="n-label">Kind</span>
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div role="radiogroup" aria-label="Recipe kind" style={{ display: 'inline-flex', gap: 4 }}>
+                  {(['component', 'dish'] as const).map((t) => (
+                    <Button key={t} size="sm" variant={recipeType === t ? 'primary' : 'secondary'} role="radio" aria-checked={recipeType === t} onClick={() => setType(t)} disabled={viewingPast}>
+                      {t === 'component' ? 'Component' : 'Dish'}
+                    </Button>
+                  ))}
+                </div>
+                <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                  {draft.is_counted_in_stocktake ? 'Counted in stocktake' : 'Not counted in stocktake'}
+                </span>
               </div>
-            )}
+            </div>
           </div>
         </div>
 
@@ -1059,7 +1282,7 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     return (
       <div ref={measureRef} className="n-card" style={{ padding: 16 }}>
         <div style={{ marginBottom: 16 }}>
-          {!embedded && (
+          {!embedded && !fromBlock && (
             <div style={{ marginBottom: 6 }}>
               <BackLink label="Recipes" onClick={back} />
             </div>

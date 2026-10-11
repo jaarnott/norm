@@ -342,7 +342,15 @@ async def preview_request(
 
 
 @router.post("/component-api/{component_key}/{action_name}")
-async def execute_component_api(
+def execute_component_api(  # sync on purpose — see below
+    # Plain ``def``, so FastAPI runs it in the threadpool. It was ``async`` with
+    # blocking work inside, and that deadlocked a worker (found 11 Oct 2026):
+    # a card fires several of these at once; the first takes the Connection
+    # row lock in refresh_access_token and raises ("No refresh token"), the
+    # second waits for that lock ON the event loop — so the first request's
+    # cleanup (the rollback that frees the lock) never runs. Every request to
+    # that worker then hangs, until the process is killed. A venue whose Loaded
+    # token has died is enough to trigger it.
     component_key: str,
     action_name: str,
     body: ExecuteRequest,

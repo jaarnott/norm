@@ -54,13 +54,27 @@ def test_passes_the_recipe_through_to_orbits_endpoint():
     assert "create 'COMPONENT - Aioli'" in logs[0]
 
 
-def test_an_edit_needs_only_the_recipe_id():
-    out, calls, _ = _run({"recipe_id": "abc", "mode": "merge", "ingredients": []})
+def test_an_edit_with_the_version_goes_straight_through():
+    out, calls, _ = _run(
+        {"recipe_id": "abc", "version_id": "v1", "mode": "merge", "ingredients": []}
+    )
     assert calls and calls[0][2] == {
         "recipe_id": "abc",
+        "version_id": "v1",
         "mode": "merge",
         "ingredients": [],
     }
+
+
+def test_an_edit_without_the_version_reads_the_current_one_first():
+    """Orbit treats recipe_id-without-version_id as a create and refuses it —
+    'name and yield_unit_id are required', 14 times in prod thread aad94383.
+    (The full read → write sequence is in tests/test_recipe_draft.py.)"""
+    out, calls, _ = _run({"recipe_id": "abc", "mode": "merge", "ingredients": []})
+    # the harness's call_api answers every call with a save receipt, which is
+    # no recipe — so the read fails and nothing is written
+    assert [a for _, a, _ in calls] == ["kitchen_get_recipe"]
+    assert "Couldn't read recipe abc" in out["error"]
 
 
 def test_a_create_without_a_name_is_refused_before_any_call():
@@ -97,10 +111,14 @@ def test_json_text_is_read_and_numbers_and_flags_coerced():
 def test_an_ingredient_edit_must_say_merge_or_replace():
     """Orbit defaults to replace: sending one changed line deleted the rest."""
     line = {"kind": "item", "name": "Salt", "quantity": 5, "unit": "g"}
-    out, calls, _ = _run({"recipe_id": "abc", "ingredients": [line]})
+    out, calls, _ = _run(
+        {"recipe_id": "abc", "version_id": "v1", "ingredients": [line]}
+    )
     assert "needs mode" in out["error"] and out["error"].startswith("nothing written")
     assert calls == []
-    out, calls, _ = _run({"recipe_id": "abc", "ingredients": [], "mode": "Merge"})
+    out, calls, _ = _run(
+        {"recipe_id": "abc", "version_id": "v1", "ingredients": [], "mode": "Merge"}
+    )
     assert calls[0][2]["mode"] == "merge"
     # a create has no lines to lose
     out, calls, _ = _run({"name": "New", "yield_unit": "kg", "ingredients": [line]})

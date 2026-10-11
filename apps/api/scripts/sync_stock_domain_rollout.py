@@ -200,7 +200,7 @@ PLAYBOOK_PATCHES: dict[str, list[tuple[str, str]]] = {
             "tell the user",
         )
     ],
-    "create_recipe_from_ingredients": [
+    "create_recipes": [
         (
             "check get_stock_items / get_recipes for anything ambiguous",
             "check get_stock / get_recipes for anything ambiguous",

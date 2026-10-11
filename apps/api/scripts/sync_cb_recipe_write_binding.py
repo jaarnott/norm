@@ -34,8 +34,11 @@ ACTION = "kitchen_record_recipe"
 DEAD_ACTIONS = {"kitchen_loadedhub_update_recipe"}
 CAP_LABEL = "Create or edit a recipe and save it to LoadedHub (approve-gated)."
 
-PLAYBOOK_SLUG = "create_recipe_from_ingredients"
-PLAYBOOK_INSTRUCTIONS = """Goal: turn the recipe the user just gave you (ingredients + instructions) into a saved LoadedHub recipe, then open it for review.
+PLAYBOOK_SLUG = "create_recipes"
+# The live text is owned by scripts/sync_recipe_drafting.py since 11 Oct 2026
+# (the card-based flow); this script only ever brings an older text up to it.
+# The original 2026-08 text is kept below for the record.
+PLAYBOOK_INSTRUCTIONS_2026_08 = """Goal: turn the recipe the user just gave you (ingredients + instructions) into a saved LoadedHub recipe, then open it for review.
 
 1. **Parse what they gave you.** Extract: recipe name, yield (how much it makes), each ingredient with quantity and unit, and the method. If the name is missing, look at get_recipes for the venue's naming convention (e.g. "COMPONENT - X", "ENTREE - X") and propose one — ask, don't invent silently. If the yield is missing, ask for it.
 
@@ -46,6 +49,15 @@ PLAYBOOK_INSTRUCTIONS = """Goal: turn the recipe the user just gave you (ingredi
 4. **Open the saved recipe.** The create's response may return null ids — find the new recipe by name via get_recipes to get its id, then call edit_recipe with that recipe_id, the venue_id and changes {} — this brings the recipe up in the recipe editor card. Tell the user it's open below for review.
 
 Never claim the recipe is saved before the approved write has returned success, and never skip the confirmation step for unclear matches."""
+
+
+def _current_playbook_text() -> str:
+    from scripts.sync_recipe_drafting import PLAYBOOK
+
+    return PLAYBOOK["instructions"]
+
+
+PLAYBOOK_INSTRUCTIONS = _current_playbook_text()
 
 
 def main() -> None:
@@ -79,9 +91,15 @@ def main() -> None:
             )
             .first()
         )
-        caps = [
-            c for c in (binding.capabilities or []) if c.get("action") not in DEAD_ACTIONS
-        ] if binding else []
+        caps = (
+            [
+                c
+                for c in (binding.capabilities or [])
+                if c.get("action") not in DEAD_ACTIONS
+            ]
+            if binding
+            else []
+        )
         removed = binding is not None and len(caps) != len(binding.capabilities or [])
         if removed:
             changes.append(f"binding: remove dead cap(s) {sorted(DEAD_ACTIONS)}")

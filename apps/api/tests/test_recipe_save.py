@@ -81,9 +81,10 @@ def test_update_sends_ids_and_no_create_flag(capture):
     assert "create" not in f
     assert f["venue_id"] == "cbven-1"
     # kitchen_record_recipe shape (verified live): editor lines map to
-    # ingredients {kind, name, quantity, unit} — unit takes the unit id.
+    # ingredients {kind, name, ref_id, quantity, unit} — unit takes the unit
+    # id, and ref_id (Oct 2026) pins the line to the item the editor chose.
     assert f["ingredients"] == [
-        {"kind": "item", "name": "Egg", "quantity": 2, "unit": "u1"}
+        {"kind": "item", "name": "Egg", "ref_id": "i1", "quantity": 2, "unit": "u1"}
     ]
     assert "lines" not in f
     assert out["created"] is False
