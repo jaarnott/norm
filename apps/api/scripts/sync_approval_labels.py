@@ -70,6 +70,7 @@ READS = [
 #: button (Place Order, Save, Share) is the approval.
 DRAFTS = [
     "loadedhub.edit_recipe",
+    "loadedhub.draft_recipe",  # one card per recipe; each card's Save writes
     "norm.create_purchase_order",
     "norm.save_app",  # private to its author until shared
     "norm.show_roster",  # opens the roster editor; its Save writes

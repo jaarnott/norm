@@ -55,6 +55,7 @@ DRAFT_RECIPE = {
     "action": ACTION,
     "method": "GET",  # read path: the handler's result becomes the working docs
     "read_only": True,
+    "effect": "draft",  # the card's Save is the approval (spec_rows.EFFECTS)
     "description": (
         "Open NEW recipes as recipe-editor cards for the chef to finish and "
         "save — THE way to create recipes. Send each recipe as written (name, "

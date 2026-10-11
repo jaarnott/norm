@@ -724,3 +724,19 @@ class TestCreatedIdIsReadBack:
         )
         assert [a for _, a in calls] == ["kitchen_record_recipe", "get_all_recipes"]
         assert (out["data"]["recipe_id"], out["data"]["version_id"]) == ("r-new", "v-2")
+
+
+def test_the_tool_row_declares_a_draft_effect_and_fans_out():
+    """Every tool an App claims declares its effect (config_validator); a
+    draft's card is the approval. The row fans data.recipes out, one document
+    and one card per draft."""
+    from scripts.sync_recipe_drafting import DRAFT_RECIPE
+
+    assert DRAFT_RECIPE["effect"] == "draft"
+    assert DRAFT_RECIPE["working_document"] == {
+        "doc_type": "recipe",
+        "sync_mode": "submit",
+        "ref_fields": ["draft_id"],
+        "items_path": "recipes",
+    }
+    assert DRAFT_RECIPE["display_component"] == "recipe_editor"
