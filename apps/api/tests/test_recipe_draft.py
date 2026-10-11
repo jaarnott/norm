@@ -740,3 +740,101 @@ def test_the_tool_row_declares_a_draft_effect_and_fans_out():
         "items_path": "recipes",
     }
     assert DRAFT_RECIPE["display_component"] == "recipe_editor"
+
+
+# ------------------------------------ cases from the first production run ----
+
+LZ_ITEMS = ITEMS + [
+    {
+        "id": "i-oil-ev",
+        "name": "OIL OLIVE EXTRA VIRGIN",
+        "unitType": 1,
+        "countingUnitId": "u-litre",
+    },
+    {
+        "id": "i-oil-pom",
+        "name": "OIL OLIVE POMACE",
+        "unitType": 1,
+        "countingUnitId": "u-litre",
+    },
+    {
+        "id": "i-salt-fl",
+        "name": "SALT FLAKES",
+        "unitType": 0,
+        "countingUnitId": "u-kilo",
+    },
+    {
+        "id": "i-salt-tb",
+        "name": "SALT TABLE IODISED",
+        "unitType": 0,
+        "countingUnitId": "u-kilo",
+    },
+]
+LZ_RECIPES = RECIPES + [
+    {
+        "id": "r-panna",
+        "name": "COMPONENT - OLIVE OIL PANNACOTTA",
+        "currentVersion": {"yieldUnitId": "u-each"},
+    },
+    {
+        "id": "r-herb",
+        "name": "COMPONENT - HERB BUTTER",
+        "currentVersion": {"yieldUnitId": "u-kilo"},
+    },
+    {
+        "id": "r-brown",
+        "name": "COMPONENT - BUTTER BROWN",
+        "currentVersion": {"yieldUnitId": "u-kilo"},
+    },
+    {
+        "id": "r-anch",
+        "name": "COMPONENT - ANCHOVY BUTTER",
+        "currentVersion": {"yieldUnitId": "u-kilo"},
+    },
+    {
+        "id": "r-rum",
+        "name": "HOT BUTTTERED RUM - BUTTER MIX",
+        "currentVersion": {"yieldUnitId": "u-kilo"},
+    },
+    {
+        "id": "r-lsalt",
+        "name": "COMPONENT - LIME SALT",
+        "currentVersion": {"yieldUnitId": "u-kilo"},
+    },
+    {
+        "id": "r-ssalt",
+        "name": "COMPONENT - SUMAC SALT",
+        "currentVersion": {"yieldUnitId": "u-kilo"},
+    },
+]
+LZ = {"items": LZ_ITEMS, "recipes": LZ_RECIPES, "units": UNITS}
+
+
+class TestFirstProductionRun:
+    """La Zeppa, 11 Oct 2026: what the first real draft got wrong."""
+
+    def test_a_sub_recipe_that_merely_contains_the_words_is_not_picked(self):
+        """'olive oil' was matched to COMPONENT - OLIVE OIL PANNACOTTA."""
+        out = match_line(line("olive oil", 300, "ml"), LZ)
+        assert out["match"]["status"] == "unresolved"
+        assert out["ref_id"] is None
+        kinds = {c["kind"] for c in out["match"]["candidates"]}
+        assert "item" in kinds
+        assert "OIL OLIVE EXTRA VIRGIN" in {
+            c["name"] for c in out["match"]["candidates"]
+        }
+
+    def test_candidates_show_both_kinds(self):
+        """'butter' and 'salt' offered only sub-recipes; the stock items never
+        made the list."""
+        for name, item in (("butter", "BUTTER UNSALTED"), ("salt", "SALT FLAKES")):
+            out = match_line(line(name, 10, "g"), LZ)
+            assert out["match"]["status"] == "unresolved"
+            names = {c["name"] for c in out["match"]["candidates"]}
+            kinds = {c["kind"] for c in out["match"]["candidates"]}
+            assert kinds == {"item", "recipe"}, (name, names)
+            assert item in names, (name, names)
+
+    def test_an_exact_sub_recipe_name_still_wins(self):
+        out = match_line(line("herb butter", 50, "g"), LZ)
+        assert (out["match"]["status"], out["ref_id"]) == ("matched", "r-herb")

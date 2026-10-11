@@ -3480,10 +3480,12 @@ def _draft_recipe(params: dict, db: Session, thread_id: str | None) -> dict:
             "cards": summarise(drafts),
             "recipes": drafts,
             "note": (
-                "Each recipe is open as a card below. Lines in amber need the "
-                "chef: a candidate to pick, a stock item to create, or a "
-                "quantity. Save on a card creates that recipe in Loaded — "
-                "nothing is saved until then. Don't repeat the drafts in text."
+                "Each recipe is open as a card below. Tell the chef, in a few "
+                "lines, what needs them before each card can be saved — "
+                "`cards[].needs_the_chef` names each line and why (a candidate "
+                "to pick, a stock item to create, a quantity) — and any recipe "
+                "that already exists. Save on a card creates that recipe in "
+                "Loaded; nothing is saved until then. Don't repeat the drafts."
             ),
         },
         "error": None,

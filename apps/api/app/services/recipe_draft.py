@@ -413,17 +413,27 @@ def match_line(line: dict, cat: dict, batch_names: set[str] | None = None) -> di
         # "polenta" is the component it makes, not the raw grain). A pool that
         # scores best but holds two equal names is ambiguous — the weaker pool
         # never wins by default (two POLENTA components must not fall through
-        # to POLENTA FINE GROUND).
-        if rec_pick is not None and rec_best >= item_best:
+        # to POLENTA FINE GROUND). A sub-recipe is picked only on its exact
+        # name or the same words: extra words in a recipe's name change the
+        # dish ("olive oil" is not OLIVE OIL PANNACOTTA), whereas a stock
+        # item's extra words qualify the same thing (POPCORN KERNELS).
+        if rec_pick is not None and rec_best >= 2 and rec_best >= item_best:
             chosen, kind = rec_pick, "recipe"
-        elif item_pick is not None and item_best > rec_best:
+        elif item_pick is not None and (item_best > rec_best or rec_best < 2):
             chosen, kind = item_pick, "item"
         else:
-            merged = sorted(
-                [(s, "recipe", r) for s, r in rec_scored]
-                + [(s, "item", i) for s, i in item_scored],
-                key=lambda t: (-t[0], t[1] != "recipe"),
-            )
+            # Candidates from both pools, best first, a sub-recipe ahead of an
+            # item on equal score — but never one kind crowding out the other.
+            by_kind = {
+                "recipe": [(s, "recipe", r) for s, r in rec_scored],
+                "item": [(s, "item", i) for s, i in item_scored],
+            }
+            picked: list = []
+            for k in ("recipe", "item"):
+                picked += by_kind[k][:2]
+            rest = [t for k in ("recipe", "item") for t in by_kind[k][2:]]
+            picked.sort(key=lambda t: (-t[0], t[1] != "recipe"))
+            merged = picked + sorted(rest, key=lambda t: (-t[0], t[1] != "recipe"))
             out["match"]["candidates"] = [
                 {"id": row["id"], "name": row.get("name"), "kind": k}
                 for _, k, row in merged[: _MAX_CANDIDATES + 1]
