@@ -11,35 +11,43 @@ export const metadata: Metadata = {
 };
 
 // Each team member keeps one colour across the site (marketing.css .mkt-c-*).
-const TEAM: { name: string; tone: string; dark?: boolean; job: string; does: string[] }[] = [
+// `image` is a still life on the member's colour (public/marketing/team-*.webp).
+const TEAM: { name: string; image: string; tone: string; dark?: boolean; job: string; does: string[] }[] = [
   {
-    name: 'Procurement', tone: 'mkt-c-procurement', job: 'Orders, supplier invoices and stock.',
+    name: 'Procurement', image: 'team-procurement', tone: 'mkt-c-procurement', job: 'Orders, supplier invoices and stock.',
     does: ['Drafts purchase orders for you to approve', 'Checks each invoice against the order', 'Reconciles statements, stocktakes and tenders'],
   },
   {
-    name: 'Time & Attendance', tone: 'mkt-c-time', job: 'Rosters and the cost of them.',
+    name: 'Time & Attendance', image: 'team-time', tone: 'mkt-c-time', job: 'Rosters and the cost of them.',
     does: ['Edits and publishes rosters', 'Watches labour against sales', 'Checks who turned up against the roster'],
   },
   {
-    name: 'HR', tone: 'mkt-c-hr', job: 'Hiring, training and your people.',
+    name: 'HR', image: 'team-hr', tone: 'mkt-c-hr', job: 'Hiring, training and your people.',
     does: ['Job posts and a candidate pipeline', 'Training with on-shift sign-offs', 'Employee records through BambooHR'],
   },
   {
-    name: 'Executive Chef', tone: 'mkt-c-chef', job: 'Recipes, menus and margins.',
+    name: 'Executive Chef', image: 'team-chef', tone: 'mkt-c-chef', job: 'Recipes, menus and margins.',
     does: ['Writes and costs recipes', 'Keeps every menu up to date', 'Shows which dishes to push, rework or drop'],
   },
   {
-    name: 'Marketing', tone: 'mkt-c-marketing', job: 'Campaigns and socials.',
+    name: 'Marketing', image: 'team-marketing', tone: 'mkt-c-marketing', job: 'Campaigns and socials.',
     does: ['Writes and schedules email campaigns', 'Plans and queues social posts', 'Reports back on reach'],
   },
   {
-    name: 'Reports', tone: 'mkt-c-reports', dark: true, job: 'The numbers, whenever you ask.',
+    name: 'Reports', image: 'team-reports', tone: 'mkt-c-reports', dark: true, job: 'The numbers, whenever you ask.',
     does: ['Sales, labour, stock and cost of goods', 'Dashboards and saved charts', 'A weekly report in your inbox'],
   },
 ];
 
-// The Cook Brothers venues Norm runs at every day.
-const VENUES = ['La Zeppa', 'Freeman & Grey', 'The Glass Goose', 'Mr Murdochs', 'Dunedin Social Club', 'Bessie'];
+// Venues using Norm, each named on its own (city from its address in Norm).
+const VENUES: [string, string][] = [
+  ['La Zeppa', 'Auckland'],
+  ['Freeman & Grey', 'Auckland'],
+  ['The Glass Goose', 'Auckland'],
+  ['Mr Murdochs', 'Auckland'],
+  ['Dunedin Social Club', 'Dunedin'],
+  ['Bessie', 'Christchurch'],
+];
 
 // Real quotes only, each with the person's OK to use their name and words.
 // The section stays hidden until there is one.
@@ -49,8 +57,8 @@ export default function HomePage() {
   return (
     <>
       {/* Hero */}
-      <section className="mkt-section mkt-section--cream" style={{ paddingTop: 48 }}>
-        <div className="mkt-wrap mkt-split">
+      <section className="mkt-section mkt-section--cream mkt-hero">
+        <div className="mkt-wrap mkt-hero-grid">
           <div className="mkt-stack mkt-stack--lg">
             <h1 className="mkt-h1">The best hospitality manager you&apos;ve ever had. Working 24/7.</h1>
             <p className="mkt-lead">
@@ -67,14 +75,16 @@ export default function HomePage() {
           </div>
 
           <div className="mkt-hero-visual">
+            {/* Norm, as a person: the hospitality manager the product stands in
+                for. A generated portrait (no real person or venue), so no caption.
+                Persona and source brief: docs/norm-persona.md. */}
             <Photo
-              name="glass-goose-deck" widths={[640, 1100]} ratio={1620 / 1100}
-              alt="A full deck at The Glass Goose, under hanging greenery and festoon lights."
-              sizes="(max-width: 720px) 100vw, 560px"
+              name="norm-pub" widths={[900, 1536]} ratio={1024 / 1536}
+              alt="Norm, a friendly hospitality manager in a green work shirt, leaning on the bar of a classic pub with a coffee and grinning at you."
+              sizes="(max-width: 900px) 100vw, 60vw"
               className="mkt-hero-photo"
               eager
             />
-            <span className="mkt-caption">The Glass Goose, Auckland</span>
             {/* A Norm conversation, drawn the way the app draws it. */}
             <div
               className="mkt-demo"
@@ -120,6 +130,7 @@ export default function HomePage() {
           <div className="mkt-team">
             {TEAM.map(member => (
               <div key={member.name} className={`mkt-member-card ${member.tone}${member.dark ? ' mkt-dark' : ''}`}>
+                <Photo name={member.image} widths={[480, 800]} ratio={1} alt="" sizes="(max-width: 720px) 100vw, 380px" className="mkt-member-media" />
                 <h3 className="mkt-h3">{member.name}</h3>
                 <p className="mkt-text">{member.job}</p>
                 <ul>
@@ -239,37 +250,28 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Where it runs: the venues, in photos */}
+      {/* The venues using Norm, each on its own; real photos from one of them. */}
       <section className="mkt-section mkt-section--cream">
         <div className="mkt-wrap mkt-stack mkt-stack--xl">
           <div className="mkt-split" style={{ alignItems: 'end', gap: 32 }}>
             <div className="mkt-stack">
-              <h2 className="mkt-h2">Built inside a hospitality group.</h2>
+              <h2 className="mkt-h2">Venues running on Norm.</h2>
               <p className="mkt-body">
-                Norm was made with Cook Brothers Bars and is used every day across their venues, for the orders, invoices, rosters and numbers behind each service.
+                Bars, restaurants and function venues use Norm for the orders, invoices, rosters and numbers behind each service.
               </p>
             </div>
-            <ul className="mkt-venues" aria-label="Cook Brothers Bars venues">
-              {VENUES.map(v => <li key={v}>{v}</li>)}
+            <ul className="mkt-venues" aria-label="Venues using Norm">
+              {VENUES.map(([name, city]) => <li key={name}>{name}<span>{city}</span></li>)}
             </ul>
           </div>
-          <div className="mkt-gallery">
-            <figure>
-              <Photo name="glass-goose-cocktail" widths={[520, 950]} ratio={1316 / 950} alt="A yellow cocktail garnished with a leaf, held up against tropical plants." sizes="(max-width: 720px) 100vw, 290px" />
-              <figcaption className="mkt-caption">The Glass Goose</figcaption>
-            </figure>
-            <figure>
-              <Photo name="glass-goose-canapes" widths={[456]} ratio={488 / 456} alt="Canapés on a wooden board: crostini with pickled onion and fried chicken pieces." sizes="(max-width: 720px) 100vw, 290px" />
-              <figcaption className="mkt-caption">Function canapés</figcaption>
-            </figure>
-            <figure>
-              <Photo name="glass-goose-party" widths={[520, 830]} ratio={1652 / 830} alt="Two guests laughing at a party under hanging garlands." sizes="(max-width: 720px) 100vw, 290px" />
-              <figcaption className="mkt-caption">A function</figcaption>
-            </figure>
-            <figure>
-              <Photo name="glass-goose-walkfork" widths={[456]} ratio={488 / 456} alt="Fried fish with lemon and herbs served in a paper boat." sizes="(max-width: 720px) 100vw, 290px" />
-              <figcaption className="mkt-caption">Walk-and-fork menu</figcaption>
-            </figure>
+          <div className="mkt-stack" style={{ gap: 10 }}>
+            <div className="mkt-gallery">
+              <Photo name="glass-goose-deck" widths={[640, 1100]} ratio={1620 / 1100} alt="A full deck at The Glass Goose, under hanging greenery and festoon lights." sizes="(max-width: 720px) 50vw, 290px" />
+              <Photo name="glass-goose-cocktail" widths={[520, 950]} ratio={1323 / 936} alt="A yellow cocktail garnished with a leaf, held up against tropical plants." sizes="(max-width: 720px) 50vw, 290px" />
+              <Photo name="glass-goose-canapes" widths={[415]} ratio={462 / 415} alt="Canapés on a wooden board: crostini with pickled onion and fried chicken pieces." sizes="(max-width: 720px) 50vw, 290px" />
+              <Photo name="glass-goose-party" widths={[520, 830]} ratio={1652 / 830} alt="Two guests laughing at a party under hanging garlands." sizes="(max-width: 720px) 50vw, 290px" />
+            </div>
+            <p className="mkt-caption">Photos from The Glass Goose, Auckland.</p>
           </div>
         </div>
       </section>

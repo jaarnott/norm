@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import Photo from '../_components/Photo';
 import { SIGNUP_HREF } from '../_components/links';
 
 export const metadata: Metadata = {
@@ -9,9 +10,9 @@ export const metadata: Metadata = {
 };
 
 // Same colour per member as the home page (marketing.css .mkt-c-*).
-const MEMBERS: { name: string; tone: string; dark?: boolean; summary: string; does: string[] }[] = [
+const MEMBERS: { name: string; image: string; tone: string; dark?: boolean; summary: string; does: string[] }[] = [
   {
-    name: 'Procurement', tone: 'mkt-c-procurement',
+    name: 'Procurement', image: 'team-procurement', tone: 'mkt-c-procurement',
     summary: 'Ordering, invoices and stock, from the first purchase order to the month-end statement.',
     does: [
       'Purchase orders drafted from what you sell and hold',
@@ -23,7 +24,7 @@ const MEMBERS: { name: string; tone: string; dark?: boolean; summary: string; do
     ],
   },
   {
-    name: 'Time & Attendance', tone: 'mkt-c-time',
+    name: 'Time & Attendance', image: 'team-time', tone: 'mkt-c-time',
     summary: 'Rosters that fit the trade, and labour you can see coming.',
     does: [
       'Week and day roster views',
@@ -33,7 +34,7 @@ const MEMBERS: { name: string; tone: string; dark?: boolean; summary: string; do
     ],
   },
   {
-    name: 'HR', tone: 'mkt-c-hr',
+    name: 'HR', image: 'team-hr', tone: 'mkt-c-hr',
     summary: 'From the first job ad to a fully trained team member.',
     does: [
       'Norm Hiring: openings, candidates and a talent pool',
@@ -43,7 +44,7 @@ const MEMBERS: { name: string; tone: string; dark?: boolean; summary: string; do
     ],
   },
   {
-    name: 'Executive Chef', tone: 'mkt-c-chef',
+    name: 'Executive Chef', image: 'team-chef', tone: 'mkt-c-chef',
     summary: 'Recipes and menus that stay costed and current.',
     does: [
       'Recipes written, costed and kept up to date',
@@ -53,7 +54,7 @@ const MEMBERS: { name: string; tone: string; dark?: boolean; summary: string; do
     ],
   },
   {
-    name: 'Marketing', tone: 'mkt-c-marketing',
+    name: 'Marketing', image: 'team-marketing', tone: 'mkt-c-marketing',
     summary: 'Keep the room full without another login.',
     does: [
       'Email campaigns written and scheduled in Brevo',
@@ -62,7 +63,7 @@ const MEMBERS: { name: string; tone: string; dark?: boolean; summary: string; do
     ],
   },
   {
-    name: 'Reports', tone: 'mkt-c-reports', dark: true,
+    name: 'Reports', image: 'team-reports', tone: 'mkt-c-reports', dark: true,
     summary: 'Ask a question, get the number. Included with every plan.',
     does: [
       'Sales, labour, stock and cost of goods',
@@ -109,6 +110,7 @@ export default function FeaturesPage() {
           {MEMBERS.map(m => (
             <article key={m.name} className={`mkt-member-row ${m.tone}${m.dark ? ' mkt-dark' : ''}`}>
               <div className="mkt-stack" style={{ gap: 10 }}>
+                <Photo name={m.image} widths={[480, 800]} ratio={1} alt="" sizes="(max-width: 720px) 100vw, 260px" className="mkt-member-thumb" />
                 <h2 className="mkt-h2 mkt-h2--sm">{m.name}</h2>
                 <p className="mkt-text">{m.summary}</p>
               </div>
