@@ -1,14 +1,14 @@
 export const metadata = { title: 'Privacy Policy – Norm' };
 
 const sectionStyle = { marginBottom: '2rem' };
-const h2Style = { fontSize: '1.3rem', fontWeight: 700 as const, color: '#2d2a26', marginBottom: '0.75rem' };
-const pStyle = { color: '#555', lineHeight: 1.8, fontSize: '0.95rem', marginBottom: '0.75rem' };
+const h2Style = { fontSize: '1.3rem', fontWeight: 700 as const, color: '#1a1a1a', marginBottom: '0.75rem' };
+const pStyle = { color: '#4f4943', lineHeight: 1.8, fontSize: '0.95rem', marginBottom: '0.75rem' };
 
 export default function PrivacyPage() {
   return (
     <div style={{ maxWidth: 780, margin: '0 auto', padding: '3rem 2rem 5rem' }}>
-      <h1 style={{ fontSize: '2rem', fontWeight: 800, color: '#2d2a26', marginBottom: '0.5rem' }}>Privacy Policy</h1>
-      <p style={{ color: '#999', fontSize: '0.85rem', marginBottom: '2.5rem' }}>Last updated: March 25, 2026</p>
+      <h1 style={{ fontSize: '2rem', fontWeight: 800, color: '#1a1a1a', marginBottom: '0.5rem' }}>Privacy Policy</h1>
+      <p style={{ color: '#69615a', fontSize: '0.85rem', marginBottom: '2.5rem' }}>Last updated: March 25, 2026</p>
 
       <div style={sectionStyle}>
         <h2 style={h2Style}>1. Introduction</h2>

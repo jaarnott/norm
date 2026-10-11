@@ -1,108 +1,173 @@
-'use client';
-
+import type { Metadata } from 'next';
 import Link from 'next/link';
-import { useBreakpoint } from '../../hooks/useBreakpoint';
+import type { LucideIcon } from 'lucide-react';
+import { CalendarClock, ChartColumn, Check, ChefHat, Megaphone, ShoppingCart, Users } from 'lucide-react';
+import { SIGNUP_HREF } from '../_components/links';
 
-const FEATURES = [
+export const metadata: Metadata = {
+  title: { absolute: 'Features — Norm' },
+  description:
+    'Procurement, Time & Attendance, HR, Executive Chef, Marketing and Reports: an AI team for hospitality that works in the systems you already use.',
+};
+
+const MEMBERS: { name: string; icon: LucideIcon; summary: string; does: string[] }[] = [
   {
-    title: 'Conversational AI', icon: '💬',
-    desc: 'Talk to Norm like you would a colleague. It understands context, asks clarifying questions, and chains actions across your systems.',
-    details: ['Natural language queries and commands', 'Multi-turn conversations with context awareness', 'Visible thinking steps so you see the reasoning', 'Parallel tool calls for faster data gathering', 'Approval gates for write operations'],
+    name: 'Procurement', icon: ShoppingCart,
+    summary: 'Ordering, invoices and stock, from the first purchase order to the month-end statement.',
+    does: [
+      'Purchase orders drafted from what you sell and hold',
+      'Supplier invoices read and checked against the order',
+      'Clean invoices received automatically, if you choose',
+      'Statements reconciled at month end',
+      'Stock on hand, stocktakes and variance',
+      'Supplier tenders: compare prices before you switch',
+    ],
   },
   {
-    title: 'Roster Management', icon: '📅',
-    desc: 'Visual drag-and-drop scheduling that syncs with your venue systems in real time.',
-    details: ['Week grid view with staff rows and daily columns', 'Day timeline view with hour-by-hour visualization', 'Drag shifts between staff members', 'Resize shifts to adjust clock-in/out times', 'Multi-venue roster support', 'Real-time sync with LoadedHub'],
+    name: 'Time & Attendance', icon: CalendarClock,
+    summary: 'Rosters that fit the trade, and labour you can see coming.',
+    does: [
+      'Week and day roster views',
+      'Drag and resize shifts; publish when ready',
+      'Labour cost against sales and budget',
+      'Who turned up, checked against the roster',
+    ],
   },
   {
-    title: 'Procurement & Stock', icon: '📦',
-    desc: 'Track inventory, generate purchase orders, and manage suppliers from a single conversation.',
-    details: ['Stock level queries across time periods', 'Automated purchase order generation', 'Supplier management and ordering', 'Usage calculation and forecasting', 'Budget-based stock recommendations', 'Multi-line PO editor with approval workflow'],
+    name: 'HR', icon: Users,
+    summary: 'From the first job ad to a fully trained team member.',
+    does: [
+      'Norm Hiring: openings, candidates and a talent pool',
+      'CVs read and summarised',
+      'Norm Training: programs, plans and on-shift sign-offs',
+      'Employee records through BambooHR',
+    ],
   },
   {
-    title: 'HR & Hiring', icon: '👥',
-    desc: 'Manage your hiring pipeline from job posting to onboarding, with AI-assisted candidate screening.',
-    details: ['Job board with status tracking', 'Candidate management with application history', 'Resume analysis and scoring', 'Screening questions and rating system', 'Integration with BambooHR', 'Employee onboarding workflows'],
+    name: 'Executive Chef', icon: ChefHat,
+    summary: 'Recipes and menus that stay costed and current.',
+    does: [
+      'Recipes written, costed and kept up to date',
+      'Turn a recipe document into a recipe card',
+      'Menus edited in one place',
+      'Menu engineering by popularity and margin',
+    ],
   },
   {
-    title: 'Automated Tasks', icon: '⚡',
-    desc: 'Schedule recurring workflows that run on autopilot — checks, reports, and alerts without lifting a finger.',
-    details: ['Daily, weekly, and monthly schedules', 'Manual trigger for on-demand runs', 'Test mode for dry runs', 'Execution history with status tracking', 'Per-agent task routing', 'Pause and resume workflows'],
+    name: 'Marketing', icon: Megaphone,
+    summary: 'Keep the room full without another login.',
+    does: [
+      'Email campaigns written and scheduled in Brevo',
+      'Social posts planned in Metricool',
+      'Reach and engagement reported back',
+    ],
   },
   {
-    title: 'Reporting & Analytics', icon: '📊',
-    desc: 'Generate sales reports, stock analyses, and operational summaries on demand or on schedule.',
-    details: ['Sales data across time periods', 'Stock on hand and usage reports', 'Budget vs. actual analysis', 'Cross-venue comparisons', 'Automated report scheduling', 'Markdown-formatted output'],
-  },
-  {
-    title: 'Integrations', icon: '🔗',
-    desc: 'Norm connects to the systems you already use, with a flexible connector architecture that grows with you.',
-    details: ['LoadedHub — rostering, stock, sales', 'BambooHR — jobs, candidates, employees', 'Bidfood — supplier ordering', 'OAuth2 and API key authentication', 'Custom connector builder', 'Response transforms for clean data'],
-  },
-  {
-    title: 'Multi-Venue Management', icon: '🏢',
-    desc: 'Manage multiple locations from a single dashboard with per-venue connectors and unified reporting.',
-    details: ['Per-venue connector configuration', 'Cross-venue data queries', 'Venue-scoped task routing', 'Team member access control', 'Unified billing per organization'],
+    name: 'Reports', icon: ChartColumn,
+    summary: 'Ask a question, get the number. Included with every plan.',
+    does: [
+      'Sales, labour, stock and cost of goods',
+      'Budgets against actuals, venue by venue',
+      'Dashboards and saved charts',
+      'Reports emailed on a schedule',
+    ],
   },
 ];
 
-export default function FeaturesPage() {
-  const { isMobile } = useBreakpoint();
-  const sectionStyle = { maxWidth: 900, margin: '0 auto', padding: isMobile ? '0 1rem' : '0 2rem' };
+const INCLUDED: { title: string; body: string }[] = [
+  { title: 'Approvals you control', body: 'Every change previewed. Choose what Norm may do without asking.' },
+  { title: 'Scheduled tasks', body: 'Daily, weekly or monthly. Work that needs you waits and emails you.' },
+  { title: 'A memory for your business', body: 'Norm remembers how you like things done, so you only say it once.' },
+  { title: 'Every venue', body: 'Each venue connects its own systems. Compare them side by side.' },
+  { title: 'Roles and permissions', body: 'Owners, managers, payroll and team members, or roles of your own.' },
+  { title: 'Phone and iPad', body: 'The full app on the device in your apron.' },
+  { title: 'App Builder', body: 'Describe a tool and Norm builds it on your data.' },
+  { title: 'Files and photos', body: 'Send an invoice PDF or a recipe document and Norm reads it.' },
+];
 
+const INTEGRATIONS: [string, string][] = [
+  ['LoadedHub', 'Rosters, sales, stock, invoices, recipes'],
+  ['Bidfood', 'Supplier ordering'],
+  ['BambooHR', 'Employees, jobs and candidates'],
+  ['Brevo', 'Email campaigns'],
+  ['Metricool', 'Social posts and reach'],
+];
+
+export default function FeaturesPage() {
   return (
-    <div>
-      <section style={{ ...sectionStyle, paddingTop: isMobile ? '2.5rem' : '4rem', paddingBottom: '3rem', textAlign: 'center' }}>
-        <h1 style={{ fontSize: isMobile ? '1.8rem' : '2.5rem', fontWeight: 800, marginBottom: '0.75rem', color: '#2d2a26' }}>
-          Built for hospitality operations
-        </h1>
-        <p style={{ color: '#999', fontSize: isMobile ? '1rem' : '1.1rem', maxWidth: 550, margin: '0 auto' }}>
-          Every feature designed around how hospitality venues actually work — from shift scheduling to stock orders.
-        </p>
+    <>
+      <section className="mkt-section mkt-section--cream" style={{ paddingTop: 48, paddingBottom: 72 }}>
+        <div className="mkt-wrap mkt-stack">
+          <span className="mkt-eyebrow">Features</span>
+          <h1 className="mkt-h1 mkt-h1--page">One AI team for the whole operation.</h1>
+          <p className="mkt-lead">
+            Norm works through a team of specialists, each with its own job. Hire the ones you need. They share one memory, one set of permissions, and your approval.
+          </p>
+        </div>
       </section>
 
-      <section style={{ ...sectionStyle, paddingBottom: '5rem' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-          {FEATURES.map((f) => (
-            <div key={f.title} style={{
-              display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? '1rem' : '2.5rem', alignItems: 'start',
-              backgroundColor: '#fff', borderRadius: 14, padding: isMobile ? '1.25rem' : '2rem', border: '1px solid #e8e4de',
-            }}>
-              <div>
-                <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>{f.icon}</div>
-                <h2 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '0.75rem', color: '#2d2a26' }}>{f.title}</h2>
-                <p style={{ color: '#888', fontSize: '0.9rem', lineHeight: 1.6, margin: 0 }}>{f.desc}</p>
+      <section className="mkt-section" style={{ paddingTop: 72 }}>
+        <div className="mkt-wrap mkt-stack" style={{ gap: 20 }}>
+          {MEMBERS.map(({ name, icon: Icon, summary, does }) => (
+            <article key={name} className="mkt-member">
+              <div className="mkt-stack" style={{ gap: 12 }}>
+                <span className="mkt-tile" aria-hidden="true"><Icon size={24} strokeWidth={1.75} /></span>
+                <h2 className="mkt-h3 mkt-h3--lg">{name}</h2>
+                <p className="mkt-text" style={{ fontSize: 17 }}>{summary}</p>
               </div>
-              <div>
-                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                  {f.details.map(d => (
-                    <li key={d} style={{ fontSize: '0.82rem', color: '#666', padding: '0.35rem 0', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                      <span style={{ color: '#a08060', flexShrink: 0 }}>&#10003;</span>
-                      <span>{d}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
+              <ul className="mkt-checks mkt-checks--grid">
+                {does.map(item => (
+                  <li key={item}><Check size={16} strokeWidth={2.25} aria-hidden="true" />{item}</li>
+                ))}
+              </ul>
+            </article>
           ))}
         </div>
       </section>
 
-      {/* CTA */}
-      <section style={{ ...sectionStyle, paddingBottom: '5rem', textAlign: 'center' }}>
-        <h2 style={{ fontSize: isMobile ? '1.4rem' : '1.8rem', fontWeight: 700, marginBottom: '1rem', color: '#2d2a26' }}>
-          See it in action
-        </h2>
-        <p style={{ color: '#999', fontSize: '1rem', marginBottom: '2rem' }}>
-          Start your free trial and connect your first venue in minutes.
-        </p>
-        <Link href="/login" style={{
-          backgroundColor: '#a08060', color: '#fff', padding: '0.75rem 2rem',
-          borderRadius: 10, fontSize: '1rem', fontWeight: 700, textDecoration: 'none',
-        }}>
-          Get Started Free
-        </Link>
+      <section className="mkt-section mkt-section--cream">
+        <div className="mkt-wrap mkt-stack" style={{ gap: 36 }}>
+          <div className="mkt-head">
+            <h2 className="mkt-h2">Every plan includes</h2>
+            <p className="mkt-body">The things that make Norm safe to hand work to.</p>
+          </div>
+          <div className="mkt-cards" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 16 }}>
+            {INCLUDED.map(item => (
+              <div key={item.title} className="mkt-card mkt-card--quiet">
+                <strong style={{ fontSize: 17 }}>{item.title}</strong>
+                <span className="mkt-text" style={{ fontSize: 15 }}>{item.body}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
-    </div>
+
+      <section className="mkt-section">
+        <div className="mkt-wrap mkt-split" style={{ alignItems: 'start', gap: 40 }}>
+          <div className="mkt-stack" style={{ gap: 12 }}>
+            <h2 className="mkt-h2">Works with the systems you already run</h2>
+            <p className="mkt-body">Norm reads from and writes to your existing tools, so nothing has to move.</p>
+          </div>
+          <div className="mkt-list">
+            {INTEGRATIONS.map(([name, what]) => (
+              <div key={name} className="mkt-list-row">
+                <strong>{name}</strong>
+                <span style={{ color: 'var(--mkt-ink-soft)', textAlign: 'right' }}>{what}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="mkt-section mkt-section--tint">
+        <div className="mkt-wrap mkt-wrap--narrow mkt-stack mkt-stack--lg mkt-center">
+          <h2 className="mkt-h2 mkt-h2--xl">See it on your own numbers.</h2>
+          <p className="mkt-lead">Connect a venue and ask Norm about last week. Free for 7 days.</p>
+          <div className="mkt-actions">
+            <Link href={SIGNUP_HREF} className="mkt-btn mkt-btn--primary">Start your free week</Link>
+          </div>
+        </div>
+      </section>
+    </>
   );
 }

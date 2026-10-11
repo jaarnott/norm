@@ -34,6 +34,8 @@ const figtreeExt = localFont({
 });
 
 export const metadata: Metadata = {
+  // Share images and canonical links resolve against the public site.
+  metadataBase: new URL('https://bettercallnorm.com'),
   title: 'Norm',
   description: 'AI-powered operations assistant for hospitality',
 };

@@ -6,10 +6,12 @@ import Button from '../ui/Button';
 
 interface LoginFormProps {
   onSuccess: (token: string, user: { id: string; email: string; full_name: string; role: string }) => void;
+  /** Which form to open on: the marketing site's "Start free" opens sign-up. */
+  initialMode?: 'login' | 'register';
 }
 
-export default function LoginForm({ onSuccess }: LoginFormProps) {
-  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
+export default function LoginForm({ onSuccess, initialMode = 'login' }: LoginFormProps) {
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');

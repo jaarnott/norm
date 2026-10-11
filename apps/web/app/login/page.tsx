@@ -20,9 +20,12 @@ function LoginInner() {
     router.push(next);
   };
 
+  // ?mode=signup (the marketing site's "Start free") opens on Create account.
+  const initialMode = params.get('mode') === 'signup' ? 'register' : 'login';
+
   // LoginForm draws the whole screen, wordmark included — this page used to
   // add a second "Norm / Sign in to your account" header above it.
-  return <LoginForm onSuccess={handleLogin} />;
+  return <LoginForm onSuccess={handleLogin} initialMode={initialMode} />;
 }
 
 export default function LoginPage() {

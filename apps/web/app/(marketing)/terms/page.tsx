@@ -1,14 +1,14 @@
 export const metadata = { title: 'Terms of Service – Norm' };
 
 const sectionStyle = { marginBottom: '2rem' };
-const h2Style = { fontSize: '1.3rem', fontWeight: 700 as const, color: '#2d2a26', marginBottom: '0.75rem' };
-const pStyle = { color: '#555', lineHeight: 1.8, fontSize: '0.95rem', marginBottom: '0.75rem' };
+const h2Style = { fontSize: '1.3rem', fontWeight: 700 as const, color: '#1a1a1a', marginBottom: '0.75rem' };
+const pStyle = { color: '#4f4943', lineHeight: 1.8, fontSize: '0.95rem', marginBottom: '0.75rem' };
 
 export default function TermsPage() {
   return (
     <div style={{ maxWidth: 780, margin: '0 auto', padding: '3rem 2rem 5rem' }}>
-      <h1 style={{ fontSize: '2rem', fontWeight: 800, color: '#2d2a26', marginBottom: '0.5rem' }}>Terms of Service</h1>
-      <p style={{ color: '#999', fontSize: '0.85rem', marginBottom: '2.5rem' }}>Last updated: March 25, 2026</p>
+      <h1 style={{ fontSize: '2rem', fontWeight: 800, color: '#1a1a1a', marginBottom: '0.5rem' }}>Terms of Service</h1>
+      <p style={{ color: '#69615a', fontSize: '0.85rem', marginBottom: '2.5rem' }}>Last updated: March 25, 2026</p>
 
       <div style={sectionStyle}>
         <h2 style={h2Style}>1. Acceptance of Terms</h2>
@@ -40,7 +40,7 @@ export default function TermsPage() {
 
       <div style={sectionStyle}>
         <h2 style={h2Style}>5. Your Data</h2>
-        <p style={pStyle}>You retain ownership of all data you submit to the Service. By using the Service, you grant us a limited licence to process your data solely to provide and improve the Service. We handle your data in accordance with our <a href="/privacy" style={{ color: '#a08060' }}>Privacy Policy</a>.</p>
+        <p style={pStyle}>You retain ownership of all data you submit to the Service. By using the Service, you grant us a limited licence to process your data solely to provide and improve the Service. We handle your data in accordance with our <a href="/privacy" style={{ color: '#8a5200' }}>Privacy Policy</a>.</p>
       </div>
 
       <div style={sectionStyle}>
