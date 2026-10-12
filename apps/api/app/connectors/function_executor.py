@@ -256,6 +256,9 @@ def execute_function(
     options: dict | None = None,
     call_api_override=None,
     storage_override=None,
+    email_override=None,
+    calendar_override=None,
+    pdf_override=None,
 ) -> dict:
     """Execute a consolidator Python function.
 
@@ -305,7 +308,13 @@ def execute_function(
 
     options = options or {}
     max_api_calls = min(
-        int(options.get("max_api_calls") or _DEFAULT_MAX_API_CALLS),
+        # `or` read a declared 0 as "unset": an app that makes no connector
+        # calls got 20. Only a missing/None value means the default.
+        int(
+            _DEFAULT_MAX_API_CALLS
+            if options.get("max_api_calls") is None
+            else options["max_api_calls"]
+        ),
         _HARD_MAX_API_CALLS,
     )
     allowed_write_actions = set(options.get("allowed_write_actions") or [])
@@ -963,6 +972,17 @@ def execute_function(
             # ambiguous for anything written tomorrow. `store` is only present
             # when the caller supplied a door for it.
             namespace["store"] = storage_override
+        if email_override is not None:
+            # Same pattern as `store`: present only when the caller (an app's
+            # logic run) supplies a door for it — services/app_email.py.
+            namespace["email"] = email_override
+        if calendar_override is not None:
+            # Same pattern again: venue-mailbox calendar invites
+            # (services/app_calendar.py) and candidate-pack PDFs
+            # (services/app_pdf.py), only when the caller supplies the door.
+            namespace["calendar"] = calendar_override
+        if pdf_override is not None:
+            namespace["pdf"] = pdf_override
         if preview_mode:
 
             def preview(card=None, basis=None):

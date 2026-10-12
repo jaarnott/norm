@@ -653,3 +653,47 @@ guessing PINs on a production system overnight. The editors above are built from
 the **exact content-type data shapes** captured in the live-data audit (§8), and
 enhanced beyond a like-for-like port (live previews, structured quiz builder,
 drag-and-drop) rather than copied.
+
+## 11. October 2026 — Norm brought up to date with Orbit
+
+*Plan of record: `~/.claude/plans/we-re-going-to-make-zesty-cake.md`. Supersedes the
+"prod has no data", fixture-path and §6 "deferred" notes above.*
+
+Norm Hiring and Norm Training are **built into Norm** (since 28 Sep, `app/builtin_apps/`,
+`services/builtin_apps.py`). Orbit is still the live system; Norm mirrors it until cut-over.
+
+**Data refresh (Phase 0).** `scripts/migrate_orbit_{training,hiring,files}.py` are a
+repeatable mirror: upsert by `orbit_id`, a delete pass for rows gone from Orbit (only
+orbit-sourced rows; a mass-delete guard stops a real run when deletes exceed 25 rows and
+25%, override `--allow-mass-delete`), all of Orbit's new review/interview fields and
+tables, ids mapped with the raw Orbit id kept beside them, soft-deleted reviews carried as
+deleted, evidence/CV/content-media files copied and re-linked on every run. Order:
+training → hiring → files. `--dry-run` works with the read-only prod login. Tests:
+`tests/test_orbit_import.py`. Run the real prod refresh only after the code that adds
+`storage.logic_only` is deployed (pay fields must not be readable through the raw records
+endpoints).
+
+**Platform (Phase 1)** — for built-in apps only:
+- `params["_viewer"]` — who is running, set by the server.
+- `spec.schedules` — daily jobs run once per org per day from `/internal/run-due-tasks`
+  (`services/app_schedules.py`, `app_schedule_runs`), as the system actor.
+- `spec.email` — the sandbox's `email` door (`services/app_email.py`): **off per org until
+  an org manager turns it on**, recipients must be the org's (unless `external`),
+  idempotency keys, limits, dry-run/test modes, suppressed outside production.
+- `storage.logic_only` — collections readable only through the app's own logic.
+- `store.put(..., venue_id="")` — explicit group-wide.
+
+**Training (Phases 2–3).** Plan venues, plan progress badges, People filters + manager
+field, and performance reviews (admin + manager sides; field rules enforced in
+`training.py`; cycles + nightly enrolment; manager digest; goals email; email log). The team
+member's side waits for staff logins.
+
+**Hiring (Phase 4).** Bulk candidate actions, email composer, group interviews +
+Interviews page, duplicate/reopen job; interview invitations sent once per booking;
+venue-mailbox calendar invites (`services/app_calendar.py`, connector `venue_mailbox` via
+`scripts/sync_venue_mailbox.py` — needs a Google OAuth client first) and candidate-pack PDFs
+(`services/app_pdf.py`). Norm Hiring stays switched off (BambooHR is the hiring system).
+
+**At cut-over:** final mirror run → switch the team → turn on HR emails (each app's Emails
+page) → connect venue mailboxes (never while Orbit is live: imported interviews carry Orbit's
+calendar event ids) → Orbit's HR off.

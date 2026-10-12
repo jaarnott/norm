@@ -39,6 +39,7 @@ import json
 import logging
 import re
 import time
+import contextvars
 from dataclasses import dataclass
 
 import sqlalchemy as sa
@@ -65,6 +66,47 @@ class AppAccess:
     reason: str | None = None
 
 
+#: True while an app's own logic is running (run_logic). Collections a spec
+#: lists in ``storage.logic_only`` are readable only then — never through the
+#: direct records/files endpoints or the page's norm.storage — so an app's
+#: field rules (e.g. Training's: pay and private review answers only for the
+#: review's manager) can't be sidestepped by reading the raw rows.
+_IN_LOGIC: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "app_in_logic", default=False
+)
+
+
+def _run_in_logic(fn, *args, **kwargs):
+    token = _IN_LOGIC.set(True)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _IN_LOGIC.reset(token)
+
+
+@dataclass(frozen=True)
+class SystemActor:
+    """Who a SCHEDULED run of a built-in app acts as (services/app_schedules.py).
+
+    Not a user and never constructible from a request. It is only honoured for
+    apps built into Norm (resolve_access), and every query it makes is still
+    pinned to the org the app was bound to — the admin-style shortcuts below
+    (no venue-access rows, no permission ceiling) never reach another org.
+    """
+
+    id: None = None
+    email: None = None
+    full_name: str = "Norm (scheduled)"
+    role: str = "admin"
+
+
+SYSTEM = SystemActor()
+
+
+def is_system(user) -> bool:
+    return isinstance(user, SystemActor)
+
+
 def resolve_access(db: Session, app, user) -> AppAccess:
     """Audience check — owner, or a share that names this viewer.
 
@@ -77,6 +119,9 @@ def resolve_access(db: Session, app, user) -> AppAccess:
 
     if app.archived_at is not None:
         return AppAccess(False, "none", False, "this app has been archived")
+    if is_system(user) and not getattr(app, "builtin", False):
+        # The system actor runs Norm's own apps only — never an org's app.
+        return AppAccess(False, "none", False, "app not found")
 
     # Built into Norm (services/builtin_apps.py): no author, no shares —
     # anyone in the org it was bound to may use it and change its data. The
@@ -87,6 +132,8 @@ def resolve_access(db: Session, app, user) -> AppAccess:
     if is_builtin(app):
         from app.db.models import OrganizationMembership
 
+        if is_system(user):
+            return AppAccess(True, "view", True)
         member = (
             db.query(OrganizationMembership)
             .filter(
@@ -336,8 +383,12 @@ def call_action(
     action: str,
     params: dict | None = None,
     access: AppAccess | None = None,
+    commit: bool = True,
 ) -> object:
-    """Run ONE connector action on behalf of an app. The only data door."""
+    """Run ONE connector action on behalf of an app. The only data door.
+
+    ``commit=False`` inside a logic run: the audit row then rides the run's
+    own transaction, so a failed run still leaves nothing half-written."""
     from app.connectors.tool_executor import execute_connector_tool
     from app.db.models import AppCall
 
@@ -414,9 +465,13 @@ def call_action(
                 duration_ms=ms,
             )
         )
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except Exception as exc:  # noqa: BLE001 — audit must not fail the call
-        db.rollback()
+        if commit:
+            db.rollback()
         logger.info("app audit write failed: %s", exc)
 
     if not result.success:
@@ -496,6 +551,20 @@ def _storage_guard(
 
     spec = version.spec or {}
     namespace = _storage_reach(spec, collection)
+    # Norm's own apps change their data only through their own logic, where
+    # their rules live (Training: who may set a manager, pay, private review
+    # answers). Built-ins give every org member access, so a direct write
+    # through the records/files endpoints would skip every one of those rules
+    # — e.g. making yourself a colleague's manager to read their pay.
+    if mutating and getattr(app, "builtin", False) and not _IN_LOGIC.get():
+        raise HTTPException(403, f"changes to {app.name} go through the app itself")
+    if (
+        collection in set(_storage_spec(spec).get("logic_only") or [])
+        and not _IN_LOGIC.get()
+    ):
+        raise HTTPException(
+            403, f"'{collection}' is only available through the app itself"
+        )
     # A built-in app's namespace is reserved platform-wide (see
     # services/builtin_apps.py) — refused here too, at run time, so no app
     # saved before the reservation existed can reach the built-ins' data.
@@ -847,12 +916,17 @@ def store_put(
     data: dict,
     record_id: str | None = None,
     venue_id: str | None = None,
+    group_wide: bool = False,
 ) -> dict:
     """Create a row, or replace the ``data`` of one this app can already see.
 
     An update is scoped by namespace + org + collection, so a caller cannot
-    reach a row in another namespace by guessing its id.
+    reach a row in another namespace by guessing its id. ``group_wide`` files
+    the row under no venue — on create, or by clearing an update's venue —
+    which ``venue_id=None`` can't express (None means "leave it as it is").
     """
+    if group_wide:
+        venue_id = None
     from app.db.models import AppRecord
 
     namespace, org_id = _storage_guard(
@@ -899,7 +973,9 @@ def store_put(
     else:
         row.data = data
         row.updated_by = user.id
-        if venue_id is not None:
+        if group_wide:
+            row.venue_id = None
+        elif venue_id is not None:
             row.venue_id = venue_id
     db.flush()
     out = _record_out(row)
@@ -1376,6 +1452,142 @@ def save_app(db: Session, user, payload: dict) -> dict:
     }
 
 
+def viewer_of(db: Session, user, app) -> dict:
+    """Who is running the app — set by the platform, read by the app's logic
+    as ``params["_viewer"]``. The app maps ``user_id`` to its own people."""
+    if is_system(user):
+        return {
+            "system": True,
+            "user_id": None,
+            "name": user.full_name,
+            "email": None,
+            "is_admin": False,
+            "role": "system",
+            "permissions": [],
+        }
+    from app.db.models import OrganizationMembership, Role
+
+    role_name = None
+    membership = (
+        db.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.user_id == user.id,
+            OrganizationMembership.organization_id == app.organization_id,
+        )
+        .first()
+    )
+    perms: set[str] = set()
+    if membership and membership.role_id:
+        role = db.query(Role).filter(Role.id == membership.role_id).first()
+        role_name = (role.display_name or role.name) if role else None
+        perms = set((role.permissions if role else None) or [])
+    if getattr(user, "role", None) == "admin":
+        from app.auth.permissions import ALL_ORG_PERMISSIONS
+
+        perms = set(ALL_ORG_PERMISSIONS)
+    return {
+        "system": False,
+        "user_id": user.id,
+        "name": getattr(user, "full_name", None) or getattr(user, "email", None),
+        "email": getattr(user, "email", None),
+        "is_admin": getattr(user, "role", None) == "admin",
+        "role": role_name,
+        # From the membership in THIS app's org — not the user's first org.
+        "permissions": sorted(perms),
+    }
+
+
+def _email_door(db: Session, app, version, user, mode: str):
+    """The sandbox's ``email`` object (services/app_email.py), bound to this
+    app, org and viewer. ``person:<id>`` recipients resolve through the app's
+    own ``people`` collection."""
+    from app.services.app_email import AppEmail
+
+    def person_email(person_id: str) -> str | None:
+        try:
+            row = store_get(
+                db,
+                app=app,
+                version=version,
+                user=user,
+                collection="people",
+                record_id=str(person_id),
+            )
+        except HTTPException:
+            return None
+        return (row or {}).get("email")
+
+    door = AppEmail(
+        db, app=app, version=version, user=user, mode=mode, person_email=person_email
+    )
+    # The sandbox gets plain functions only. Handing it the AppEmail instance
+    # would hand it `.db` — the live session — since the sandbox only blocks
+    # UNDERSCORED attribute access. Closures keep the instance out of reach.
+    from types import SimpleNamespace
+
+    def send(
+        to,
+        subject,
+        html,
+        key=None,
+        kind=None,
+        cc=None,
+        reply_to=None,
+        heading=None,
+        button=None,
+        sanitize=False,
+    ):
+        return door.send(
+            to,
+            subject,
+            html,
+            key=key,
+            kind=kind,
+            cc=cc,
+            reply_to=reply_to,
+            heading=heading,
+            button=button,
+            sanitize=sanitize,
+        )
+
+    def enabled():
+        return door.enabled()
+
+    def link(inputs=None):
+        return door.link(inputs)
+
+    def set_enabled(on):
+        return door.set_enabled(on)
+
+    def log(limit=200):
+        return door.log(limit)
+
+    def preview(log_id):
+        return door.preview(log_id)
+
+    return SimpleNamespace(
+        send=send,
+        enabled=enabled,
+        link=link,
+        set_enabled=set_enabled,
+        log=log,
+        preview=preview,
+        mode=door.mode,
+    )
+
+
+def _calendar_door(db: Session, config_db, app, version, user, mode="live"):
+    from app.services.app_calendar import calendar_door
+
+    return calendar_door(db, config_db, app, version, user, mode)
+
+
+def _pdf_door(db: Session, app, version, user):
+    from app.services.app_pdf import pdf_door
+
+    return pdf_door(db, app, version, user)
+
+
 def run_logic(
     db: Session,
     config_db: Session,
@@ -1403,7 +1615,24 @@ def run_logic(
         raise HTTPException(404, access.reason or "app not found")
 
     spec = version.spec or {}
-    bound_params = {**(params or {})}
+    builtin = bool(getattr(app, "builtin", False))
+    raw = params or {}
+    email_mode = "live"
+    if builtin:
+        # Norm's own apps: underscored keys are the platform's to set, never
+        # the caller's — a client that sends `_viewer` must not get to say who
+        # it is. The one exception is `_email_mode`, and only its two safe
+        # values (dry_run / test). User-built apps keep their params exactly
+        # as sent, and are never handed the viewer's identity.
+        bound_params = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+        if raw.get("_email_mode") in ("dry_run", "test"):
+            email_mode = raw["_email_mode"]
+        if "_schedule" in raw and is_system(user):
+            bound_params["_schedule"] = raw["_schedule"]
+        bound_params["_viewer"] = viewer_of(db, user, app)
+        bound_params["_email_mode"] = email_mode
+    else:
+        bound_params = {**raw}
     if venue_id:
         bound_params.setdefault("venue_id", venue_id)
 
@@ -1419,6 +1648,10 @@ def run_logic(
             action=action,
             params=api_params,
             access=access,
+            # Built-ins: the audit row rides the run's transaction. A
+            # user-built app keeps its committed-per-call audit, so failing
+            # the run afterwards can't erase the record of a write it made.
+            commit=not builtin,
         )
 
     class _Store:
@@ -1524,6 +1757,19 @@ def run_logic(
             # it to an update would silently pull a group-wide row (venue NULL)
             # into whichever venue happened to be selected — the same promotion
             # hazard the venue-delete path guards against, in reverse.
+            # venue_id="" says "group-wide" explicitly: a new row with no venue
+            # even while one is selected, or an update that clears its venue.
+            if venue_id == "":
+                return store_put(
+                    db,
+                    app=app,
+                    version=version,
+                    user=user,
+                    collection=collection,
+                    data=data,
+                    record_id=record_id,
+                    group_wide=True,
+                )
             fallback = None if record_id else venue_id_bound
             return store_put(
                 db,
@@ -1571,7 +1817,8 @@ def run_logic(
     # call_api_override routes it back through this module's door instead, so
     # UI and logic are checked identically. Storage is bound the same way, and
     # is absent entirely for an app that declares none.
-    return execute_function(
+    return _run_in_logic(
+        execute_function,
         version.logic_source,
         bound_params,
         db,
@@ -1590,4 +1837,16 @@ def run_logic(
         },
         call_api_override=_call_api,
         storage_override=_Store if _storage_spec(spec).get("namespace") else None,
+        # Email is for Norm's own apps only (services/app_email.py).
+        email_override=_email_door(db, app, version, user, email_mode)
+        if isinstance(spec.get("email"), dict) and getattr(app, "builtin", False)
+        else None,
+        # Venue-mailbox calendar and candidate-pack PDFs: Norm's own apps only
+        # (services/app_calendar.py, services/app_pdf.py).
+        calendar_override=_calendar_door(db, config_db, app, version, user, email_mode)
+        if isinstance(spec.get("calendar"), dict) and getattr(app, "builtin", False)
+        else None,
+        pdf_override=_pdf_door(db, app, version, user)
+        if isinstance(spec.get("pdf"), dict) and getattr(app, "builtin", False)
+        else None,
     )

@@ -818,3 +818,38 @@ class TestConnectionHealthIsPersisted:
         db_session.refresh(row)
         assert row.needs_reconnect is False
         assert row.last_auth_error is None
+
+
+class TestVenueMailboxNeedsAVenue:
+    """A venue mailbox (Hiring's interview invites) belongs to one venue;
+    authorising one without a venue would store the token org-wide."""
+
+    def test_authorize_without_a_venue_is_refused(
+        self, client, db_session, admin_headers
+    ):
+        import uuid as _uuid
+
+        from app.db.config_models import ConnectionSpec
+
+        name = f"vm_{_uuid.uuid4().hex[:6]}"
+        db_session.add(
+            ConnectionSpec(
+                id=str(_uuid.uuid4()),
+                connector_name=name,
+                display_name="Venue mailbox",
+                category="calendar",
+                auth_type="oauth2",
+                execution_mode="template",
+                oauth_config={
+                    "authorize_url": "https://accounts.example.com/o/oauth2/auth",
+                    "token_url": "https://oauth.example.com/token",
+                    "client_id": "x",
+                    "scopes": "calendar",
+                },
+                tools=[],
+                enabled=True,
+            )
+        )
+        db_session.flush()
+        r = client.get(f"/api/oauth/authorize/{name}", headers=admin_headers)
+        assert r.status_code == 400 and "venue" in r.json()["detail"].lower()

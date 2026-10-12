@@ -80,6 +80,19 @@ def _load(db: Session, slug: str, user: User, config_db: Session):
     return app, version
 
 
+def _content_disposition(filename: str | None) -> str:
+    from urllib.parse import quote
+
+    name = filename or "file"
+    ascii_name = (
+        name.encode("ascii", "replace")
+        .decode("ascii")
+        .replace('"', "'")
+        .replace("\\", "_")
+    )
+    return f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name, safe='')}"
+
+
 def _refuse_builtin(app) -> None:
     """Sharing is how a user-built app reaches people. A built-in app already
     reaches everyone in the org, and has no row a share could point at."""
@@ -807,8 +820,10 @@ async def app_file_download(
         media_type=row.content_type or "application/octet-stream",
         headers={
             # `inline` so a photo of a signed checklist opens rather than
-            # downloads; the filename is quoted because staff name files freely.
-            "Content-Disposition": f'inline; filename="{row.filename}"',
+            # downloads. Staff name files freely (Māori names, quotes): an
+            # ASCII fallback plus the RFC 5987 UTF-8 form — a raw non-Latin-1
+            # name in a header is a 500.
+            "Content-Disposition": _content_disposition(row.filename),
             "Cache-Control": "private, no-store",
         },
     )

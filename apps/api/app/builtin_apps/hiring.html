@@ -21,7 +21,7 @@
   .bar > .n-btn { flex: 0 0 auto; align-self: center; margin-bottom: 8px; }
   .n-btn svg { flex: 0 0 auto; }
   .n-btn--primary svg { stroke-width: 2; }
-  #body { padding-top: 16px; }
+  #body-wrap { padding-top: 16px; }
 
   .row { display: flex; align-items: center; gap: 12px; }
   .grow { flex: 1; min-width: 0; }
@@ -56,6 +56,7 @@
           padding: 0; border: none; border-radius: var(--norm-radius); background: transparent; color: var(--norm-icon); cursor: pointer; }
   .ibtn:hover { background: var(--norm-surface-alt); color: var(--norm-text); }
   .ibtn.danger:hover { background: var(--norm-error-bg); color: var(--norm-error); }
+  .ibtn:disabled { opacity: .35; cursor: default; background: transparent; }
   .ibtn-gap { display: inline-block; flex: 0 0 auto; width: 32px; height: 32px; }
   @media (pointer: coarse) { .ibtn, .ibtn-gap { width: 40px; height: 40px; } }
 
@@ -209,18 +210,102 @@
     .modal .panel { padding: 18px 16px; }
     .modal-foot { margin: 8px -16px -18px; padding: 12px 16px 18px; }
   }
+  .modal .panel.wide { max-width: 760px; }
+  .modal-sub { margin: -10px 0 14px; font-size: var(--norm-fs-sm); color: var(--norm-muted); }
+
+  /* While Orbit is the live system: one quiet line, never in the way. */
+  .banner { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0 0; padding: 8px 12px; border-radius: var(--norm-radius);
+            background: var(--norm-surface-alt); font-size: var(--norm-fs-sm); color: var(--norm-text-soft); }
+  .banner svg { flex: 0 0 auto; margin-top: 2px; color: var(--norm-icon); }
+  .banner:empty { display: none; }
+
+  /* What just happened (a send, an invite) — stays until the next screen. */
+  .notice { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border-radius: var(--norm-radius);
+            font-size: var(--norm-fs-sm); background: var(--norm-ok-bg); color: var(--norm-text); }
+  .notice.warn { background: var(--norm-warn-bg); }
+  .notice > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .notice .ibtn { width: 24px; height: 24px; margin: -2px -4px -2px 0; }
+
+  /* Filters above a list. */
+  .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .toolbar .n-select { width: auto; max-width: 260px; }
+  .toolbar .n-input.search { flex: 1 1 200px; min-width: 160px; }
+  .toolbar .n-input[type="date"] { width: auto; }
+  .count-line { margin: -4px 0 8px; font-size: var(--norm-fs-xs); color: var(--norm-muted); }
+
+  /* The selection bar: what to do with the ticked candidates. */
+  .selbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 12px;
+            border-radius: var(--norm-radius); background: var(--norm-accent-soft); }
+  .selbar .lead-count { font-weight: 600; margin-right: 4px; }
+  .selbar .n-select { width: auto; max-width: 200px; }
+  .list th.sel, .list td.sel { width: 1%; padding-right: 0; }
+  .list td.sel input, .list th.sel input { width: 16px; height: 16px; margin: 0; accent-color: var(--norm-accent); }
+  .list tr.picked > td { background: var(--norm-accent-soft); }
+  @media (max-width: 640px) {
+    .cands tr { grid-template-columns: auto minmax(0, 1fr) auto; }
+    .cands td.sel { grid-row: 1 / 3; align-self: center; }
+    .cands td.stage-col { display: block; grid-column: 2 / 4; }
+  }
+
+  /* Chips + a searchable list: the interviewer picker and selected candidates. */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips:empty { display: none; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px;
+          background: var(--norm-surface-alt); font-size: var(--norm-fs-sm); }
+  .chip button { display: inline-flex; padding: 2px; border: none; border-radius: 999px; background: none; color: var(--norm-icon); cursor: pointer; }
+  .chip button:hover { background: var(--norm-line); color: var(--norm-text); }
+  .picker { position: relative; display: flex; flex-direction: column; gap: 8px; }
+  .picker .n-input { width: 100%; }
+  .picker-list { position: absolute; z-index: 5; top: 100%; left: 0; right: 0; margin-top: 4px; max-height: 220px; overflow-y: auto;
+                 background: var(--norm-bg); border: 1px solid var(--norm-line-strong); border-radius: var(--norm-radius); box-shadow: 0 6px 20px rgba(26,26,26,.12); }
+  .picker-list button { display: block; width: 100%; padding: 8px 12px; border: none; background: none; text-align: left; font: inherit; cursor: pointer; }
+  .picker-list button:hover, .picker-list button.on { background: var(--norm-surface-alt); }
+  .picker-list .none { padding: 8px 12px; }
+
+  /* Previous / next through the list a candidate was opened from. */
+  .navrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .navrow .grow { min-width: 0; }
+  .pos { font-size: var(--norm-fs-sm); color: var(--norm-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* Interviews */
+  .ivs .toggle { width: 28px; height: 28px; }
+  .ivs tr.member > td { background: var(--norm-surface-alt); }
+  .ivs tr.member td.lead { padding-left: 44px; }
+  .ivs .when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .feed .acts { flex: 0 0 auto; display: inline-flex; gap: 4px; }
+  @media (max-width: 640px) {
+    .ivs tr.member td.lead { padding-left: 0; }
+    .ivs td.when { grid-column: 1 / -1; }
+  }
+
+  /* The email composer: a small rich-text area and the first recipient's copy. */
+  .editor { min-height: 160px; max-height: 360px; overflow-y: auto; padding: 8px 10px; border: 1px solid var(--norm-field, var(--norm-line-strong));
+            border-radius: var(--norm-radius); background: var(--norm-bg); line-height: 1.5; }
+  .editor:focus { outline: 2px solid var(--norm-focus); outline-offset: 1px; }
+  .editor p { margin: 0 0 8px; }
+  .preview { padding: 12px 14px; border: 1px solid var(--norm-line); border-radius: var(--norm-radius); background: var(--norm-surface-alt); }
+  .preview .subj { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--norm-line); font-weight: 600; }
+  .preview p { margin: 0 0 8px; }
+  .replace { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-radius: var(--norm-radius); background: var(--norm-warn-bg); font-size: var(--norm-fs-sm); }
+  .replace > span { flex: 1 1 220px; }
+  .warn-line { font-size: var(--norm-fs-sm); color: var(--norm-warn); }
+  .mail-frame { width: 100%; height: 420px; border: 1px solid var(--norm-line); border-radius: var(--norm-radius); background: #fff; }
 </style>
 
 <div class="wrap">
   <div class="head"><h1>Hiring</h1><div class="scope" id="scope">—</div></div>
+  <div class="banner" id="banner" role="note"></div>
   <div class="bar">
     <div class="n-tabs" role="tablist" aria-label="Hiring">
       <button type="button" class="n-tab tab" role="tab" data-view="jobs" aria-selected="true">Openings</button>
+      <button type="button" class="n-tab tab" role="tab" data-view="cands" aria-selected="false">Candidates</button>
+      <button type="button" class="n-tab tab" role="tab" data-view="ivs" aria-selected="false">Interviews</button>
       <button type="button" class="n-tab tab" role="tab" data-view="pool" aria-selected="false">Talent pool</button>
+      <button type="button" class="n-tab tab" role="tab" data-view="settings" aria-selected="false">Settings</button>
     </div>
     <button type="button" class="n-btn n-btn--primary" id="newjob"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New job</button>
   </div>
-  <div id="body"><div class="state" role="status">Loading…</div></div>
+  <div id="body-wrap"><div id="notice" aria-live="polite"></div><div id="body"><div class="state" role="status">Loading…</div></div></div>
 </div>
 <div id="modal"></div>
 
@@ -262,8 +347,10 @@
     if (days < 30) return days + 'd ago';
     var mo = Math.floor(days / 30); return mo + 'mo ago';
   }
+  // Who is acting is the platform's to say (the logic reads the viewer it
+  // is handed) — the page sends only what to do.
   function run(op, extra) {
-    var p = { op: op, actor: 'Norm' };
+    var p = { op: op };
     for (var k in (extra || {})) p[k] = extra[k];
     return norm.run(p).then(function (d) { if (d && d.error) throw new Error(d.error); return d; });
   }
@@ -279,6 +366,13 @@
     star: '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>',
     loader: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
     alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    left: '<path d="m15 18-6-6 6-6"/>',
+    right: '<path d="m9 18 6-6-6-6"/>',
+    chevdown: '<path d="m6 9 6 6 6-6"/>',
+    info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    mail: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+    cal: '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M10 16h4"/><path d="M12 14v4"/>',
   };
   function icon(name, size, cls) {
     return '<svg' + (cls ? ' class="' + cls + '"' : '') + ' width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
@@ -327,7 +421,7 @@
     b.classList.toggle('n-btn--secondary', !on);
   }
 
-  function loading() { body.innerHTML = state('loading', 'Loading…'); }
+  function loading() { notice(''); body.innerHTML = state('loading', 'Loading…'); }
   function fail(e) {
     body.innerHTML = '<div class="alert" role="alert">' + icon('alert', 16) +
       '<div><div class="alert-title">That didn’t work</div><div class="alert-detail">' + esc(e && e.message ? e.message : e) + '</div></div></div>';
@@ -391,6 +485,106 @@
     return badge(cap(s), s === 'rejected' ? 'error' : 'ok');
   }
   function bind(sel, fn) { body.querySelectorAll(sel).forEach(function (el) { el.addEventListener('click', function () { fn(el); }); }); }
+
+  // ---- Shared bits for the newer screens ------------------------------------
+  var noticeHost = document.getElementById('notice');
+  // What an action did (an invite sent, an email held back): one line that
+  // stays until the next screen, so a message from the calendar isn't missed.
+  function notice(msg, tone) {
+    if (!msg) { noticeHost.innerHTML = ''; return; }
+    noticeHost.innerHTML = '<div class="notice' + (tone === 'warn' ? ' warn' : '') + '" role="status"><span>' + esc(msg) + '</span>' +
+      iconBtn('x', 'Dismiss', 'id="notice-x"') + '</div>';
+    document.getElementById('notice-x').addEventListener('click', function () { notice(''); });
+  }
+  // A logic result's message, toned by whether the calendar side worked.
+  function report(r, fallback) {
+    var cal = r && r.calendar;
+    notice((r && r.message) || fallback || '', cal && cal.ok === false ? 'warn' : 'ok');
+  }
+  function bulkDone(r, what) {
+    var msg = what + ': ' + r.done + ' done' + (r.failed ? ', ' + r.failed + ' failed' : '');
+    if (r.failed && r.errors && r.errors[0]) msg += ' (' + r.errors[0].error + ')';
+    notice(msg, r.failed ? 'warn' : 'ok');
+  }
+  // Times are stored in UTC and shown in this browser's own time.
+  function when(iso) {
+    var d = new Date(iso); if (!iso || isNaN(d.getTime())) return iso ? String(iso).replace('T', ' ').slice(0, 16) : 'No time set';
+    return d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  }
+  function localInput(iso) {
+    var d = new Date(iso); if (!iso || isNaN(d.getTime())) return '';
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function fromLocalInput(v) { if (!v) return null; var d = new Date(v); return isNaN(d.getTime()) ? null : d.toISOString(); }
+  var TYPES = [['phone_screen', 'Phone screen'], ['in_person', 'In person'], ['video', 'Video call'], ['trial_shift', 'Trial shift'], ['panel', 'Panel']];
+  function typeLabel(t) { for (var i = 0; i < TYPES.length; i++) if (TYPES[i][0] === t) return TYPES[i][1]; return cap(t || 'interview'); }
+  function typeOptions(sel) { return TYPES.map(function (t) { return '<option value="' + t[0] + '"' + (t[0] === sel ? ' selected' : '') + '>' + t[1] + '</option>'; }).join(''); }
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 10); }
+
+  // Interviewers: a search box over the team, picks shown as removable chips.
+  // `chosen` is the live array of person ids — read it when saving.
+  function pickerHtml(id, label) {
+    return '<div class="fld wide"><span class="n-label" id="' + id + '-lbl">' + label + '</span><div class="picker" id="' + id + '">' +
+      '<div class="chips"></div><input type="text" class="n-input" placeholder="Search the team…" aria-labelledby="' + id + '-lbl" autocomplete="off">' +
+      '<div class="picker-list" role="listbox" hidden></div></div></div>';
+  }
+  function bindPicker(id, people, chosen) {
+    var root = document.getElementById(id), chips = root.querySelector('.chips'), input = root.querySelector('input'), list = root.querySelector('.picker-list');
+    var byId = {}; people.forEach(function (p) { byId[p.id] = p; });
+    function draw() {
+      chips.innerHTML = chosen.map(function (pid) {
+        var p = byId[pid] || { name: 'Unknown' };
+        return '<span class="chip">' + esc(p.name) + '<button type="button" data-unpick="' + esc(pid) + '" aria-label="Remove ' + esc(p.name) + '">' + icon('x', 12) + '</button></span>';
+      }).join('');
+      chips.querySelectorAll('[data-unpick]').forEach(function (b) {
+        b.addEventListener('click', function () { var i = chosen.indexOf(b.getAttribute('data-unpick')); if (i >= 0) chosen.splice(i, 1); draw(); });
+      });
+    }
+    function matches() {
+      var q = input.value.trim().toLowerCase();
+      return people.filter(function (p) { return chosen.indexOf(p.id) < 0 && (!q || String(p.name).toLowerCase().indexOf(q) >= 0 || String(p.email || '').toLowerCase().indexOf(q) >= 0); }).slice(0, 8);
+    }
+    function open() {
+      var m = matches();
+      list.innerHTML = m.length ? m.map(function (p, i) {
+        return '<button type="button" role="option" data-pick="' + esc(p.id) + '"' + (i === 0 ? ' class="on"' : '') + '>' + esc(p.name) +
+          (p.email ? ' <span class="meta">' + esc(p.email) + '</span>' : ' <span class="meta">no email — won’t get the invite</span>') + '</button>';
+      }).join('') : '<div class="none">Nobody matches.</div>';
+      list.hidden = false;
+      list.querySelectorAll('[data-pick]').forEach(function (b) {
+        b.addEventListener('mousedown', function (ev) { ev.preventDefault(); add(b.getAttribute('data-pick')); });
+      });
+    }
+    function add(pid) { if (pid && chosen.indexOf(pid) < 0) chosen.push(pid); input.value = ''; draw(); open(); }
+    input.addEventListener('focus', open);
+    input.addEventListener('input', open);
+    input.addEventListener('blur', function () { setTimeout(function () { list.hidden = true; }, 120); });
+    input.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); var m = matches(); if (m[0]) add(m[0].id); }
+      else if (ev.key === 'Escape' && !list.hidden) { ev.stopPropagation(); list.hidden = true; }
+    });
+    draw();
+  }
+
+  // HTML an email body may carry: formatting and links, never script.
+  function cleanHtml(html) {
+    var doc = new DOMParser().parseFromString('<div>' + String(html || '') + '</div>', 'text/html');
+    doc.querySelectorAll('script,style,iframe,object,embed,link,meta,form,input,button').forEach(function (n) { n.remove(); });
+    doc.querySelectorAll('*').forEach(function (n) {
+      Array.prototype.slice.call(n.attributes).forEach(function (a) {
+        var name = a.name.toLowerCase();
+        if (name.indexOf('on') === 0 || ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(a.value))) n.removeAttribute(a.name);
+      });
+    });
+    return doc.body.firstChild ? doc.body.firstChild.innerHTML : '';
+  }
+  function fillMerge(text, values, escapeValues) {
+    return String(text || '').replace(/\{\{\s*(\w+)\s*\}\}/g, function (_m, key) {
+      var v = values && values[key] != null ? String(values[key]) : '';
+      return escapeValues ? esc(v) : v;
+    });
+  }
 
   // ---- Openings ----------------------------------------------------------
   function showJobs() {
@@ -482,6 +676,7 @@
           '<div class="card-head"><h2 class="card-title grow">Job details</h2>' +
             jobBadge(j.status) +
             (j.is_published ? btn('Unpublish', 'secondary', 'id="j-unpub"', { sm: true }) : btn('Publish', 'secondary', 'id="j-pub"', { sm: true })) +
+            btn('Duplicate', 'secondary', 'id="j-dup"', { sm: true }) +
             (j.status === 'closed' ? btn('Reopen', 'secondary', 'id="j-reopen"', { sm: true }) : btn('Close', 'danger', 'id="j-close"', { sm: true })) +
           '</div>' +
           '<div class="card-body"><div class="form">' +
@@ -524,7 +719,17 @@
       var pub = document.getElementById('j-pub'); if (pub) pub.addEventListener('click', function () { status({ is_published: true }); });
       var unpub = document.getElementById('j-unpub'); if (unpub) unpub.addEventListener('click', function () { status({ is_published: false }); });
       var close = document.getElementById('j-close'); if (close) close.addEventListener('click', function () { status({ status: 'closed' }); });
-      var reopen = document.getElementById('j-reopen'); if (reopen) reopen.addEventListener('click', function () { status({ status: 'open' }); });
+      // Reopen: approved but unpublished, so it doesn't reappear on the
+      // careers page until someone publishes it again (Orbit's rule).
+      var reopen = document.getElementById('j-reopen'); if (reopen) reopen.addEventListener('click', function () {
+        run('reopen_job', { job_id: jobId }).then(function () { reload(); notice('Reopened — publish it when you’re ready to take applications.'); }).catch(fail);
+      });
+      document.getElementById('j-dup').addEventListener('click', function () {
+        run('duplicate_job', { job_id: jobId }).then(function (r) {
+          showJobEditor(r.job.id);
+          notice('Copied “' + (j.title || 'job') + '” — its pipeline, application form and hiring team came with it. The copy is a draft.');
+        }).catch(fail);
+      });
       document.getElementById('addstage').addEventListener('click', function () { run('add_stage', { job_id: jobId }).then(reload).catch(fail); });
       document.getElementById('addfield').addEventListener('click', function () { addFieldModal(jobId, reload); });
 
@@ -626,14 +831,18 @@
       body.innerHTML = backLink('back', 'All openings') +
         '<section class="card"><div class="jobhead"><div class="grow"><h2 class="view-title">' + esc(d.job.title) + '</h2>' +
           (jobMeta ? '<div class="meta">' + esc(jobMeta) + '</div>' : '') + '</div>' +
-          '<div class="btns">' + btn('Edit job', 'secondary', 'id="editjob"', { sm: true }) +
+          '<div class="btns">' + btn('List view', 'quiet', 'id="listjob"', { sm: true }) + btn('Edit job', 'secondary', 'id="editjob"', { sm: true }) +
             btn('Add candidate', 'primary', 'id="addcand"', { sm: true, icon: 'plus' }) + '</div></div></section>' +
-        '<div class="hint board-hint">Drag a card between columns to move someone, or click it to open. The stage type (hired or rejected) drives their status.</div>' +
+        '<div class="hint board-hint">Drag a card between columns to move someone, or click it to open. The stage type (hired or rejected) drives their status. To act on several at once, use the list view.</div>' +
         '<div class="board">' + cols + '</div>';
       document.getElementById('back').addEventListener('click', showJobs);
       document.getElementById('editjob').addEventListener('click', function () { showJobEditor(jobId); });
+      document.getElementById('listjob').addEventListener('click', function () { selectTab('cands'); showCandidates(jobId); });
       document.getElementById('addcand').addEventListener('click', function () { addCandidateModal(jobId); });
-      bind('[data-app]', function (el) { showCandidate(el.getAttribute('data-app'), jobId); });
+      // Previous / next walk the board in its own order: stage by stage.
+      var order = [];
+      stages.forEach(function (s) { (s.applications || []).forEach(function (a) { order.push(a.id); }); });
+      bind('[data-app]', function (el) { showCandidate(el.getAttribute('data-app'), jobId, { ids: order }); });
 
       // Drag a candidate card onto a stage's drop zone to move them.
       var dragId = null;
@@ -677,35 +886,55 @@
   }
 
   // ---- Candidate ---------------------------------------------------------
-  function showCandidate(applicationId, jobId) {
+  // `nav` = { ids: [...] } — the list this candidate was opened from, in its
+  // order, for previous / next; `nav.back` returns to it.
+  function showCandidate(applicationId, jobId, nav) {
+    nav = nav || {};
     newJobLeads(false);
     loading();
     run('candidate', { application_id: applicationId }).then(function (d) {
       var a = d.application, c = d.candidate;
+      jobId = jobId || a.job_id;
+      var ids = nav.ids || [], at = ids.indexOf(applicationId);
       var options = (d.stages || []).map(function (s) { return '<option value="' + esc(s.id) + '"' + (s.id === a.stage_id ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('');
       var answers = (d.answers || []).map(function (x) { return '<div class="kv"><b>' + esc(x.label || x.field_key) + '</b><span>' + esc(x.value) + '</span></div>'; }).join('') || '<div class="none">No application answers.</div>';
       var notes = (d.notes || []).map(function (n) { return '<div class="feed"><span>' + esc(n.body) + '</span>' + (n.author ? '<span class="meta">' + esc(n.author) + '</span>' : '') + '</div>'; }).join('') || '<div class="none">No notes yet.</div>';
-      var feed = (d.activity || []).map(function (x) { return '<div class="feed"><span>' + esc(x.summary) + '</span><span class="meta">' + esc((x.at || '').slice(0, 16).replace('T', ' ')) + '</span></div>'; }).join('') || '<div class="none">Nothing yet.</div>';
+      var feed = (d.activity || []).map(function (x) { return '<div class="feed"><span>' + esc(x.summary) + '</span><span class="meta">' + esc(joinMeta([x.actor && x.actor !== 'Orbit' ? x.actor : '', (x.at || '').slice(0, 16).replace('T', ' ')])) + '</span></div>'; }).join('') || '<div class="none">Nothing yet.</div>';
       var interviews = (d.interviews || []).map(function (iv) {
-        return '<div class="feed"><span>' + esc(cap(iv.interview_type || 'interview')) + ' · ' + esc((iv.scheduled_at || 'unscheduled').replace('T', ' ')) +
+        var live = iv.status !== 'cancelled';
+        return '<div class="feed"><span>' + (iv.group_id ? badge(iv.group_title || 'Group interview', 'info') + ' ' : '') +
+          esc(typeLabel(iv.interview_type)) + ' · ' + esc(when(iv.scheduled_at)) +
           (iv.duration_minutes ? ' · ' + esc(iv.duration_minutes) + ' min' : '') +
           (iv.location ? ' · ' + esc(iv.location) : '') +
-          (iv.meeting_url ? ' · <a class="link" href="' + esc(iv.meeting_url) + '" target="_blank" rel="noopener noreferrer">Meeting link</a>' : '') + '</span></div>';
+          (iv.meeting_url ? ' · <a class="link" href="' + esc(iv.meeting_url) + '" target="_blank" rel="noopener noreferrer">Meeting link</a>' : '') +
+          ((iv.interviewer_names || []).length ? '<br><span class="meta">With ' + esc(iv.interviewer_names.join(', ')) + '</span>' : '') +
+          (iv.google_event_id && live ? ' <span class="meta">· invite sent</span>' : '') + '</span>' +
+          (live ? '' : badge('Cancelled', 'error')) +
+          (live ? '<span class="acts">' + (iv.group_id ? '' : btn('Edit', 'quiet', 'data-ivedit="' + esc(iv.id) + '"', { sm: true })) +
+            btn(iv.group_id ? 'Leave group' : 'Cancel', 'quiet', 'data-ivcancel="' + esc(iv.id) + '"', { sm: true }) + '</span>' : '') + '</div>';
       }).join('') || '<div class="none">No interviews.</div>';
+      var emails = (d.emails || []).map(function (e) {
+        return '<div class="feed"><span>' + esc(e.subject || '(no subject)') + '</span><span class="meta">' + esc(joinMeta([cap(e.status || ''), (e.created_at || '').slice(0, 16).replace('T', ' ')])) + '</span></div>';
+      }).join('') || '<div class="none">No emails yet.</div>';
       var stars = ''; for (var i = 1; i <= 5; i++) stars += '<button type="button" class="star-btn" data-star="' + i + '" aria-label="Rate ' + i + ' of 5" title="Rate ' + i + ' of 5">' + starIcon(a.rating >= i, 18) + '</button>';
       var section = function (title, inner) { return '<section class="card"><div class="card-head"><h2 class="card-title">' + title + '</h2></div><div class="card-body">' + inner + '</div></section>'; };
+      var navBar = ids.length > 1 && at >= 0 ?
+        '<span class="btns">' + iconBtn('left', 'Previous candidate', 'id="prevc"' + (at === 0 ? ' disabled' : '')) +
+          '<span class="pos">' + (at + 1) + ' of ' + ids.length + '</span>' +
+          iconBtn('right', 'Next candidate', 'id="nextc"' + (at === ids.length - 1 ? ' disabled' : '')) + '</span>' : '';
 
-      body.innerHTML = backLink('back', 'Pipeline') +
+      body.innerHTML = '<div class="navrow"><span class="grow">' + backLink('back', nav.backLabel || 'Pipeline') + '</span>' + navBar + '</div>' +
         '<section class="card">' +
           '<div class="card-body top">' +
             '<div class="cand-head"><div class="grow"><div class="title-row"><h2 class="view-title">' + esc(c.name) + '</h2>' + statusPill(a.status) + '</div>' +
-              '<div class="meta">' + esc(joinMeta([c.email || '', c.phone || ''])) + '</div></div>' +
+              '<div class="meta">' + esc(joinMeta([d.job && d.job.title || '', c.email || '', c.phone || ''])) + '</div></div>' +
               check('tp', 'Talent pool', c.in_talent_pool) + '</div>' +
             '<div class="rating-row"><span class="lbl">Rating</span><span class="stars" id="stars" role="group" aria-label="Rating">' + stars + '</span></div>' +
           '</div>' +
           '<div class="card-foot actions">' +
             '<span class="grp"><select class="n-select" id="stage" aria-label="Stage">' + options + '</select>' + btn('Move', 'secondary', 'id="move"') + '</span>' +
             btn('Schedule interview', 'secondary', 'id="interview"') +
+            btn('Email', 'secondary', 'id="mailone"') +
             (a.status === 'rejected' ? '' : btn('Not progressing', 'danger', 'id="reject"')) +
           '</div>' +
           (a.status === 'hired' ? '' :
@@ -719,15 +948,25 @@
         section('Interviews', interviews) +
         section('Notes', '<div>' + notes + '</div><div class="note-box"><textarea class="n-input" id="note" rows="2" placeholder="Add a note…" aria-label="Add a note"></textarea>' +
           btn('Add note', 'secondary', 'id="addnote"', { sm: true }) + '</div>') +
+        section('Emails', emails) +
         section('Activity', feed);
 
-      var reload = function () { showCandidate(applicationId, jobId); };
-      document.getElementById('back').addEventListener('click', function () { showPipeline(jobId); });
+      var reload = function () { showCandidate(applicationId, jobId, nav); };
+      var after = function (r) { reload(); report(r); };
+      document.getElementById('back').addEventListener('click', function () { if (nav.back) nav.back(); else showPipeline(jobId); });
+      var prev = document.getElementById('prevc'); if (prev) prev.addEventListener('click', function () { if (at > 0) showCandidate(ids[at - 1], null, nav); });
+      var next = document.getElementById('nextc'); if (next) next.addEventListener('click', function () { if (at < ids.length - 1) showCandidate(ids[at + 1], null, nav); });
       document.getElementById('move').addEventListener('click', function () { run('move', { application_id: applicationId, stage_id: document.getElementById('stage').value }).then(reload).catch(fail); });
       document.getElementById('addnote').addEventListener('click', function () { var b = document.getElementById('note').value; if (b.trim()) run('note', { application_id: applicationId, body: b }).then(reload).catch(fail); });
       document.getElementById('tp').addEventListener('change', function () { run('set_talent_pool', { candidate_id: c.id, in_talent_pool: this.checked }).catch(fail); });
-      document.getElementById('interview').addEventListener('click', function () { interviewModal(applicationId, reload); });
-      var rej = document.getElementById('reject'); if (rej) rej.addEventListener('click', function () { rejectModal(applicationId, reload); });
+      document.getElementById('interview').addEventListener('click', function () { interviewModal({ applicationId: applicationId, jobId: jobId }, after); });
+      document.getElementById('mailone').addEventListener('click', function () { emailModal([applicationId], reload); });
+      bind('[data-ivedit]', function (el) { interviewModal({ applicationId: applicationId, jobId: jobId, interviewId: el.getAttribute('data-ivedit') }, after); });
+      bind('[data-ivcancel]', function (el) {
+        if (!confirm('Cancel this interview? Anyone invited from the venue calendar is told.')) return;
+        run('cancel_interview', { interview_id: el.getAttribute('data-ivcancel') }).then(after).catch(fail);
+      });
+      var rej = document.getElementById('reject'); if (rej) rej.addEventListener('click', function () { rejectModal([applicationId], function () { reload(); }); });
       var hire = document.getElementById('hire'); if (hire) hire.addEventListener('click', function () {
         run('hire', { application_id: applicationId, venue_id: ctx && ctx.venueId,
           role: document.getElementById('hire-role').value, start_date: document.getElementById('hire-start').value || null }).then(reload).catch(fail);
@@ -739,38 +978,452 @@
     }).catch(fail);
   }
 
-  function rejectModal(applicationId, reload) {
-    modal('<h2 class="modal-title">Not progressing</h2>' +
-      fld('rej-reason', 'Reason', '<textarea class="n-input" id="rej-reason" rows="3" placeholder="Optional — recorded on the candidate"></textarea>') +
-      modalFoot('rej-cancel', 'rej-do', 'Reject', 'danger'));
+  // Not progressing — one candidate or a batch. A reason is required: it is
+  // what the activity log says when someone asks why later.
+  function rejectModal(applicationIds, done) {
+    var many = applicationIds.length > 1;
+    modal('<h2 class="modal-title">Not progressing' + (many ? ' — ' + applicationIds.length + ' candidates' : '') + '</h2>' +
+      fld('rej-reason', 'Reason', '<textarea class="n-input" id="rej-reason" rows="3" placeholder="Recorded in each candidate’s activity"></textarea>') +
+      modalFoot('rej-cancel', 'rej-do', 'Confirm', 'danger'));
+    var go = document.getElementById('rej-do'), box = document.getElementById('rej-reason');
+    var sync = function () { go.disabled = !box.value.trim(); };
+    box.addEventListener('input', sync); sync(); box.focus();
     document.getElementById('rej-cancel').addEventListener('click', closeModal);
-    document.getElementById('rej-do').addEventListener('click', function () {
-      run('reject', { application_id: applicationId, reason: document.getElementById('rej-reason').value || null }).then(function () { closeModal(); reload(); }).catch(fail);
+    go.addEventListener('click', function () {
+      go.disabled = true;
+      run('bulk_reject', { application_ids: applicationIds, reason: box.value.trim() }).then(function (r) {
+        closeModal(); done(r);
+        if (many) bulkDone(r, 'Not progressing');
+        else if (r.failed) notice(r.errors[0].error, 'warn');
+      }).catch(function (e) { closeModal(); fail(e); });
     });
   }
 
-  function interviewModal(applicationId, reload) {
-    modal('<h2 class="modal-title">Schedule interview</h2>' +
-      '<div class="stack">' +
-        fld('iv-type', 'Type', '<select class="n-select" id="iv-type"><option value="phone_screen">Phone screen</option><option value="in_person">In person</option><option value="video">Video</option><option value="trial_shift">Trial shift</option></select>') +
-        '<div class="form">' +
-          fld('iv-when', 'When', '<input type="datetime-local" class="n-input" id="iv-when">') +
-          fld('iv-dur', 'Duration (min)', '<input type="number" class="n-input narrow" id="iv-dur" value="30">') +
+  // Schedule (or edit) one interview: the panel from the team, a scorecard,
+  // and whether the candidate is emailed. The invite goes from the job
+  // venue's mailbox; the candidate's email goes once per time.
+  function interviewModal(o, done) {
+    run('interview_form', { job_id: o.jobId, interview_id: o.interviewId || null }).then(function (f) {
+      var iv = f.interview || {}, editing = !!o.interviewId;
+      var chosen = (iv.interviewer_ids || []).slice();
+      modal('<h2 class="modal-title">' + (editing ? 'Edit interview' : 'Schedule interview') + '</h2>' +
+        '<p class="modal-sub">The calendar invite goes to the interviewers from the venue’s mailbox. The candidate gets an email instead.</p>' +
+        '<div class="stack">' +
+          '<div class="form">' +
+            fld('iv-type', 'Type', '<select class="n-select" id="iv-type">' + typeOptions(iv.interview_type || 'in_person') + '</select>') +
+            fld('iv-dur', 'Duration (min)', '<input type="number" class="n-input narrow" id="iv-dur" min="5" value="' + esc(iv.duration_minutes || 30) + '">') +
+            fld('iv-when', 'When', '<input type="datetime-local" class="n-input" id="iv-when" value="' + esc(localInput(iv.scheduled_at)) + '">', 'wide') +
+          '</div>' +
+          fld('iv-loc', 'Location', '<input type="text" class="n-input" id="iv-loc" placeholder="Venue / room" value="' + esc(iv.location || '') + '">') +
+          fld('iv-url', 'Meeting URL', '<input type="text" class="n-input" id="iv-url" placeholder="Video call link (optional)" value="' + esc(iv.meeting_url || '') + '">') +
+          pickerHtml('iv-panel', 'Interviewers') +
+          fld('iv-card', 'Scorecard', '<select class="n-select" id="iv-card"><option value="">None</option>' +
+            (f.templates || []).map(function (t) { return '<option value="' + esc(t.id) + '"' + (t.id === iv.scorecard_template_id ? ' selected' : '') + '>' + esc(t.name) + '</option>'; }).join('') + '</select>') +
+          fld('iv-inst', 'Notes', '<textarea class="n-input" id="iv-inst" rows="2" placeholder="For the candidate and the panel">' + esc(iv.instructions || '') + '</textarea>') +
+          check('iv-invite', 'Email the candidate an invitation', iv.invite_candidate !== false, 'only when it’s booked or moved') +
         '</div>' +
-        fld('iv-loc', 'Location', '<input type="text" class="n-input" id="iv-loc" placeholder="Venue / room">') +
-        fld('iv-url', 'Meeting URL', '<input type="text" class="n-input" id="iv-url" placeholder="Video call link (optional)">') +
-        fld('iv-inst', 'Briefing', '<textarea class="n-input" id="iv-inst" rows="2" placeholder="Notes for the candidate or panel"></textarea>') +
-      '</div>' +
-      modalFoot('iv-cancel', 'iv-do', 'Schedule'));
-    document.getElementById('iv-cancel').addEventListener('click', closeModal);
-    document.getElementById('iv-do').addEventListener('click', function () {
-      var dur = document.getElementById('iv-dur').value;
-      run('schedule_interview', { application_id: applicationId, interview_type: document.getElementById('iv-type').value,
-        scheduled_at: document.getElementById('iv-when').value || null, location: document.getElementById('iv-loc').value || null,
-        duration_minutes: dur ? Number(dur) : null, meeting_url: document.getElementById('iv-url').value || null,
-        instructions: document.getElementById('iv-inst').value || null })
-        .then(function () { closeModal(); reload(); }).catch(fail);
-    });
+        modalFoot('iv-cancel', 'iv-do', editing ? 'Save' : 'Schedule'));
+      bindPicker('iv-panel', f.people || [], chosen);
+      document.getElementById('iv-cancel').addEventListener('click', closeModal);
+      document.getElementById('iv-do').addEventListener('click', function () {
+        var dur = document.getElementById('iv-dur').value;
+        var fields = {
+          interview_type: document.getElementById('iv-type').value,
+          scheduled_at: fromLocalInput(document.getElementById('iv-when').value),
+          duration_minutes: dur ? Number(dur) : 30,
+          location: document.getElementById('iv-loc').value || null,
+          meeting_url: document.getElementById('iv-url').value || null,
+          instructions: document.getElementById('iv-inst').value || null,
+          scorecard_template_id: document.getElementById('iv-card').value || null,
+          interviewer_ids: chosen.slice(),
+          invite_candidate: document.getElementById('iv-invite').checked,
+        };
+        this.disabled = true;
+        var call = editing ? run('update_interview', { interview_id: o.interviewId, fields: fields })
+          : run('schedule_interview', Object.assign({ application_id: o.applicationId }, fields));
+        call.then(function (r) { closeModal(); done(r); }).catch(function (e) { closeModal(); fail(e); });
+      });
+    }).catch(fail);
+  }
+
+  // Group interviews: one event for everyone, each candidate keeping their
+  // own interview. mode: 'new' (from selected candidates), 'add' (pick an
+  // upcoming group for the job), 'edit' (from the Interviews tab).
+  function groupModal(o, done) {
+    run('interview_form', { job_id: o.jobId, group_id: o.groupId || null }).then(function (f) {
+      var mode = o.mode, picked = o.groupId || '';
+      var people = f.people || [];
+      // Editing shows who is in the group; new / add show who is being added.
+      var list = mode === 'edit' ? (f.members || []).slice() : (o.candidates || []).slice();
+      var g = f.group || {};
+      var chosen = (g.interviewer_ids || []).slice();
+      function draw() {
+        var showForm = mode !== 'add' || !!picked;
+        var title = mode === 'new' ? 'Schedule group interview' : mode === 'add' ? 'Add to group interview' : 'Edit group interview';
+        modal('<h2 class="modal-title">' + title + '</h2>' +
+          '<p class="modal-sub">One calendar invite for the whole group, sent from the venue’s mailbox. Interviewers are the guests; candidates get their own email and can’t see each other.</p>' +
+          '<div class="stack">' +
+            (mode === 'add' ? fld('gi-pick', 'Group interview', '<select class="n-select" id="gi-pick"><option value="">' +
+              ((f.groups || []).length ? 'Choose a group interview…' : 'No upcoming group interviews for this job') + '</option>' +
+              (f.groups || []).map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === picked ? ' selected' : '') + '>' + esc(when(x.scheduled_at)) + ' · ' + x.member_count + ' candidate' + (x.member_count === 1 ? '' : 's') + '</option>'; }).join('') + '</select>') : '') +
+            (list.length ? '<div class="fld"><span class="n-label">' + (mode === 'edit' ? 'Candidates' : 'Adding') + '</span><div class="chips" id="gi-cands">' +
+              list.map(function (c, i) { return '<span class="chip">' + esc(c.name) + (mode === 'edit' ? '' : '<button type="button" data-uncand="' + i + '" aria-label="Don’t add ' + esc(c.name) + '">' + icon('x', 12) + '</button>') + '</span>'; }).join('') + '</div></div>' : '') +
+            (showForm ?
+              fld('gi-title', 'Title', '<input type="text" class="n-input" id="gi-title" placeholder="Optional — e.g. Saturday bar team group" value="' + esc(g.title || '') + '">') +
+              '<div class="form">' +
+                fld('gi-type', 'Type', '<select class="n-select" id="gi-type">' + typeOptions(g.interview_type || 'in_person') + '</select>') +
+                fld('gi-dur', 'Duration (min)', '<input type="number" class="n-input narrow" id="gi-dur" min="5" value="' + esc(g.duration_minutes || 60) + '">') +
+                fld('gi-when', 'When', '<input type="datetime-local" class="n-input" id="gi-when" value="' + esc(localInput(g.scheduled_at)) + '">', 'wide') +
+              '</div>' +
+              fld('gi-loc', 'Location', '<input type="text" class="n-input" id="gi-loc" placeholder="Venue / room" value="' + esc(g.location || '') + '">') +
+              pickerHtml('gi-panel', 'Interviewers') +
+              fld('gi-card', 'Scorecard', '<select class="n-select" id="gi-card"><option value="">None</option>' +
+                (f.templates || []).map(function (t) { return '<option value="' + esc(t.id) + '"' + (t.id === g.scorecard_template_id ? ' selected' : '') + '>' + esc(t.name) + '</option>'; }).join('') + '</select>') +
+              fld('gi-inst', 'Notes', '<textarea class="n-input" id="gi-inst" rows="2" placeholder="For the candidates and the panel">' + esc(g.instructions || '') + '</textarea>') +
+              check('gi-invite', 'Email each candidate an invitation', g.invite_candidate !== false, 'when they join, or the time moves')
+            : '') +
+          '</div>' +
+          modalFoot('gi-cancel', 'gi-do', mode === 'edit' ? 'Save' : mode === 'add' ? 'Add' : 'Schedule'));
+        document.getElementById('gi-cancel').addEventListener('click', closeModal);
+        var pick = document.getElementById('gi-pick');
+        if (pick) pick.addEventListener('change', function () {
+          picked = pick.value;
+          if (!picked) { g = {}; chosen = []; draw(); return; }
+          run('interview_form', { job_id: o.jobId, group_id: picked }).then(function (f2) { g = f2.group || {}; chosen = (g.interviewer_ids || []).slice(); draw(); }).catch(fail);
+        });
+        modalHost.querySelectorAll('[data-uncand]').forEach(function (b) {
+          b.addEventListener('click', function () { list.splice(Number(b.getAttribute('data-uncand')), 1); draw(); });
+        });
+        if (showForm) bindPicker('gi-panel', people, chosen);
+        var go = document.getElementById('gi-do');
+        go.disabled = !showForm || (mode !== 'edit' && !list.length);
+        go.addEventListener('click', function () {
+          var dur = document.getElementById('gi-dur').value;
+          go.disabled = true;
+          run('save_group', {
+            group_id: mode === 'new' ? null : picked || o.groupId,
+            job_id: o.jobId,
+            application_ids: mode === 'edit' ? [] : list.map(function (c) { return c.application_id; }),
+            fields: {
+              title: document.getElementById('gi-title').value || null,
+              interview_type: document.getElementById('gi-type').value,
+              scheduled_at: fromLocalInput(document.getElementById('gi-when').value),
+              duration_minutes: dur ? Number(dur) : 60,
+              location: document.getElementById('gi-loc').value || null,
+              instructions: document.getElementById('gi-inst').value || null,
+              scorecard_template_id: document.getElementById('gi-card').value || null,
+              interviewer_ids: chosen.slice(),
+              invite_candidate: document.getElementById('gi-invite').checked,
+            },
+          }).then(function (r) {
+            closeModal();
+            done(r);
+            var who = r.added ? r.added + ' candidate' + (r.added === 1 ? '' : 's') + ' added. ' : '';
+            notice(who + (r.message || 'Saved'), r.calendar && r.calendar.ok === false ? 'warn' : 'ok');
+          }).catch(function (e) { closeModal(); fail(e); });
+        });
+      }
+      draw();
+    }).catch(fail);
+  }
+
+  // ---- Bulk email --------------------------------------------------------
+  // One personalised copy per candidate. The first recipient's copy is the
+  // preview; picking a template over an edited email asks first.
+  function emailModal(applicationIds, done) {
+    run('email_compose', { application_ids: applicationIds }).then(function (d) {
+      var templates = d.templates || [], recips = d.recipients || [];
+      var withEmail = recips.filter(function (r) { return r.email; });
+      var noEmail = recips.length - withEmail.length;
+      var tid = '', base = { subject: '', body: '' }, pending = null;
+      var batch = uid();
+      modal('<h2 class="modal-title">Email ' + recips.length + ' candidate' + (recips.length === 1 ? '' : 's') + '</h2>' +
+        (!d.enabled ? '<p class="modal-sub">Email is switched off for Norm Hiring, so a send won’t go anywhere yet — you can still send yourself a test.</p>' : '') +
+        '<div class="stack">' +
+          (noEmail ? '<div class="warn-line">' + noEmail + ' selected candidate' + (noEmail === 1 ? ' has' : 's have') + ' no email address and will be skipped.</div>' : '') +
+          fld('em-tpl', 'Template', '<select class="n-select" id="em-tpl"><option value="">Start from a template (optional)…</option>' +
+            templates.map(function (t) { return '<option value="' + esc(t.id) + '">' + esc(t.name) + '</option>'; }).join('') + '</select>') +
+          '<div id="em-replace"></div>' +
+          fld('em-subj', 'Subject', '<input type="text" class="n-input" id="em-subj" placeholder="Subject…">') +
+          '<div class="fld"><span class="n-label" id="em-body-lbl">Message</span><div class="editor" id="em-body" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="em-body-lbl"></div>' +
+            '<div class="hint">Merge fields like {{candidate_first_name}}, {{job_title}}, {{venue_name}} and {{hiring_manager}} are filled in for each candidate.</div></div>' +
+          '<div id="em-preview"></div>' +
+        '</div>' +
+        '<div class="modal-foot">' + btn('Cancel', 'secondary', 'id="em-cancel"') + btn('Send me a test', 'secondary', 'id="em-test"') +
+          btn('Send to ' + withEmail.length, 'primary', 'id="em-send"', { icon: 'mail' }) + '</div>', 'wide');
+      modalHost.querySelector('.panel').classList.add('wide');
+      var subj = document.getElementById('em-subj'), bodyEl = document.getElementById('em-body'), tpl = document.getElementById('em-tpl');
+      var sendBtn = document.getElementById('em-send'), testBtn = document.getElementById('em-test');
+      function current() { return { subject: subj.value, body: cleanHtml(bodyEl.innerHTML) }; }
+      function refresh() {
+        var c = current(), first = withEmail[0];
+        var ready = c.subject.trim() && bodyEl.textContent.trim();
+        sendBtn.disabled = !ready || !withEmail.length;
+        testBtn.disabled = !ready || !withEmail.length;
+        document.getElementById('em-preview').innerHTML = first && ready ?
+          '<div class="fld"><span class="n-label">Preview — ' + esc(first.name) + ' (' + esc(first.email) + ')</span><div class="preview"><div class="subj">' +
+            esc(fillMerge(c.subject, first.values, false)) + '</div><div>' + cleanHtml(fillMerge(c.body, first.values, true)) + '</div></div>' +
+            (withEmail.length > 1 ? '<div class="hint">Each of the ' + withEmail.length + ' recipients gets their own copy.</div>' : '') + '</div>' : '';
+      }
+      function apply(id) {
+        var t = templates.filter(function (x) { return x.id === id; })[0];
+        tid = id;
+        if (t) { subj.value = t.subject || ''; bodyEl.innerHTML = cleanHtml(t.body_html || ''); base = current(); }
+        tpl.value = id;
+        document.getElementById('em-replace').innerHTML = '';
+        refresh();
+      }
+      tpl.addEventListener('change', function () {
+        var id = tpl.value;
+        if (!id || id === tid) return;
+        var c = current();
+        var dirty = (c.subject.trim() || bodyEl.textContent.trim()) && (c.subject !== base.subject || c.body !== base.body);
+        if (!dirty) { apply(id); return; }
+        pending = id; tpl.value = tid;
+        var host = document.getElementById('em-replace');
+        host.innerHTML = '<div class="replace" role="alert"><span><b>Replace this email?</b> You’ve changed it since it was loaded — the template’s wording would replace your subject and message.</span>' +
+          btn('Keep my version', 'secondary', 'id="em-keep"', { sm: true }) + btn('Use template', 'primary', 'id="em-use"', { sm: true }) + '</div>';
+        document.getElementById('em-keep').addEventListener('click', function () { pending = null; host.innerHTML = ''; });
+        document.getElementById('em-use').addEventListener('click', function () { var p = pending; pending = null; apply(p); });
+      });
+      subj.addEventListener('input', refresh);
+      bodyEl.addEventListener('input', refresh);
+      document.getElementById('em-cancel').addEventListener('click', closeModal);
+      function send(mode) {
+        var c = current();
+        sendBtn.disabled = testBtn.disabled = true;
+        var extra = { application_ids: applicationIds, subject: c.subject, body_html: c.body, template_id: tid || null, batch_id: batch };
+        if (mode) extra._email_mode = mode;
+        run('bulk_email', extra).then(function (r) {
+          if (mode === 'test') { notice(r.message || 'Test sent'); refresh(); return; }
+          closeModal(); if (done) done(r);
+          notice(r.message || 'Done', (r.statuses || []).some(function (s) { return s === 'failed' || s === 'disabled'; }) ? 'warn' : 'ok');
+        }).catch(function (e) { closeModal(); fail(e); });
+      }
+      sendBtn.addEventListener('click', function () { send(null); });
+      testBtn.addEventListener('click', function () { send('test'); });
+      refresh();
+    }).catch(fail);
+  }
+
+  // ---- Candidates (all, or one job's) --------------------------------------
+  // Ticking candidates — or all of the filtered list — opens the bulk actions.
+  var picked = {};
+  function showCandidates(jobId, keepPicks) {
+    newJobLeads(true);
+    if (!keepPicks) picked = {};
+    loading();
+    run('candidates', { job_id: jobId || null }).then(function (d) {
+      var rows = d.applications || [], stages = d.stages || [], q = '';
+      function filtered() {
+        var s = q.trim().toLowerCase();
+        return rows.filter(function (a) { return !s || (String(a.candidate_name) + ' ' + String(a.candidate_email || '')).toLowerCase().indexOf(s) >= 0; });
+      }
+      function chosenIds() { return filtered().filter(function (a) { return picked[a.id]; }).map(function (a) { return a.id; }); }
+      function draw() {
+        var list = filtered(), sel = chosenIds(), all = list.length > 0 && sel.length === list.length;
+        var toolbar = '<div class="toolbar">' +
+          '<select class="n-select" id="cf-job" aria-label="Job opening"><option value="">All job openings</option>' +
+            (d.jobs || []).map(function (j) { return '<option value="' + esc(j.id) + '"' + (j.id === jobId ? ' selected' : '') + '>' + esc(j.title) + (j.status && j.status !== 'open' ? ' (' + esc(cap(j.status)) + ')' : '') + '</option>'; }).join('') + '</select>' +
+          '<input type="search" class="n-input search" id="cf-q" placeholder="Search candidates…" aria-label="Search candidates" value="' + esc(q) + '">' +
+          (jobId ? btn('Pipeline', 'quiet', 'id="cf-board"', { sm: true }) : '') + '</div>';
+        var bar = sel.length ? '<div class="selbar" role="region" aria-label="Bulk actions"><span class="lead-count">' + sel.length + ' selected</span>' +
+          (jobId && stages.length ? '<span class="grp"><select class="n-select" id="b-stage" aria-label="Move to stage"><option value="">Move to stage…</option>' +
+            stages.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>'; }).join('') + '</select></span>' : '') +
+          (jobId ? btn('Schedule group interview', 'secondary', 'id="b-group"', { sm: true, icon: 'cal' }) + btn('Add to group interview', 'secondary', 'id="b-addgroup"', { sm: true }) : '') +
+          btn('Email', 'secondary', 'id="b-mail"', { sm: true, icon: 'mail' }) +
+          btn('Not progressing', 'secondary', 'id="b-reject"', { sm: true }) +
+          btn('Add to talent pool', 'secondary', 'id="b-pool"', { sm: true }) +
+          btn('Clear', 'quiet', 'id="b-clear"', { sm: true }) +
+          (!jobId ? '<span class="hint">Choose a job to move stages or schedule a group interview.</span>' : '') + '</div>' : '';
+        var table = list.length ? '<table class="n-table list cands"><thead><tr>' +
+            '<th scope="col" class="sel"><input type="checkbox" id="c-all" aria-label="Select all ' + list.length + ' candidates"' + (all ? ' checked' : '') + '></th>' +
+            '<th scope="col">Candidate</th>' + (jobId ? '' : '<th scope="col">Role</th>') + '<th scope="col">Stage</th><th scope="col">Rating</th><th scope="col">Source</th><th scope="col">Applied</th>' +
+          '</tr></thead><tbody>' + list.map(function (a) {
+            var on = !!picked[a.id];
+            return '<tr' + (on ? ' class="picked"' : '') + '><td class="sel"><input type="checkbox" data-pick="' + esc(a.id) + '" aria-label="Select ' + esc(a.candidate_name) + '"' + (on ? ' checked' : '') + '></td>' +
+              '<td class="lead"><div class="open" data-open="' + esc(a.id) + '"><div class="name">' + esc(a.candidate_name) + (a.knockout_flag ? ' ' + badge('Knockout', 'warn') : '') + '</div>' +
+                '<div class="meta">' + esc(a.candidate_email || 'No email') + '</div>' +
+                (jobId ? '' : '<div class="meta m-only">' + esc(a.job_title || '') + '</div>') + '</div></td>' +
+              (jobId ? '' : '<td class="note">' + esc(a.job_title || '—') + '</td>') +
+              '<td class="note stage-col">' + (a.status === 'active' ? esc(a.stage_name || '—') : statusPill(a.status)) + '</td>' +
+              '<td class="num">' + (a.rating ? esc(a.rating) + '/5' : '—') + '</td>' +
+              '<td class="note">' + esc(cap(a.source || 'manual')) + '</td>' +
+              '<td class="note">' + esc(a.applied_at ? agoLabel(a.applied_at) : '') + '</td></tr>';
+          }).join('') + '</tbody></table>'
+          : state('empty', rows.length ? 'Nobody matches that search' : 'No candidates yet', rows.length ? '' : 'Candidates appear here as they apply or are added to a job.');
+        body.innerHTML = toolbar + bar + (list.length ? '<div class="count-line">' + list.length + ' candidate' + (list.length === 1 ? '' : 's') + '</div>' : '') + table;
+
+        document.getElementById('cf-job').addEventListener('change', function () { showCandidates(this.value || null); });
+        var qs = document.getElementById('cf-q');
+        qs.addEventListener('input', function () { q = qs.value; var pos = qs.selectionStart; draw(); var n = document.getElementById('cf-q'); n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { /* search inputs */ } });
+        var board = document.getElementById('cf-board'); if (board) board.addEventListener('click', function () { selectTab('jobs'); showPipeline(jobId); });
+        var allBox = document.getElementById('c-all');
+        if (allBox) allBox.addEventListener('change', function () { list.forEach(function (a) { if (allBox.checked) picked[a.id] = true; else delete picked[a.id]; }); draw(); });
+        body.querySelectorAll('[data-pick]').forEach(function (b) {
+          b.addEventListener('change', function () { var id = b.getAttribute('data-pick'); if (b.checked) picked[id] = true; else delete picked[id]; draw(); });
+        });
+        var order = list.map(function (a) { return a.id; });
+        bind('[data-open]', function (el) {
+          showCandidate(el.getAttribute('data-open'), jobId, { ids: order, backLabel: 'Candidates', back: function () { selectTab('cands'); showCandidates(jobId, true); } });
+        });
+        if (!sel.length) return;
+        var reload = function () { picked = {}; showCandidates(jobId, true); };
+        var st = document.getElementById('b-stage');
+        if (st) st.addEventListener('change', function () {
+          if (!st.value) return;
+          var name = st.options[st.selectedIndex].text;
+          run('bulk_move', { application_ids: sel, stage_id: st.value }).then(function (r) { reload(); bulkDone(r, 'Moved to ' + name); }).catch(fail);
+        });
+        var named = function () { return list.filter(function (a) { return picked[a.id]; }).map(function (a) { return { application_id: a.id, name: a.candidate_name }; }); };
+        var grp = document.getElementById('b-group'); if (grp) grp.addEventListener('click', function () { groupModal({ mode: 'new', jobId: jobId, candidates: named() }, function () { picked = {}; showCandidates(jobId, true); }); });
+        var add = document.getElementById('b-addgroup'); if (add) add.addEventListener('click', function () { groupModal({ mode: 'add', jobId: jobId, candidates: named() }, function () { picked = {}; showCandidates(jobId, true); }); });
+        document.getElementById('b-mail').addEventListener('click', function () { emailModal(sel, function () { picked = {}; showCandidates(jobId, true); }); });
+        document.getElementById('b-reject').addEventListener('click', function () { rejectModal(sel, function () { picked = {}; showCandidates(jobId, true); }); });
+        document.getElementById('b-pool').addEventListener('click', function () {
+          run('bulk_talent_pool', { application_ids: sel }).then(function (r) { reload(); bulkDone(r, 'Added to talent pool'); }).catch(fail);
+        });
+        document.getElementById('b-clear').addEventListener('click', function () { picked = {}; draw(); });
+      }
+      draw();
+    }).catch(fail);
+  }
+
+  // ---- Interviews ----------------------------------------------------------
+  var ivState = { when: 'upcoming', from: '', to: '', job: '', venue: '', who: '', status: 'scheduled', open: {} };
+  var ivData = null;
+  function showInterviews() {
+    newJobLeads(true);
+    loading();
+    var s = ivState, args = { when: s.when };
+    if (s.when === 'range') {
+      args.from = s.from ? new Date(s.from + 'T00:00:00').toISOString() : null;
+      args.to = s.to ? new Date(s.to + 'T23:59:59').toISOString() : null;
+    }
+    run('interviews', args).then(function (d) { ivData = d; drawInterviews(); }).catch(fail);
+  }
+  // Job, venue, interviewer and status filter what's loaded — no round trip.
+  function drawInterviews() {
+    var s = ivState, d = ivData || {};
+    (function () {
+      var venues = d.venues || [];
+      var unconnected = venues.filter(function (v) { return !(v.mailbox && v.mailbox.connected); });
+      var rows = (d.rows || []).filter(function (r) {
+        if (s.job && (r.job || {}).id !== s.job) return false;
+        if (s.venue && (r.job || {}).venue_id !== s.venue) return false;
+        if (s.who && (r.interviewer_ids || []).indexOf(s.who) < 0) return false;
+        if (s.status && r.status !== s.status) return false;
+        return true;
+      });
+      var sel = function (id, label, opts, val) {
+        return '<select class="n-select" id="' + id + '" aria-label="' + label + '">' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (o[0] === val ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';
+      };
+      var toolbar = '<div class="toolbar">' +
+        sel('if-when', 'When', [['upcoming', 'Upcoming'], ['past', 'Past'], ['range', 'Date range']], s.when) +
+        (s.when === 'range' ? '<input type="date" class="n-input" id="if-from" aria-label="From" value="' + esc(s.from) + '"><input type="date" class="n-input" id="if-to" aria-label="To" value="' + esc(s.to) + '">' : '') +
+        sel('if-job', 'Job', [['', 'All jobs']].concat((d.jobs || []).map(function (j) { return [j.id, j.title || 'Untitled']; })), s.job) +
+        sel('if-venue', 'Venue', [['', 'All venues']].concat(venues.map(function (v) { return [v.id, v.name]; })), s.venue) +
+        sel('if-who', 'Interviewer', [['', 'All interviewers']].concat((d.people || []).map(function (p) { return [p.id, p.name]; })), s.who) +
+        sel('if-status', 'Status', [['scheduled', 'Scheduled'], ['completed', 'Completed'], ['cancelled', 'Cancelled'], ['', 'Any status']], s.status) + '</div>';
+      var hint = venues.length && unconnected.length === venues.length ?
+        '<div class="banner" role="note">' + icon('info', 14) + '<span>Invites go out from the job venue’s own mailbox. None is connected yet — connect one in Settings → Venues (“Venue mailbox”) and interviews will send calendar invites.</span></div>' : '';
+      var table = rows.length ? '<table class="n-table list ivs"><thead><tr><th scope="col" class="sel"><span class="sr">Expand</span></th><th scope="col">When</th><th scope="col">Interview</th><th scope="col">Job</th><th scope="col">Interviewers</th><th scope="col">Status</th><th scope="col" class="tools"><span class="sr">Actions</span></th></tr></thead><tbody>' +
+        rows.map(function (r) {
+          var group = !!r.group_id, open = !!s.open[r.key], members = r.members || [];
+          var label = group ? esc(r.title || 'Group interview') + ' · ' + members.length + ' candidate' + (members.length === 1 ? '' : 's') : esc((members[0] || {}).candidate_name || 'Candidate');
+          var live = r.status === 'scheduled';
+          var head = '<tr><td class="sel">' + (group ? iconBtn(open ? 'chevdown' : 'right', (open ? 'Hide' : 'Show') + ' candidates', 'data-toggle="' + esc(r.key) + '" aria-expanded="' + open + '"', 'toggle') : '') + '</td>' +
+            '<td class="when">' + esc(when(r.scheduled_at)) + '</td>' +
+            '<td class="lead"><div' + (group ? '' : ' class="open" data-openiv="' + esc((members[0] || {}).application_id || '') + '"') + '><div class="name">' + label + '</div>' +
+              '<div class="meta">' + esc(joinMeta([typeLabel(r.interview_type), r.duration_minutes ? r.duration_minutes + ' min' : '', r.location || '', r.calendar ? 'invite sent' : ''])) + '</div>' +
+              '<div class="meta m-only">' + esc(joinMeta([(r.job || {}).title || '', (r.interviewer_names || []).join(', ')])) + '</div></div></td>' +
+            '<td class="note">' + esc((r.job || {}).title || '—') + (r.venue_name ? '<div class="meta">' + esc(r.venue_name) + '</div>' : '') + '</td>' +
+            '<td class="note">' + esc((r.interviewer_names || []).join(', ') || '—') + '</td>' +
+            '<td class="status">' + badge(cap(r.status), r.status === 'cancelled' ? 'error' : (r.status === 'completed' ? 'ok' : 'info')) + '</td>' +
+            '<td class="tools"><div class="btns">' + (group && live ? btn('Edit', 'quiet', 'data-gedit="' + esc(r.group_id) + '" data-gjob="' + esc((r.job || {}).id || '') + '"', { sm: true }) +
+              btn('Cancel', 'quiet', 'data-gcancel="' + esc(r.group_id) + '"', { sm: true }) : '') + '</div></td></tr>';
+          var kids = group && open ? members.map(function (m) {
+            return '<tr class="member"><td class="sel"></td><td class="when"></td><td class="lead"><div class="open" data-openiv="' + esc(m.application_id) + '"><div class="name">' + esc(m.candidate_name) + '</div></div></td>' +
+              '<td class="note"></td><td class="note"></td><td class="status"></td>' +
+              '<td class="tools"><div class="btns">' + (live ? btn('Remove', 'quiet', 'data-mremove="' + esc(m.interview_id) + '"', { sm: true }) : '') + '</div></td></tr>';
+          }).join('') + (members.length ? '' : '<tr class="member"><td></td><td></td><td class="lead"><span class="hint">No candidates left in this group.</span></td><td></td><td></td><td></td><td></td></tr>') : '';
+          return head + kids;
+        }).join('') + '</tbody></table>'
+        : state('empty', 'No interviews here', s.when === 'upcoming' ? 'Schedule one from a candidate, or tick several on the Candidates tab for a group interview.' : '');
+      body.innerHTML = toolbar + hint + table;
+
+      var set = function (k, v) { s[k] = v; showInterviews(); };
+      document.getElementById('if-when').addEventListener('change', function () { set('when', this.value); });
+      var f = document.getElementById('if-from'); if (f) f.addEventListener('change', function () { set('from', this.value); });
+      var t = document.getElementById('if-to'); if (t) t.addEventListener('change', function () { set('to', this.value); });
+      // These filter what's loaded — no round trip.
+      ['job', 'venue', 'who', 'status'].forEach(function (k) {
+        document.getElementById('if-' + k).addEventListener('change', function () { s[k] = this.value; drawInterviews(); });
+      });
+      bind('[data-toggle]', function (el) { var k = el.getAttribute('data-toggle'); if (s.open[k]) delete s.open[k]; else s.open[k] = true; drawInterviews(); });
+      bind('[data-openiv]', function (el) {
+        var id = el.getAttribute('data-openiv'); if (!id) return;
+        showCandidate(id, null, { backLabel: 'Interviews', back: function () { selectTab('ivs'); showInterviews(); } });
+      });
+      bind('[data-gedit]', function (el) {
+        groupModal({ mode: 'edit', jobId: el.getAttribute('data-gjob'), groupId: el.getAttribute('data-gedit') }, function () { showInterviews(); });
+      });
+      bind('[data-gcancel]', function (el) {
+        if (!confirm('Cancel this group interview for everyone? The interviewers are told through the calendar.')) return;
+        run('cancel_group', { group_id: el.getAttribute('data-gcancel') }).then(function (r) { showInterviews(); notice(r.message || 'Group interview cancelled'); }).catch(fail);
+      });
+      bind('[data-mremove]', function (el) {
+        if (!confirm('Take this candidate out of the group interview?')) return;
+        run('remove_group_member', { interview_id: el.getAttribute('data-mremove') }).then(function (r) { showInterviews(); notice(r.message || 'Removed — invite updated'); }).catch(fail);
+      });
+    })();
+  }
+
+  // ---- Settings: email + venue mailboxes -------------------------------------
+  function showSettings() {
+    newJobLeads(true);
+    loading();
+    run('settings').then(function (d) {
+      var venues = d.venues || [];
+      var log = (d.log || []).map(function (e) {
+        return '<tr><td class="lead"><div class="name">' + esc(e.subject || '(no subject)') + '</div><div class="meta">' + esc((e.to || []).join(', ')) + '</div></td>' +
+          '<td class="note">' + esc(cap(e.kind || 'message')) + '</td>' +
+          '<td class="status">' + badge(cap(e.status || ''), e.status === 'sent' ? 'ok' : (e.status === 'failed' ? 'error' : '')) + (e.is_test ? badge('Test') : '') + '</td>' +
+          '<td class="note">' + esc((e.at || '').slice(0, 16).replace('T', ' ')) + '</td>' +
+          '<td class="tools"><div class="btns">' + btn('View', 'quiet', 'data-mview="' + esc(e.id) + '"', { sm: true }) + '</div></td></tr>';
+      }).join('');
+      body.innerHTML =
+        '<section class="card"><div class="card-head"><h2 class="card-title grow">Email</h2>' + badge(d.email_enabled ? 'On' : 'Off', d.email_enabled ? 'ok' : '') + '</div>' +
+          '<div class="card-body"><div class="hint">Candidate invitations and the emails you send from the Candidates tab. ' +
+            (d.email_enabled ? 'Email is on.' : 'Email is off — Orbit is still the live system, so nothing is sent from here yet.') + '</div></div>' +
+          (d.can_manage ? '<div class="card-foot">' + (d.email_enabled ? btn('Turn email off', 'secondary', 'id="em-off"') : btn('Turn email on', 'secondary', 'id="em-on"')) +
+            '<span class="hint">Only org managers can change this.</span></div>' : '') + '</section>' +
+        '<section class="card"><div class="card-head"><h2 class="card-title">Venue mailboxes</h2></div>' +
+          '<div class="card-body"><div class="hint">Interview invites go out from the job venue’s own mailbox, with a candidate pack attached. Connect one under Settings → Venues → “Venue mailbox”.</div></div>' +
+          (venues.length ? '<table class="n-table list"><tbody>' + venues.map(function (v) {
+            var m = v.mailbox || {};
+            return '<tr><td class="lead"><div class="name">' + esc(v.name) + '</div>' + (m.email ? '<div class="meta">' + esc(m.email) + '</div>' : '') + '</td>' +
+              '<td class="tools">' + (m.connected ? (m.needs_reconnect ? badge('Reconnect needed', 'warn') : badge('Connected', 'ok')) : badge('Not connected')) + '</td></tr>';
+          }).join('') + '</tbody></table>' : '<div class="card-note none">No venues.</div>') + '</section>' +
+        '<section class="card"><div class="card-head"><h2 class="card-title">Email log</h2></div>' +
+          (log ? '<table class="n-table list"><tbody>' + log + '</tbody></table>' : '<div class="card-note none">Nothing has been sent from Norm Hiring.</div>') + '</section>';
+      var on = document.getElementById('em-on'), off = document.getElementById('em-off');
+      var toggle = function (v) {
+        if (v && !confirm('Turn on email for Norm Hiring? Candidates will start getting invitations from Norm — while Orbit is live they could get two.')) return;
+        run('set_email_enabled', { enabled: v }).then(showSettings).catch(fail);
+      };
+      if (on) on.addEventListener('click', function () { toggle(true); });
+      if (off) off.addEventListener('click', function () { toggle(false); });
+      bind('[data-mview]', function (el) {
+        run('email_preview', { log_id: el.getAttribute('data-mview') }).then(function (r) {
+          modal('<h2 class="modal-title">Email</h2><iframe class="mail-frame" sandbox title="Email preview"></iframe>' +
+            '<div class="modal-foot">' + btn('Close', 'secondary', 'id="mv-close"') + '</div>');
+          modalHost.querySelector('.panel').classList.add('wide');
+          modalHost.querySelector('iframe').srcdoc = r.html || '';
+          document.getElementById('mv-close').addEventListener('click', closeModal);
+        }).catch(fail);
+      });
+    }).catch(fail);
   }
 
   // ---- Talent pool -------------------------------------------------------
@@ -794,7 +1447,27 @@
     }).catch(fail);
   }
 
-  function render() { closeModal(); view === 'pool' ? showPool() : showJobs(); }
+  function render() {
+    closeModal();
+    if (view === 'pool') showPool();
+    else if (view === 'cands') showCandidates(null);
+    else if (view === 'ivs') showInterviews();
+    else if (view === 'settings') showSettings();
+    else showJobs();
+  }
+
+  // While Orbit is the live system, say when this copy was last refreshed
+  // from it — only when something here actually came from Orbit.
+  function showBanner() {
+    run('sync_status').then(function (r) {
+      var el = document.getElementById('banner');
+      if (!r || !r.refreshed_at) { el.innerHTML = ''; return; }
+      var d = new Date(r.refreshed_at);
+      var day = isNaN(d.getTime()) ? String(r.refreshed_at).slice(0, 10) : d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+      el.innerHTML = icon('info', 14) + '<span>Data refreshed from Orbit on ' + esc(day) +
+        ' — Orbit is still the live system; changes made here are overwritten by the next refresh.</span>';
+    }).catch(function () { /* the banner is a courtesy, never an error */ });
+  }
 
   document.getElementById('newjob').addEventListener('click', newJob);
   document.querySelectorAll('.tab').forEach(function (t) {
@@ -818,6 +1491,9 @@
     var ins = c.inputs || {};
     if (ins.view === 'talent_pool' || ins.view === 'pool') selectTab('pool');
     else if (ins.view === 'openings' || ins.view === 'jobs') selectTab('jobs');
+    else if (ins.view === 'candidates') selectTab('cands');
+    else if (ins.view === 'interviews') selectTab('ivs');
+    else if (ins.view === 'settings') selectTab('settings');
     if (!ins.job && !ins.candidate) return false;
     loading();
     run('locate', { job: ins.job || null, candidate: ins.candidate || null }).then(function (r) {
@@ -832,7 +1508,7 @@
     ctx = c;
     var v = (c.venues || []).find(function (x) { return x.id === c.venueId; });
     document.getElementById('scope').textContent = 'Openings across the group' + (v ? ' · hiring into ' + v.name : '');
-    if (!started) { started = true; if (start(c)) return; }
+    if (!started) { started = true; showBanner(); if (start(c)) return; }
     render();
   });
 })();

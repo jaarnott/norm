@@ -101,6 +101,13 @@ async def oauth_authorize(
     if not spec.oauth_config:
         raise HTTPException(400, f"Connector {connector} has no OAuth configuration")
 
+    # A venue mailbox (Hiring's interview invites — services/app_calendar.py)
+    # belongs to ONE venue. Without a venue the token would be stored
+    # org-wide and every venue's invites would go from whichever mailbox
+    # connected last.
+    if spec.category == "calendar" and not venue_id:
+        raise HTTPException(400, "Choose the venue this mailbox belongs to")
+
     # Public clients (RFC 7591 dynamic registration): register once, lazily, the
     # first time anyone connects — no manual client provisioning. Idempotent
     # (skips if a client_id is already stored).

@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from app.db.models import AppRecord, Role
+from app.db.models import AppRecord, OrganizationMembership, Role
 from app.services import app_runtime as AR
 from tests.conftest import (
     _make_membership,
@@ -1242,6 +1242,15 @@ class TestSignoffQueue:
                 "rejected": True,  # a prior rejection must be cleared on accept
             },
         )
+        # Who signed it off comes from the platform's viewer — a client-sent
+        # name (the old hard-coded actor) is ignored.
+        me = _rec(
+            db_session,
+            org,
+            author,
+            "people",
+            {"name": "Manager Sam", "norm_user_id": author.id},
+        )
         d = _run(
             db_session,
             app,
@@ -1249,12 +1258,13 @@ class TestSignoffQueue:
             author,
             op="sign_off",
             completion_id=cid,
-            by="Manager Sam",
+            by="Someone Else",
         )
         c = d["completion"]
         assert c["awaiting_signoff"] is False
         assert c["signoff_at"]
-        assert c["signoff_by"] == "Manager Sam"
+        assert c["signoff_by"] == me
+        assert c["signoff_by_name"] == author.full_name
         assert "rejected" not in c  # cleared on acceptance
         # and it is gone from the queue
         assert _run(db_session, app, version, author, op="signoffs")["pending"] == []
@@ -1681,7 +1691,26 @@ class TestLocate:
             :3
         ]
         out = _run(db_session, app, version, author, op="locate", program="food")
-        assert out == {"program_id": program, "person_id": None}
+        assert out == {"program_id": program, "person_id": None, "review_id": None}
+
+    def test_a_review_id_resolves_and_a_missing_one_says_so(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        person = _rec(db_session, org, author, "people", {"name": "Sam"})
+        review = _rec(
+            db_session,
+            org,
+            author,
+            "performance_reviews",
+            {"person_id": person, "status": "employee_in_progress"},
+        )
+        out = _run(db_session, app, version, author, op="locate", review=review)
+        assert out["review_id"] == review
+        gone = _run(
+            db_session, app, version, author, op="locate", review=str(uuid.uuid4())
+        )
+        assert "no longer exists" in gone["error"]
 
     def test_a_person_name_resolves(self, db_session, org, author, app_and_version):
         app, version = app_and_version
@@ -1702,3 +1731,393 @@ class TestLocate:
             params={"op": "locate", "person": "Nobody"},
         )
         assert "Nobody in training matching 'Nobody'" in str(out)
+
+
+class TestContentMediaCopies:
+    def test_content_carries_its_copied_media_through_unchanged(
+        self, db_session, org, author, app_and_version
+    ):
+        """The page swaps each Orbit `source_url` in a body for the Norm copy
+        (norm.files.urlFor) — so both ops must hand `files` over untouched."""
+        app, version = app_and_version
+        program, module, section, _ = _program_with_two_items(db_session, org, author)[
+            :4
+        ]
+        files = [
+            {
+                "file_id": "f-1",
+                "name": "pour.jpg",
+                "source_url": "https://x.supabase.co/storage/v1/object/public/training-media/pour.jpg",
+            }
+        ]
+        content = _rec(
+            db_session,
+            org,
+            author,
+            "content",
+            {
+                "section_id": section,
+                "module_id": module,
+                "title": "Pouring",
+                "content_type": "rich_text",
+                "body": {"html": f'<img src="{files[0]["source_url"]}">'},
+                "files": files,
+            },
+        )
+        out = _run(db_session, app, version, author, op="content", content_id=content)
+        assert out["content"]["files"] == files
+        tree = _run(db_session, app, version, author, op="program", program_id=program)
+        assert next(c for c in tree["content"] if c["id"] == content)["files"] == files
+
+
+class TestPlanVenueAndProgress:
+    """Orbit's plan editor: the plan's venue can change (its enrolment moves
+    with it), and each module/section shows how far the trainee has got."""
+
+    def test_moving_a_plan_moves_only_its_matching_enrolment(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        v1 = _make_venue(db_session, name="Glass Goose", organization_id=org.id)
+        v2 = _make_venue(db_session, name="Bessie", organization_id=org.id)
+        for v in (v1, v2):
+            _make_venue_access(db_session, author, v)
+        program = _rec(db_session, org, author, "programs", {"name": "Bar"})
+        person = _rec(db_session, org, author, "people", {"name": "Ana"})
+        plan = _rec(
+            db_session,
+            org,
+            author,
+            "plans",
+            {
+                "program_id": program,
+                "person_id": person,
+                "variant_id": "g:a",
+                "status": "active",
+            },
+            v1.id,
+        )
+        match = _rec(
+            db_session,
+            org,
+            author,
+            "assignments",
+            {"program_id": program, "person_id": person, "variant_id": "g:a"},
+            v1.id,
+        )
+        other_variant = _rec(
+            db_session,
+            org,
+            author,
+            "assignments",
+            {"program_id": program, "person_id": person, "variant_id": "g:b"},
+            v1.id,
+        )
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="set_plan_venue",
+            plan_id=plan,
+            venue_id=v2.id,
+        )
+        assert out["moved_assignments"] == 1
+        db_session.expire_all()
+        venue_of = {
+            r.id: r.venue_id
+            for r in db_session.query(AppRecord).filter(
+                AppRecord.id.in_([plan, match, other_variant])
+            )
+        }
+        assert venue_of == {plan: v2.id, match: v2.id, other_variant: v1.id}
+
+    def test_back_to_group_wide_clears_the_venue(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        v1 = _make_venue(db_session, name="Glass Goose", organization_id=org.id)
+        _make_venue_access(db_session, author, v1)
+        plan = _rec(
+            db_session,
+            org,
+            author,
+            "plans",
+            {"program_id": "p", "person_id": "x"},
+            v1.id,
+        )
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="set_plan_venue",
+            plan_id=plan,
+            venue_id=None,
+        )
+        assert "error" not in out
+        db_session.expire_all()
+        assert db_session.query(AppRecord).filter_by(id=plan).one().venue_id is None
+
+    def test_a_new_plan_can_be_group_wide_while_a_venue_is_selected(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        v1 = _make_venue(db_session, name="Glass Goose", organization_id=org.id)
+        _make_venue_access(db_session, author, v1)
+        out = AR.run_logic(
+            db_session,
+            None,
+            app=app,
+            version=version,
+            user=author,
+            venue_id=v1.id,  # the picker's venue
+            params={
+                "op": "create_plan",
+                "person_id": "x",
+                "program_id": "p",
+                "venue_id": "",
+            },
+        )
+        assert out["success"] is True, out.get("error")
+        plan_id = out["data"]["plan"]["id"]
+        assert db_session.query(AppRecord).filter_by(id=plan_id).one().venue_id is None
+
+    def test_module_and_section_progress(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        program = _rec(
+            db_session, org, author, "programs", {"name": "Bar", "requires_plan": True}
+        )
+        m1 = _rec(
+            db_session,
+            org,
+            author,
+            "modules",
+            {"program_id": program, "name": "Pour", "sort_index": 0},
+        )
+        m2 = _rec(
+            db_session,
+            org,
+            author,
+            "modules",
+            {"program_id": program, "name": "Close", "sort_index": 1},
+        )
+        s1 = _rec(
+            db_session, org, author, "sections", {"module_id": m1, "name": "Taps"}
+        )
+        s2 = _rec(
+            db_session, org, author, "sections", {"module_id": m2, "name": "Lockup"}
+        )
+        c1, c2 = (
+            _rec(
+                db_session,
+                org,
+                author,
+                "content",
+                {"section_id": s1, "module_id": m1, "title": t},
+            )
+            for t in ("A", "B")
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "content",
+            {"section_id": s2, "module_id": m2, "title": "C"},
+        )
+        person = _rec(db_session, org, author, "people", {"name": "Ana"})
+        plan = _rec(
+            db_session,
+            org,
+            author,
+            "plans",
+            {"program_id": program, "person_id": person, "status": "active"},
+        )
+        a = _rec(
+            db_session,
+            org,
+            author,
+            "assignments",
+            {"program_id": program, "person_id": person},
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "completions",
+            {
+                "assignment_id": a,
+                "content_id": c1,
+                "completed_at": "2026-10-01T00:00:00+00:00",
+            },
+        )
+        # Awaiting sign-off: done, but it doesn't count yet.
+        _rec(
+            db_session,
+            org,
+            author,
+            "completions",
+            {"assignment_id": a, "content_id": c2, "awaiting_signoff": True},
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "module_signoffs",
+            {
+                "assignment_id": a,
+                "module_id": m2,
+                "signed_off_at": "2026-10-05T00:00:00+00:00",
+            },
+        )
+        _rec(
+            db_session,
+            org,
+            author,
+            "plan_sections",
+            {
+                "plan_id": plan,
+                "section_id": s2,
+                "status": "completed",
+                "completed_at": "2026-10-04T00:00:00+00:00",
+            },
+        )
+        d = _run(db_session, app, version, author, op="plan", plan_id=plan)
+        mods = {m["name"]: m["progress"] for m in d["modules"]}
+        assert mods["Pour"]["label"] == "In progress (1/2)"
+        assert mods["Close"] == {
+            "label": "Signed off",
+            "tone": "ok",
+            "at": "2026-10-05T00:00:00+00:00",
+        }
+        secs = {s["name"]: s["progress"] for s in d["sections"]}
+        assert secs["Taps"]["label"] == "In progress (1/2)"
+        assert secs["Lockup"]["label"] == "Completed"
+        assert secs["Lockup"]["at"] == "2026-10-04T00:00:00+00:00"
+        assert d["plan"]["assignment_id"] == a and d["plan"]["person_name"] == "Ana"
+
+    def test_create_plan_keeps_its_venue_and_variant(
+        self, db_session, org, author, app_and_version
+    ):
+        app, version = app_and_version
+        v1 = _make_venue(db_session, name="Glass Goose", organization_id=org.id)
+        _make_venue_access(db_session, author, v1)
+        me = _rec(
+            db_session, org, author, "people", {"name": "Me", "norm_user_id": author.id}
+        )
+        out = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="create_plan",
+            person_id="p1",
+            program_id="prog",
+            variant_id="g:larder",
+            variant_name="Larder",
+            venue_id=v1.id,
+        )
+        plan = out["plan"]
+        assert plan["venue_id"] == v1.id and plan["variant_name"] == "Larder"
+        assert plan["created_by"] == me
+
+
+class TestPeopleAndSync:
+    def test_people_buckets_match_orbit(self, db_session, org, author, app_and_version):
+        app, version = app_and_version
+        _rec(
+            db_session,
+            org,
+            author,
+            "people",
+            {"name": "On payroll", "is_active": True, "loadedhub_id": "L1"},
+        )
+        _rec(db_session, org, author, "people", {"name": "App only", "is_active": True})
+        _rec(
+            db_session,
+            org,
+            author,
+            "people",
+            {"name": "Left", "is_active": False, "loadedhub_id": "L2"},
+        )
+        d = _run(db_session, app, version, author, op="people")
+        assert d["counts"] == {"active": 1, "app_only": 1, "deactivated": 1}
+        assert {p["name"]: p["bucket"] for p in d["people"]} == {
+            "On payroll": "active",
+            "App only": "app_only",
+            "Left": "deactivated",
+        }
+
+    def test_save_person_validates(self, db_session, org, author, app_and_version):
+        app, version = app_and_version
+        # Editing people is an HR admin's job (pre-push review).
+        assert (
+            "Only an HR admin"
+            in (
+                _run(
+                    db_session,
+                    app,
+                    version,
+                    author,
+                    op="save_person",
+                    fields={"name": "X"},
+                )["error"]
+            )
+        )
+        mem = (
+            db_session.query(OrganizationMembership).filter_by(user_id=author.id).one()
+        )
+        role = db_session.query(Role).filter_by(id=mem.role_id).one()
+        role.permissions = list(role.permissions or []) + ["hr:write"]
+        db_session.flush()
+        assert (
+            "needs a name"
+            in _run(
+                db_session, app, version, author, op="save_person", fields={"name": " "}
+            )["error"]
+        )
+        assert (
+            "Role must be"
+            in _run(
+                db_session,
+                app,
+                version,
+                author,
+                op="save_person",
+                fields={"name": "A", "role": "boss"},
+            )["error"]
+        )
+        made = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="save_person",
+            fields={"name": " Ana ", "email": "ana@t.local", "role": "manager"},
+        )["person"]
+        assert made["name"] == "Ana" and made["is_active"] is True
+
+    def test_sync_status_is_the_newest_row_an_orbit_refresh_brought(
+        self, db_session, org, author, app_and_version
+    ):
+        from datetime import datetime, timezone
+
+        app, version = app_and_version
+        assert _run(db_session, app, version, author, op="sync_status") == {
+            "refreshed_at": None
+        }
+        old = _rec(db_session, org, author, "people", {"name": "A", "orbit_id": "o1"})
+        new = _rec(db_session, org, author, "completions", {"orbit_id": "o2"})
+        mine = _rec(db_session, org, author, "programs", {"name": "Made in Norm"})
+        stamps = {
+            old: datetime(2026, 10, 1, tzinfo=timezone.utc),
+            new: datetime(2026, 10, 9, tzinfo=timezone.utc),
+            mine: datetime(2026, 10, 11, tzinfo=timezone.utc),
+        }
+        for row in db_session.query(AppRecord).filter(AppRecord.id.in_(list(stamps))):
+            row.created_at = stamps[row.id]
+        db_session.flush()
+        out = _run(db_session, app, version, author, op="sync_status")
+        assert out["refreshed_at"].startswith("2026-10-09")

@@ -4,6 +4,7 @@
  * Runs one user-built app in a sandboxed iframe.
  *
  * The security model, stated once: the iframe gets `sandbox="allow-scripts"`
+ * (Norm's own built-in apps also get `allow-modals`, for confirm()/print())
  * and a srcdoc document, so it runs on an opaque origin with NO access to the
  * session token, localStorage, or Norm's DOM. Every byte of data it wants
  * comes back through this component over postMessage, and this component only
@@ -458,7 +459,9 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
   const frame = srcdoc ? (
     <iframe
       ref={iframeRef}
-      sandbox="allow-scripts"
+      // Norm's own apps may confirm()/prompt()/print(); a user-built app
+      // stays scripts-only, so it can't raise dialogs over Norm's chrome.
+      sandbox={app.builtin ? 'allow-scripts allow-modals' : 'allow-scripts'}
       srcDoc={srcdoc}
       title={app.name}
       style={fills

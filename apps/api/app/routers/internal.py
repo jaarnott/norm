@@ -38,6 +38,24 @@ async def run_due_tasks_endpoint(
     from app.services.task_scheduler import run_due_tasks
 
     result = run_due_tasks()
+    # Built-in apps' daily jobs ride the same 5-minute tick — no extra Cloud
+    # Scheduler job (services/app_schedules.py). On a background thread, as
+    # run_due_tasks dispatches its tasks: a night's runs (email, Google calls)
+    # must not hold this worker's event loop. Overlapping ticks are safe — each
+    # job claims its (org, op, day) slot before running.
+    import threading
+
+    def _app_schedules() -> None:
+        try:
+            from app.services.app_schedules import run_app_schedules
+
+            apps = run_app_schedules()
+            if apps["ran"]:
+                logger.info("app schedules ran: %s", apps["ran"])
+        except Exception:  # noqa: BLE001
+            logger.exception("app schedules failed")
+
+    threading.Thread(target=_app_schedules, name="app-schedules", daemon=True).start()
     if result["claimed"]:
         logger.info(
             "run-due-tasks claimed %d task(s): %s",
@@ -45,6 +63,21 @@ async def run_due_tasks_endpoint(
             ", ".join(t[:12] for t in result["task_ids"]),
         )
     return result
+
+
+@router.post("/internal/run-app-schedules")
+async def run_app_schedules_endpoint(
+    x_scheduler_secret: str = Header(default=""),
+):
+    """Run any due built-in app schedules now (also runs every 5 minutes as
+    part of /internal/run-due-tasks). Safe to call repeatedly — each job runs
+    once per org per day."""
+    _authorize(x_scheduler_secret)
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.app_schedules import run_app_schedules
+
+    return await run_in_threadpool(run_app_schedules)
 
 
 @router.post("/internal/prewarm-reviews")

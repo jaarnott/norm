@@ -22,6 +22,7 @@
         "notes",
         "activity",
         "interviews",
+        "interview_groups",
         "scorecard_templates",
         "job_approvals",
         "hiring_team",
@@ -29,18 +30,27 @@
         "careers_settings",
         "candidate_documents",
         "hiring_emails",
-        "jd_templates"
+        "jd_templates",
+        "interview_scorecards",
+        "scorecard_ratings"
       ]
     },
+    "email": {
+      "external": true
+    },
+    "calendar": {
+      "provider": "venue_mailbox"
+    },
+    "pdf": {},
     "max_api_calls": 0,
     "components": [
       {
         "key": "hiring",
         "label": "Hiring",
         "page": true,
-        "description": "Job openings, each job's candidate pipeline, candidates and the talent pool.",
+        "description": "Job openings, each job's candidate pipeline, candidates (with bulk actions), interviews and the talent pool.",
         "inputs": {
-          "view": "Which tab to open: 'openings' (default) or 'talent_pool'.",
+          "view": "Which tab to open: 'openings' (default), 'candidates', 'interviews', 'talent_pool' or 'settings'.",
           "job": "A job opening, by id or title (e.g. 'Head Chef') — opens its pipeline.",
           "candidate": "A candidate, by id or name — opens their application (within `job` when both are given)."
         }

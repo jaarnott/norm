@@ -16,6 +16,7 @@ from sqlalchemy import (
     CheckConstraint,
     Numeric,
 )
+from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -998,6 +999,20 @@ class E2ETestRun(Base):
 
 class EmailLog(Base):
     __tablename__ = "email_logs"
+    __table_args__ = (
+        # One claimed-or-sent email per (org, app, idempotency key) — the database is the
+        # guard, so two concurrent runs can't both send (services/app_email.py).
+        Index(
+            "uq_email_logs_app_key",
+            "organization_id",
+            "app_slug",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=sa_text(
+                "idempotency_key IS NOT NULL AND status IN ('sending', 'sent') AND is_test = false"
+            ),
+        ),
+    )
 
     id = Column(String, primary_key=True, default=_uuid)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=True)
@@ -1022,6 +1037,11 @@ class EmailLog(Base):
     retry_count = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), default=_now)
     sent_at = Column(DateTime(timezone=True), nullable=True)
+    #: Sent by an app's logic (services/app_email.py) — which app, and the
+    #: app's own idempotency key, so a re-run never sends the same email twice.
+    app_slug = Column(String, nullable=True, index=True)
+    idempotency_key = Column(String, nullable=True)
+    is_test = Column(Boolean, nullable=False, default=False)
 
 
 class EmailTemplate(Base):
@@ -1593,4 +1613,55 @@ class ThreadMemoryFile(Base):
     path = Column(String, nullable=False)
     content = Column(Text, nullable=False, default="")
     created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class AppScheduleRun(Base):
+    """One scheduled run of a built-in app's op, for one org, for one slot.
+
+    The unique (organization, app, op, slot) row IS the once-per-slot guard:
+    the scheduler inserts it before running, so a second API instance — or the
+    next 5-minute tick — finds it taken and skips (services/app_schedules.py).
+    """
+
+    __tablename__ = "app_schedule_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "app_slug", "op", "slot", name="uq_app_schedule_slot"
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    app_slug = Column(String, nullable=False)
+    op = Column(String, nullable=False)
+    #: The local date the run belongs to (YYYY-MM-DD in the schedule's tz).
+    slot = Column(String, nullable=False)
+    started_at = Column(DateTime(timezone=True), default=_now)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    ok = Column(Boolean, nullable=True)
+    error = Column(Text, nullable=True)
+    summary = Column(JSON, nullable=True)
+
+
+class AppEmailSetting(Base):
+    """Whether an app may send email for one org. Off unless an org admin
+    turns it on — an app that emails people is a decision, not a default."""
+
+    __tablename__ = "app_email_settings"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "app_slug", name="uq_app_email_setting"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    app_slug = Column(String, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=False)
+    updated_by = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)

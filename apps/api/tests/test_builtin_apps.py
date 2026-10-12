@@ -156,20 +156,48 @@ class TestTheSwitch:
 
 
 class TestAnyoneInTheOrg:
-    def test_a_member_with_no_role_can_change_data(self, db_session):
+    def test_a_member_with_no_role_can_change_data_through_the_app(self, db_session):
         org = _make_organization(db_session)
         user = _member(db_session, org)
         app, version = load_for_user(db_session, db_session, "training", user)
-        out = AR.store_put(
+        out = AR.run_logic(
+            db_session,
             db_session,
             app=app,
             version=version,
             user=user,
-            collection="people",
-            data={"name": "Sam"},
+            venue_id=None,
+            params={
+                "op": "save_program",
+                "fields": {"name": "Barista basics", "is_active": True},
+            },
         )
-        assert out
-        assert _people(db_session, user) == {"Sam"}
+        assert out["success"] is True, out.get("error")
+        names = {
+            r.data.get("name")
+            for r in db_session.query(AppRecord).filter_by(
+                namespace="hr_suite", organization_id=org.id, collection="programs"
+            )
+        }
+        assert names == {"Barista basics"}
+
+    def test_but_never_directly_around_the_apps_rules(self, db_session):
+        """Pre-push review: a direct write (records/files endpoints) would skip
+        the app's rules — e.g. setting a colleague's manager to yourself to
+        read their pay. Built-ins change data only through their own logic."""
+        org = _make_organization(db_session)
+        user = _member(db_session, org)
+        app, version = load_for_user(db_session, db_session, "training", user)
+        with pytest.raises(HTTPException) as e:
+            AR.store_put(
+                db_session,
+                app=app,
+                version=version,
+                user=user,
+                collection="people",
+                data={"name": "Sam", "manager_id": "me"},
+            )
+        assert e.value.status_code == 403
 
     def test_audit_names_the_builtin_and_the_org(self, db_session):
         org = _make_organization(db_session)

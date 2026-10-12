@@ -41,7 +41,7 @@ def author(db_session, org):
         organization_id=org.id,
         name=f"r-{uuid.uuid4().hex[:6]}",
         display_name="r",
-        permissions=["hr:read", "apps:build"],
+        permissions=["hr:read", "hr:hire", "apps:build"],
     )
     db_session.add(role)
     db_session.flush()
@@ -416,6 +416,8 @@ class TestBoardAndPipeline:
         ]
 
     def test_a_note_is_recorded_with_its_author(self, db_session, org, author, hiring):
+        """The author is the viewer the platform names — a page can no longer
+        say who wrote it (it used to send `actor: 'Norm'`)."""
         job, stages = _job_with_stages(db_session, org, author)
         _, application = _applicant(db_session, org, author, job, stages["Applied"])
         _run(
@@ -431,7 +433,9 @@ class TestBoardAndPipeline:
             db_session, hiring, author, op="candidate", application_id=application
         )
         assert detail["notes"][0]["body"] == "Strong trial shift"
-        assert detail["notes"][0]["author"] == "Jane"
+        assert detail["notes"][0]["author"] == author.full_name
+        assert detail["notes"][0]["author_user_id"] == author.id
+        assert detail["activity"][0]["actor"] == author.full_name
 
     def test_an_empty_note_is_refused(self, db_session, org, author, hiring):
         job, stages = _job_with_stages(db_session, org, author)
@@ -959,7 +963,8 @@ class TestInterviewDepth:
         assert iv["duration_minutes"] == 45
         assert iv["meeting_url"] == "https://meet.example/abc"
         assert iv["instructions"] == "Bring your portfolio"
-        assert iv["interviewers"] == ["p1", "p2"]
+        # Stored as `interviewer_ids`, the name the Orbit import uses.
+        assert iv["interviewer_ids"] == ["p1", "p2"]
 
 
 class TestLocate:

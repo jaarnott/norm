@@ -276,7 +276,7 @@ class TestTheTeamPageShowsThem:
         app = next(a for a in payload["apps"] if a["slug"] == "training")
         comp = next(c for c in app["components"] if c["key"] == "training")
         assert comp["app_page"] is True and comp["page"] is None
-        assert {i["name"] for i in comp["inputs"]} == {"view", "program", "person"}
+        assert {i["name"] for i in comp["inputs"]} == {"view", "program", "person", "review"}
 
     def test_a_custom_app_without_a_declaration_still_has_one(self, db_session):
         user, org, _ = _world(db_session)

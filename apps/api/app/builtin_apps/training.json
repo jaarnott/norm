@@ -4,7 +4,7 @@
   "icon": "🎓",
   "agent": "hr",
   "description": "Programs, enrolments and completion across the group — who has been trained on what.",
-  "purpose": "The management surface for staff training: the program catalogue and its module/section/content structure, who is enrolled on which instance (program + variant + venue), and a member × program tracker showing where everyone is. Ported from Orbit, with Norm as the system of record.",
+  "purpose": "The management surface for staff training: the program catalogue and its module/section/content structure, who is enrolled on which instance (program + variant + venue), and a member × program tracker showing where everyone is. Ported from Orbit, with Norm as the system of record. Also runs performance reviews: review cycles, the manager's side of each review, the review meeting and the goals email.",
   "spec": {
     "actions": [],
     "writes": [],
@@ -26,10 +26,21 @@
         "performance_reviews",
         "auto_enroll_rules",
         "reminder_settings",
-        "reminder_emails"
+        "reminder_emails",
+        "module_signoffs",
+        "performance_review_emails",
+        "performance_review_email_settings",
+        "remuneration",
+        "app_settings"
       ],
       "shared_with": [
         "hiring"
+      ],
+      "logic_only": [
+        "performance_reviews",
+        "remuneration",
+        "performance_review_emails",
+        "performance_review_email_settings"
       ]
     },
     "max_api_calls": 0,
@@ -38,12 +49,23 @@
         "key": "training",
         "label": "Training",
         "page": true,
-        "description": "Training programs, plans, the member tracker, sign-offs and capability frameworks.",
+        "description": "Training programs, plans, the member tracker, sign-offs, people, performance reviews and capability frameworks.",
         "inputs": {
-          "view": "Which tab to open: 'programs' (default), 'plans', 'tracker', 'signoffs' or 'frameworks'.",
+          "view": "Which tab to open: 'programs' (default), 'plans', 'signoffs', 'tracker', 'people', 'frameworks', or a reviews page: 'my_team_reviews', 'reviews' (every review, HR admins), 'review_cycles' or 'review_emails'.",
           "program": "A training program, by id or name — opens it.",
-          "person": "A team member, by id or name — opens their training: programs, progress and plans."
+          "person": "A team member, by id or name — opens their training: programs, progress and plans.",
+          "review": "A performance review, by id — opens it (as its manager when that's you)."
         }
+      }
+    ],
+    "email": {
+      "external": false
+    },
+    "schedules": [
+      {
+        "op": "nightly",
+        "at": "19:00",
+        "tz": "UTC"
       }
     ]
   }
