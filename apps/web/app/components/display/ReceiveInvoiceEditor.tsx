@@ -27,7 +27,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowUp, Check, ChevronDown, ChevronRight, ExternalLink,
+  ArrowUp, Check, ChevronDown, ChevronRight, CircleDot, ExternalLink,
   FileText, Hourglass, Plus, RefreshCw, TriangleAlert, X,
 } from 'lucide-react';
 import { apiFetch, getStoredUser } from '../../lib/api';
@@ -421,13 +421,16 @@ const readonlyField: React.CSSProperties = {
   color: 'var(--text-soft)', fontSize: 'var(--fs-base)',
 };
 // Inline suggestion chip: the proposed value + accept (and dismiss).
+// Small on purpose: a chip sits under a field or inside a table cell, so it
+// must not stretch the row it is in (12 Oct 2026). Its tick and cross are the
+// compact icon buttons (tokens.css .n-icon-btn--xs).
 const chipStyle: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: 2, maxWidth: '100%', marginTop: 4,
-  padding: '0 2px 0 8px', borderRadius: 'var(--radius-sm)', background: 'var(--accent-soft)',
-  color: 'var(--accent)', fontSize: 'var(--fs-sm)', fontWeight: 500, lineHeight: 1.3,
+  display: 'inline-flex', alignItems: 'center', gap: 0, maxWidth: '100%', marginTop: 3,
+  padding: '0 1px 0 6px', borderRadius: 'var(--radius-sm)', background: 'var(--accent-soft)',
+  color: 'var(--accent)', fontSize: 'var(--fs-xs)', fontWeight: 500, lineHeight: 1.25,
   textDecoration: 'none',
 };
-const chipLabel: React.CSSProperties = { padding: '4px 0', overflowWrap: 'break-word' };
+const chipLabel: React.CSSProperties = { padding: '2px 4px 2px 0', overflowWrap: 'break-word' };
 // A sentence-sized message with its icon (errors, warnings, notes).
 const iconLine: React.CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 6 };
 const iconNudge: React.CSSProperties = { marginTop: 2 };
@@ -2190,10 +2193,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     <div>
       <span style={chipStyle} title={title}>
         <span style={chipLabel}>{label}</span>
-        <IconButton icon={Check} iconSize={16} label={accept.label} title={accept.title}
+        <IconButton icon={Check} iconSize={14} className="n-icon-btn--xs" label={accept.label} title={accept.title}
           onClick={accept.onClick} disabled={accept.disabled} style={{ color: 'var(--ok)' }} />
         {dismiss && (
-          <IconButton icon={X} iconSize={16} label={dismiss.label} title={dismiss.title}
+          <IconButton icon={X} iconSize={14} className="n-icon-btn--xs" label={dismiss.label} title={dismiss.title}
             onClick={dismiss.onClick} />
         )}
       </span>
@@ -2480,9 +2483,13 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const busy = acceptingRows || accepting !== null;
     const links = destructive && lead ? deleteLinks(lead) : [];
     const acceptTitle = lead ? ACCEPT_LABELS[lead.kind] : undefined;
+    // One glance per row: done, blocking autopilot, or a change to decide.
+    const rowIcon = !r.open ? Check : i?.blocking ? TriangleAlert : CircleDot;
+    const rowIconColor = !r.open ? 'var(--ok)' : !live ? 'var(--icon)' : i?.blocking ? 'var(--error)' : 'var(--accent)';
     return (
-      <div key={r.key} style={{ padding: '4px 0', fontSize: 'var(--fs-sm)', color: live ? 'var(--text)' : 'var(--muted)' }}>
+      <div key={r.key} style={{ padding: '3px 0', fontSize: 'var(--fs-sm)', lineHeight: 1.35, color: live ? 'var(--text)' : 'var(--muted)' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+          <Icon icon={rowIcon} size={14} style={{ position: 'relative', top: 2, flex: '0 0 auto', color: rowIconColor }} />
           <span onClick={goToLine} title={goToLine ? 'show this line' : undefined}
             style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', cursor: goToLine ? 'pointer' : undefined, ...(!r.open ? { textDecoration: 'line-through' } : {}) }}>
             {text}
@@ -2512,12 +2519,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             </span>
           )}
           {!r.open && !doneState && !destructive && undoTarget && lastAction.get(undoTarget.id)?.action === 'accepted' && (
-            <Button variant="quiet" size="sm" onClick={() => undoAction(undoTarget, undoTarget.id)} title="undo this change">
+            <Button variant="quiet" size="xs" onClick={() => undoAction(undoTarget, undoTarget.id)} title="undo this change">
               Undo
             </Button>
           )}
           {live && hasFix && !(embedded && destructive) && (
-            <Button variant={destructive ? 'danger' : 'secondary'} size="sm" onClick={() => { void acceptRows([r]); }}
+            <Button variant={destructive ? 'danger' : 'secondary'} size="xs" onClick={() => { void acceptRows([r]); }}
               disabled={busy} style={busy ? { opacity: 1 } : undefined} title={acceptTitle}>
               {busy ? 'Applying…' : 'Accept'}
             </Button>
@@ -2525,14 +2532,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           {/* Nothing could fix it (the server logs these): open the line's own
               picker so there is still a way forward. */}
           {live && !hasFix && i && FIX_FORMS[i.code] && i.line_id && (
-            <Button variant="secondary" size="sm" onClick={() => openFix(i)}
+            <Button variant="secondary" size="xs" onClick={() => openFix(i)}
               title="open this line's picker to choose or create what it needs">
               Fix…
             </Button>
           )}
         </div>
         {fixes.length > 1 && !isAdd && (
-          <ul style={{ margin: '2px 0 0', paddingLeft: 18, color: 'var(--text-soft)' }}>
+          <ul style={{ margin: '2px 0 0 22px', paddingLeft: 16, color: 'var(--text-soft)' }}>
             {fixes.map((sg) => (
               <li key={sg.id} style={stateOf(sg.id) !== 'pending' ? { textDecoration: 'line-through' } : undefined}>
                 {fixSummary(sg)}
@@ -2542,7 +2549,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         )}
         {/* Which venue setting would let Norm do this on its own. */}
         {live && gateLabel && (
-          <div style={{ marginTop: 2, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+          <div style={{ marginLeft: 22, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
             Auto-receive needs “{gateLabel}” switched on for this venue
           </div>
         )}
@@ -3338,41 +3345,49 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               {n.message}
             </div>
           ))}
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-            <div style={sectionTitle}>
-              {review.rows.length === 0
-                ? (reviewing ? 'Reviewing against the attached invoice…' : reviewed ? 'Nothing to review — Norm checked it against the invoice' : 'Not yet reviewed.')
-                : openRows.length ? `To review (${openRows.length})` : 'Reviewed'}
-            </div>
-            {!doneState && !embedded && (
-              <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {openRows.length > 1 && (
-                  <Button size="sm" onClick={() => { void acceptRows(openRows); }} disabled={acceptingRows}
-                    title="apply every fix Norm suggests, including creating what Loaded is missing">
-                    {acceptingRows ? 'Applying…' : `Accept all (${openRows.length})`}
-                  </Button>
-                )}
-                {/* The measurement half of the loop: this invoice defeated
-                    Norm, so file it for training rather than fixing it by
-                    hand and leaving no trace. */}
-                <Button size="sm" variant="quiet" onClick={cannotReceive} disabled={cannotState === 'sending' || cannotState === 'filed'}
-                  icon={cannotState === 'filed' ? Check : undefined}
-                  title="Norm can't get this invoice right — file it for training. Nothing is received."
-                  style={cannotState === 'filed' ? { color: 'var(--ok)', opacity: 1 } : undefined}>
-                  {cannotState === 'sending' ? 'Filing…' : cannotState === 'filed' ? 'Filed for training' : "Can't receive"}
-                </Button>
+          {/* The list sits on the "needs you" tint while anything is open;
+              once all of it is decided (or the invoice is received) it goes
+              quiet and reads as the record. */}
+          <div role="group" aria-label="Review" style={{
+            display: 'flex', flexDirection: 'column', padding: '8px 12px', borderRadius: 'var(--radius)',
+            background: openRows.length && !doneState ? 'var(--accent-soft)' : 'var(--surface)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: review.rows.length ? 4 : 0 }}>
+              <div style={sectionTitle}>
+                {review.rows.length === 0
+                  ? (reviewing ? 'Reviewing against the attached invoice…' : reviewed ? 'Nothing to review — Norm checked it against the invoice' : 'Not yet reviewed.')
+                  : openRows.length ? `To review (${openRows.length})` : 'Reviewed'}
               </div>
+              {!doneState && !embedded && (
+                <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {openRows.length > 1 && (
+                    <Button size="xs" onClick={() => { void acceptRows(openRows); }} disabled={acceptingRows}
+                      title="apply every fix Norm suggests, including creating what Loaded is missing">
+                      {acceptingRows ? 'Applying…' : `Accept all (${openRows.length})`}
+                    </Button>
+                  )}
+                  {/* The measurement half of the loop: this invoice defeated
+                      Norm, so file it for training rather than fixing it by
+                      hand and leaving no trace. */}
+                  <Button size="xs" variant="quiet" onClick={cannotReceive} disabled={cannotState === 'sending' || cannotState === 'filed'}
+                    icon={cannotState === 'filed' ? Check : undefined}
+                    title="Norm can't get this invoice right — file it for training. Nothing is received."
+                    style={cannotState === 'filed' ? { color: 'var(--ok)', opacity: 1 } : undefined}>
+                    {cannotState === 'sending' ? 'Filing…' : cannotState === 'filed' ? 'Filed for training' : "Can't receive"}
+                  </Button>
+                </div>
+              )}
+            </div>
+            {visibleRows.map(reviewRowView)}
+            {review.deleteRow && review.rows.length > 1 && (
+              <Button variant="link" onClick={() => setShowBehindDelete((v) => !v)}
+                style={{ ...inlineLink, alignSelf: 'flex-start', marginTop: 4, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                {showBehindDelete
+                  ? 'Hide the rest'
+                  : `Not ${review.deleteRow.issue?.code === 'duplicate_invoice' ? 'a duplicate' : 'right'}? Show the other ${review.rows.length - 1} thing${review.rows.length - 1 > 1 ? 's' : ''} Norm noticed`}
+              </Button>
             )}
           </div>
-          {visibleRows.map(reviewRowView)}
-          {review.deleteRow && review.rows.length > 1 && (
-            <Button variant="link" onClick={() => setShowBehindDelete((v) => !v)}
-              style={{ ...inlineLink, alignSelf: 'flex-start', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
-              {showBehindDelete
-                ? 'Hide the rest'
-                : `Not ${review.deleteRow.issue?.code === 'duplicate_invoice' ? 'a duplicate' : 'right'}? Show the other ${review.rows.length - 1} thing${review.rows.length - 1 > 1 ? 's' : ''} Norm noticed`}
-            </Button>
-          )}
           {effectiveActions.length > 0 && (
             <details style={{ marginTop: 6 }}>
               <summary style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', cursor: 'pointer', userSelect: 'none' }}>

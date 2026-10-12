@@ -188,6 +188,16 @@
   .n-icon-btn { width: 40px; height: 40px; }
 }
 
+/* Compact controls for dense review UIs: the receive-invoice card's
+   suggestion chips (which sit under a field or a table cell, so must not
+   stretch the row) and its review rows. Still 30-32px on touch. */
+.n-btn--xs { height: 26px; padding: 0 10px; font-size: var(--fs-xs); }
+.n-icon-btn--xs { width: 22px; height: 22px; border-radius: var(--radius-sm); }
+@media (pointer: coarse) {
+  .n-btn.n-btn--xs { min-height: 32px; }
+  .n-icon-btn.n-icon-btn--xs { width: 30px; height: 30px; }
+}
+
 .n-back {
   display: inline-flex;
   align-items: center;
