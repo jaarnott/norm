@@ -242,6 +242,8 @@ APPS = [
             "norm_email.send_report_email",
             "norm_reports.render_chart",
             "gmail.send_email",
+            # was set_workflow_mode under loaded-stock (scripts/sync_approval_preferences.py)
+            "norm.set_approval_preference",
         ],
         components=[
             _shared(
@@ -328,7 +330,6 @@ APPS = [
             "loadedhub.get_invoices",
             "loadedhub.review_and_receive_invoices",
             "loadedhub.reconcile_received_invoices",
-            "norm.set_workflow_mode",
         ],
         components=[
             _c(
@@ -459,6 +460,15 @@ APPS = [
         description="Training programs, plans, tracker and sign-offs — runs on Norm.",
         note="To show it, open_app 'Norm Training' — at a program or a person by name (inputs program, person) or a tab (view).",
         extra={"app_slug": "training"},
+    ),
+    _app(
+        "performance",
+        name="Norm Performance",
+        member="hr",
+        icon="📈",
+        description="Performance reviews, review cycles and capability frameworks — runs on Norm.",
+        note="To show it, open_app 'Norm Performance' — at a review (input review) or a tab (view).",
+        extra={"app_slug": "performance"},
     ),
     _app(
         "bamboohr-app",

@@ -69,8 +69,8 @@ class AppAccess:
 #: True while an app's own logic is running (run_logic). Collections a spec
 #: lists in ``storage.logic_only`` are readable only then — never through the
 #: direct records/files endpoints or the page's norm.storage — so an app's
-#: field rules (e.g. Training's: pay and private review answers only for the
-#: review's manager) can't be sidestepped by reading the raw rows.
+#: field rules (e.g. Norm Performance's: pay and private review answers only
+#: for the review's manager) can't be sidestepped by reading the raw rows.
 _IN_LOGIC: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "app_in_logic", default=False
 )
@@ -552,8 +552,8 @@ def _storage_guard(
     spec = version.spec or {}
     namespace = _storage_reach(spec, collection)
     # Norm's own apps change their data only through their own logic, where
-    # their rules live (Training: who may set a manager, pay, private review
-    # answers). Built-ins give every org member access, so a direct write
+    # their rules live (Training: who may set a manager; Performance: pay,
+    # private review answers). Built-ins give every org member access, so a direct write
     # through the records/files endpoints would skip every one of those rules
     # — e.g. making yourself a colleague's manager to read their pay.
     if mutating and getattr(app, "builtin", False) and not _IN_LOGIC.get():

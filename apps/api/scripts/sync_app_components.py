@@ -30,16 +30,18 @@ OPEN_APP = {
     "method": "GET",
     "read_only": True,
     "description": (
-        "Open one of the organization's apps (Norm Hiring, Norm Training, or an "
-        "app your team built) in the conversation, optionally at a specific "
-        "place. Use it when the user wants to SEE or work in an app — 'show me "
-        "the pipeline for the head chef role', 'open Sam's training'. Pass the "
-        "app's name in `app`, and where to start in `inputs`: Norm Hiring takes "
-        "view ('openings' or 'talent_pool'), job (id or title) and candidate "
-        "(id or name); Norm Training takes view ('programs', 'plans', "
-        "'tracker', 'signoffs', 'frameworks'), program (id or name) and person "
-        "(id or name). Names are fine — the app resolves them. If the app or an "
-        "input isn't valid, the error lists what is."
+        "Open one of the organization's apps (Norm Hiring, Norm Training, Norm "
+        "Performance, or an app your team built) in the conversation, "
+        "optionally at a specific place. Use it when the user wants to SEE or "
+        "work in an app — 'show me the pipeline for the head chef role', 'open "
+        "Sam's training', 'show my team's reviews'. Pass the app's name in "
+        "`app`, and where to start in `inputs`: Norm Hiring takes view "
+        "('openings' or 'talent_pool'), job (id or title) and candidate (id or "
+        "name); Norm Training takes view ('programs', 'plans', 'tracker', "
+        "'signoffs', 'people'), program (id or name) and person (id or name); "
+        "Norm Performance takes view ('my_team', 'all', 'cycles', 'frameworks', "
+        "'emails') and review (a review id). Names are fine — the app resolves "
+        "them. If the app or an input isn't valid, the error lists what is."
     ),
     "required_fields": ["app"],
     "optional_fields": ["component", "inputs"],

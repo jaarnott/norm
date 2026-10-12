@@ -69,8 +69,8 @@ def _people(db, user):
 
 
 class TestTheRegistry:
-    def test_hiring_and_training_ship_with_norm(self):
-        assert set(builtin_apps()) == {"hiring", "training"}
+    def test_hiring_training_and_performance_ship_with_norm(self):
+        assert set(builtin_apps()) == {"hiring", "training", "performance"}
         for b in builtin_apps().values():
             assert b.ui_source and b.logic_source and len(b.build) == 8
             # anyone in the org has access for now — no permission scopes
@@ -314,7 +314,11 @@ class TestOverHttp:
         org = _make_organization(db_session)
         _, headers = self._headers(db_session, org)
         listed = client.get("/api/apps", headers=headers).json()["apps"]
-        assert {a["slug"] for a in listed if a.get("builtin")} == {"hiring", "training"}
+        assert {a["slug"] for a in listed if a.get("builtin")} == {
+            "hiring",
+            "training",
+            "performance",
+        }
         detail = client.get("/api/apps/hiring", headers=headers).json()
         assert detail["builtin"] is True
         assert detail["ui_source"] == get_builtin("hiring").ui_source

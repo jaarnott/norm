@@ -685,8 +685,19 @@ endpoints).
 
 **Training (Phases 2–3).** Plan venues, plan progress badges, People filters + manager
 field, and performance reviews (admin + manager sides; field rules enforced in
-`training.py`; cycles + nightly enrolment; manager digest; goals email; email log). The team
+`training.py`, now `performance.py`; cycles + nightly enrolment; manager digest; goals email; email log). The team
 member's side waits for staff logins.
+
+**Norm Performance (12 Oct, split out of Training).** Reviews, review cycles, the nightly
+run (cycle enrolment + manager digest), the goals email, the review email log and capability
+frameworks moved to their own built-in app, `performance` (`app/builtin_apps/performance.*`,
+`tests/test_performance_app.py`) — same ops, same field rules, same data: it joins Training's
+`hr_suite` namespace (`training.json` `shared_with`), and the review collections, their
+`logic_only` list, the `email` door and the schedule now sit on Performance, so Training can no
+longer read them at all. People (and who manages whom) stay in Training. Email settings, the
+Norm-sent log and schedule claims are keyed by app slug, so Performance starts with email off
+(none existed under `training` in prod). Catalog row: `scripts/sync_marketplace_catalog.py`;
+`open_app` text: `scripts/sync_app_components.py` — both run after the deploy.
 
 **Hiring (Phase 4).** Bulk candidate actions, email composer, group interviews +
 Interviews page, duplicate/reopen job; interview invitations sent once per booking;
@@ -695,5 +706,5 @@ venue-mailbox calendar invites (`services/app_calendar.py`, connector `venue_mai
 (`services/app_pdf.py`). Norm Hiring stays switched off (BambooHR is the hiring system).
 
 **At cut-over:** final mirror run → switch the team → turn on HR emails (each app's Emails
-page) → connect venue mailboxes (never while Orbit is live: imported interviews carry Orbit's
+page) and Performance's Norm cycle enrolment → connect venue mailboxes (never while Orbit is live: imported interviews carry Orbit's
 calendar event ids) → Orbit's HR off.

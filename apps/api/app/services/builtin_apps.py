@@ -1,4 +1,5 @@
-"""Apps built into Norm: Norm Hiring and Norm Training (28 Sep 2026).
+"""Apps built into Norm: Norm Hiring and Norm Training (28 Sep 2026), and
+Norm Performance (Oct 2026 — performance reviews moved out of Training).
 
 They run on the app platform — one sandboxed page, server-side logic, app
 storage — but unlike an app someone builds, a built-in app is **part of Norm**:

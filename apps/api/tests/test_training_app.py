@@ -42,7 +42,6 @@ SPEC = {
             "completions",
             "plans",
             "plan_sections",
-            "capability_frameworks",
         ],
     },
 }
@@ -1305,102 +1304,6 @@ class TestSignoffQueue:
         )
 
 
-class TestCapabilityFrameworks:
-    """P4: capability frameworks — a role's competency map (Orbit's
-    `capability_frameworks`), carried across whole with categories, capabilities
-    and L1/L2/L3 descriptors nested inside."""
-
-    def test_list_counts_categories_and_sorts_by_name(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
-        _rec(
-            db_session,
-            org,
-            author,
-            "capability_frameworks",
-            {"name": "Sales Manager", "categories": [{"name": "A"}, {"name": "B"}]},
-        )
-        _rec(
-            db_session,
-            org,
-            author,
-            "capability_frameworks",
-            {"name": "Bar Host", "categories": []},
-        )
-        d = _run(db_session, app, version, author, op="frameworks")
-        assert [f["name"] for f in d["frameworks"]] == ["Bar Host", "Sales Manager"]
-        by_name = {f["name"]: f for f in d["frameworks"]}
-        assert by_name["Sales Manager"]["category_count"] == 2
-        assert by_name["Bar Host"]["category_count"] == 0
-
-    def test_get_returns_nested_capabilities(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
-        fid = _rec(
-            db_session,
-            org,
-            author,
-            "capability_frameworks",
-            {
-                "name": "Sales Manager",
-                "categories": [
-                    {
-                        "name": "Standards",
-                        "capabilities": [
-                            {"name": "Appearance", "level1_descriptor": "Tidy"}
-                        ],
-                    }
-                ],
-            },
-        )
-        d = _run(db_session, app, version, author, op="framework", framework_id=fid)
-        cap = d["framework"]["categories"][0]["capabilities"][0]
-        assert cap["name"] == "Appearance"
-        assert cap["level1_descriptor"] == "Tidy"
-
-    def test_create_seeds_empty_then_update_preserves_name(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
-        created = _run(
-            db_session,
-            app,
-            version,
-            author,
-            op="save_framework",
-            fields={"name": "New Role", "is_active": True},
-        )["framework"]
-        assert created["name"] == "New Role"
-        assert created["categories"] == []  # a new framework starts empty
-        updated = _run(
-            db_session,
-            app,
-            version,
-            author,
-            op="save_framework",
-            framework_id=created["id"],
-            fields={"role_label": "Floor Lead", "is_active": False},
-        )["framework"]
-        assert updated["role_label"] == "Floor Lead"
-        assert updated["is_active"] is False
-        assert updated["name"] == "New Role"  # untouched fields survive
-        assert updated["categories"] == []  # and so does the category map
-
-    def test_save_requires_a_name(self, db_session, org, author, app_and_version):
-        app, version = app_and_version
-        d = _run(
-            db_session,
-            app,
-            version,
-            author,
-            op="save_framework",
-            fields={"is_active": True},
-        )
-        assert "name" in d["error"]
-
-
 class TestPlanCompletion:
     """B1: a plan-led program must be completable from Norm. The `plan` op
     returns a real plan_section_id, and `set_plan_status` closes the plan."""
@@ -1626,64 +1529,10 @@ class TestGrandfathering:
         assert not [c for c in comps if (c.get("result") or {}).get("grandfathered")]
 
 
-class TestFrameworkCategoryEditing:
-    """B5: capability frameworks must be editable to the category/capability
-    level — the UI sends the whole tree and every node gets a stable id."""
-
-    def test_save_categories_assigns_ids_and_persists(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
-        created = _run(
-            db_session,
-            app,
-            version,
-            author,
-            op="save_framework",
-            fields={"name": "Bar Host"},
-        )["framework"]
-        fid = created["id"]
-        # Save a category with one capability, no ids supplied.
-        saved = _run(
-            db_session,
-            app,
-            version,
-            author,
-            op="save_framework",
-            framework_id=fid,
-            fields={
-                "categories": [
-                    {
-                        "name": "Standards",
-                        "capabilities": [
-                            {"name": "Appearance", "level1_descriptor": "Tidy"}
-                        ],
-                    }
-                ]
-            },
-        )["framework"]
-        cat = saved["categories"][0]
-        assert cat.get("id")  # server assigned an id
-        cap = cat["capabilities"][0]
-        assert cap.get("id") and cap["level1_descriptor"] == "Tidy"
-        # Re-saving with the ids present must preserve them.
-        cat_id, cap_id = cat["id"], cap["id"]
-        again = _run(
-            db_session,
-            app,
-            version,
-            author,
-            op="save_framework",
-            framework_id=fid,
-            fields={"categories": saved["categories"]},
-        )["framework"]
-        assert again["categories"][0]["id"] == cat_id
-        assert again["categories"][0]["capabilities"][0]["id"] == cap_id
-
-
 class TestLocate:
     """Norm opens Training by name (28 Sep 2026): `program` / `person`
-    inputs resolve to ids here, where the data is."""
+    inputs resolve to ids here, where the data is. (A review link opens Norm
+    Performance — see test_performance_app.py.)"""
 
     def test_a_program_name_resolves(self, db_session, org, author, app_and_version):
         app, version = app_and_version
@@ -1691,26 +1540,7 @@ class TestLocate:
             :3
         ]
         out = _run(db_session, app, version, author, op="locate", program="food")
-        assert out == {"program_id": program, "person_id": None, "review_id": None}
-
-    def test_a_review_id_resolves_and_a_missing_one_says_so(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
-        person = _rec(db_session, org, author, "people", {"name": "Sam"})
-        review = _rec(
-            db_session,
-            org,
-            author,
-            "performance_reviews",
-            {"person_id": person, "status": "employee_in_progress"},
-        )
-        out = _run(db_session, app, version, author, op="locate", review=review)
-        assert out["review_id"] == review
-        gone = _run(
-            db_session, app, version, author, op="locate", review=str(uuid.uuid4())
-        )
-        assert "no longer exists" in gone["error"]
+        assert out == {"program_id": program, "person_id": None}
 
     def test_a_person_name_resolves(self, db_session, org, author, app_and_version):
         app, version = app_and_version

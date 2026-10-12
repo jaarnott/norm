@@ -39,6 +39,7 @@ const BY_NAME: Record<string, LucideIcon> = {
 const BY_SLUG: Record<string, LucideIcon> = {
   training: GraduationCap,
   hiring: UserRoundSearch,
+  performance: TrendingUp,
   'norm-core': Compass,
   'loaded-stock': Boxes,
   'loaded-kitchen': BookOpen,

@@ -1,8 +1,9 @@
 """App components (28 Sep 2026): the screens Norm may open in an App-platform
-app, and the inputs that say where each starts. Norm Hiring and Norm Training
-are one component each, with navigation kept inside and optional inputs
-(job/candidate, program/person) — so "show me the chef role's pipeline" opens
-Hiring on that pipeline. See app/services/app_components.py."""
+app, and the inputs that say where each starts. Norm Hiring, Norm Training and
+Norm Performance are one component each, with navigation kept inside and
+optional inputs (job/candidate, program/person, review) — so "show me the chef
+role's pipeline" opens Hiring on that pipeline. See
+app/services/app_components.py."""
 
 import json
 import pathlib
@@ -166,7 +167,7 @@ class TestTheFirstPartyApps:
     input Norm offers but the page ignores would open the app in the wrong
     place, silently."""
 
-    @pytest.mark.parametrize("slug", ["hiring", "training"])
+    @pytest.mark.parametrize("slug", ["hiring", "training", "performance"])
     def test_declared_inputs_are_the_ones_the_page_reads(self, slug):
         spec = _spec(slug)
         assert validate_components(spec) == []
@@ -177,7 +178,7 @@ class TestTheFirstPartyApps:
         read = set(re.findall(r"\bins\.([a-z_]+)", html))
         assert declared == read
 
-    @pytest.mark.parametrize("slug", ["hiring", "training"])
+    @pytest.mark.parametrize("slug", ["hiring", "training", "performance"])
     def test_the_locate_op_takes_the_named_inputs(self, slug):
         # `view` is handled in the page; everything else goes to `locate`.
         comps = declared_components(_spec(slug), slug=slug, name=slug)
@@ -276,7 +277,28 @@ class TestTheTeamPageShowsThem:
         app = next(a for a in payload["apps"] if a["slug"] == "training")
         comp = next(c for c in app["components"] if c["key"] == "training")
         assert comp["app_page"] is True and comp["page"] is None
-        assert {i["name"] for i in comp["inputs"]} == {"view", "program", "person", "review"}
+        assert {i["name"] for i in comp["inputs"]} == {"view", "program", "person"}
+
+    def test_performance_lists_its_review_input(self, db_session):
+        """Reviews moved out of Training into Norm Performance (Oct 2026): the
+        `review` input (the digest and goals emails' deep link) went with them."""
+        user, org, _ = _world(db_session)
+        db_session.add(
+            MarketplaceApp(
+                slug="performance",
+                name="Norm Performance",
+                description="",
+                tier="app",
+                bundled=True,
+                composition={"member": "hr", "app_slug": "performance"},
+            )
+        )
+        db_session.flush()
+        payload = agent_catalog.team_payload(org.id, db_session, db_session)
+        app = next(a for a in payload["apps"] if a["slug"] == "performance")
+        comp = next(c for c in app["components"] if c["key"] == "performance")
+        assert comp["app_page"] is True
+        assert {i["name"] for i in comp["inputs"]} == {"view", "review"}
 
     def test_a_custom_app_without_a_declaration_still_has_one(self, db_session):
         user, org, _ = _world(db_session)

@@ -1,10 +1,12 @@
-"""Performance reviews in Norm Training (Oct 2026 — Orbit parity, phase 3).
+"""Norm Performance: performance reviews, review cycles, the manager digest
+and capability frameworks (Oct 2026 — Orbit parity, phase 3; moved out of Norm
+Training into their own built-in app, unchanged).
 
 Orbit decided who may see and change what in a review by the URL alone: its
 database let any manager edit any review, and a team member write every
 column of their own, pay included. Norm enforces the FIELD RULES in the app's
-logic, so these tests run the real `training.py` through the real sandbox and
-storage door, as different viewers:
+logic, so these tests run the real `performance.py` through the real sandbox
+and storage door, as different viewers:
 
 * the manager's side, the two private questions and pay — only the review's
   effective manager (review.manager_id, else the person's) or a review admin;
@@ -12,7 +14,9 @@ storage door, as different viewers:
 * each side's answers stay hidden from the other until both are in;
 * the workflow, completion rules, unlock, review cycles (roll forward, enrol,
   carry goals forward, withdraw untouched orphans), the nightly run as the
-  system actor, and the manager digest's idempotency.
+  system actor, and the manager digest's idempotency;
+* capability frameworks (a role's competency map), and that Training no
+  longer has any of it.
 """
 
 import uuid
@@ -75,6 +79,14 @@ def other(db_session, org):
 
 @pytest.fixture()
 def app_and_version(db_session, org, admin):
+    from app.services.builtin_apps import bind, get_builtin
+
+    return bind(get_builtin("performance"), org.id)
+
+
+@pytest.fixture()
+def training(db_session, org):
+    """Norm Training, which keeps the people (and who manages whom)."""
     from app.services.builtin_apps import bind, get_builtin
 
     return bind(get_builtin("training"), org.id)
@@ -448,9 +460,10 @@ class TestWhoWritesWhat:
         assert "recognize_value" not in data["manager_feedback"]
 
     def test_only_a_review_admin_changes_someones_manager_and_no_manager_clears(
-        self, db_session, admin, other, world, app_and_version
+        self, db_session, admin, boss, other, world, app_and_version, training
     ):
-        app, version = app_and_version
+        # People — and so a person's manager — are Norm Training's.
+        app, version = training
         refused = _run(
             db_session,
             app,
@@ -491,6 +504,12 @@ class TestWhoWritesWhat:
         people = _run(db_session, app, version, admin, op="people")
         sam = next(p for p in people["people"] if p["id"] == world["sam"])
         assert sam["manager_id"] is None and sam["manager_name"] is None
+        # ...and Performance reads it: Sam's review no longer has a manager.
+        perf, perf_version = app_and_version
+        assert (
+            _run(db_session, perf, perf_version, boss, op="my_team_reviews")["current"]
+            == []
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +727,7 @@ class TestWorkflow:
         app, version = app_and_version
         rid = world["review"]
         self._both_in(db_session, rid)
-        set_email_enabled(db_session, org.id, "training", True, None)
+        set_email_enabled(db_session, org.id, "performance", True, None)
         monkeypatch.setenv("APP_EMAIL_ALLOW_NONPROD", "1")
         with patch(
             "app.services.app_email.AppEmail._deliver",
@@ -742,7 +761,7 @@ class TestWorkflow:
         assert "Run a shift &lt;solo&gt;" in data["summary_email_html"]
         log = (
             db_session.query(EmailLog)
-            .filter_by(organization_id=org.id, app_slug="training")
+            .filter_by(organization_id=org.id, app_slug="performance")
             .one()
         )
         assert log.idempotency_key == f"goals:{rid}:0"
@@ -777,7 +796,7 @@ class TestWorkflow:
         app, version = app_and_version
         rid = world["review"]
         self._both_in(db_session, rid)
-        set_email_enabled(db_session, org.id, "training", True, None)
+        set_email_enabled(db_session, org.id, "performance", True, None)
         monkeypatch.setenv("APP_EMAIL_ALLOW_NONPROD", "1")
         with patch(
             "app.services.app_email.AppEmail._deliver",
@@ -1509,7 +1528,9 @@ class TestDigest:
         assert e["items"] == 2  # the open one + ready to meet; not the waiting one
         assert e["subject"] == "You have 1 performance review to complete"
         assert "Ready for your one-on-one" in e["html"] and "Sam Tui" in e["html"]
-        assert "view=my_team_reviews" in e["html"] and world["review"] in e["html"]
+        # The links open Norm Performance on that review.
+        assert "/apps/performance?view=my_team" in e["html"]
+        assert world["review"] in e["html"]
         assert (
             not db_session.query(AppRecord)
             .filter_by(organization_id=org.id, collection="performance_review_emails")
@@ -1527,7 +1548,7 @@ class TestDigest:
         self, db_session, org, boss, world, team, app_and_version, monkeypatch
     ):
         app, version = app_and_version
-        set_email_enabled(db_session, org.id, "training", True, None)
+        set_email_enabled(db_session, org.id, "performance", True, None)
         monkeypatch.setenv("APP_EMAIL_ALLOW_NONPROD", "1")
         slot = TODAY.isoformat()
         with patch(
@@ -1556,7 +1577,7 @@ class TestDigest:
         )
         key = (
             db_session.query(EmailLog)
-            .filter_by(organization_id=org.id, app_slug="training")
+            .filter_by(organization_id=org.id, app_slug="performance")
             .one()
         )
         assert key.idempotency_key == f"digest:{world['mgr']}:{slot}"
@@ -1649,7 +1670,7 @@ class TestDigest:
 
 class TestRawRowsStayBehindTheFieldRules:
     """`storage.logic_only`: the review rows (pay, private answers), pay rates
-    and the email history are readable only through training.py's ops — the
+    and the email history are readable only through performance.py's ops — the
     direct records endpoints (and the page's norm.storage) are refused, or
     anyone in the org could read the raw rows and skip every rule above."""
 
@@ -1697,3 +1718,273 @@ class TestRawRowsStayBehindTheFieldRules:
             db_session, app=app, version=version, user=admin, collection="people"
         )
         assert {r["id"] for r in rows} >= {world["sam"], world["mgr"]}
+
+
+# ---------------------------------------------------------------------------
+# Capability frameworks (moved from Norm Training with the reviews)
+# ---------------------------------------------------------------------------
+
+
+class TestCapabilityFrameworks:
+    """P4: capability frameworks — a role's competency map (Orbit's
+    `capability_frameworks`), carried across whole with categories, capabilities
+    and L1/L2/L3 descriptors nested inside."""
+
+    def test_list_counts_categories_and_sorts_by_name(
+        self, db_session, org, admin, app_and_version
+    ):
+        app, version = app_and_version
+        _rec(
+            db_session,
+            org,
+            "capability_frameworks",
+            {"name": "Sales Manager", "categories": [{"name": "A"}, {"name": "B"}]},
+        )
+        _rec(
+            db_session,
+            org,
+            "capability_frameworks",
+            {"name": "Bar Host", "categories": []},
+        )
+        d = _run(db_session, app, version, admin, op="frameworks")
+        assert [f["name"] for f in d["frameworks"]] == ["Bar Host", "Sales Manager"]
+        by_name = {f["name"]: f for f in d["frameworks"]}
+        assert by_name["Sales Manager"]["category_count"] == 2
+        assert by_name["Bar Host"]["category_count"] == 0
+
+    def test_get_returns_nested_capabilities(
+        self, db_session, org, admin, app_and_version
+    ):
+        app, version = app_and_version
+        fid = _rec(
+            db_session,
+            org,
+            "capability_frameworks",
+            {
+                "name": "Sales Manager",
+                "categories": [
+                    {
+                        "name": "Standards",
+                        "capabilities": [
+                            {"name": "Appearance", "level1_descriptor": "Tidy"}
+                        ],
+                    }
+                ],
+            },
+        )
+        d = _run(db_session, app, version, admin, op="framework", framework_id=fid)
+        cap = d["framework"]["categories"][0]["capabilities"][0]
+        assert cap["name"] == "Appearance"
+        assert cap["level1_descriptor"] == "Tidy"
+
+    def test_create_seeds_empty_then_update_preserves_name(
+        self, db_session, admin, app_and_version
+    ):
+        app, version = app_and_version
+        created = _run(
+            db_session,
+            app,
+            version,
+            admin,
+            op="save_framework",
+            fields={"name": "New Role", "is_active": True},
+        )["framework"]
+        assert created["name"] == "New Role"
+        assert created["categories"] == []  # a new framework starts empty
+        updated = _run(
+            db_session,
+            app,
+            version,
+            admin,
+            op="save_framework",
+            framework_id=created["id"],
+            fields={"role_label": "Floor Lead", "is_active": False},
+        )["framework"]
+        assert updated["role_label"] == "Floor Lead"
+        assert updated["is_active"] is False
+        assert updated["name"] == "New Role"  # untouched fields survive
+        assert updated["categories"] == []  # and so does the category map
+
+    def test_save_requires_a_name(self, db_session, admin, app_and_version):
+        app, version = app_and_version
+        d = _run(
+            db_session,
+            app,
+            version,
+            admin,
+            op="save_framework",
+            fields={"is_active": True},
+        )
+        assert "name" in d["error"]
+
+    def test_save_categories_assigns_ids_and_persists(
+        self, db_session, admin, app_and_version
+    ):
+        """B5: frameworks are editable to the category/capability level — the
+        UI sends the whole tree and every node gets a stable id."""
+        app, version = app_and_version
+        created = _run(
+            db_session,
+            app,
+            version,
+            admin,
+            op="save_framework",
+            fields={"name": "Bar Host"},
+        )["framework"]
+        fid = created["id"]
+        # Save a category with one capability, no ids supplied.
+        saved = _run(
+            db_session,
+            app,
+            version,
+            admin,
+            op="save_framework",
+            framework_id=fid,
+            fields={
+                "categories": [
+                    {
+                        "name": "Standards",
+                        "capabilities": [
+                            {"name": "Appearance", "level1_descriptor": "Tidy"}
+                        ],
+                    }
+                ]
+            },
+        )["framework"]
+        cat = saved["categories"][0]
+        assert cat.get("id")  # server assigned an id
+        cap = cat["capabilities"][0]
+        assert cap.get("id") and cap["level1_descriptor"] == "Tidy"
+        # Re-saving with the ids present must preserve them.
+        cat_id, cap_id = cat["id"], cap["id"]
+        again = _run(
+            db_session,
+            app,
+            version,
+            admin,
+            op="save_framework",
+            framework_id=fid,
+            fields={"categories": saved["categories"]},
+        )["framework"]
+        assert again["categories"][0]["id"] == cat_id
+        assert again["categories"][0]["capabilities"][0]["id"] == cap_id
+
+
+# ---------------------------------------------------------------------------
+# Opening the app, and its Orbit banner
+# ---------------------------------------------------------------------------
+
+
+class TestLocateAndSync:
+    def test_a_review_id_resolves_and_a_missing_one_says_so(
+        self, db_session, admin, world, app_and_version
+    ):
+        app, version = app_and_version
+        out = _run(db_session, app, version, admin, op="locate", review=world["review"])
+        assert out == {"review_id": world["review"]}
+        gone = _run(
+            db_session, app, version, admin, op="locate", review=str(uuid.uuid4())
+        )
+        assert "no longer exists" in gone["error"]
+
+    def test_sync_status_is_the_newest_row_an_orbit_refresh_brought(
+        self, db_session, org, admin, app_and_version
+    ):
+        app, version = app_and_version
+        assert _run(db_session, app, version, admin, op="sync_status") == {
+            "refreshed_at": None
+        }
+        old = _rec(db_session, org, "people", {"name": "A", "orbit_id": "o1"})
+        new = _rec(db_session, org, "performance_reviews", {"orbit_id": "o2"})
+        mine = _rec(db_session, org, "review_cycles", {"name": "Made in Norm"})
+        # A Training-only collection isn't this app's to read.
+        _rec(db_session, org, "completions", {"orbit_id": "o3"})
+        stamps = {
+            old: datetime(2026, 10, 1, tzinfo=timezone.utc),
+            new: datetime(2026, 10, 9, tzinfo=timezone.utc),
+            mine: datetime(2026, 10, 11, tzinfo=timezone.utc),
+        }
+        for row in db_session.query(AppRecord).filter(AppRecord.id.in_(list(stamps))):
+            row.created_at = stamps[row.id]
+        db_session.flush()
+        out = _run(db_session, app, version, admin, op="sync_status")
+        assert out["refreshed_at"].startswith("2026-10-09")
+
+
+# ---------------------------------------------------------------------------
+# The move: Training no longer has any of this
+# ---------------------------------------------------------------------------
+
+
+class TestTrainingNoLongerHasReviews:
+    @pytest.mark.parametrize(
+        "op",
+        [
+            "review_badge",
+            "reviews",
+            "my_team_reviews",
+            "review",
+            "review_save_manager",
+            "review_start",
+            "review_cycles",
+            "save_review_cycle",
+            "cycle_preview",
+            "auto_enroll_preview",
+            "review_emails",
+            "review_digest_run",
+            "set_norm_runs_cycles",
+            "frameworks",
+            "save_framework",
+        ],
+    )
+    def test_its_review_ops_are_gone(self, db_session, admin, world, training, op):
+        app, version = training
+        out = _run(db_session, app, version, admin, op=op, review_id=world["review"])
+        assert out == {"error": f"unknown op '{op}'"}
+
+    def test_the_nightly_is_performances_now(self, db_session, training):
+        app, version = training
+        assert not version.spec.get("schedules")
+        assert not version.spec.get("email")
+        out = _system(db_session, app, version, op="nightly")
+        assert out == {"error": "unknown op 'nightly'"}
+
+    @pytest.mark.parametrize(
+        "collection",
+        [
+            "performance_reviews",
+            "remuneration",
+            "review_cycles",
+            "capability_frameworks",
+            "performance_review_emails",
+        ],
+    )
+    def test_it_cannot_read_the_review_rows(
+        self, db_session, admin, world, training, collection
+    ):
+        from fastapi import HTTPException
+
+        app, version = training
+        with pytest.raises(HTTPException) as err:
+            AR.store_list(
+                db_session, app=app, version=version, user=admin, collection=collection
+            )
+        assert err.value.status_code == 403
+        assert "not a collection this app declares" in err.value.detail
+
+    def test_a_review_link_is_not_an_input_training_takes(
+        self, db_session, admin, world, training
+    ):
+        from app.services.app_components import declared_components
+
+        app, version = training
+        comp = declared_components(version.spec, slug="training", name="Training")[0]
+        assert {i["name"] for i in comp["inputs"]} == {"view", "program", "person"}
+        out = _run(db_session, app, version, admin, op="locate", review=world["review"])
+        assert out == {"program_id": None, "person_id": None}
+
+    def test_training_shares_the_namespace_with_performance(self, training):
+        _, version = training
+        storage = version.spec["storage"]
+        assert storage["namespace"] == "hr_suite"
+        assert set(storage["shared_with"]) == {"hiring", "performance"}

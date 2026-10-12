@@ -1,0 +1,55 @@
+{
+  "slug": "performance",
+  "name": "Norm Performance",
+  "icon": "📈",
+  "agent": "hr",
+  "description": "Performance reviews, review cycles and capability frameworks — runs on Norm.",
+  "purpose": "The management surface for performance: each review's manager side, the review meeting, the goals email and the pay decision; every review for HR admins; review cycles that create each round's reviews; the managers' daily digest; and the capability frameworks reviews rate against. Ported from Orbit. Its data sits in the shared HR namespace beside Norm Training's people, whose managers decide who completes each review.",
+  "spec": {
+    "actions": [],
+    "writes": [],
+    "scopes": [],
+    "storage": {
+      "namespace": "hr_suite",
+      "collections": [
+        "people",
+        "capability_frameworks",
+        "review_cycles",
+        "performance_reviews",
+        "performance_review_emails",
+        "performance_review_email_settings",
+        "remuneration",
+        "app_settings"
+      ],
+      "logic_only": [
+        "performance_reviews",
+        "remuneration",
+        "performance_review_emails",
+        "performance_review_email_settings"
+      ]
+    },
+    "max_api_calls": 0,
+    "components": [
+      {
+        "key": "performance",
+        "label": "Performance",
+        "page": true,
+        "description": "Performance reviews (my team's and, for HR admins, every review), review cycles, capability frameworks and the review emails.",
+        "inputs": {
+          "view": "Which tab to open: 'my_team' (default — reviews you manage), 'all' (every review, HR admins), 'cycles', 'frameworks' or 'emails'.",
+          "review": "A performance review, by id — opens it (as its manager when that's you)."
+        }
+      }
+    ],
+    "email": {
+      "external": false
+    },
+    "schedules": [
+      {
+        "op": "nightly",
+        "at": "19:00",
+        "tz": "UTC"
+      }
+    ]
+  }
+}

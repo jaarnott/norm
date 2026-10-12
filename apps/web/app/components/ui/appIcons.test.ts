@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AppWindow, Blocks, BookOpen, ChefHat, GraduationCap, Share2, Truck, UserRoundSearch } from 'lucide-react';
+import { AppWindow, Blocks, BookOpen, ChefHat, GraduationCap, Share2, TrendingUp, Truck, UserRoundSearch } from 'lucide-react';
 import { resolveAppIcon } from './appIcons';
 
 describe('resolveAppIcon', () => {
@@ -8,6 +8,7 @@ describe('resolveAppIcon', () => {
     // hiring.json says 🧑‍🍳 and the catalog says 🧑‍💻 — the slug decides.
     expect(resolveAppIcon({ slug: 'hiring', icon: '🧑‍🍳' })).toBe(UserRoundSearch);
     expect(resolveAppIcon({ slug: 'hiring', icon: '🧑‍💻' })).toBe(UserRoundSearch);
+    expect(resolveAppIcon({ slug: 'performance', icon: '📈' })).toBe(TrendingUp);
   });
 
   it('takes a lucide name the app chose, in any spelling', () => {
