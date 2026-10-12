@@ -8,16 +8,18 @@ production values were saved before this ran
 (~/norm-split-backups/venues-invoice-autopilot-20261011T210138Z.json on
 norm-dev); the downgrade restores the column, not its values.
 
-Revision ID: z1a2b3c4d5e6
-Revises: y0z1a2b3c4d5
+Revision ID: za1b2c3d4e5f
+Revises: z1a2b3c4d5e6
 Create Date: 2026-10-12
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "z1a2b3c4d5e6"
-down_revision = "y0z1a2b3c4d5"
+revision = "za1b2c3d4e5f"
+# Chained after z1a2b3c4d5e6_app_schedules_and_email (2c6e92b): this file first
+# shipped with that same revision id, and alembic refused the two heads.
+down_revision = "z1a2b3c4d5e6"
 branch_labels = None
 depends_on = None
 
