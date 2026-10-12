@@ -293,6 +293,11 @@
 }
 textarea.n-input { height: auto; padding: 8px 10px; line-height: 1.45; resize: vertical; }
 .n-input::placeholder { color: var(--muted); }
+/* Number fields carry no spinner: Chrome reserves the spinner's width even
+   while it is hidden, so right-aligned figures sat short of the right edge. */
+.n-input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
+.n-input[type='number']::-webkit-inner-spin-button,
+.n-input[type='number']::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .n-input:disabled { background: var(--surface); color: var(--muted); }
 @media (pointer: coarse) {
   .n-input:not(textarea) { height: 40px; }

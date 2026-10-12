@@ -31,8 +31,7 @@ def _doc(db_session, venue, invoice_id, **data):
         external_ref={"invoice_id": invoice_id},
         data={
             "invoice_id": invoice_id,
-            "checks": "pppppppppppp",
-            "check_reasons": [],
+            "reviewed_at": "2026-10-01T00:00:00Z",
             "suggestions": [],
             **data,
         },
@@ -66,13 +65,11 @@ class TestInvalidateConflictingDrafts:
             "inv-2",
             reference_number="IN11380900",
             supplier_name="SERVICE FOODS AUCKLAND",
-            check_reasons=["old"],
             suggestions=[{"type": "link_po"}],
         )
         invalidate_conflicting_drafts(db_session, venue.id, "inv-1")
         db_session.refresh(dup)
-        assert dup.data["checks"] is None
-        assert dup.data["check_reasons"] == []
+        assert dup.data["reviewed_at"] is None
         assert dup.data["suggestions"] == []
         assert not dup.data.get("is_received")
 
@@ -93,7 +90,7 @@ class TestInvalidateConflictingDrafts:
         )
         invalidate_conflicting_drafts(db_session, venue.id, "inv-1")
         db_session.refresh(overlap)
-        assert overlap.data["checks"] is None
+        assert overlap.data["reviewed_at"] is None
 
     def test_unrelated_sibling_untouched(self, db_session, venue):
         _doc(db_session, venue, "inv-1", reference_number="R-1")
@@ -106,7 +103,7 @@ class TestInvalidateConflictingDrafts:
         )
         invalidate_conflicting_drafts(db_session, venue.id, "inv-1")
         db_session.refresh(other)
-        assert other.data["checks"] == "pppppppppppp"
+        assert other.data["reviewed_at"] == "2026-10-01T00:00:00Z"
 
     def test_delete_path_uses_caller_identity(self, db_session, venue):
         # The deleted invoice's own docs are already gone — the caller passes
@@ -127,7 +124,7 @@ class TestInvalidateConflictingDrafts:
             received=False,
         )
         db_session.refresh(dup)
-        assert dup.data["checks"] is None
+        assert dup.data["reviewed_at"] is None
         assert not dup.data.get("is_received")
 
     def test_already_received_siblings_skipped(self, db_session, venue):
@@ -137,7 +134,7 @@ class TestInvalidateConflictingDrafts:
         _doc(db_session, venue, "inv-1", reference_number="R-1")
         invalidate_conflicting_drafts(db_session, venue.id, "inv-1")
         db_session.refresh(done)
-        assert done.data["checks"] == "pppppppppppp"  # untouched
+        assert done.data["reviewed_at"] == "2026-10-01T00:00:00Z"  # untouched
 
     def test_never_raises_on_malformed_docs(self, db_session, venue):
         doc = WorkingDocument(
@@ -153,51 +150,60 @@ class TestInvalidateConflictingDrafts:
 
 
 class TestReceiveEndpointWiring:
+    """/invoice-fixes/receive takes the one receive path
+    (``received_invoice.receive_from_draft``) — body ``{venue_id, invoice_id}``."""
+
+    def _wire(self, monkeypatch, received):
+        import app.routers.invoice_fixes as IF
+
+        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: object())
+        monkeypatch.setattr(
+            "app.services.received_invoice.do_receive",
+            lambda lh, req: {"ok": True, "received": received},
+        )
+
     def test_receive_invalidates_siblings(
         self, client, db_session, admin_user, admin_headers, monkeypatch, venue
     ):
-        import app.routers.invoice_fixes as IF
-
         _doc(db_session, venue, "inv-1", reference_number="R-1", supplier_name="S")
         dup = _doc(
             db_session, venue, "inv-2", reference_number="R-1", supplier_name="S"
         )
-
-        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: object())
-        monkeypatch.setattr(
-            IF, "_do_receive", lambda lh, body: {"ok": True, "received": True}
-        )
-
+        self._wire(monkeypatch, received=True)
         resp = client.post(
             "/api/invoice-fixes/receive",
-            json={"venue_id": venue.id, "invoice_id": "inv-1", "receive": True},
+            json={"venue_id": venue.id, "invoice_id": "inv-1"},
             headers=admin_headers,
         )
         assert resp.status_code == 200
         db_session.refresh(dup)
-        assert dup.data["checks"] is None
+        assert dup.data["reviewed_at"] is None
 
-    def test_save_without_receive_does_not_invalidate(
+    def test_a_refused_receive_does_not_invalidate(
         self, client, db_session, admin_user, admin_headers, monkeypatch, venue
     ):
-        import app.routers.invoice_fixes as IF
-
         _doc(db_session, venue, "inv-1", reference_number="R-1", supplier_name="S")
         dup = _doc(
             db_session, venue, "inv-2", reference_number="R-1", supplier_name="S"
         )
-        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: object())
-        monkeypatch.setattr(
-            IF, "_do_receive", lambda lh, body: {"ok": True, "received": False}
-        )
+        self._wire(monkeypatch, received=False)
         resp = client.post(
             "/api/invoice-fixes/receive",
-            json={"venue_id": venue.id, "invoice_id": "inv-1", "receive": False},
+            json={"venue_id": venue.id, "invoice_id": "inv-1"},
             headers=admin_headers,
         )
         assert resp.status_code == 200
         db_session.refresh(dup)
-        assert dup.data["checks"] == "pppppppppppp"
+        assert dup.data["reviewed_at"] == "2026-10-01T00:00:00Z"
+
+    def test_no_open_draft_is_a_404(self, client, admin_headers, monkeypatch, venue):
+        self._wire(monkeypatch, received=True)
+        resp = client.post(
+            "/api/invoice-fixes/receive",
+            json={"venue_id": venue.id, "invoice_id": "never-opened"},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 404
 
 
 class TestResetValidation:
@@ -248,8 +254,7 @@ class TestResetValidation:
             external_ref={"invoice_id": "inv-1"},
             data={
                 "invoice_id": "inv-1",
-                "checks": "ppppf",
-                "check_reasons": ["old reason"],
+                "reviewed_at": "2026-10-01T00:00:00Z",
                 "suggestions": [{"type": "unit"}],
                 "actioned_suggestions": [{"key": "unit:l1", "summary": "done"}],
                 "lines": [{"id": "l1", "struck": True}],
@@ -274,64 +279,11 @@ class TestResetValidation:
         assert db_session.query(DE).filter(DE.cache_key == f"k2-{ref}").count() == 1
 
         db_session.refresh(doc)
-        assert not doc.data.get("checks")
+        assert not doc.data.get("reviewed_at")
         assert not doc.data.get("actioned_suggestions")
         assert doc.data.get("reference_number") == ref
         # local line state gone too — rebuilt fresh from Loaded
         assert doc.data.get("lines") == []
-
-    def test_wipes_this_invoices_item_match_cache_only(
-        self, client, db_session, admin_user, admin_headers, monkeypatch, venue
-    ):
-        # A cached wrong/declined stock-item match (the Sailor Jerry case,
-        # 08 Aug 2026) used to survive every reset — the rows ARE identifiable
-        # per invoice: their data dict is keyed by the invoice's line ids.
-        import app.routers.invoice_fixes as IF
-        from app.db.models import DocumentExtraction
-
-        detail = {
-            "id": "inv-1",
-            "referenceNumber": f"R-{uuid.uuid4().hex[:10]}",
-            "supplierName": "S",
-            "lines": [{"id": "line-abc", "description": "RUM"}],
-        }
-
-        class FakeLh:
-            def invoice(self, iid):
-                return detail
-
-        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: FakeLh())
-        mine = f"m1-{uuid.uuid4().hex[:8]}"
-        other = f"m2-{uuid.uuid4().hex[:8]}"
-        db_session.add(
-            DocumentExtraction(
-                cache_key=mine,
-                connector="norm",
-                action="match_stock_items",
-                data={"line-abc": {"matched_item": None, "suggested_name": "Rum"}},
-            )
-        )
-        db_session.add(
-            DocumentExtraction(
-                cache_key=other,
-                connector="norm",
-                action="match_stock_items",
-                data={"line-of-another-invoice": {"matched_item": None}},
-            )
-        )
-        db_session.flush()
-
-        resp = client.post(
-            "/api/invoice-fixes/reset-validation",
-            json={"venue_id": venue.id, "invoice_id": "inv-1"},
-            headers=admin_headers,
-        )
-        assert resp.status_code == 200
-        assert resp.json()["extractions_deleted"] == 1
-
-        de = db_session.query(DocumentExtraction)
-        assert de.filter(DocumentExtraction.cache_key == mine).count() == 0
-        assert de.filter(DocumentExtraction.cache_key == other).count() == 1
 
     def test_received_drafts_left_alone(
         self, client, db_session, admin_user, admin_headers, monkeypatch, venue
@@ -352,7 +304,7 @@ class TestResetValidation:
         assert resp.status_code == 200
         assert resp.json()["documents_reset"] == 0
         db_session.refresh(done)
-        assert done.data["checks"] == "pppppppppppp"
+        assert done.data["reviewed_at"] == "2026-10-01T00:00:00Z"
 
 
 class TestDeleteTombstones:
@@ -402,7 +354,7 @@ class TestDeleteTombstones:
             assert "duplicate" in d.data["deleted_reason"]
         # The same-numbered SIBLING is refreshed (review cleared), never tombstoned.
         db_session.refresh(sibling)
-        assert sibling.data["checks"] is None
+        assert sibling.data["reviewed_at"] is None
         assert not sibling.data.get("is_deleted")
 
     def test_tombstones_are_skipped_by_reset_and_invalidation(
@@ -424,7 +376,7 @@ class TestDeleteTombstones:
             db_session, venue.id, "inv-9", reference_number="R-1", supplier_name="S"
         )
         db_session.refresh(tomb)
-        assert tomb.data["checks"] == "pppppppppppp"
+        assert tomb.data["reviewed_at"] == "2026-10-01T00:00:00Z"
         assert not tomb.data.get("is_received")
 
         # reset-validation: documents_reset == 0 for a tombstoned invoice
@@ -443,7 +395,7 @@ class TestDeleteTombstones:
 
 
 class TestReviewTwinHealing:
-    """/invoice-fixes/review lands the fresh replica_v1 payload on ALL open
+    """/invoice-fixes/review lands the fresh replica_v2 payload on ALL open
     twin docs (historic per-thread duplicates) and bumps every version — a
     card bound to a non-canonical twin used to PATCH and get a bare doc back,
     visibly losing the validation. Re-review is a SQUASH: the payload replaces
@@ -455,7 +407,7 @@ class TestReviewTwinHealing:
     @staticmethod
     def _payload():
         return {
-            "doc_schema": "replica_v1",
+            "doc_schema": "replica_v2",
             "reference_number": "R-1",
             "lines": [{"id": "l-1", "description": "X", "quantity_received": 4}],
             "suggestions": [{"id": "line_value:quantity_received:l-1"}],
@@ -499,7 +451,7 @@ class TestReviewTwinHealing:
         db_session.refresh(a)
         db_session.refresh(b)
         for d in (a, b):
-            assert d.data["doc_schema"] == "replica_v1"
+            assert d.data["doc_schema"] == "replica_v2"
             assert d.data["suggestions"] == [{"id": "line_value:quantity_received:l-1"}]
             assert d.data["lines"][0]["quantity_received"] == 4
         # Squash semantics: the twin's local struck state is deliberately
@@ -515,7 +467,7 @@ class TestReviewTwinHealing:
             db_session,
             venue,
             inv,
-            doc_schema="replica_v1",
+            doc_schema="replica_v2",
             reviewed_at="2026-08-10T00:00:00+00:00",
         )
 

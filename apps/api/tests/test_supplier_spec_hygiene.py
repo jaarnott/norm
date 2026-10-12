@@ -350,7 +350,7 @@ class TestTheSenseiAsksUnderEverySpellingItKnows:
         from app.services import invoice_review as IR
 
         monkeypatch.setattr(
-            "app.agents.internal_tools._sensei_train_supplier",
+            "app.services.spec_dojo.train_supplier",
             lambda *_a, **_k: pytest.fail("a supplier with a spec was retrained"),
         )
         trained = IR._maybe_sensei(
@@ -372,8 +372,11 @@ class TestTheSenseiAsksUnderEverySpellingItKnows:
 
         seen = {}
         monkeypatch.setattr(
-            "app.agents.internal_tools._sensei_train_supplier",
-            lambda params, *_a, **_k: seen.update(params) or {"success": True},
+            "app.services.spec_dojo.train_supplier",
+            lambda db, venue_id, invoice_id, supplier_name, aliases=(): (
+                seen.update(supplier_name=supplier_name, aliases=list(aliases))
+                or {"status": "trained"}
+            ),
         )
         trained = IR._maybe_sensei(
             None, db_session, "v-1", "inv-9", "Brand New Butchery", "BNB Ltd"
@@ -388,25 +391,23 @@ class TestTheSenseiAsksUnderEverySpellingItKnows:
         """The tool re-checks before staging. Called directly (the dojo's own
         entry point) it must reach the same conclusion, or the duplicate work
         simply moves one layer down."""
-        from app.agents import internal_tools as IT
 
         _bind_config_session(monkeypatch, db_session)
         monkeypatch.setattr(
             "app.services.spec_dojo.stage_invoice_sample",
             lambda *_a, **_k: pytest.fail("staged a sample for a covered supplier"),
         )
-        out = IT._sensei_train_supplier(
-            {
-                "venue_id": "v-1",
-                "invoice_id": "inv-1",
-                "supplier_name": "Kaans Catering",
-                "aliases": ["Kaan's Catering Supplies Ltd"],
-            },
+        from app.services import spec_dojo
+
+        out = spec_dojo.train_supplier(
             None,
-            None,
+            "v-1",
+            "inv-1",
+            "Kaans Catering",
+            aliases=["Kaan's Catering Supplies Ltd"],
         )
-        assert out["data"]["status"] == "skipped"
-        assert out["data"]["spec_name"] == "Kaan's Catering Supplies"
+        assert out["status"] == "skipped"
+        assert out["spec_name"] == "Kaan's Catering Supplies"
 
 
 class TestTheRosterIsAskedAboutTheNameOnThePaper:
@@ -438,8 +439,11 @@ class TestTheRosterIsAskedAboutTheNameOnThePaper:
     ):
         seen = {}
         monkeypatch.setattr(
-            "app.agents.internal_tools._sensei_train_supplier",
-            lambda params, *_a, **_k: seen.update(params) or {"success": True},
+            "app.services.spec_dojo.train_supplier",
+            lambda db, venue_id, invoice_id, supplier_name, aliases=(): (
+                seen.update(supplier_name=supplier_name, aliases=list(aliases))
+                or {"status": "trained"}
+            ),
         )
         from app.services import invoice_review as IR
 

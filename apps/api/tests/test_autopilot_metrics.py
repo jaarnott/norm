@@ -550,7 +550,7 @@ class TestAutoVerdict:
 
     def _reviewed(self, *, lines=None, snapshot_lines=None, **over):
         doc = _doc(lines=lines, snapshot_lines=snapshot_lines, **over)
-        doc["doc_schema"] = "replica_v1"
+        doc["doc_schema"] = "replica_v2"
         return doc
 
     def test_accept_all_matches_and_names_its_gates(self):
@@ -598,6 +598,16 @@ class TestAutoVerdict:
         # carry the identity.
         doc = self._reviewed(
             lines=[_line(unit="6x700ml", linked_unit_id="u-new", unit_ratio=4.2)],
+            suggestions=[
+                {
+                    "id": "create_unit:unit:ld-1",
+                    "kind": "create_unit",
+                    "field": "unit",
+                    "line_id": "ld-1",
+                    "payload": {"unit_name": "6x700ml"},
+                    "gate": "auto_create_units",
+                }
+            ],
             issues=[
                 {
                     "id": "unit_would_be_created:ld-1",
@@ -606,10 +616,7 @@ class TestAutoVerdict:
                     "line_id": "ld-1",
                     "gate": "auto_create_units",
                     "message": "…",
-                    "action": {
-                        "kind": "create_unit",
-                        "payload": {"unit_name": "6x700ml"},
-                    },
+                    "fix": ["create_unit:unit:ld-1"],
                 }
             ],
         )
@@ -620,6 +627,16 @@ class TestAutoVerdict:
     def test_a_different_unit_than_the_create_differs(self):
         doc = self._reviewed(
             lines=[_line(unit="12 Pack", linked_unit_id="u-12", unit_ratio=12)],
+            suggestions=[
+                {
+                    "id": "create_unit:unit:ld-1",
+                    "kind": "create_unit",
+                    "field": "unit",
+                    "line_id": "ld-1",
+                    "payload": {"unit_name": "6x700ml"},
+                    "gate": "auto_create_units",
+                }
+            ],
             issues=[
                 {
                     "id": "unit_would_be_created:ld-1",
@@ -628,10 +645,7 @@ class TestAutoVerdict:
                     "line_id": "ld-1",
                     "gate": "auto_create_units",
                     "message": "…",
-                    "action": {
-                        "kind": "create_unit",
-                        "payload": {"unit_name": "6x700ml"},
-                    },
+                    "fix": ["create_unit:unit:ld-1"],
                 }
             ],
         )
@@ -692,6 +706,14 @@ class TestAutoVerdict:
     def test_a_delete_gated_duplicate_the_human_received_differs(self):
         doc = self._reviewed(
             lines=[_line()],
+            suggestions=[
+                {
+                    "id": "delete_invoice",
+                    "kind": "delete_invoice",
+                    "payload": {},
+                    "gate": "auto_delete_duplicates",
+                }
+            ],
             issues=[
                 {
                     "id": "duplicate_invoice",
@@ -700,7 +722,7 @@ class TestAutoVerdict:
                     "line_id": None,
                     "gate": "auto_delete_duplicates",
                     "message": "duplicate",
-                    "action": {"kind": "delete_invoice", "payload": {}},
+                    "fix": ["delete_invoice"],
                 }
             ],
         )

@@ -179,7 +179,8 @@ class TestCannotReceive:
         )
         # A Loaded receive here would be a bug — there is no client to call.
         monkeypatch.setattr(
-            IF, "_do_receive", lambda *a, **k: pytest.fail("must not receive")
+            "app.services.received_invoice.do_receive",
+            lambda *a, **k: pytest.fail("must not receive"),
         )
         res = client.post(
             "/api/invoice-fixes/cannot-receive",

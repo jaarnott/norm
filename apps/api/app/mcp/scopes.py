@@ -171,8 +171,10 @@ MCP_SCOPES: dict[str, McpScope] = {
         description="Lets YOU receive a prepared supplier invoice into Loaded by "
         "pressing Accept & Receive inside the embedded invoice editor. This marks "
         "the stock received, links the purchase order and may update the "
-        "supplier's unit on matched items. Claude cannot trigger this itself — "
-        "only your click receives the invoice, exactly as shown.",
+        "supplier's unit on matched items. The editor's create buttons also add "
+        "the stock items, units, brands or suppliers a line needs to Loaded. "
+        "Claude cannot trigger these itself — only your click receives the "
+        "invoice, exactly as shown, or creates what you entered.",
         access_level=ACCESS_WRITE,
         requires=frozenset({"orders:read", "orders:write"}),
     ),

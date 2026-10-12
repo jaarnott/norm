@@ -4,11 +4,9 @@ Two directions share these rules:
 
 - The review ENGINE matches a Loaded line against the invoice COPY's lines
   (``plain_match``) and, via a known stock item's supplier variants, lets a
-  variant claim a copy line (``variant_claim``). Those two are VERBATIM
-  ports of the sandboxed consolidator's ``_plain_match``/``_variant_claim``
-  (config/consolidators/review_and_receive_invoices.py) — the sandbox can't
-  import app modules, so the logic is duplicated there by design and pinned
-  by a parity test (the ``invoice_units`` precedent).
+  variant claim a copy line (``variant_claim``). They began as ports of the
+  sandboxed consolidator's ``_plain_match``/``_variant_claim``; since the
+  review moved server-side (Aug 2026) these are the only implementation.
 
 - The replica builder matches an EXTRACTED line against the venue's whole
   catalogue (``CatalogueIndex`` + ``match_line``): Loaded's own ingestion

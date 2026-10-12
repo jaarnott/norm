@@ -12,6 +12,8 @@
  *   PATCH                                        -> norm__update_working_document
  *   callComponentApi(reads)                      -> norm__component_api (paged)
  *   callComponentApi('create_orders_batch')      -> norm__place_stock_order
+ *   GET  /api/invoice-fixes/{units,brands,…}     -> norm__invoice_catalog (paged)
+ *   POST /api/invoice-fixes/create-{item,unit,…} -> norm__invoice_create
  *
  * Anything else is answered with a 404-shaped Response — components already
  * treat that as "reference data unavailable" and degrade the way they do in
@@ -89,6 +91,74 @@ const WD_URL = /\/(?:threads\/[^/]+\/)?working-documents\/([^/?]+)$/;
 // orders tools — MCP scope projection is all-of, so the two can't share a tool.
 const INVOICE_WD_URL = /\/(?:threads\/[^/]+\/)?invoice-documents\/([^/?]+)$/;
 
+// The invoice editor's catalogue: its picker lists and its create buttons.
+// URL path -> the tool's `list` vocabulary (norm__invoice_catalog).
+const CATALOG_LISTS: Record<string, string> = {
+  units: 'units',
+  brands: 'brands',
+  'stock-groups': 'stock_groups',
+  'stock-items': 'stock_items',
+  suppliers: 'suppliers',
+  'unit-spec': 'unit_spec',
+};
+const CATALOG_READ_URL = /\/api\/invoice-fixes\/(units|brands|stock-groups|stock-items|suppliers|unit-spec)\?(.*)$/;
+const CATALOG_CREATE_URL = /\/api\/invoice-fixes\/create-(item|unit|brand|supplier)$/;
+// What norm__invoice_create accepts; the schema refuses anything else.
+const CREATE_KEYS = [
+  'venue_id', 'invoice_id', 'name', 'line_id', 'group_id', 'unit_id',
+  'brand_id', 'supplier_id', 'ratio', 'unit_type',
+];
+
+/** A tool reply as the web endpoint's Response: `ok: false` carries a detail. */
+function catalogResponse(reply: unknown): Response {
+  const p = (toolPayload(reply) ?? {}) as { ok?: boolean; detail?: unknown };
+  if (isErrorReply(reply) || p.ok === false) {
+    return jsonResponse(false, { detail: p.detail ?? 'Not available' }, 400);
+  }
+  return jsonResponse(true, p);
+}
+
+async function routeCatalogRead(path: string, query: string): Promise<Response> {
+  const q = new URLSearchParams(query);
+  const args: Record<string, unknown> = {
+    venue_id: q.get('venue_id') ?? '',
+    invoice_id: q.get('invoice_id') ?? '',
+    list: CATALOG_LISTS[path],
+  };
+  if (q.get('name') !== null) args.name = q.get('name');
+  try {
+    if (path !== 'stock-items') {
+      return catalogResponse(await window.NormApp.callTool('norm__invoice_catalog', args));
+    }
+    // A catalogue runs to a thousand items: reassemble the pages.
+    const items: unknown[] = [];
+    let page: number | null = 0;
+    while (page !== null) {
+      const reply = await window.NormApp.callTool('norm__invoice_catalog', { ...args, page });
+      const p = (toolPayload(reply) ?? {}) as { ok?: boolean; stock_items?: unknown[]; next_page?: number | null };
+      if (isErrorReply(reply) || p.ok === false) return catalogResponse(reply);
+      items.push(...(p.stock_items ?? []));
+      page = typeof p.next_page === 'number' ? p.next_page : null;
+    }
+    return jsonResponse(true, { stock_items: items });
+  } catch {
+    return jsonResponse(false, {}, 502);
+  }
+}
+
+async function routeCatalogCreate(kind: string, init?: RequestInit): Promise<Response> {
+  const body = init?.body ? JSON.parse(String(init.body)) : {};
+  const args: Record<string, unknown> = { kind };
+  for (const k of CREATE_KEYS) {
+    if (body[k] !== null && body[k] !== undefined && body[k] !== '') args[k] = body[k];
+  }
+  try {
+    return catalogResponse(await window.NormApp.callTool('norm__invoice_create', args));
+  } catch {
+    return jsonResponse(false, {}, 502);
+  }
+}
+
 async function routeDoc(
   docId: string,
   getTool: string,
@@ -160,6 +230,14 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
     } catch {
       return jsonResponse(false, {}, 502);
     }
+  }
+  const read = url.match(CATALOG_READ_URL);
+  if (read && (init?.method || 'GET').toUpperCase() === 'GET') {
+    return routeCatalogRead(read[1], read[2]);
+  }
+  const create = url.match(CATALOG_CREATE_URL);
+  if (create && (init?.method || '').toUpperCase() === 'POST') {
+    return routeCatalogCreate(create[1], init);
   }
   // Save recipe — the one recipe write, routed to the Cook Brothers App through
   // norm__save_recipe. The editor POSTs {venue_id, recipe}.

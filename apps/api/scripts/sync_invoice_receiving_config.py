@@ -7,17 +7,10 @@ binding capabilities, and playbooks. Consolidator function_code is loaded from
 the canonical in-repo sources (config/consolidators/*.py) so it stays reviewed
 and version-controlled.
 
-Idempotent — safe to re-run; it upserts by action/slug and only reports what
-changed. Run AFTER deploying the API code (the consolidator relies on the
-extract_document / allowed_write_actions / binary-response infrastructure).
-
-Usage:
-    .venv/bin/python scripts/sync_invoice_receiving_config.py --dry-run
-    .venv/bin/python scripts/sync_invoice_receiving_config.py
+NOT an installer any more (Oct 2026) — see ``main``: running it refuses.
+Other scripts and tests read the definitions below.
 """
 
-import argparse
-import json
 import pathlib
 import sys
 
@@ -554,134 +547,18 @@ GET_PURCHASE_ORDERS_TOOL = {
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    """Refuses — this file is the invoice tools' DEFINITIONS, not an installer.
 
-    from app.db.engine import _ConfigSessionLocal
-    from app.db.config_models import AgentConnectionBinding, ConnectionSpec, Playbook
-
-    consolidator = dict(CONSOLIDATOR_TOOL)
-    consolidator["consolidator_config"] = {
-        **CONSOLIDATOR_TOOL["consolidator_config"],
-        "function_code": FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
-    }
-    reconcile_consolidator = dict(RECONCILE_CONSOLIDATOR_TOOL)
-    reconcile_consolidator["consolidator_config"] = {
-        **RECONCILE_CONSOLIDATOR_TOOL["consolidator_config"],
-        "function_code": RECONCILE_FUNCTION_CODE_PATH.read_text(encoding="utf-8"),
-    }
-    get_invoices_tool = dict(GET_INVOICES_TOOL)
-    get_invoices_tool["consolidator_config"] = {
-        **GET_INVOICES_TOOL["consolidator_config"],
-        "function_code": GET_INVOICES_CODE_PATH.read_text(encoding="utf-8"),
-    }
-    get_pos_tool = dict(GET_PURCHASE_ORDERS_TOOL)
-    get_pos_tool["consolidator_config"] = {
-        **GET_PURCHASE_ORDERS_TOOL["consolidator_config"],
-        "function_code": GET_POS_CODE_PATH.read_text(encoding="utf-8"),
-        # Its slim list shape (1 Oct 2026); replacing the row without it
-        # would hand the model Loaded's raw 24-field rows again.
-        "shapes": json.loads(
-            (FUNCTION_CODE_PATH.parent / "shapes.json").read_text(encoding="utf-8")
-        )["loadedhub.get_purchase_orders"],
-    }
-    desired_tools = {
-        t["action"]: t
-        for t in [
-            *SPEC_TOOLS,
-            *RECONCILE_SPEC_TOOLS,
-            consolidator,
-            reconcile_consolidator,
-            get_invoices_tool,
-            get_pos_tool,
-        ]
-    }
-
-    db = _ConfigSessionLocal()
-    changes: list[str] = []
-    try:
-        spec = (
-            db.query(ConnectionSpec)
-            .filter(ConnectionSpec.connector_name == "loadedhub")
-            .first()
-        )
-        if not spec:
-            raise SystemExit("loadedhub ConnectionSpec not found in config DB")
-
-        tools = list(spec.tools or [])
-        retired = [t for t in tools if t.get("action") in RETIRED_ACTIONS]
-        if retired:
-            tools = [t for t in tools if t.get("action") not in RETIRED_ACTIONS]
-            for t in retired:
-                changes.append(f"spec tool retired: {t.get('action')}")
-        by_action = {t.get("action"): i for i, t in enumerate(tools)}
-        for action, tool in desired_tools.items():
-            if action in by_action:
-                if tools[by_action[action]] != tool:
-                    tools[by_action[action]] = tool
-                    changes.append(f"spec tool updated: {action}")
-            else:
-                tools.append(tool)
-                changes.append(f"spec tool added: {action}")
-        spec.tools = tools
-
-        binding = (
-            db.query(AgentConnectionBinding)
-            .filter(
-                AgentConnectionBinding.agent_slug == "procurement",
-                AgentConnectionBinding.connector_name == "loadedhub",
-            )
-            .first()
-        )
-        if not binding:
-            raise SystemExit("procurement/loadedhub binding not found in config DB")
-        caps = list(binding.capabilities or [])
-        existing_actions = {c.get("action") if isinstance(c, dict) else c for c in caps}
-        labels = {t["action"]: t.get("description", t["action"]) for t in tools}
-        for action in BINDING_CAPABILITY_ACTIONS:
-            if action not in existing_actions:
-                caps.append(
-                    {
-                        "action": action,
-                        "label": labels.get(action, action),
-                        "enabled": True,
-                    }
-                )
-                changes.append(f"binding capability added: {action}")
-        binding.capabilities = caps
-
-        for playbook_def in (PLAYBOOK, RECONCILE_PLAYBOOK, RECEIVE_ONE_PLAYBOOK):
-            playbook = (
-                db.query(Playbook).filter(Playbook.slug == playbook_def["slug"]).first()
-            )
-            if playbook:
-                for key, value in playbook_def.items():
-                    if getattr(playbook, key) != value:
-                        setattr(playbook, key, value)
-                        changes.append(
-                            f"playbook {playbook_def['slug']} field updated: {key}"
-                        )
-            else:
-                db.add(Playbook(**playbook_def))
-                changes.append(f"playbook created: {playbook_def['slug']}")
-
-        if not changes:
-            print("Config already in sync — nothing to do.")
-            return
-        for line in changes:
-            print(("DRY RUN: " if args.dry_run else "") + line)
-        if args.dry_run:
-            db.rollback()
-        else:
-            from sqlalchemy.orm.attributes import flag_modified
-
-            flag_modified(spec, "tools")
-            flag_modified(binding, "capabilities")
-            db.commit()
-            print(f"Applied {len(changes)} change(s).")
-    finally:
-        db.close()
+    Its installer predated the endpoints/tools split (Sep 2026): it wrote the
+    raw Loaded endpoints into the LLM-facing ``tools`` list and replaced the
+    invoice playbooks wholesale, so running it on today's config would put
+    raw endpoints back in front of the model and undo later playbook edits.
+    Change a live row with a ``scripts/tool_row_updates.RowUpdate`` script that
+    names exactly the keys it sets (``scripts/sync_answer_shapes.py`` is one).
+    Removed Oct 2026; the definitions above stay, other scripts and tests read
+    them.
+    """
+    raise SystemExit(main.__doc__)
 
 
 if __name__ == "__main__":

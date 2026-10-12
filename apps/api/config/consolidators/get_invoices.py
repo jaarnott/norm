@@ -1,7 +1,9 @@
 # ruff: noqa: F821 — sandbox-injected names; not imports.
 #
 # Canonical function_code for the `loadedhub.get_invoices` consolidator —
-# THE supplier-invoice lookup (synced by scripts/sync_invoice_consolidators.py).
+# THE supplier-invoice lookup. Row definition: GET_INVOICES_TOOL in
+# scripts/sync_invoice_receiving_config.py; this code reaches the live row
+# through scripts/sync_invoice_tool_code.py.
 # Replaces five agent-facing tools: get_outstanding_invoices (deleted),
 # list_stock_invoices, list_received_invoices, get_invoice_detail and the
 # get_received_invoices_for_period wrapper (deleted), plus statements via

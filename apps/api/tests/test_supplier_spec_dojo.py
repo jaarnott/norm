@@ -1629,28 +1629,22 @@ class TestGroundTruthArithmetic:
 
 
 class TestSenseiHandler:
-    """norm.sensei_train_supplier: the once-per-supplier guard and the
-    analysis-outcome mapping (trained / no_spec_needed / pending_review)."""
+    """spec_dojo.train_supplier (the sensei; was the engine tool
+    norm.sensei_train_supplier until Oct 2026): the once-per-supplier guard and
+    the analysis-outcome mapping (trained / no_spec_needed / pending_review)."""
 
     def _call(self, db_session, monkeypatch, supplier="Sensei Foods"):
-        from app.agents.internal_tools import get_handler
         from app.db import engine as engine_mod
 
         monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", lambda: db_session)
         monkeypatch.setattr(db_session, "close", lambda: None)
-        handler = get_handler("norm", "sensei_train_supplier")
-        assert handler is not None
-        return handler(
-            {"venue_id": "v1", "invoice_id": "inv-s1", "supplier_name": supplier},
-            db_session,
-            None,
-        )
+        return spec_dojo.train_supplier(db_session, "v1", "inv-s1", supplier)
 
     def test_skips_when_spec_has_instructions(self, db_session, monkeypatch):
         _make_spec(db_session, "Sensei Foods")  # instructions "notes"
         out = self._call(db_session, monkeypatch)
-        assert out["data"]["status"] == "skipped"
-        assert "instructions" in out["data"]["reason"]
+        assert out["status"] == "skipped"
+        assert "instructions" in out["reason"]
 
     def test_skips_when_spec_already_has_a_sample(self, db_session, monkeypatch):
         spec = _make_spec(db_session, "Sensei Foods")
@@ -1660,8 +1654,8 @@ class TestSenseiHandler:
         )
         db_session.flush()
         out = self._call(db_session, monkeypatch)
-        assert out["data"]["status"] == "skipped"
-        assert "sample" in out["data"]["reason"]
+        assert out["status"] == "skipped"
+        assert "sample" in out["reason"]
 
     def test_fresh_supplier_maps_analysis_outcomes(self, db_session, monkeypatch):
         staged = {
@@ -1703,8 +1697,8 @@ class TestSenseiHandler:
                 lambda *a, **k: analysis,  # noqa: B023
             )
             out = self._call(db_session, monkeypatch, supplier="Fresh Foods")
-            assert out["data"]["status"] == want_status, analysis
-            assert out["data"].get("instructions", "") == want_text
+            assert out["status"] == want_status, analysis
+            assert out.get("instructions", "") == want_text
 
     def test_already_in_dojo_skips_analysis(self, db_session, monkeypatch):
         monkeypatch.setattr(
@@ -1724,7 +1718,7 @@ class TestSenseiHandler:
             spec_dojo, "analyse_sample", lambda *a, **k: called.append(1)
         )
         out = self._call(db_session, monkeypatch, supplier="Fresh Foods")
-        assert out["data"]["status"] == "skipped"
+        assert out["status"] == "skipped"
         assert called == []
 
 

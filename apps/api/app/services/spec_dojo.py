@@ -1907,3 +1907,115 @@ def replica_view_rows(replica: dict) -> dict:
         if isinstance(rl, dict)
     ]
     return {"header": header, "lines": lines}
+
+
+def train_supplier(
+    db: Session,
+    venue_id: str,
+    invoice_id: str,
+    supplier_name: str,
+    aliases: tuple | list = (),
+) -> dict:
+    """The SENSEI: when a review meets a supplier with NO spec prompt, file the
+    invoice into the dojo as the supplier's founding regression sample and run
+    the analysis agent synchronously (1-2 min) so the supplier's first spec
+    exists BEFORE extraction continues. The self-training gate in
+    ``analyse_sample`` decides the outcome: a green fix for a real misread
+    auto-applies; a document the main prompt already reads correctly leaves no
+    spec (``no_spec_needed``); anything murky stays a pending proposal.
+
+    Called directly by ``invoice_review._maybe_sensei``. It lived on as the
+    engine tool ``norm.sensei_train_supplier`` from the days the review ran in
+    the consolidator sandbox and could only reach it through ``call_api`` —
+    nothing called that tool any more (Oct 2026).
+
+    Fail-open — a sensei failure must never sink a review; the review just
+    extracts with the main prompt this run. Returns ``{status, ...}``.
+    """
+    from app.db.config_models import SupplierSpecSample
+    from app.db.engine import _ConfigSessionLocal
+
+    def _out(status: str, **extra) -> dict:
+        return {"status": status, **extra}
+
+    name = str(supplier_name or "").strip()
+    invoice_id = str(invoice_id or "").strip()
+    if not name or not invoice_id or not venue_id:
+        return _out("skipped", reason="venue, invoice and supplier name required")
+
+    try:
+        wcdb = _ConfigSessionLocal()
+        try:
+            # Once-per-supplier guard: an existing spec with instructions, or
+            # with ANY non-draft sample (including a spec_not_needed
+            # conclusion, which leaves an empty spec WITH a sample), means the
+            # sensei already ruled — never retrain on every review. With the
+            # caller's identity hints: without them a supplier whose Loaded
+            # spelling differs from its spec name never matches, and the
+            # sensei retrains a working spec on every review.
+            existing = find_spec_for_supplier(wcdb, name, *(aliases or ()))
+            if existing is not None:
+                if (existing.instructions or "").strip():
+                    return _out(
+                        "skipped",
+                        reason="spec already has instructions",
+                        spec_name=existing.name,
+                    )
+                has_sample = (
+                    wcdb.query(SupplierSpecSample)
+                    .filter(
+                        SupplierSpecSample.spec_id == existing.id,
+                        SupplierSpecSample.draft.isnot(True),
+                    )
+                    .first()
+                    is not None
+                )
+                if has_sample:
+                    return _out(
+                        "skipped",
+                        reason="supplier already has a dojo sample",
+                        spec_name=existing.name,
+                    )
+
+            # The caller's name, not Loaded's: for a copy printed by a business
+            # filed under someone else's Loaded record they are different, and
+            # the guard above just ruled on the caller's one.
+            staged = stage_invoice_sample(
+                db, str(venue_id), invoice_id, draft=False, supplier_name=name
+            )
+            if staged["already_in_dojo"]:
+                return _out(
+                    "skipped",
+                    reason="invoice already in the dojo",
+                    spec_name=staged["spec_name"],
+                    sample_id=staged["sample_id"],
+                )
+
+            analysis = analyse_sample(db, wcdb, staged["sample_id"])
+        finally:
+            wcdb.close()
+
+        status = str(analysis.get("status") or "failed")
+        if status == "applied" and analysis.get("auto_applied"):
+            mapped = "trained"
+        elif analysis.get("spec_not_needed"):
+            mapped = "no_spec_needed"
+        elif status in ("ready", "not_green"):
+            mapped = "pending_review"
+        else:
+            mapped = "failed"
+        return _out(
+            mapped,
+            spec_name=staged["spec_name"],
+            sample_id=staged["sample_id"],
+            auto_applied=bool(analysis.get("auto_applied")),
+            instructions=(
+                str(analysis.get("proposed_instructions") or "")
+                if mapped == "trained"
+                else ""
+            ),
+            error=analysis.get("error"),
+        )
+    except Exception as exc:  # noqa: BLE001 — fail open, the review continues
+        logger.warning("sensei training failed for '%s': %s", name, exc)
+        return _out("failed", reason=str(exc))

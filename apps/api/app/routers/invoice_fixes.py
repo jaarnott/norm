@@ -16,9 +16,10 @@ single suggestion engine); this router wires it to the web editor:
 - ``/accept`` applies the few suggestions that are LOADED WRITES rather than
   local doc edits (delete a duplicate/statement draft; the legacy link_po
   path). Everything else is a local working-document patch until receive.
-- ``/create-item``, ``/create-unit``, ``/create-supplier`` create catalogue
-  entries so blocked lines become receivable; the reference-data GETs feed
-  the editor's pickers.
+- ``/create-item``, ``/create-unit``, ``/create-brand``, ``/create-supplier``
+  create catalogue entries so blocked lines become receivable; the
+  reference-data GETs feed the editor's pickers. Both live in
+  ``services/invoice_catalog``, shared with the claude.ai card and autopilot.
 
 Loaded write contracts verified live in the LoadedHub test env (18 Jul 2026):
 link_po = PUT the invoice with linkedPurchaseOrderId + purchaseOrderNumber
@@ -29,8 +30,6 @@ supplier variant so future invoices match.
 from __future__ import annotations
 
 import copy
-import datetime as _dt
-import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -46,6 +45,7 @@ from app.db.models import User
 # Kept under the old private names here so the endpoints and tests below (and
 # test_invoice_fixes_handler.py) are untouched by the move.
 from app.services import card_actions
+from app.services import invoice_catalog as catalog
 from app.services.autopilot_metrics import record_receive_outcome
 from app.services.invoice_po_reference import (
     enrich_loaded_snapshot as _enrich_snapshot,
@@ -54,29 +54,23 @@ from app.services.invoice_po_reference import (
 )
 from app.services.received_invoice import (
     LoadedInvoiceClient as _Loaded,
-    ReceiveRequest,
     _norm,
     _po_key,
     attach_item_names,
     build_received_invoice_data,
-    do_receive as _do_receive,
-)
-
-# Item-matching moved to the shared LLM-function service (norm.match_stock_items,
-# called by the review engine via call_api). Re-imported under the old private
-# names so this router's endpoints and tests keep working unchanged.
-from app.services.item_match import (
-    _classify_item_lines,  # noqa: F401 — kept for tests (IF._classify_item_lines)
-    _default_variant,
-    _fetch_raw_stock_items,  # noqa: F401 — kept for tests
-    _fetch_stock_groups,
-    _match_stock_items,  # noqa: F401 — kept for tests
-    _match_subset,  # noqa: F401 — kept for tests
-    _new_item_lines,  # noqa: F401 — kept for tests
+    open_drafts as _open_docs_for,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _catalog(fn, *args, **kwargs):
+    """Run a catalogue call; its refusal reaches the card as an HTTP error."""
+    try:
+        return fn(*args, **kwargs)
+    except catalog.CatalogError as e:
+        raise HTTPException(e.status, e.message) from e
 
 
 class DraftRequest(BaseModel):
@@ -122,146 +116,9 @@ def _apply_delete_invoice(lh: _Loaded, fix: dict, db: Session) -> str:  # noqa: 
     return "Draft deleted from Loaded"
 
 
-def _resolve_unit(lh: _Loaded, proposed: str) -> dict | None:
-    """Find the Loaded unit whose name matches the proposed unit.
-
-    Exact name first; for a simple (non-multipack) unit fall back to a
-    guideline-equivalent match by (type, magnitude). A MULTIPACK proposed name
-    ('5x3kg') matches by exact name ONLY — a ratio-equal but differently-named
-    unit ('15 KG') is a different pack, so an unmatched multipack is created.
-    """
-    from app.services.invoice_units import (
-        _unit_norm,
-        is_multipack,
-        is_packaging_word,
-        multipack_equal,
-        parse_unit,
-    )
-
-    units = lh.get("/1.0/stock/internal/units")
-    units = [u for u in (units or []) if not u.get("datestampDeleted")]
-    for u in units:
-        # Case/whitespace-insensitive, but dots kept — the alnum norm used to
-        # let '1.9 KG' name-match '19 KG'.
-        if _unit_norm(u.get("name")) == _unit_norm(proposed):
-            return u
-    if is_multipack(proposed):
-        # Component-equivalence, not fuzzier: '6x1L' resolves to an existing
-        # '6 X 1 Litre' (same count, same inner size) instead of creating a
-        # near-duplicate unit. A ratio-equal but differently-SHAPED pack
-        # ('24 pack' vs '4x6 pack') still does NOT match.
-        for u in units:
-            if multipack_equal(u.get("name"), proposed):
-                return u
-        return None
-    target = parse_unit(proposed)
-    if target:
-        for u in units:
-            # Same guard as the replica's _resolve_unit_record: 'EA' and a
-            # unit literally named 'PACK' both parse as a count of 1, but
-            # magnitude equivalence must not hand an each-line a packaging
-            # word (Trents 5973784, 18 Aug 2026). Packaging-named units are
-            # reachable only by printing their name exactly (the tier above).
-            if is_packaging_word(u.get("name")):
-                continue
-            pu = parse_unit(u.get("name"))
-            if pu and pu[0] == target[0] and abs(pu[1] - target[1]) < 0.001:
-                return u
-    return None
-
-
-_UNIT_TYPES = {"Weight", "Volume", "Count"}
-
-
-def _resolve_unit_spec(name: str, db: Session) -> dict | None:
-    """Resolve a unit NAME to Loaded's create fields {ratio, stock_unit_type} via
-    the LLM. Only used when a unit must be CREATED (it isn't in the catalogue), so
-    the cost is paid rarely; robust to naming conventions ('5x3kg', '6x1 Litre',
-    '2x2.3KG'). Returns None if no confident spec.
-    """
-    from app.interpreter.llm_interpreter import call_llm
-
-    schema = {
-        "ratio": (
-            "number — the unit's size as a multiple of the BASE unit of its "
-            "type: Weight is in KILOGRAMS, Volume in LITRES, Count in items. A "
-            "multipack 'NxM' means N of M (multiply): '5x3kg' → 15 (5 x 3kg), "
-            "'6x700ml' → 4.2, '12x1L' → 12, '4x6 pack' → 24 (4 packs of 6), "
-            "'2kg' → 2, '500g' → 0.5, '12 pack' → 12, 'Each' → 1."
-        ),
-        "stock_unit_type": "one of 'Weight', 'Volume', 'Count'",
-    }
-    system_prompt = (
-        "You convert a stock unit name into its base-unit size and type for a "
-        "stock system (Weight→kilograms, Volume→litres, Count→items). Return "
-        "ONLY a JSON object matching this schema:\n"
-        + json.dumps(schema, indent=1)
-        + "\nDimensions that are NOT weight, volume or count — length/metres, "
-        "sheets, ply, micron — are DESCRIPTIVE, not the stock dimension: the "
-        "unit counts ITEMS. '8x300m' (8 rolls of 300 metres) → "
-        '{"ratio": 8, "stock_unit_type": "Count"}; \'2x50m\' → 2.'
-        "\nNever guess — if the name carries no size at all (a bare packaging "
-        'word like \'carton\'), return {"ratio": null, "stock_unit_type": null}.'
-    )
-    try:
-        parsed, _ = call_llm(
-            system_prompt=system_prompt,
-            user_prompt=f"Unit name: {name}",
-            db=db,
-            call_type="extraction",
-            max_tokens=200,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("unit-spec resolve failed for %s: %s", name, exc)
-        return None
-    parsed = parsed if isinstance(parsed, dict) else {}
-    try:
-        ratio = float(parsed.get("ratio"))
-    except (TypeError, ValueError):
-        return None
-    utype = parsed.get("stock_unit_type")
-    if ratio <= 0 or utype not in _UNIT_TYPES:
-        return None
-    return {"ratio": ratio, "stock_unit_type": utype}
-
-
-def _get_or_create_unit(lh: _Loaded, name: str, db: Session) -> tuple[dict, bool]:
-    """The Loaded unit for ``name`` — resolved from the catalogue, else CREATED.
-    The LLM supplies the base-unit ratio + type (robust to '5x3kg' /
-    '6x1 Litre' conventions); only fires on a create. Returns (unit, created).
-    Raises RuntimeError when no confident definition exists — a junk unit is
-    never created.
-    """
-    unit = _resolve_unit(lh, name)
-    if unit:
-        return unit, False
-    spec = _resolve_unit_spec(name, db)
-    if not spec:
-        raise RuntimeError(
-            f"could not resolve a unit definition for '{name}' — "
-            "create it in Loaded manually"
-        )
-    unit = lh.request(
-        "POST",
-        "/1.0/stock/internal/units",
-        {
-            "name": name,
-            "ratio": spec["ratio"],
-            "stockUnitType": spec["stock_unit_type"],
-        },
-    )
-    # Loaded returns the created unit; re-fetch by name if the POST response
-    # isn't the object itself.
-    if not isinstance(unit, dict) or not unit.get("id"):
-        unit = _resolve_unit(lh, name)
-    if not isinstance(unit, dict) or not unit.get("id"):
-        raise RuntimeError(f"created unit '{name}' but could not read it back")
-    return unit, True
-
-
 def _apply_unit(lh: _Loaded, fix: dict, db: Session) -> str:
     proposed = fix.get("proposed_unit", "")
-    unit, created = _get_or_create_unit(lh, proposed, db)
+    unit, created = catalog.get_or_create_unit(lh, proposed, db)
     inv = lh.invoice(fix["invoice_id"])
     line = next(
         (ln for ln in inv.get("lines") or [] if ln.get("id") == fix.get("line_id")),
@@ -334,7 +191,7 @@ def accept_invoice_fix(
     # Write the change to Loaded (link a PO / correct a unit; a missing unit is
     # created first). The appliers PUT the invoice with only the change set —
     # they never set isReceived, so the invoice stays unreceived.
-    message = applier(lh, fix, db)
+    message = _catalog(applier, lh, fix, db)
     card_actions.record(
         db,
         user,
@@ -385,38 +242,6 @@ def accept_invoice_fix(
 
     document = _reshape_draft_after_write(db, lh, body.venue_id, body.invoice_id)
     return {"message": message, "document": document}
-
-
-def _open_docs_for(db: Session, venue_id: str, invoice_id: str):
-    """Every OPEN received_invoice doc for this invoice, canonical first.
-
-    Twin docs exist historically (the fan-out used to key per thread); state
-    changes must land on ALL of them so any bound card reads the same truth.
-    Canonical = a doc that already carries a review, else the newest.
-    """
-    from app.db.models import WorkingDocument
-
-    docs = [
-        d
-        for d in db.query(WorkingDocument)
-        .filter(
-            WorkingDocument.doc_type == "received_invoice",
-            WorkingDocument.venue_id == venue_id,
-        )
-        .all()
-        if (d.external_ref or {}).get("invoice_id") == invoice_id
-        and not (d.data or {}).get("is_received")
-        and not (d.data or {}).get("is_deleted")
-    ]
-    docs.sort(
-        key=lambda d: (
-            (d.data or {}).get("reviewed_at") is not None
-            or (d.data or {}).get("checks") is not None,
-            d.created_at or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc),
-        ),
-        reverse=True,
-    )
-    return docs
 
 
 # The Loaded mirror resolves stock items the way Loaded's own screen does —
@@ -478,9 +303,7 @@ def _reshape_draft_after_write(
             _attach_po_reference(fresh, lh)
             attach_item_names(fresh, lh)
             enrich_loaded_snapshot(fresh, lh, venue_id, db, seed_working=True)
-            fresh["checks"] = None
             fresh["suggestions"] = []
-            fresh["check_reasons"] = []
             doc.data = fresh
             doc.version += 1
             flag_modified(doc, "data")
@@ -499,11 +322,9 @@ class CreateItemRequest(BaseModel):
     name: str | None = None
     unit_id: str | None = None
     brand_id: str | None = None
-
-
-# Loaded's base unit per type + the unitType enum used on a stock item.
-_BASE_UNIT_BY_TYPE = {"Weight": "kilo", "Volume": "litre", "Count": "each"}
-_UNIT_TYPE_INDEX = {"Weight": 0, "Volume": 1, "Count": 2}
+    # The supplier the card shows — picked there, it reaches Loaded's invoice
+    # only on receive, so Loaded's own header can still be empty.
+    supplier_id: str | None = None
 
 
 @router.post("/invoice-fixes/create-item")
@@ -513,100 +334,45 @@ def create_stock_item(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Explicitly create a NEW stock item (+ its supplier variant) in Loaded and
-    link the invoice line to it — WITHOUT receiving. A deliberate, controlled
-    action: the caller supplies the stock group; the unit must already be
-    resolved. Verified live: POST /1.0/stock/internal/items with the variant
-    embedded in ``suppliers[]`` returns the created item.
-    """
+    """Create a NEW stock item (+ its supplier variant) in Loaded for an invoice
+    line — or hand back the same-named one already there. Nothing touches the
+    invoice: the card links the line locally and it lands on receive."""
     card_actions.venue_for(db, user, body.venue_id)
     lh = _Loaded(db, config_db, body.venue_id)
-    inv = lh.invoice(body.invoice_id)
-    line = next(
-        (ln for ln in inv.get("lines") or [] if ln.get("id") == body.line_id), None
+    out = _catalog(
+        catalog.create_item,
+        lh,
+        db,
+        config_db,
+        venue_id=body.venue_id,
+        invoice_id=body.invoice_id,
+        line_id=body.line_id,
+        name=body.name,
+        group_id=body.group_id,
+        unit_id=body.unit_id,
+        brand_id=body.brand_id,
+        supplier_id=body.supplier_id,
     )
-    if not line:
-        raise HTTPException(404, "invoice line not found")
-    unit_id = body.unit_id or line.get("linkedUnitId")
-    if not unit_id:
-        raise HTTPException(400, "resolve the line's unit before creating the item")
-    name = (body.name or line.get("description") or line.get("code") or "").strip()
-    if not name or not body.group_id:
-        raise HTTPException(400, "a name and a stock group are required")
-
-    units = lh.get("/1.0/stock/internal/units")
-    unit = next((u for u in (units or []) if u.get("id") == unit_id), None)
-    if not unit:
-        raise HTTPException(400, "unit not found in Loaded")
-    utype = unit.get("stockUnitType") or "Weight"
-    base = (
-        next(
-            (
-                u
-                for u in units
-                if _norm(u.get("name")) == _BASE_UNIT_BY_TYPE.get(utype, "")
-                and not u.get("datestampDeleted")
-            ),
-            None,
+    if out["created"]:
+        card_actions.record(
+            db,
+            user,
+            body.venue_id,
+            "created a stock item",
+            f"'{out['item_name']}' ({out['item_id']})",
         )
-        or unit
-    )
-    supplier_id = inv.get("linkedSupplierId")
-
-    payload = {
-        "name": name,
-        "groupId": body.group_id,
-        "unitType": _UNIT_TYPE_INDEX.get(utype, 0),
-        "countingUnitId": base.get("id"),
-        "countingUnitRatio": base.get("ratio") or 1.0,
-        "orderingUnitId": unit_id,
-        "orderingUnitRatio": unit.get("ratio") or 1.0,
-        "globalSalesTaxSortOrder": 1,
-        "defaultSupplierId": supplier_id,
-        "defaultBrandId": body.brand_id,
-        "itemType": "Default",
-        "suppliers": [
-            {
-                "supplierId": supplier_id,
-                "stockCode": line.get("code"),
-                "unitId": unit_id,
-                # invoice-line cost: Loaded renamed unitCost → unitCostExclTax
-                "unitCost": (
-                    line.get("unitCostExclTax")
-                    if line.get("unitCostExclTax") is not None
-                    else line.get("unitCost")
-                ),
-                "brandId": body.brand_id,
-                "defaultForSupplier": True,
-                "description": line.get("description"),
-            }
-        ],
-    }
-    created = lh.request("POST", "/1.0/stock/internal/items", payload)
-    item_id = created.get("id") if isinstance(created, dict) else None
-    if not item_id:
-        raise HTTPException(502, "Loaded did not return the created stock item")
-
-    # Creating the item (+ its supplier variant) is the only Loaded write
-    # here. The LINE links locally in the editor and lands in Loaded at
-    # receive time — nothing touches the invoice until Accept & Receive.
-    card_actions.record(
-        db, user, body.venue_id, "created a stock item", f"'{name}' ({item_id})"
-    )
-    db.commit()
-    return {
-        "message": f"Created stock item '{name}'",
-        "item_id": item_id,
-        "item_name": name,
-        "unit_id": unit_id,
-        "unit_name": unit.get("name"),
-        "unit_ratio": unit.get("ratio"),
-    }
+        db.commit()
+    verb = "Created" if out["created"] else "Found"
+    return {"message": f"{verb} stock item '{out['item_name']}'", **out}
 
 
 class CreateUnitRequest(BaseModel):
     venue_id: str
     name: str
+    # The person's own type and size (the new-unit form). Without them the
+    # name is read, then the LLM asked — the accept-a-suggestion path.
+    ratio: float | None = None
+    unit_type: str | None = None
 
 
 @router.post("/invoice-fixes/create-unit")
@@ -616,20 +382,18 @@ def create_stock_unit(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """The Loaded unit for a copy-delivered unit name the catalogue lacks —
-    resolved if an equivalent exists, else explicitly created (same contract as
-    create-item: the CREATE is the one Loaded write; the line takes the unit as
-    a LOCAL edit in the editor and lands on the line + variant at receive).
-    """
+    """The Loaded unit for a name the catalogue lacks — resolved if an
+    equivalent exists, else created. The line takes it as a local edit."""
     card_actions.venue_for(db, user, body.venue_id)
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(400, "a unit name is required")
     lh = _Loaded(db, config_db, body.venue_id)
-    try:
-        unit, created = _get_or_create_unit(lh, name, db)
-    except RuntimeError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    unit, created = _catalog(
+        catalog.get_or_create_unit,
+        lh,
+        body.name,
+        db,
+        ratio=body.ratio,
+        unit_type=body.unit_type,
+    )
     if created:
         card_actions.record(
             db, user, body.venue_id, "created a unit", f"'{unit.get('name')}'"
@@ -656,51 +420,21 @@ def create_stock_brand(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """The Loaded brand record for a brand name the catalogue lacks.
-
-    Loaded refuses to receive a line that names a brand it has no record for
-    (its own client blocks on it, and ``do_receive`` guards the same way), and
-    the brand text comes from LOADED's line — we deliberately do not extract
-    brands from the copy, which would be noise.
-
-    Resolve-first, exactly like create-unit and create-supplier: an existing
-    record is returned rather than duplicated, so a double-click cannot litter
-    the catalogue. The CREATE is the one Loaded write; the LINE takes the brand
-    as a local edit and lands on receive.
-
-    ``POST /1.0/stock/internal/brands {name}`` → 201 ``{id, name, masterId,
-    datestampDeleted}`` (verified live on the test venue, 11 Aug 2026).
-    """
+    """The Loaded brand record for a name the catalogue lacks — Loaded refuses
+    to receive a line naming a brand it has no record for."""
     card_actions.venue_for(db, user, body.venue_id)
-    from app.services.invoice_replica import fetch_brands
-
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(400, "a brand name is required")
     lh = _Loaded(db, config_db, body.venue_id)
-
-    existing = next(
-        (b for b in fetch_brands(lh) if _norm(b.get("name")) == _norm(name)), None
-    )
-    if existing:
-        return {
-            "message": f"Found brand '{existing.get('name')}'",
-            "created": False,
-            "brand_id": existing.get("id"),
-            "brand_name": existing.get("name"),
-        }
-
-    created = lh.request("POST", "/1.0/stock/internal/brands", {"name": name})
-    brand_id = created.get("id") if isinstance(created, dict) else None
-    if not brand_id:
-        raise HTTPException(502, "Loaded did not return the created brand")
-    card_actions.record(db, user, body.venue_id, "created a brand", f"'{name}'")
-    db.commit()
+    brand, created = _catalog(catalog.get_or_create_brand, lh, body.name)
+    if created:
+        card_actions.record(
+            db, user, body.venue_id, "created a brand", f"'{brand['name']}'"
+        )
+        db.commit()
     return {
-        "message": f"Created brand '{name}'",
-        "created": True,
-        "brand_id": brand_id,
-        "brand_name": created.get("name") or name,
+        "message": f"{'Created' if created else 'Found'} brand '{brand['name']}'",
+        "created": created,
+        "brand_id": brand["id"],
+        "brand_name": brand["name"],
     }
 
 
@@ -716,58 +450,25 @@ def create_supplier(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """The Loaded supplier for a copy-printed supplier name the venue lacks —
-    resolved if a record already covers it (normalized containment, the
-    supplier-matching convention — never a duplicate record), else explicitly
-    created (POST /suppliers, verified live 08 Aug 2026: 201 + the created
-    object). Same contract as create-unit: the CREATE is the one Loaded
-    write; the invoice takes the supplier as a LOCAL edit in the editor and
-    lands on the header at receive.
-    """
+    """The Loaded supplier for a printed name the venue lacks — resolved if a
+    record already covers it, else created. The invoice takes it locally."""
     card_actions.venue_for(db, user, body.venue_id)
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(400, "a supplier name is required")
     lh = _Loaded(db, config_db, body.venue_id)
-
-    def _n(v):
-        return "".join(ch for ch in str(v or "").lower() if ch.isalnum())
-
-    rows = lh.get("/1.0/stock/internal/suppliers")
-    rows = rows if isinstance(rows, list) else []
-    target = _n(name)
-    for s in rows:
-        if not isinstance(s, dict) or s.get("removedAt") or s.get("datestampDeleted"):
-            continue
-        cand = _n(s.get("name"))
-        if (
-            len(cand) >= 3
-            and len(target) >= 3
-            and (cand == target or cand in target or target in cand)
-        ):
-            return {
-                "message": f"Found existing supplier '{s.get('name')}'",
-                "created": False,
-                "supplier_id": s.get("id"),
-                "supplier_name": s.get("name"),
-            }
-
-    created = lh.request("POST", "/1.0/stock/internal/suppliers", {"name": name})
-    if not isinstance(created, dict) or not created.get("id"):
-        raise HTTPException(502, "Loaded did not return the created supplier")
-    card_actions.record(
-        db,
-        user,
-        body.venue_id,
-        "created a supplier",
-        f"'{created.get('name') or name}'",
-    )
-    db.commit()
+    supplier, created = _catalog(catalog.get_or_create_supplier, lh, body.name)
+    if created:
+        card_actions.record(
+            db, user, body.venue_id, "created a supplier", f"'{supplier['name']}'"
+        )
+        db.commit()
     return {
-        "message": f"Created supplier '{created.get('name') or name}'",
-        "created": True,
-        "supplier_id": created.get("id"),
-        "supplier_name": created.get("name") or name,
+        "message": (
+            f"Created supplier '{supplier['name']}'"
+            if created
+            else f"Found existing supplier '{supplier['name']}'"
+        ),
+        "created": created,
+        "supplier_id": supplier["id"],
+        "supplier_name": supplier["name"],
     }
 
 
@@ -807,20 +508,33 @@ def list_units(
 ):
     """Loaded units catalog for the card's unit dropdown."""
     card_actions.venue_for(db, user, venue_id)
-    lh = _Loaded(db, config_db, venue_id)
-    units = lh.get("/1.0/stock/internal/units")
-    return {
-        "units": [
-            {
-                "id": u.get("id"),
-                "name": u.get("name"),
-                "type": u.get("stockUnitType"),
-                "ratio": u.get("ratio"),
-            }
-            for u in (units or [])
-            if not u.get("datestampDeleted")
-        ]
-    }
+    return {"units": catalog.units(_Loaded(db, config_db, venue_id))}
+
+
+@router.get("/invoice-fixes/unit-spec")
+def unit_spec(
+    venue_id: str,
+    name: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """What the card's new-unit form opens with: Loaded's existing unit for
+    this name, else Norm's reading of its type and size."""
+    card_actions.venue_for(db, user, venue_id)
+    return catalog.suggest_unit(_Loaded(db, config_db, venue_id), name, db)
+
+
+@router.get("/invoice-fixes/brands")
+def list_brands(
+    venue_id: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Loaded brands for the card's brand picker."""
+    card_actions.venue_for(db, user, venue_id)
+    return {"brands": catalog.brands(_Loaded(db, config_db, venue_id))}
 
 
 @router.get("/invoice-fixes/stock-groups")
@@ -832,8 +546,7 @@ def list_stock_groups(
 ):
     """Loaded stock groups (subcategories) for the create-stock-item form."""
     card_actions.venue_for(db, user, venue_id)
-    lh = _Loaded(db, config_db, venue_id)
-    return {"groups": _fetch_stock_groups(lh)}
+    return {"groups": catalog.stock_groups(_Loaded(db, config_db, venue_id))}
 
 
 @router.get("/invoice-fixes/suppliers")
@@ -843,32 +556,9 @@ def list_suppliers(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Loaded suppliers for the editor's Supplier dropdown.
-
-    Reuses the purchase-order editor's configured `get_suppliers` component-api
-    so we never hardcode a Loaded path here.
-    """
+    """Loaded suppliers for the editor's Supplier dropdown."""
     card_actions.venue_for(db, user, venue_id)
-    from app.services.component_api import ComponentApiError, execute_component_action
-
-    try:
-        result = execute_component_action(
-            "purchase_order_editor", "get_suppliers", {}, venue_id, db, config_db
-        )
-    except ComponentApiError as e:
-        raise HTTPException(502, str(e)) from e
-    rows = result.get("data") if isinstance(result, dict) else result
-    rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
-    return {
-        "suppliers": [
-            {"id": s.get("id"), "name": s.get("name") or s.get("supplierName")}
-            for s in rows
-            # Loaded renamed the supplier delete marker datestampDeleted -> removedAt
-            # (Aug 2026); read both so either payload vintage filters correctly.
-            if isinstance(s, dict)
-            and not (s.get("removedAt") or s.get("datestampDeleted"))
-        ]
-    }
+    return {"suppliers": _catalog(catalog.suppliers, venue_id, db, config_db)}
 
 
 @router.get("/invoice-fixes/stock-items")
@@ -878,49 +568,9 @@ def list_stock_items(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Stock catalogue for the editor's Add Item search.
-
-    Reuses the PO editor's `get_stock_items_detail` component-api and resolves
-    each item's default supplier-variant (code / unit / cost) the same way
-    po_display._resolve_lines does — so an added line carries what Loaded needs.
-    """
+    """Stock catalogue for the editor's Add Item and link-an-item searches."""
     card_actions.venue_for(db, user, venue_id)
-    from app.services.component_api import ComponentApiError, execute_component_action
-
-    try:
-        result = execute_component_action(
-            "purchase_order_editor",
-            "get_stock_items_detail",
-            {},
-            venue_id,
-            db,
-            config_db,
-        )
-    except ComponentApiError as e:
-        raise HTTPException(502, str(e)) from e
-    items = result.get("data") if isinstance(result, dict) else result
-    items = items if isinstance(items, list) else (items or {}).get("data") or []
-    out = []
-    for i in items:
-        if not isinstance(i, dict):
-            continue
-        v = _default_variant(i) or {}
-        out.append(
-            {
-                "id": i.get("id"),
-                "name": i.get("name"),
-                "code": v.get("stockCode"),
-                "unit_id": v.get("unitId") or i.get("orderingUnitId"),
-                "unit_ratio": v.get("unitRatio") or i.get("orderingUnitRatio") or 1,
-                "unit_cost": v.get("unitCost") or 0,
-            }
-        )
-    return {"stock_items": out}
-
-
-# ---------------------------------------------------------------------------
-# Match an unmatched line to an EXISTING stock item (LLM), else offer create
-# ---------------------------------------------------------------------------
+    return {"stock_items": _catalog(catalog.stock_items, venue_id, db, config_db)}
 
 
 @router.get("/invoice-fixes/file")
@@ -1004,95 +654,48 @@ def list_purchase_orders(
     }
 
 
+class ReceiveBody(BaseModel):
+    venue_id: str
+    invoice_id: str
+
+
 @router.post("/invoice-fixes/receive")
 def receive_invoice(
-    body: ReceiveRequest,
+    body: ReceiveBody,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Receive an invoice from its working document (the doc-driven path).
+    """Receive an invoice exactly as its reviewed working document shows it.
 
-    The canonical body is just ``{venue_id, invoice_id}``: the server loads
-    the canonical doc, gates on the reviewed fingerprint (409 when the
-    invoice changed in Loaded since the review), and builds the receive
-    request from the doc's WORKING values — Loaded's draft + accepted
-    suggestions + manual edits (``receive_request_from_doc``). A body that
-    still carries explicit ``lines`` takes the legacy client-built path
-    unchanged (older cards mid-deploy).
+    The body is ``{venue_id, invoice_id}``; the server builds the receive from
+    the canonical draft and refuses (409) when the invoice changed in Loaded
+    since the review — see ``received_invoice.receive_from_draft``, the one
+    receive path this and the claude.ai card share.
     """
     card_actions.venue_for(db, user, body.venue_id)
-    from app.services.received_invoice import (
-        invalidate_conflicting_drafts,
-        invoice_fingerprint,
-        receive_request_from_doc,
-    )
+    from app.services.received_invoice import receive_from_draft
 
     lh = _Loaded(db, config_db, body.venue_id)
-    req = body
-    # Hoisted so the outcome recorder below can see the doc that was actually
-    # received. The legacy client-built path leaves them empty — deliberately:
-    # with no working document there is nothing honest to record.
-    docs: list = []
-    data: dict = {}
-    if not body.lines:
-        docs = _open_docs_for(db, body.venue_id, body.invoice_id)
-        if not docs:
-            raise HTTPException(404, "no open draft for this invoice — open it first")
-        data = docs[0].data or {}
-        want = data.get("reviewed_invoice_fingerprint")
-        if want:
-            live = lh.invoice(body.invoice_id)
-            if invoice_fingerprint(live) != want:
-                raise HTTPException(
-                    409,
-                    "this invoice changed in Loaded since it was reviewed — "
-                    "reopen it to re-review before receiving",
-                )
-        req = receive_request_from_doc(data, body.venue_id, body.invoice_id)
-    out = _do_receive(lh, req)
+    out, doc = receive_from_draft(
+        db,
+        config_db,
+        lh,
+        body.venue_id,
+        body.invoice_id,
+        mode="interactive",
+        user_id=user.id,
+    )
     if isinstance(out, dict) and out.get("ok"):
         card_actions.record(
             db,
             user,
             body.venue_id,
-            "received an invoice"
-            if out.get("received")
-            else "saved changes to an invoice",
+            "received an invoice",
             f"invoice {body.invoice_id}",
-            thread_id=docs[0].thread_id if docs else None,
+            thread_id=doc.thread_id,
         )
         db.commit()
-    if req.receive and isinstance(out, dict) and out.get("received"):
-        if data:
-            # The units this receive actually used → the catalogue's
-            # practice tier (advisory; the divergence detector).
-            from app.services import supplier_catalog
-
-            supplier_catalog.observe_practice_from_doc(config_db, data)
-        # Sibling drafts may now be duplicates (same number, just received) or
-        # reference a PO that just got invoiced — mark twins received and clear
-        # conflicting cached reviews so their cards re-review, not re-receive.
-        invalidate_conflicting_drafts(
-            db,
-            body.venue_id,
-            body.invoice_id,
-            reference_number=req.reference_number,
-            po_ids=(req.linked_purchase_order_id, req.po_number),
-        )
-        # Would autopilot have produced this same result? Best-effort and
-        # isolated — Loaded has already accepted the receive by now.
-        record_receive_outcome(
-            db,
-            venue_id=body.venue_id,
-            invoice_id=body.invoice_id,
-            data=data,
-            mode="interactive",
-            actor="user",
-            user_id=user.id,
-            working_document_id=docs[0].id if docs else None,
-            thread_id=docs[0].thread_id if docs else None,
-        )
     return out
 
 
@@ -1199,13 +802,11 @@ def create_receive_draft(
             # _refresh_metadata already updated loaded_invoice_fingerprint
             # from the live detail via _META_HEADER_FIELDS.
             d = doc.data
-            if (d.get("checks") or d.get("reviewed_at")) and d.get(
-                "reviewed_invoice_fingerprint"
-            ) != d.get("loaded_invoice_fingerprint"):
-                d["checks"] = None  # legacy-shape marker
-                d["check_reasons"] = []
+            if d.get("reviewed_at") and d.get("reviewed_invoice_fingerprint") != d.get(
+                "loaded_invoice_fingerprint"
+            ):
                 d["suggestions"] = []
-                d["reviewed_at"] = None  # replica_v1 marker
+                d["reviewed_at"] = None  # the cached-review marker
                 d["issues"] = []
             flag_modified(doc, "data")
             db.commit()
@@ -1269,21 +870,6 @@ def _wipe_validation_caches(db: Session, detail: dict) -> int:
                 db.delete(row)
                 deleted += 1
 
-    line_ids = {
-        ln.get("id")
-        for ln in detail.get("lines") or []
-        if isinstance(ln, dict) and ln.get("id")
-    }
-    if line_ids:
-        for row in (
-            db.query(DocumentExtraction)
-            .filter(DocumentExtraction.action == "match_stock_items")
-            .all()
-        ):
-            data = row.data if isinstance(row.data, dict) else {}
-            if line_ids & set(data.keys()):
-                db.delete(row)
-                deleted += 1
     return deleted
 
 
@@ -1494,7 +1080,7 @@ def review_receive_draft(
     The single review pipeline (``services/invoice_review.review_invoice``):
     working values from Loaded's draft, the replica sidecar, unified
     suggestions with explanations, and confidence issues. A draft that
-    already carries a replica_v1 review is returned untouched unless
+    already carries a current (replica_v2) review is returned untouched unless
     ``force`` — the (LLM) PDF extraction runs once per invoice, not per open.
     Re-running REPLACES the doc payload wholesale (squash semantics).
     """

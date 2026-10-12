@@ -7,11 +7,13 @@ autopilot policy (auto-accept everything, receive only when ready).
 All reference data injected — no network, no LLM.
 """
 
+import pytest
+
 from app.services import invoice_review as IR
 from app.services import venue_autopilot as VA
 from app.services.invoice_review import (
     apply_suggestion,
-    auto_accept_all,
+    autopilot_accept,
     compute_confidence,
     pair_lines,
     review_invoice,
@@ -160,7 +162,7 @@ def _issue_codes(data):
 class TestCleanInvoice:
     def test_agreement_yields_no_suggestions_and_ready(self):
         data = _review()
-        assert data["doc_schema"] == "replica_v1"
+        assert data["doc_schema"] == "replica_v2"
         assert data["suggestions"] == []
         assert data["issues"] == []
         assert data["confidence"] == "ready"
@@ -191,7 +193,7 @@ class TestLineSuggestions:
         s = next(s for s in data["suggestions"] if s["field"] == "quantity_received")
         assert s["line_id"] == "ld-1"
         assert s["current"] == 5.0 and s["proposed"] == 4.95
-        assert "the copy bills quantity 4.95" in s["explanation"]
+        assert "the invoice bills quantity 4.95" in s["explanation"]
         assert s["apply"] == {"quantity_received": 4.95}
         # suggestions never block
         assert data["confidence"] == "ready"
@@ -302,7 +304,7 @@ class TestLineSuggestions:
         row.update(over)
         return lambda payload: {"lines": [row]}
 
-    def test_resolver_pick_is_a_suggestion_and_the_gate_gets_it(self):
+    def test_resolver_pick_is_the_blockers_fix_behind_its_switch(self):
         data = self._sizeless_case(self._resolver_answer())
         s = next(s for s in data["suggestions"] if s["field"] == "unit")
         assert s["apply"]["linked_unit_id"] == "u-5l"
@@ -311,21 +313,26 @@ class TestLineSuggestions:
         # the line itself is untouched — an offer, not a resolution
         assert data["lines"][0]["linked_unit_id"] is None
         issue = next(i for i in data["issues"] if i["code"] == "unit_missing")
-        # HIGH confidence rides in the gate action, so autopilot's
-        # receive_without_unit gate applies exactly what the suggestion shows
-        assert issue["action"]["kind"] == "guess_unit"
-        assert issue["action"]["apply"]["linked_unit_id"] == "u-5l"
+        # ONE decision: the blocker points at the suggestion, and picking a
+        # unit is what receive_without_unit authorises Norm to do alone.
+        assert issue["fix"] == [s["id"]]
+        assert s["gate"] == "receive_without_unit"
+        assert s["sure"] is False
 
-    def test_medium_confidence_suggests_but_the_gate_gets_no_apply(self):
+    def test_medium_confidence_is_offered_the_same_way(self):
         data = self._sizeless_case(self._resolver_answer(confidence="medium"))
         s = next(s for s in data["suggestions"] if s["field"] == "unit")
         assert s["confidence"] == "medium"
         issue = next(i for i in data["issues"] if i["code"] == "unit_missing")
-        assert "apply" not in issue["action"]
+        assert issue["fix"] == [s["id"]]
+        assert s["gate"] == "receive_without_unit"
 
-    def test_low_confidence_stays_silent(self):
+    def test_low_confidence_is_still_the_blockers_answer(self):
+        # Norm always proposes a fix (user, 11 Oct 2026): a low answer is a
+        # guess for a person, never applied without the switch.
         data = self._sizeless_case(self._resolver_answer(confidence="low"))
-        assert not [s for s in data["suggestions"] if s["field"] == "unit"]
+        s = next(s for s in data["suggestions"] if s["field"] == "unit")
+        assert s["sure"] is False and s["gate"] == "receive_without_unit"
         assert "unit_missing" in _issue_codes(data)
 
     def _copy_only_freight_case(self, confidence="high"):
@@ -363,23 +370,38 @@ class TestLineSuggestions:
             detail=det, extraction=ext, reference=REFERENCE(unit_resolver_ask=ask)
         )
 
-    def test_a_copy_only_lines_pick_rides_in_the_add_line(self):
+    def test_a_copy_only_lines_pick_arrives_with_the_line(self):
         # A copy-only line never meets the paired-line unit walk, so the
         # resolver's decisive pick died as metadata: the added line arrived
         # unitless and its blocker demanded a decision the resolver had
-        # already made (Aitkens 173670 freight, 19 Aug 2026).
+        # already made (Aitkens 173670 freight, 19 Aug 2026). The pick is the
+        # added line's own unit suggestion — the card's Accept on the add
+        # lands both — and it stays behind receive_without_unit, because
+        # adding a line is applied unattended and a unit pick is not.
         data = self._copy_only_freight_case()
-        s = next(s for s in data["suggestions"] if s["kind"] == "add_line")
-        assert s["payload"]["linked_unit_id"] == "u-each"
-        assert s["payload"]["unit"] == "Each"
-        assert "delivered as 'Each'" in s["explanation"]
-        assert "service charge" in s["explanation"]
-        # accepting the suggestion lands the line complete
+        add = next(s for s in data["suggestions"] if s["kind"] == "add_line")
+        unit = next(
+            s
+            for s in data["suggestions"]
+            if s["field"] == "unit" and s["line_id"] == add["line_id"]
+        )
+        assert unit["apply"]["linked_unit_id"] == "u-each"
+        assert unit["apply"]["unit"] == "Each"
+        assert "service charge" in unit["explanation"]
+        assert unit["gate"] == "receive_without_unit"
+        issue = next(
+            i
+            for i in data["issues"]
+            if i["code"] == "unit_missing" and i["line_id"] == add["line_id"]
+        )
+        assert issue["fix"] == [unit["id"]]
+        # accepting both lands the line complete
         from app.services import invoice_review as IR2
 
-        IR2.apply_suggestion(data, s)
+        IR2.apply_suggestion(data, add)
+        IR2.apply_suggestion(data, unit)
         added = next(
-            ln for ln in data["lines"] if str(ln.get("id")) == str(s["line_id"])
+            ln for ln in data["lines"] if str(ln.get("id")) == str(add["line_id"])
         )
         assert added["linked_unit_id"] == "u-each"
 
@@ -508,12 +530,13 @@ class TestCoverage:
         )
         assert issue["blocking"] is True and issue["line_id"] == "ld-9"
         assert data["confidence"] == "needs_review"
-        # The strike remedy is FOLDED onto the blocker (one row, one Accept)
-        # and gated for autopilot; the suggestion list no longer repeats it.
-        assert issue["action"]["kind"] == "strike"
-        assert issue["action"]["apply"] == {"struck": True}
+        # ONE decision: the blocker points at the strike, which autopilot may
+        # apply only with its switch on.
+        strike = next(s for s in data["suggestions"] if s["kind"] == "strike")
+        assert strike["apply"] == {"struck": True}
+        assert strike["gate"] == "auto_strike_phantom_lines"
+        assert issue["fix"] == [strike["id"]]
         assert issue["gate"] == "auto_strike_phantom_lines"
-        assert not [s for s in data["suggestions"] if s["kind"] == "strike"]
         # striking the line clears it (the clears_when predicate)
         ln = next(line for line in data["lines"] if line["id"] == "ld-9")
         ln["struck"] = True
@@ -568,7 +591,7 @@ class TestHeaderSuggestions:
         assert by_field["reference_number"]["proposed"] == "F100"
         assert by_field["issued_at"]["proposed"] == "2026-08-07"
         assert by_field["total"]["proposed"] == 252.75
-        assert "the copy's total is 252.75" in by_field["total"]["explanation"]
+        assert "the invoice's total is 252.75" in by_field["total"]["explanation"]
 
     def test_supplier_fill_when_loaded_has_none(self):
         det = DETAIL(linkedSupplierId=None, supplierName=None)
@@ -606,14 +629,14 @@ class TestBlockingIssues:
         ]
         data = _review(reference=REFERENCE(received_feed=feed))
         dup = next(i for i in data["issues"] if i["code"] == "duplicate_invoice")
-        # The delete recommendation rides ON the blocker now (one row, one
-        # Accept), behind its own gate — autopilot's destructive writes each
-        # answer to a separate toggle.
-        assert dup["action"]["kind"] == "delete_invoice"
-        assert dup["action"]["payload"]["duplicate_of_invoice_id"] == "inv-old"
-        assert dup["action"]["payload"]["type"] == "delete_invoice"
-        assert dup["gate"] == "auto_delete_duplicates"
-        assert not [s for s in data["suggestions"] if s["kind"] == "delete_invoice"]
+        # The Replica's answer is "delete this draft" — the blocker's fix,
+        # behind its own switch: autopilot's destructive writes each answer to
+        # a separate toggle.
+        delete = next(s for s in data["suggestions"] if s["kind"] == "delete_invoice")
+        assert delete["payload"]["duplicate_of_invoice_id"] == "inv-old"
+        assert delete["payload"]["type"] == "delete_invoice"
+        assert delete["gate"] == "auto_delete_duplicates"
+        assert dup["fix"] == [delete["id"]]
 
     def test_no_copy_attached_blocks(self):
         data = _review(detail=DETAIL(fileId=None))
@@ -684,9 +707,11 @@ class TestPoPolicy:
         assert issue["blocking"] is True
         # the card names the toggle that would let autopilot past this
         assert issue["gate"] == "receive_without_po"
-        # ...and offers Accept: a record-only decision to receive without a
-        # PO (the one-button doctrine — no more instruction with no button)
-        assert issue["action"] == {"kind": "receive_without_po", "payload": {}}
+        # ...and offers Accept: a confirm — receive without an order, which
+        # changes nothing and records the decision.
+        confirm = next(s for s in data["suggestions"] if s["id"] in issue["fix"])
+        assert confirm["kind"] == "confirm"
+        assert confirm["gate"] == "receive_without_po"
         assert data["confidence"] == "needs_review"
         # linking an order clears it (clears_when)
         data["linked_purchase_order_id"] = "po-9"
@@ -728,7 +753,8 @@ class TestPoPolicy:
         issue = next(i for i in data["issues"] if i["code"] == "po_unresolved")
         assert issue["blocking"] is True
         assert issue["gate"] == "receive_without_po"
-        assert issue["action"] == {"kind": "receive_without_po", "payload": {}}
+        confirm = next(s for s in data["suggestions"] if s["id"] in issue["fix"])
+        assert confirm["kind"] == "confirm"
 
 
 class TestAutoAccept:
@@ -736,8 +762,8 @@ class TestAutoAccept:
         det = DETAIL(referenceNumber="WRONG-1")
         det["lines"][0]["quantityReceived"] = 5.0
         data = _review(detail=det)
-        n = auto_accept_all(data, actor="norm")
-        assert n == len(data["suggestions"]) == 2
+        assert len(data["suggestions"]) == 2
+        autopilot_accept(None, None, "v-1", "inv-1", data, VA.settings_from(None))
         assert data["lines"][0]["quantity_received"] == 4.95
         assert data["reference_number"] == "F100"
         actions = data["suggestion_actions"]
@@ -1031,7 +1057,7 @@ class TestSuggestionSummaryEmbedded:
         data = _review(detail=det)
         s = _suggestion_summary(data)
         assert "needs review" in s and "1 blocking issue(s)" in s
-        assert "no invoice copy is attached" in s
+        assert "no invoice is attached" in s
 
         clean = _review()
         s2 = _suggestion_summary(clean)
@@ -1276,9 +1302,48 @@ class TestOrderBreaksAmbiguousCode:
         assert by_line["ld-1"]["apply"]["linked_item_id"] == "item-canoe"
         assert by_line["ld-2"]["apply"]["linked_item_id"] == "item-1inch"
         # and it says why, naming what Loaded picked
-        assert "3 catalogue items" in by_line["ld-1"]["explanation"]
+        assert "covers 3 stock items" in by_line["ld-1"]["explanation"]
         assert "BONES (STOCK)" in by_line["ld-1"]["explanation"]
         assert by_line["ld-1"]["current"] == "BONES (STOCK)"
+
+    def test_the_replica_holds_the_answer(self):
+        # The rule runs INSIDE the replica: the Replica tab shows what the
+        # card proposes, so the two can never disagree (IN11656852).
+        data = self._run()
+        assert [rl["linked_item_id"] for rl in data["replica"]["lines"]] == [
+            "item-canoe",
+            "item-1inch",
+        ]
+
+    def test_the_invoices_own_wording_beats_the_order(self):
+        # IN11656852 (12 Oct 2026): Service Foods sells SHALLOTS and BANANA
+        # SHALLOTS under one code; the invoice said "SHALLOTS (PER KG)", the
+        # order said BANANA SHALLOTS, and the order won — wrongly. When the
+        # invoice's words name exactly one of the items, they decide.
+        det = DETAIL(lines=[self._line("ld-1", 6.43), self._line("ld-2", 14.15)])
+        named = dict(self._copy_line(6.43), description="Beef Bones Marrow 1 Inch")
+        ext = EXTRACTION(lines=[named, self._copy_line(14.15)])
+        data = _review(
+            detail=det,
+            extraction=ext,
+            reference=REFERENCE(catalogue=self.CATALOGUE),
+            lh=self._Lh(self.PO),
+        )
+        rep = data["replica"]["lines"]
+        # The first line names 1-INCH outright, though the order's nearest row
+        # is the canoe cut; the second can't be told apart, so the order
+        # decides it.
+        assert rep[0]["linked_item_id"] == "item-1inch"
+        assert rep[0]["matched_by"] == "invoice wording"
+        assert rep[1]["matched_by"] == "order"
+
+    def test_without_an_order_loadeds_own_match_stands(self):
+        data = self._run(po={"createdAt": "2026-08-10", "lines": []})
+        assert [rl["linked_item_id"] for rl in data["replica"]["lines"]] == [
+            "item-bones",
+            "item-bones",
+        ]
+        assert self._item_suggs(data) == []
 
     def test_exactly_one_item_proposal_per_line(self):
         # The replica read the same ambiguous words; the order supersedes it.
@@ -1474,24 +1539,30 @@ class TestCreateItemSuggestion:
             (s for s in data["suggestions"] if s["kind"] == "create_item"), None
         )
 
-    def test_an_unmatched_product_blocks_and_carries_its_own_create(self):
+    def test_an_unmatched_product_blocks_and_its_fix_is_the_create(self):
         data = self._unmatched()
         b = _blocker(data, "item_unmatched", "ld-1")
         assert b is not None and b["blocking"] is True
-        assert b["action"] == {
-            "kind": "create_item",
-            "payload": {"name": "ALPHA DOMUS SYRAH 2022", "group_id": "grp-wine"},
+        create = self._create_sugg(data)
+        assert create["payload"] == {
+            "name": "ALPHA DOMUS SYRAH 2022",
+            "group_id": "grp-wine",
         }
-        assert "create it" in b["message"]
+        assert create["gate"] == "auto_create_items"
+        assert "create it" in create["explanation"]
+        assert b["fix"] == [create["id"]]
 
     def test_it_names_the_toggle_that_would_let_norm_do_it(self):
         assert _blocker(self._unmatched(), "item_unmatched")["gate"] == (
             "auto_create_items"
         )
 
-    def test_it_appears_in_exactly_one_list(self):
-        """The whole point: one decision, one row."""
-        assert self._create_sugg(self._unmatched()) is None
+    def test_it_is_one_decision(self):
+        """The whole point: one decision, one row — the blocker carries no
+        action of its own, it points at the create."""
+        data = self._unmatched()
+        assert len([s for s in data["suggestions"] if s["kind"] == "create_item"]) == 1
+        assert "action" not in _blocker(data, "item_unmatched")
 
     def test_no_stock_group_means_no_one_click_create(self):
         # Loaded's create REQUIRES a group; a name alone is not actionable, so
@@ -1633,9 +1704,11 @@ class TestAnOrderOwnedByAnotherSupplierIsJustWorthKnowing:
         ]
 
     def test_it_no_longer_offers_to_unlink_the_order(self):
-        suggestions, issues = IR.fold_remedies_into_blockers([], self._issues())
+        suggestions: list = []
+        issues = self._issues()
+        IR.link_fixes(self._mismatched(), None, issues, suggestions)
         assert [s for s in suggestions if s.get("kind") == "unlink_po"] == []
-        assert [i for i in issues if i["code"] == "po_supplier_mismatch"]
+        assert issues[0]["fix"] == []
 
     def test_it_does_not_stop_the_receive(self):
         data = {
@@ -1646,12 +1719,10 @@ class TestAnOrderOwnedByAnotherSupplierIsJustWorthKnowing:
         assert IR.compute_confidence(data) == "ready"
 
 
-class TestAFoldedRemedyAppearsOnceAndActuallyClearsIt:
+class TestAnUnlinkIsItsBlockersFix:
     """`unlink_po` sat in Suggested changes next to its own blocker — and
-    because the issue id never equals the suggestion id and the issue carries
-    no clears_when, ACCEPTING it did not clear the blocker. Autopilot
-    auto-accepted the unlink and then parked the invoice citing the thing it
-    had just remedied.
+    accepting it did not clear the blocker. Autopilot auto-accepted the unlink
+    and then parked the invoice citing the thing it had just remedied.
     """
 
     def _doubled(self):
@@ -1672,43 +1743,49 @@ class TestAFoldedRemedyAppearsOnceAndActuallyClearsIt:
             "line_id": None,
             "explanation": "order 1520987 is already fully invoiced — remove the reference",
             "apply": {"purchase_order_number": None, "linked_purchase_order_id": None},
+            "sure": False,
         }
 
-    def test_the_remedy_moves_onto_its_blocker(self):
-        suggestions, issues = IR.fold_remedies_into_blockers(
-            [self._unlink()], self._doubled()
-        )
-        assert suggestions == []
-        blocker = next(i for i in issues if i["code"] == "po_doubled_up")
-        assert blocker["action"]["kind"] == "unlink_po"
-        assert blocker["action"]["apply"]["linked_purchase_order_id"] is None
+    def _linked(self):
+        issues, suggestions = self._doubled(), [self._unlink()]
+        IR.link_fixes({"lines": []}, None, issues, suggestions)
+        return issues, suggestions
 
-    def test_no_toggle_authorises_it(self):
+    def test_the_blocker_points_at_it(self):
+        issues, _s = self._linked()
+        assert issues[0]["fix"] == ["unlink_po:purchase_order_number"]
+
+    def test_no_switch_authorises_it(self):
         """An order already invoiced by a sibling is a judgement, not a create
-        — no venue setting should be able to wave it through."""
-        _s, issues = IR.fold_remedies_into_blockers([self._unlink()], self._doubled())
-        assert issues[0].get("gate") is None
+        — no venue setting may wave it through."""
+        issues, suggestions = self._linked()
+        assert issues[0].get("gate") is None and suggestions[0].get("gate") is None
+        data = {"lines": [], "suggestions": suggestions, "issues": issues}
+        settings = VA.settings_from({g: True for g in VA.GATES})
+        autopilot_accept(None, None, "v-1", "inv-1", data, settings)
+        assert data["suggestion_actions"] == []
 
-    def test_applying_it_clears_the_blocker(self):
-        _s, issues = IR.fold_remedies_into_blockers([self._unlink()], self._doubled())
+    def test_accepting_it_clears_the_blocker(self):
+        issues, _s = self._linked()
         data = {
             "lines": [],
             "issues": issues,
             "suggestion_actions": [
-                {"suggestion_id": "po_doubled_up", "action": "accepted", "by": "user"}
+                {
+                    "suggestion_id": "unlink_po:purchase_order_number",
+                    "action": "accepted",
+                    "by": "user",
+                }
             ],
         }
         assert IR.compute_confidence(data) == "ready"
 
 
-class TestAUnitBlockerSaysWhichUnitWillBeUsed:
-    """The blocker read "no unit could be determined (nothing recognisable on
-    the copy and no unit on the Loaded variant) — set the unit before
-    receiving" while the dropdown plainly showed 750 mL. Both halves were
-    "true" of different objects: the replica's own resolution failed, while the
-    working line kept Loaded's unit. The user was asked to do something already
-    done, on the strength of a claim that was false for the row in front of
-    them.
+class TestAUnitDecisionSaysWhichUnitWillBeUsed:
+    """The blocker read "no unit could be determined … set the unit before
+    receiving" while the dropdown plainly showed 750 mL (Soho 00162798). When
+    Norm agrees with the unit already there, the fix is to KEEP it — and it
+    says which unit, and where it came from.
     """
 
     def _issue(self, code="unit_missing"):
@@ -1717,67 +1794,64 @@ class TestAUnitBlockerSaysWhichUnitWillBeUsed:
             "code": code,
             "blocking": True,
             "line_id": "ld-1",
-            "message": "line 1 'SOHO Harry Rose 2025': no unit could be read from the copy",
+            "message": "line 1 'SOHO Harry Rose 2025': no unit could be read from the invoice",
         }
 
-    def test_it_names_the_unit_loaded_supplied(self):
-        data = {"lines": [{"id": "ld-1", "unit": "750 mL", "linked_unit_id": "u-750"}]}
-        issues = [self._issue()]
-        IR.name_the_unit_in_use(data, issues)
-        assert issues[0]["message"].endswith("— using Loaded's '750 mL'")
-        assert "no unit on the Loaded variant" not in issues[0]["message"]
+    def _confirm(self, data, issue):
+        suggestions: list = []
+        IR.link_fixes(data, None, [issue], suggestions)
+        assert issue["fix"] == [s["id"] for s in suggestions]
+        return suggestions[0] if suggestions else None
 
-    def test_it_becomes_its_own_decision(self):
-        """A unit Loaded supplied is not "no unit" — it is a different question
-        with a different answer, so it gets its own toggle."""
+    def test_it_keeps_the_unit_loaded_supplied(self):
         data = {"lines": [{"id": "ld-1", "unit": "750 mL", "linked_unit_id": "u-750"}]}
-        issues = [self._issue()]
-        IR.name_the_unit_in_use(data, issues)
-        assert issues[0]["gate"] == VA.RECEIVE_WITH_UNCONFIRMED_UNIT
+        issue = self._issue()
+        c = self._confirm(data, issue)
+        assert c["kind"] == "confirm"
+        assert c["explanation"].endswith("keep Loaded's '750 mL'")
 
-    def test_with_nothing_anywhere_the_instruction_is_the_honest_ending(self):
+    def test_it_is_its_own_switch(self):
+        """A unit Loaded supplied is not "no unit" — a different question with
+        a different answer, so it has its own toggle."""
+        data = {"lines": [{"id": "ld-1", "unit": "750 mL", "linked_unit_id": "u-750"}]}
+        issue = self._issue()
+        c = self._confirm(data, issue)
+        assert issue["gate"] == VA.RECEIVE_WITH_UNCONFIRMED_UNIT
+        assert c["gate"] == VA.RECEIVE_WITH_UNCONFIRMED_UNIT
+
+    def test_with_nothing_anywhere_there_is_nothing_to_keep(self):
         data = {"lines": [{"id": "ld-1", "unit": None, "linked_unit_id": None}]}
-        issues = [self._issue()]
-        IR.name_the_unit_in_use(data, issues)
-        assert issues[0]["message"].endswith("— set one before receiving")
+        issue = self._issue()
+        assert self._confirm(data, issue) is None
+        assert issue["gate"] == VA.RECEIVE_WITHOUT_UNIT
 
-    def test_an_unreadable_copy_unit_is_named_too(self):
+    def test_an_unreadable_unit_is_named_too(self):
         data = {"lines": [{"id": "ld-1", "unit": "Kilo", "linked_unit_id": "u-kilo"}]}
-        issues = [self._issue("unit_unconfirmed")]
-        IR.name_the_unit_in_use(data, issues)
-        assert "using Loaded's 'Kilo'" in issues[0]["message"]
+        c = self._confirm(data, self._issue("unit_unconfirmed"))
+        assert "keep Loaded's 'Kilo'" in c["explanation"]
 
     def test_a_catalogue_supplied_unit_is_credited_to_the_catalogue(self):
-        # "using Loaded's '700 mL'" was false when Norm's own catalogue
-        # answered the unit (HIGHLAND PARK 15, 4366904, 19 Aug 2026) — the
-        # replica now stamps the tier that supplied the stand-in.
+        # "Loaded's '700 mL'" was false when Norm's own catalogue answered the
+        # unit (HIGHLAND PARK 15, 4366904, 19 Aug 2026).
         data = {"lines": [{"id": "ld-1", "unit": "700 mL", "linked_unit_id": "u-700"}]}
         issue = self._issue("unit_unconfirmed")
         issue["data"] = {"unit_chosen_by": "catalogue", "unit_id": "u-700"}
-        issues = [issue]
-        IR.name_the_unit_in_use(data, issues)
-        assert issues[0]["message"].endswith("— Norm's catalogue answers '700 mL'")
+        c = self._confirm(data, issue)
+        assert "Norm's catalogue says '700 mL'" in c["explanation"]
 
     def test_the_stamp_is_dropped_when_the_working_line_shows_another_unit(self):
-        # The replica's stand-in was catalogue-sourced, but the WORKING line
-        # shows a different unit — that one is Loaded's, and crediting the
-        # catalogue for it would be the same lie in the other direction.
         data = {"lines": [{"id": "ld-1", "unit": "Each", "linked_unit_id": "u-each"}]}
         issue = self._issue("unit_unconfirmed")
         issue["data"] = {"unit_chosen_by": "catalogue", "unit_id": "u-700"}
-        issues = [issue]
-        IR.name_the_unit_in_use(data, issues)
-        assert issues[0]["message"].endswith("— using Loaded's 'Each'")
+        c = self._confirm(data, issue)
+        assert c["explanation"].endswith("keep Loaded's 'Each'")
 
     def test_a_printed_charge_word_is_named_as_the_fallback_it_is(self):
         data = {"lines": [{"id": "ld-1", "unit": "each", "linked_unit_id": "u-each"}]}
         issue = self._issue("unit_unconfirmed")
         issue["data"] = {"unit_chosen_by": "printed", "unit_id": "u-each"}
-        issues = [issue]
-        IR.name_the_unit_in_use(data, issues)
-        assert issues[0]["message"].endswith(
-            "— falling back to the printed column's 'each'"
-        )
+        c = self._confirm(data, issue)
+        assert "the printed column says 'each'" in c["explanation"]
 
 
 class TestAutopilotHonoursTheVenuesToggles:
@@ -1800,39 +1874,45 @@ class TestAutopilotHonoursTheVenuesToggles:
             settings[gate_on] = True
         return data, settings
 
-    def test_an_unticked_gate_leaves_the_blocker_standing(self, monkeypatch):
-        from app.routers import invoice_fixes as IF
+    def _loaded(self, monkeypatch, fail=False):
+        """A fake Loaded behind the REAL create (services/invoice_catalog).
+        Not a patched create function: patching the old endpoint is what hid
+        that every unattended create had failed since 3 Oct 2026 — it was
+        called with no user, and the endpoint's per-person venue check then
+        raised inside apply_open_gates' own except."""
+        writes: list = []
 
-        # Recorded rather than raised: apply_open_gates swallows exceptions by
-        # design (a failed create must park the invoice, not crash the batch),
-        # so an assertion thrown in here would be caught and the test would
-        # pass for the wrong reason.
-        calls: list = []
-        monkeypatch.setattr(
-            IF, "create_stock_brand", lambda *a, **k: calls.append(a) or {}
-        )
+        class _Lh:
+            def get(self, path):
+                assert path == "/1.0/stock/internal/brands"
+                return []
+
+            def request(self, method, path, body=None):
+                if fail:
+                    raise RuntimeError("Loaded said no")
+                writes.append((method, path, body))
+                return {"id": "brand-new", "name": body["name"]}
+
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda d, c, v: _Lh())
+        return writes
+
+    def test_an_unticked_gate_leaves_the_blocker_standing(self, monkeypatch):
+        writes = self._loaded(monkeypatch)
         data, settings = self._data()
 
-        assert IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings) == []
+        assert IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings) == []
 
-        assert calls == [], "autopilot created a brand the venue had not allowed"
+        assert writes == [], "autopilot created a brand the venue had not allowed"
         assert IR.compute_confidence(data) == "needs_review"
 
     def test_a_ticked_gate_creates_it_and_the_invoice_becomes_ready(self, monkeypatch):
-        from app.routers import invoice_fixes as IF
-
-        monkeypatch.setattr(
-            IF,
-            "create_stock_brand",
-            lambda body, db, cdb, user: {
-                "brand_id": "brand-new",
-                "brand_name": body.name,
-            },
-        )
+        writes = self._loaded(monkeypatch)
         data, settings = self._data(VA.AUTO_CREATE_BRANDS)
 
-        done = IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings)
+        # No person is signed in on an unattended run (db=None, no user).
+        done = IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
 
+        assert writes == [("POST", "/1.0/stock/internal/brands", {"name": "BIOZYME"})]
         assert done == ["created brand 'BIOZYME'"]
         line = next(ln for ln in data["lines"] if ln["id"] == "ld-1")
         assert line["linked_brand_id"] == "brand-new"
@@ -1841,20 +1921,14 @@ class TestAutopilotHonoursTheVenuesToggles:
     def test_norm_signs_its_own_work(self, monkeypatch):
         """The action log is what the card shows and what the readiness report
         reads, so an unattended create has to appear in it as Norm's."""
-        from app.routers import invoice_fixes as IF
-
-        monkeypatch.setattr(
-            IF,
-            "create_stock_brand",
-            lambda body, db, cdb, user: {"brand_id": "b-1", "brand_name": body.name},
-        )
+        self._loaded(monkeypatch)
         data, settings = self._data(VA.AUTO_CREATE_BRANDS)
-        IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings)
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
 
         act = next(
             a
             for a in data["suggestion_actions"]
-            if a["suggestion_id"] == "brand_unknown:ld-1"
+            if a["suggestion_id"] == "create_brand:linked_brand_id:ld-1"
         )
         assert act["by"] == "norm" and act["action"] == "accepted"
 
@@ -1863,15 +1937,10 @@ class TestAutopilotHonoursTheVenuesToggles:
     ):
         """Half-built is the one outcome worse than stopping: the line would
         reach Loaded without the brand it names and be refused there anyway."""
-        from app.routers import invoice_fixes as IF
-
-        def _boom(*a, **k):
-            raise RuntimeError("Loaded said no")
-
-        monkeypatch.setattr(IF, "create_stock_brand", _boom)
+        self._loaded(monkeypatch, fail=True)
         data, settings = self._data(VA.AUTO_CREATE_BRANDS)
 
-        assert IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings) == []
+        assert IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings) == []
         assert IR.compute_confidence(data) == "needs_review"
 
     def test_a_blocker_no_toggle_can_authorise_is_never_cleared(self, monkeypatch):
@@ -1887,7 +1956,7 @@ class TestAutopilotHonoursTheVenuesToggles:
                 "message": "this looks like a duplicate",
             }
         )
-        IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings)
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
         assert IR.compute_confidence(data) == "needs_review"
 
 
@@ -1903,7 +1972,16 @@ class TestAutopilotWillNotInventADuplicateSupplier:
     def _data(self):
         data = {
             "lines": [],
-            "suggestions": [],
+            "suggestions": [
+                {
+                    "id": "create_supplier:linked_supplier_id",
+                    "kind": "create_supplier",
+                    "field": "linked_supplier_id",
+                    "payload": {"supplier_name": "SERVICE FOODS LTD"},
+                    "gate": VA.AUTO_CREATE_SUPPLIERS,
+                    "sure": True,
+                }
+            ],
             "suggestion_actions": [],
             "issues": [
                 {
@@ -1912,10 +1990,7 @@ class TestAutopilotWillNotInventADuplicateSupplier:
                     "blocking": True,
                     "gate": VA.AUTO_CREATE_SUPPLIERS,
                     "message": "no Loaded supplier matches 'SERVICE FOODS LTD'",
-                    "action": {
-                        "kind": "create_supplier",
-                        "payload": {"supplier_name": "SERVICE FOODS LTD"},
-                    },
+                    "fix": ["create_supplier:linked_supplier_id"],
                 }
             ],
         }
@@ -1927,43 +2002,41 @@ class TestAutopilotWillNotInventADuplicateSupplier:
         return data, settings
 
     def _lh(self, monkeypatch, suppliers):
+        writes: list = []
+
         class _Lh:
             def get(self, _path):
                 return suppliers
 
+            def request(self, method, path, body=None):
+                writes.append((method, path, body))
+                return {"id": "sup-new", "name": body["name"]}
+
         monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda d, c, v: _Lh())
+        return writes
 
     def test_a_near_match_is_a_human_decision(self, monkeypatch):
-        from app.routers import invoice_fixes as IF
-
-        calls: list = []
-        self._lh(monkeypatch, [{"id": "sup-1", "name": "SERVICE FOODS AUCKLAND"}])
-        monkeypatch.setattr(
-            IF, "create_supplier", lambda *a, **k: calls.append(a) or {}
+        writes = self._lh(
+            monkeypatch, [{"id": "sup-1", "name": "SERVICE FOODS AUCKLAND"}]
         )
         data, settings = self._data()
 
-        assert IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings) == []
+        assert IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings) == []
 
-        assert calls == [], "autopilot created a supplier that already exists"
+        assert writes == [], "autopilot created a supplier that already exists"
         assert data.get("linked_supplier_id") is None
 
     def test_a_genuinely_new_supplier_is_created(self, monkeypatch):
-        from app.routers import invoice_fixes as IF
-
-        self._lh(monkeypatch, [{"id": "sup-9", "name": "Hancocks Wine & Spirits"}])
-        monkeypatch.setattr(
-            IF,
-            "create_supplier",
-            lambda body, db, cdb, user: {
-                "supplier_id": "sup-new",
-                "supplier_name": body.name,
-            },
+        writes = self._lh(
+            monkeypatch, [{"id": "sup-9", "name": "Hancocks Wine & Spirits"}]
         )
         data, settings = self._data()
 
-        done = IR.apply_open_gates(None, None, "v-1", "inv-1", data, settings)
+        done = IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
 
+        assert writes == [
+            ("POST", "/1.0/stock/internal/suppliers", {"name": "SERVICE FOODS LTD"})
+        ]
         assert done == ["created supplier 'SERVICE FOODS LTD'"]
         assert data["linked_supplier_id"] == "sup-new"
 
@@ -2034,14 +2107,16 @@ class TestBrandSuggestion:
         data = self._with_brand()
         b = _blocker(data, "brand_unknown", "ld-1")
         assert b is not None and b["blocking"] is True
-        assert b["action"] == {
-            "kind": "create_brand",
-            "payload": {"brand_name": "BIOZYME"},
-        }
+        create = self._brand_sugg(data)
+        assert create["payload"] == {"brand_name": "BIOZYME"}
+        assert create["gate"] == "auto_create_brands"
         assert b["gate"] == "auto_create_brands"
+        assert b["fix"] == [create["id"]]
 
-    def test_it_appears_in_exactly_one_list(self):
-        assert self._brand_sugg(self._with_brand()) is None
+    def test_it_is_one_decision(self):
+        data = self._with_brand()
+        assert len([s for s in data["suggestions"] if s["kind"] == "create_brand"]) == 1
+        assert "action" not in _blocker(data, "brand_unknown")
 
     def test_an_unknown_brand_is_not_ready_to_receive(self):
         """The bug this closes: confidence read "ready" with an unknown brand,
@@ -2136,25 +2211,28 @@ class TestDefectRecommendations:
     def test_no_copy_and_unreadable_carry_delete_actions(self):
         data = _review(detail=DETAIL(fileId=None))
         issue = next(i for i in data["issues"] if i["code"] == "no_copy_attached")
-        assert issue["gate"] == "auto_delete_unreadable"
-        assert issue["action"]["kind"] == "delete_unreadable"
-        assert issue["action"]["payload"]["type"] == "delete_invoice"
-        assert issue["action"]["payload"]["invoice_id"] == "inv-1"
+        delete = next(s for s in data["suggestions"] if s["kind"] == "delete_invoice")
+        assert issue["gate"] == delete["gate"] == "auto_delete_unreadable"
+        assert delete["payload"]["type"] == "delete_invoice"
+        assert delete["payload"]["invoice_id"] == "inv-1"
+        assert issue["fix"] == [delete["id"]]
 
         data = _review(extraction={"error": "LLM down"})
         issue = next(i for i in data["issues"] if i["code"] == "copy_unreadable")
-        assert issue["gate"] == "auto_delete_unreadable"
-        assert issue["action"]["kind"] == "delete_unreadable"
-        assert "delete the draft" in issue["message"]
+        delete = next(s for s in data["suggestions"] if s["kind"] == "delete_invoice")
+        assert delete["gate"] == "auto_delete_unreadable"
+        assert issue["fix"] == [delete["id"]]
+        assert "delete the draft" in delete["explanation"]
 
     def test_not_an_invoice_carries_its_delete_action(self):
         ext = EXTRACTION(document_type="statement", lines=[])
         data = _review(extraction=ext)
         issue = next(i for i in data["issues"] if i["code"] == "not_an_invoice")
-        assert issue["gate"] == "auto_delete_non_invoices"
-        assert issue["action"]["kind"] == "delete_non_invoice"
-        assert issue["action"]["payload"]["invoice_id"] == "inv-1"
-        assert "delete the draft" in issue["message"]
+        delete = next(s for s in data["suggestions"] if s["kind"] == "delete_invoice")
+        assert issue["gate"] == delete["gate"] == "auto_delete_non_invoices"
+        assert delete["payload"]["invoice_id"] == "inv-1"
+        assert issue["fix"] == [delete["id"]]
+        assert "delete the draft" in delete["explanation"]
 
     def _misread_totals_case(self, totals_ask):
         det = DETAIL(total=23.0, subtotal=20.0, taxAmount=3.0)
@@ -2209,24 +2287,25 @@ class TestDefectRecommendations:
             }
         )
         issue = next(i for i in data["issues"] if i["code"] == "totals_inconsistent")
-        # fallback Accept + gate on the blocker itself
-        assert issue["action"]["kind"] == "receive_unreconciled_totals"
         assert issue["gate"] == "receive_unreconciled_totals"
-        s = next(
-            s
-            for s in data["suggestions"]
-            if s["field"] == "total_cost" and s.get("resolves")
-        )
+        s = next(s for s in data["suggestions"] if s["field"] == "total_cost")
         assert s["proposed"] == 20.0
-        assert s["resolves"] == issue["id"]
+        assert s["fixes"] == issue["id"] and issue["fix"] == [s["id"]]
         assert s["confidence"] == "high"
         assert "2 x 10.00" in s["explanation"]
+        # ...and the corrected figure is IN the replica: the Replica tab shows it
+        assert data["replica"]["lines"][0]["total_cost"] == 20.0
 
     def test_totals_diagnosis_failure_leaves_the_fallback_only(self):
         data = self._misread_totals_case(lambda p: {})
         issue = next(i for i in data["issues"] if i["code"] == "totals_inconsistent")
-        assert issue["action"]["kind"] == "receive_unreconciled_totals"
-        assert not [s for s in data["suggestions"] if s.get("resolves")]
+        # Loaded's lines already add up, so receiving on them is the answer —
+        # a confirm, behind the totals switch.
+        assert not [s for s in data["suggestions"] if s.get("fixes")]
+        confirm = next(s for s in data["suggestions"] if s["id"] in issue["fix"])
+        assert confirm["kind"] == "confirm"
+        assert confirm["gate"] == "receive_unreconciled_totals"
+        assert "add up to the invoice total" in confirm["explanation"]
 
     def _ambiguous_case(self, pairing_ask):
         # rep-0 claims ld-1 (unique salmon); rep-1's only salmon hits are
@@ -2306,7 +2385,19 @@ class TestDestructiveGates:
         return {
             "invoice_id": "inv-1",
             "lines": [],
-            "suggestions": [],
+            "suggestions": [
+                {
+                    "id": kind,
+                    "kind": kind,
+                    "payload": {
+                        "type": "delete_invoice",
+                        "invoice_id": "inv-1",
+                        "summary": "junk draft",
+                    },
+                    "gate": gate,
+                    "sure": True,
+                }
+            ],
             "suggestion_actions": [],
             "issues": [
                 {
@@ -2314,15 +2405,8 @@ class TestDestructiveGates:
                     "code": code,
                     "blocking": True,
                     "gate": gate,
-                    "action": {
-                        "kind": kind,
-                        "payload": {
-                            "type": "delete_invoice",
-                            "invoice_id": "inv-1",
-                            "summary": "junk draft",
-                        },
-                    },
                     "message": "x",
+                    "fix": [kind],
                 }
             ],
         }
@@ -2345,7 +2429,7 @@ class TestDestructiveGates:
             "duplicate_invoice", "delete_invoice", VA.AUTO_DELETE_DUPLICATES
         )
         assert (
-            IR.apply_open_gates(None, None, "v-1", "inv-1", data, self._settings())
+            IR.autopilot_accept(None, None, "v-1", "inv-1", data, self._settings())
             == []
         )
         assert calls == [], "autopilot deleted a draft the venue had not allowed"
@@ -2360,13 +2444,23 @@ class TestDestructiveGates:
             IF, "_apply_delete_invoice", lambda lh, fix, db: deletes.append(fix)
         )
         monkeypatch.setattr(
-            IF, "create_stock_brand", lambda *a, **k: creates.append(a) or {}
+            "app.services.invoice_catalog.get_or_create_brand",
+            lambda *a, **k: creates.append(a) or ({}, True),
         )
         monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda *a, **k: object())
         data = self._data(
             "duplicate_invoice", "delete_invoice", VA.AUTO_DELETE_DUPLICATES
         )
         # a create the walk would normally run — must be skipped by the delete
+        data["suggestions"].append(
+            {
+                "id": "create_brand:linked_brand_id:ld-1",
+                "kind": "create_brand",
+                "line_id": "ld-1",
+                "payload": {"brand_name": "X"},
+                "gate": VA.AUTO_CREATE_BRANDS,
+            }
+        )
         data["issues"].append(
             {
                 "id": "brand_unknown:ld-1",
@@ -2374,12 +2468,12 @@ class TestDestructiveGates:
                 "blocking": True,
                 "line_id": "ld-1",
                 "gate": VA.AUTO_CREATE_BRANDS,
-                "action": {"kind": "create_brand", "payload": {"brand_name": "X"}},
                 "message": "x",
+                "fix": ["create_brand:linked_brand_id:ld-1"],
             }
         )
         data["lines"] = [{"id": "ld-1"}]
-        done = IR.apply_open_gates(
+        done = IR.autopilot_accept(
             None,
             None,
             "v-1",
@@ -2391,15 +2485,23 @@ class TestDestructiveGates:
         assert creates == []  # short-circuited
         assert data["is_deleted"] is True and data["status"] == "deleted"
         assert done == ["deleted the draft (junk draft)"]
-        # recorded against the issue, actor norm
+        # recorded against the delete, actor norm — which settles its blocker
         rec = data["suggestion_actions"][-1]
-        assert rec["suggestion_id"] == "duplicate_invoice" and rec["by"] == "norm"
+        assert rec["suggestion_id"] == "delete_invoice" and rec["by"] == "norm"
 
     def test_strike_and_record_only_gates(self):
         data = {
             "invoice_id": "inv-1",
             "lines": [{"id": "ld-9", "description": "Phantom"}],
-            "suggestions": [],
+            "suggestions": [
+                {
+                    "id": "strike:ld-9",
+                    "kind": "strike",
+                    "line_id": "ld-9",
+                    "apply": {"struck": True},
+                    "gate": VA.AUTO_STRIKE_PHANTOM_LINES,
+                }
+            ],
             "suggestion_actions": [],
             "issues": [
                 {
@@ -2408,7 +2510,7 @@ class TestDestructiveGates:
                     "blocking": True,
                     "line_id": "ld-9",
                     "gate": VA.AUTO_STRIKE_PHANTOM_LINES,
-                    "action": {"kind": "strike", "apply": {"struck": True}},
+                    "fix": ["strike:ld-9"],
                     "message": "x",
                     "clears_when": {
                         "scope": "line",
@@ -2423,12 +2525,11 @@ class TestDestructiveGates:
                     "blocking": True,
                     "line_id": None,
                     "gate": VA.RECEIVE_UNRECONCILED_TOTALS,
-                    "action": {"kind": "receive_unreconciled_totals", "payload": {}},
                     "message": "x",
                 },
             ],
         }
-        done = IR.apply_open_gates(
+        done = IR.autopilot_accept(
             None,
             None,
             "v-1",
@@ -2550,6 +2651,50 @@ class TestDecisionsSurviveARereview:
         }
         fresh = {"lines": [], "suggestions": [], "issues": [], "suggestion_actions": []}
         assert IR.carry_forward_decisions(previous, fresh) == 0
+
+    def test_a_v1_blocker_decision_carries_onto_its_fix(self):
+        """A draft reviewed before 12 Oct 2026 recorded a unit pick against
+        the BLOCKER. Re-reviewed, that pick is the blocker's fix suggestion:
+        the decision carries and the value is re-applied (the user: keep the
+        changes already accepted)."""
+        previous = {
+            "suggestions": [],
+            "suggestion_actions": [
+                {
+                    "suggestion_id": "unit_missing:ld-1",
+                    "action": "accepted",
+                    "by": "user",
+                    "after": {"linked_unit_id": "u-each"},
+                }
+            ],
+        }
+        fresh = {
+            "lines": [{"id": "ld-1"}],
+            "suggestions": [
+                {
+                    "id": "line_value:unit:ld-1",
+                    "kind": "line_value",
+                    "field": "unit",
+                    "line_id": "ld-1",
+                    "apply": {
+                        "unit": "Each",
+                        "linked_unit_id": "u-each",
+                        "unit_ratio": 1,
+                    },
+                }
+            ],
+            "issues": [
+                {
+                    "id": "unit_missing:ld-1",
+                    "blocking": True,
+                    "fix": ["line_value:unit:ld-1"],
+                }
+            ],
+            "suggestion_actions": [],
+        }
+        IR.carry_forward_decisions(previous, fresh)
+        assert fresh["lines"][0]["linked_unit_id"] == "u-each"
+        assert IR.compute_confidence(fresh) == "ready"
 
     def test_a_first_review_carries_nothing(self):
         assert IR.carry_forward_decisions({}, self._fresh()) == 0
@@ -2837,3 +2982,91 @@ class TestTheCopyDecidesWhichLayoutReadsIt:
         assert seen["loaded_supplier"] == "Coca Cola"
         assert seen["loaded_aliases"] == ["COKE NZ"]
         assert seen["spec_name"] == "NEAT MEAT"
+
+
+class TestTheUnitGatePicksAUnit:
+    """receive_without_unit means: when no unit can be found on the invoice,
+    Norm picks one so the invoice can be received — the batched resolver's
+    answer when there is one, else Loaded's own unit, else the unit chooser
+    (unit_guess) picking from the venue's own units. That fallback is what the
+    setting is for (the user, 12 Oct 2026, after it was briefly removed as a
+    "second picker"). The pick is made in the Replica at review time and
+    applied by autopilot only with the switch on."""
+
+    def _data(self):
+        return {
+            "invoice_id": "inv-1",
+            "lines": [{"id": "ld-1", "description": "MALFY GIN ROSA"}],
+            "suggestions": [
+                {
+                    "id": "line_value:unit:ld-1",
+                    "kind": "line_value",
+                    "field": "unit",
+                    "line_id": "ld-1",
+                    "proposed": "700 mL",
+                    "apply": {
+                        "linked_unit_id": "u-700",
+                        "unit": "700 mL",
+                        "unit_ratio": 0.7,
+                    },
+                    "sure": False,
+                    "gate": VA.RECEIVE_WITHOUT_UNIT,
+                }
+            ],
+            "suggestion_actions": [],
+            "issues": [
+                {
+                    "id": "unit_missing:ld-1",
+                    "code": "unit_missing",
+                    "blocking": True,
+                    "line_id": "ld-1",
+                    "gate": VA.RECEIVE_WITHOUT_UNIT,
+                    "fix": ["line_value:unit:ld-1"],
+                    "message": "no unit",
+                }
+            ],
+        }
+
+    def _settings(self, on=True):
+        return {
+            "mode": "autopilot",
+            **{g: False for g in VA.GATES},
+            VA.RECEIVE_WITHOUT_UNIT: on,
+        }
+
+    def test_the_pick_is_applied_with_the_switch_on(self, monkeypatch):
+        monkeypatch.setattr(
+            IR,
+            "LoadedInvoiceClient",
+            lambda *a, **k: pytest.fail("applying a pick needs no Loaded call"),
+        )
+        data = self._data()
+        done = IR.autopilot_accept(None, None, "v-1", "inv-1", data, self._settings())
+        line = data["lines"][0]
+        assert line["linked_unit_id"] == "u-700" and line["unit"] == "700 mL"
+        assert any("set unit '700 mL'" in d for d in done)
+        assert IR.compute_confidence(data) == "ready"
+
+    def test_never_with_the_switch_off(self):
+        data = self._data()
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, self._settings(False))
+        assert "linked_unit_id" not in data["lines"][0]
+        assert IR.compute_confidence(data) == "needs_review"
+
+    def test_without_a_confident_pick_norm_still_picks_one(self):
+        """Fails if the fallback is removed again: no resolver answer and no
+        unit on Loaded's line — the venue's chooser picks one."""
+        from app.services import replica_finish as RF
+
+        replica = {
+            "lines": [{"id": "rep-0", "description": "MALFY GIN ROSA"}],
+            "issues": [
+                {"id": "unit_missing:rep-0", "code": "unit_missing", "line_id": "rep-0"}
+            ],
+        }
+        data = {"lines": [{"id": "ld-1", "description": "MALFY GIN ROSA"}]}
+        each = {"id": "u-each", "name": "Each", "ratio": 1}
+        RF.settle_units(data, replica, {"rep-0": "ld-1"}, [each], lambda ln: each, [])
+        rl = replica["lines"][0]
+        assert rl["linked_unit_id"] == "u-each"
+        assert rl["unit_guess"] is True and rl["unit_by"] == "chooser"

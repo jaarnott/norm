@@ -98,7 +98,7 @@ def _last_actions(data: dict) -> dict[str, dict]:
 
 
 def _live_suggestions(data: dict) -> list[dict]:
-    """The suggestions autopilot would have acted on: replica_v1 entries,
+    """The suggestions autopilot would have acted on: replica entries,
     minus ``delete_invoice`` (autopilot skips it, so counting it as pending
     would mark every duplicate-flagged invoice as edited)."""
     return [
@@ -126,8 +126,6 @@ def _live_suggestions(data: dict) -> list[dict]:
 #: matched against the human's receive by NAME, since the created id can't be
 #: known without doing the create.
 _CREATE = "__create__"
-
-_SIM_DELETE_KINDS = {"delete_invoice", "delete_non_invoice", "delete_unreadable"}
 
 #: Line fields the sent-vs-simulated diff compares. Deliberately narrower
 #: than _LINE_FIELDS: unit identity is compared semantically (see
@@ -166,70 +164,104 @@ def _pristine_doc(data: dict) -> dict | None:
 def simulate_autopilot(data: dict) -> dict | None:
     """Autopilot's counterfactual for one reviewed document, all flags on.
 
-    Accept every suggestion (the existing pure applier), then walk the
-    blocking issues: collect each one's gate into ``gates_needed``; a blocker
-    an accepted suggestion already satisfies (its ``clears_when``) needs no
-    flag; a blocker with NO gate goes to ``ungated`` — no flag exists, a
-    person had to look. Folded create-actions apply placeholder values
-    (matched later by name); a delete-gated blocker means autopilot would
-    have DELETED the draft rather than received it.
+    Apply what the Replica is sure of (the existing pure applier), then the
+    suggestions a switch governs — creates as placeholders matched later by
+    name, a delete as ``would_delete``. A guess with no switch (a likely
+    order, costs spread to balance) is never applied: autopilot leaves those
+    to a person. Then walk the blockers: one the sure values already clear
+    needs no flag; one a switched suggestion clears needs that switch
+    (``gates_needed``); one nothing can clear goes to ``ungated`` — no flag
+    exists, a person had to look.
 
     Pure — no Loaded, no DB. Returns ``{doc, gates_needed, ungated,
-    would_delete}`` or None when there is no replica_v1 review to simulate.
+    would_delete}`` or None when there is no replica_v2 review to simulate.
     """
-    if data.get("doc_schema") != "replica_v1":
+    if data.get("doc_schema") != "replica_v2":
         return None
     sim = _pristine_doc(data)
     if sim is None:
         return None
-    from app.services.invoice_review import _clears, apply_suggestion
+    from app.services.invoice_review import (
+        _SWITCH_SETTLES,
+        LOADED_WRITE_ORDER,
+        _clears,
+        apply_suggestion,
+    )
 
-    for s in _live_suggestions(data):
-        try:
-            apply_suggestion(sim, s)
-        except Exception:  # noqa: BLE001 — one bad apply must not void the verdict
-            logger.info("simulate_autopilot: apply failed for %s", s.get("id"))
+    suggestions = [
+        s
+        for s in data.get("suggestions") or []
+        if isinstance(s, dict) and s.get("id") and s.get("kind")
+    ]
+    by_id = {str(s["id"]): s for s in suggestions}
+
+    def _apply(s: dict) -> None:
+        lines = {str(ln.get("id")): ln for ln in sim.get("lines") or [] if ln.get("id")}
+        ln = lines.get(str(s.get("line_id") or ""))
+        payload = s.get("payload") if isinstance(s.get("payload"), dict) else {}
+        kind = s.get("kind")
+        if kind == "create_unit" and ln is not None and payload.get("unit_name"):
+            ln["unit"] = payload["unit_name"]
+            ln["linked_unit_id"] = _CREATE
+            ln["unit_ratio"] = None
+        elif kind == "create_item" and ln is not None:
+            ln["linked_item_id"] = _CREATE
+            if payload.get("name"):
+                ln["item_name"] = payload["name"]
+        elif kind == "create_brand" and ln is not None:
+            ln["linked_brand_id"] = _CREATE
+        elif kind == "create_supplier":
+            sim["linked_supplier_id"] = _CREATE
+        elif kind not in LOADED_WRITE_ORDER:
+            try:
+                apply_suggestion(sim, s)
+            except Exception:  # noqa: BLE001 — one bad apply must not void the verdict
+                logger.info("simulate_autopilot: apply failed for %s", s.get("id"))
+
+    applied: set[str] = set()
+    for s in sorted(suggestions, key=lambda s: s.get("kind") != "add_line"):
+        if s.get("gate") or s.get("sure", True) is False:
+            continue
+        if s.get("kind") == "delete_invoice":
+            continue
+        _apply(s)
+        applied.add(str(s["id"]))
     gates: list[str] = []
     ungated: list[str] = []
     would_delete = False
-    lines_by_id = {
-        str(ln.get("id")): ln for ln in sim.get("lines") or [] if ln.get("id")
-    }
+    switched = [s for s in suggestions if s.get("gate")]
+    for s in sorted(switched, key=lambda s: s.get("kind") != "add_line"):
+        if s.get("kind") == "delete_invoice":
+            would_delete = True
+            continue
+        _apply(s)
+
+    def _note(gate: object) -> None:
+        if gate and str(gate) not in gates:
+            gates.append(str(gate))
+
     for i in data.get("issues") or []:
         if not isinstance(i, dict) or not i.get("blocking"):
             continue
+        fix = [by_id[f] for f in i.get("fix") or [] if f in by_id]
+        if fix and all(str(f["id"]) in applied for f in fix):
+            continue  # what the Replica is sure of clears it — no flag needed
+        gated = [f for f in fix if f.get("gate")]
+        if gated and len(gated) + sum(str(f["id"]) in applied for f in fix) >= len(fix):
+            for f in gated:
+                _note(f.get("gate"))
+            continue
         if _clears(sim, i):
-            continue  # an accepted suggestion satisfies it — no flag needed
-        act = i.get("action") if isinstance(i.get("action"), dict) else {}
-        kind = str(act.get("kind") or "")
-        payload = act.get("payload") if isinstance(act.get("payload"), dict) else {}
-        apply_now = act.get("apply") if isinstance(act.get("apply"), dict) else None
-        if kind in _SIM_DELETE_KINDS:
-            would_delete = True
-        ln = lines_by_id.get(str(i.get("line_id") or ""))
-        if ln is not None:
-            if kind == "create_unit" and payload.get("unit_name"):
-                ln["unit"] = payload["unit_name"]
-                ln["linked_unit_id"] = _CREATE
-                ln["unit_ratio"] = None
-            elif kind == "create_item":
-                ln["linked_item_id"] = _CREATE
-                if payload.get("name"):
-                    ln["item_name"] = payload["name"]
-            elif kind == "guess_unit" and apply_now:
-                for k in ("unit", "linked_unit_id", "unit_ratio"):
-                    if k in apply_now:
-                        ln[k] = apply_now[k]
-            elif kind == "strike":
-                ln["struck"] = True
-        gate = i.get("gate")
-        if gate:
-            if gate not in gates:
-                gates.append(str(gate))
-        else:
-            code = str(i.get("code") or "issue")
-            if code not in ungated:
-                ungated.append(code)
+            continue
+        if i.get("gate") and i.get("code") in _SWITCH_SETTLES:
+            _note(i.get("gate"))
+            continue
+        if i.get("gate"):
+            _note(i.get("gate"))
+            continue
+        code = str(i.get("code") or "issue")
+        if code not in ungated:
+            ungated.append(code)
     return {
         "doc": sim,
         "gates_needed": gates,
@@ -385,6 +417,13 @@ def auto_verdict(data: dict, *, received: bool = True) -> dict:
 
 #: Fields a folded blocker-action changes on its line, by action kind — the
 #: value-blind excuse used when an accepted blocker recorded no values.
+_UNIT_CODES = (
+    "unit_missing",
+    "unit_unconfirmed",
+    "unit_unknown",
+    "unit_would_be_created",
+)
+
 _ISSUE_ACTION_FIELDS = {
     "create_unit": ("unit", "linked_unit_id", "unit_ratio"),
     "guess_unit": ("unit", "linked_unit_id", "unit_ratio"),
@@ -471,18 +510,31 @@ def manual_edits(data: dict) -> list[str]:
             if not isinstance(issue, dict):
                 continue
             act = issue.get("action") if isinstance(issue.get("action"), dict) else {}
+            # v1 kept the decision on the blocker's own action; v2 blockers
+            # point at the suggestions that are their fix.
+            kinds = (
+                [str(act.get("kind"))]
+                if act
+                else [
+                    str((by_id.get(str(f)) or {}).get("kind"))
+                    for f in issue.get("fix") or []
+                ]
+            )
+            if str(issue.get("code")) in _UNIT_CODES:
+                kinds.append("guess_unit")
             lid = str(issue.get("line_id") or "")
             after = action.get("after")
-            if not isinstance(after, dict):
+            if not isinstance(after, dict) or not after:
                 after = act.get("apply") if isinstance(act.get("apply"), dict) else None
-            if str(act.get("kind")) == "strike" and lid:
+            if "strike" in kinds and lid:
                 struck_by_suggestion.add(lid)
-            if isinstance(after, dict) and lid:
+            if isinstance(after, dict) and after and lid:
                 for field, value in after.items():
                     explained[("line", lid, field)] = value
             elif lid:
-                for field in _ISSUE_ACTION_FIELDS.get(str(act.get("kind")), ()):
-                    explained_any.add(("line", lid, field))
+                for kind in kinds:
+                    for field in _ISSUE_ACTION_FIELDS.get(kind, ()):
+                        explained_any.add(("line", lid, field))
             continue
         after = action.get("after")
         if not isinstance(after, dict):

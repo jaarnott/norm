@@ -1166,8 +1166,8 @@ def build_replica(
                         msg = (
                             "this invoice isn't linked to a purchase order — "
                             f"order {order_no} was split across deliveries and "
-                            f"{sib_ref} carries the link. Accept the suggestion "
-                            "to keep the order reference, then receive."
+                            f"{sib_ref} carries the link — keep the order "
+                            "reference here without linking it, then receive."
                         )
                         log.append(msg)
                         _issue(
@@ -1257,7 +1257,7 @@ def build_replica(
                 log.append(f"PO '{po_number}': no unambiguous Loaded match")
                 _issue(
                     "po_unresolved",
-                    f"the copy references order '{po_number}' but no Loaded "
+                    f"the invoice references order '{po_number}' but no Loaded "
                     "purchase order matches it unambiguously — receive "
                     "without linking an order",
                     data={"po_number": str(po_number)},

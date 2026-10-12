@@ -6,9 +6,6 @@ engine-side matching/injection is covered in
 test_invoice_review_consolidator.py::TestSupplierSpecs.
 """
 
-from app.agents.internal_tools import get_handler
-from app.db.config_models import SupplierInvoiceSpec
-
 
 class TestSupplierSpecCrud:
     def test_create_list_update_delete(self, client, admin_headers):
@@ -108,43 +105,3 @@ class TestSupplierSpecCrud:
         )
         assert edited.status_code == 200
         assert edited.json()["instructions"] == "edited base"
-
-
-class TestGetSupplierInvoiceSpecsHandler:
-    def test_returns_enabled_specs_only(
-        self, client, db_session, admin_headers, monkeypatch
-    ):
-        # Seed via the same test DB the handler's config session points at
-        # (locally main and config DB share the engine — see conftest).
-        from app.db import engine as engine_mod
-
-        db_session.add(
-            SupplierInvoiceSpec(
-                name="On", aliases=["On Foods"], instructions="i", enabled=True
-            )
-        )
-        db_session.add(
-            SupplierInvoiceSpec(name="Off", aliases=[], instructions="x", enabled=False)
-        )
-        db_session.flush()
-        monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", lambda: db_session)
-        # keep the handler from closing the shared test session
-        monkeypatch.setattr(db_session, "close", lambda: None)
-
-        handler = get_handler("norm", "get_supplier_invoice_specs")
-        out = handler({}, db_session, None)
-        assert out["success"] is True
-        names = [s["name"] for s in out["data"]["specs"]]
-        assert "On" in names and "Off" not in names
-
-    def test_failure_degrades_to_empty(self, db_session, monkeypatch):
-        from app.db import engine as engine_mod
-
-        def boom():
-            raise RuntimeError("config db down")
-
-        monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", boom)
-        handler = get_handler("norm", "get_supplier_invoice_specs")
-        out = handler({}, db_session, None)
-        assert out["success"] is True
-        assert out["data"]["specs"] == []

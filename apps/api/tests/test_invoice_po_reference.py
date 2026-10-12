@@ -140,6 +140,39 @@ class TestProjection:
         # delivered under another code — NOT also listed as not-delivered
         assert _not_delivered(data) == []
 
+    def test_the_same_code_on_another_item_is_not_delivered(self):
+        # IN11656852: Service Foods sells SHALLOTS and BANANA SHALLOTS under
+        # one code. Shallots arrived against an order for banana shallots —
+        # the order row is still outstanding, and the shallots weren't ordered.
+        data = _doc()
+        data["po_reference"]["lines"].append(
+            {
+                "itemId": "item-banana-shallots",
+                "itemCode": "VEGF50",
+                "itemName": "BANANA SHALLOTS",
+                "unitName": "Kilo",
+                "quantityOrdered": 1,
+                "unitCost": 11.02,
+            }
+        )
+        data["lines"].append(
+            {"id": "ld-3", "code": "VEGF50", "linked_item_id": "item-shallots"}
+        )
+        project_po_reference(data)
+        assert "VEGF50" in _not_delivered(data)
+        assert data["lines"][2]["quantity_ordered"] is None
+        assert data["lines"][2]["on_order"] is False
+        assert data["lines"][2]["substitute_for"] is None
+
+    def test_an_unlinked_line_claims_no_row_by_its_code(self):
+        # The receive pairs by item alone; a code match here would show a row
+        # delivered that Loaded still calls outstanding.
+        data = _doc()
+        data["lines"][1]["code"] = "RICK#-DEEKB"
+        project_po_reference(data)
+        assert _not_delivered(data) == ["RICK#-DEEKB"]
+        assert data["lines"][1]["quantity_ordered"] is None
+
     def test_no_order_clears_everything(self):
         data = _doc(linked_purchase_order_id=None)
         data.pop("po_reference")

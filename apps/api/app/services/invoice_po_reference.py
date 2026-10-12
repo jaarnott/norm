@@ -130,15 +130,16 @@ def project_po_reference(data: dict) -> None:
     """Recompute the derived projection from the cached order + the CURRENT
     working lines. Pure: no network, no database, safe after every patch.
 
-    Loaded reconciles an invoice line to its purchase-order line by the
-    supplier CODE (the exact ordered variant) — NOT the stock item. A
-    delivered line whose code isn't on the PO shows no ordered qty even when
-    the SAME item was ordered under a different code, and that ordered line
-    stays "ordered, not delivered" (verified live: BROCCOLI delivered
-    ``VEGF0223`` vs ordered ``165618``). Only a CODELESS invoice line falls
-    back to ``itemId`` (so a line Loaded left un-coded still picks up its
-    ordered qty, e.g. PORK RACK), and its display code then borrows the PO
-    line's ``itemCode``.
+    A delivered line answers an order row by STOCK ITEM — the same pairing
+    the receive sends Loaded (``receive_request_from_doc``), so the card
+    can't show a row as delivered that Loaded will still call outstanding.
+    It used to pair by supplier CODE first: Service Foods sells SHALLOTS and
+    BANANA SHALLOTS under one code (VEGF50), so a delivery of shallots
+    against an order for banana shallots showed the order's 1 kg as
+    delivered and hid the banana shallots from "ordered, not delivered"
+    (IN11656852, 12 Oct 2026). An unlinked line pairs with nothing until it
+    has an item. The same item delivered under another code is a
+    substitute; a codeless line borrows the row's code for display.
 
     ``ordered_not_received`` lists only the PO items GENUINELY not delivered;
     an item delivered under another code is represented by its substitute
@@ -167,42 +168,22 @@ def project_po_reference(data: dict) -> None:
 
     data["order_date"] = ref.get("order_date")
     po_lines = [pl for pl in ref.get("lines") or [] if isinstance(pl, dict)]
-    po_by_item: dict[str, dict] = {}
-    po_by_code: dict[str, dict] = {}
-    for pl in po_lines:
-        if pl.get("itemId"):
-            po_by_item.setdefault(pl.get("itemId"), pl)
-        if pl.get("itemCode"):
-            po_by_code.setdefault(_norm(pl.get("itemCode")), pl)
 
+    # One order row can only be delivered once. Two invoice lines of the same
+    # item (a split delivery of BONES: 6.43 then 14.15) must not each claim the
+    # same ordered quantity — Loaded shows 14 on the first and 0 on the second,
+    # and double-counting it overstated what was on order.
     consumed: set[int] = set()  # id() of PO lines matched to an invoice line
     for ln in lines:
         ln["substitute_for"] = None
         code = _norm(ln.get("code")) if ln.get("code") else ""
-        item_id = ln.get("linked_item_id")
-        pl = None
-        is_sub = False
-        if code:
-            pl = po_by_code.get(code)
-            if not pl and item_id:
-                pl = po_by_item.get(item_id)
-                is_sub = pl is not None
-        elif item_id:
-            pl = po_by_item.get(item_id)
-        # One order row can only be delivered once. Two invoice lines sharing a
-        # code (a split delivery of BONES: 6.43 then 14.15) must not each claim
-        # the same ordered quantity — Loaded shows 14 on the first and 0 on the
-        # second, and double-counting it overstated what was on order.
-        if pl is not None and id(pl) in consumed:
-            pl = None
-            is_sub = False
+        pl = claim_row_by_item(po_lines, consumed, ln.get("linked_item_id"))
         if pl:
-            consumed.add(id(pl))
             ln["quantity_ordered"] = pl.get("quantityOrdered")
             ln["reference_cost"] = pl.get("unitCost")
             ln["on_order"] = True
             ln["display_code"] = ln.get("code") or pl.get("itemCode")
-            if is_sub:
+            if code and pl.get("itemCode") and _norm(pl.get("itemCode")) != code:
                 # The original ordered line this delivery stands in for —
                 # shown as an expandable row under the substitute; NOT also
                 # listed as "ordered, not delivered" (it WAS delivered).

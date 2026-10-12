@@ -511,6 +511,20 @@ def _register_missing_variants(
             logger.warning("variant registration failed for item %s: %s", item_id, exc)
 
 
+def _apply_brand_choice(ln: dict, e: dict) -> None:
+    """A brand the person picked or cleared in the card (``brand_set``) replaces
+    Loaded's line brand outright — name AND record. Only the record id
+    travelled before, which can't express either: picking a different brand
+    left Loaded's OCR'd name beside the new record, and clearing one (a
+    supplier's name misread as a brand) left a name with no record, which the
+    guard below refuses to receive. Lines the person didn't touch keep
+    Loaded's brand exactly as it was."""
+    if not e.get("brand_set"):
+        return
+    ln["brand"] = e.get("brand") or None
+    ln["linkedBrandId"] = e.get("linked_brand_id") or None
+
+
 def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
     """Apply the card's edits to a draft invoice and (optionally) receive it.
 
@@ -654,6 +668,7 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
             if src in e and e[src] is not None:
                 for dst in dsts:
                     ln[dst] = e[src]
+        _apply_brand_choice(ln, e)
 
     # New lines the editor added (Add Item): a request line whose id matches no
     # existing invoice line is appended as a NEW Loaded line. Only append a line
@@ -683,6 +698,7 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
         ):
             if e.get(src) is not None:
                 new_line[dst] = e[src]
+        _apply_brand_choice(new_line, e)
         inv.setdefault("lines", []).append(new_line)
 
     # Every linked line (edited or appended) takes its stock item's name —
@@ -1207,6 +1223,11 @@ def carry_local_state(fresh: dict, old: dict) -> None:
             continue
         if old_ln.get("struck"):
             fresh_ln["struck"] = True
+        # A brand the person chose (or cleared) outranks Loaded's re-read.
+        if old_ln.get("brand_set"):
+            fresh_ln["brand_set"] = True
+            fresh_ln["brand"] = old_ln.get("brand")
+            fresh_ln["linked_brand_id"] = old_ln.get("linked_brand_id")
         # The three links, each with the display fields that travel with it.
         # PEERS, not nested: the unit carry used to sit inside the item branch,
         # so a unit created on a line whose item link never changed was thrown
@@ -1224,6 +1245,111 @@ def carry_local_state(fresh: dict, old: dict) -> None:
             for k in extras:
                 if old_ln.get(k) is not None:
                     fresh_ln[k] = old_ln[k]
+
+
+def open_drafts(db: Session, venue_id: str, invoice_id: str) -> list:
+    """Every OPEN received_invoice doc for this invoice, canonical first.
+
+    Twin docs exist historically (the fan-out used to key per thread); state
+    changes must land on ALL of them so any bound card reads the same truth.
+    Canonical = a doc that already carries a review, else the newest.
+    """
+    from app.db.models import WorkingDocument
+
+    docs = [
+        d
+        for d in db.query(WorkingDocument)
+        .filter(
+            WorkingDocument.doc_type == "received_invoice",
+            WorkingDocument.venue_id == venue_id,
+        )
+        .all()
+        if (d.external_ref or {}).get("invoice_id") == invoice_id
+        and not (d.data or {}).get("is_received")
+        and not (d.data or {}).get("is_deleted")
+    ]
+    docs.sort(
+        key=lambda d: (
+            (d.data or {}).get("reviewed_at") is not None,
+            d.created_at or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+        ),
+        reverse=True,
+    )
+    return docs
+
+
+def receive_from_draft(
+    db: Session,
+    config_db: Session,
+    lh: "LoadedInvoiceClient",
+    venue_id: str,
+    invoice_id: str,
+    *,
+    mode: str,
+    user_id: str | None,
+):
+    """Receive an invoice exactly as its reviewed working document shows it.
+
+    THE receive path — the web editor's Accept & Receive and the claude.ai
+    card's both come here, and both send only ``{venue_id, invoice_id}``. The
+    request is built server-side from the canonical draft's WORKING values
+    (Loaded's draft + accepted suggestions + manual edits).
+
+    Until Oct 2026 a body carrying its own ``lines`` took a second,
+    client-built path. Nothing sent one any more, and it skipped the two
+    safeguards below — the reviewed-fingerprint check and the outcome record —
+    as did the claude.ai card's copy of this flow, which never checked the
+    fingerprint at all.
+
+    Raises HTTPException 404 (no open draft) or 409 (the invoice changed in
+    Loaded since it was reviewed). Returns ``(do_receive result, the doc)``.
+    """
+    docs = open_drafts(db, venue_id, invoice_id)
+    if not docs:
+        raise HTTPException(404, "no open draft for this invoice — open it first")
+    doc = docs[0]
+    data = doc.data or {}
+    want = data.get("reviewed_invoice_fingerprint")
+    if want and invoice_fingerprint(lh.invoice(invoice_id)) != want:
+        raise HTTPException(
+            409,
+            "this invoice changed in Loaded since it was reviewed — "
+            "reopen it to re-review before receiving",
+        )
+    req = receive_request_from_doc(data, venue_id, invoice_id)
+    out = do_receive(lh, req)
+    if isinstance(out, dict) and out.get("received"):
+        # The units this receive actually used → the catalogue's practice
+        # tier (advisory; the divergence detector).
+        from app.services import supplier_catalog
+
+        supplier_catalog.observe_practice_from_doc(config_db, data)
+        # Sibling drafts may now be duplicates (same number, just received)
+        # or reference a PO that just got invoiced — mark twins received and
+        # clear conflicting cached reviews so their cards re-review.
+        invalidate_conflicting_drafts(
+            db,
+            venue_id,
+            invoice_id,
+            reference_number=req.reference_number,
+            po_ids=(req.linked_purchase_order_id, req.po_number),
+        )
+        # Would autopilot have produced this same result? Best-effort and
+        # isolated — Loaded has already accepted the receive by now.
+        from app.services.autopilot_metrics import record_receive_outcome
+
+        record_receive_outcome(
+            db,
+            venue_id=venue_id,
+            invoice_id=invoice_id,
+            data=data,
+            mode=mode,
+            actor="user",
+            user_id=user_id,
+            working_document_id=doc.id,
+            thread_id=doc.thread_id,
+        )
+    return out, doc
 
 
 def receive_request_from_doc(
@@ -1282,6 +1408,10 @@ def receive_request_from_doc(
                 # invoice whose brand HAD been created (Bidfood 109944512,
                 # 15 Aug 2026). The id has to travel with the line.
                 "linked_brand_id": ln.get("linked_brand_id"),
+                # A brand the person picked or cleared in the card — the name
+                # has to travel too (see _apply_brand_choice).
+                "brand": ln.get("brand"),
+                "brand_set": bool(ln.get("brand_set")),
                 # Resolved on every open by attach_item_names — passing it
                 # saves do_receive an item fetch when it stamps Loaded's
                 # linked-line description.
@@ -1447,10 +1577,8 @@ def invalidate_conflicting_drafts(
                         if s.get(k):
                             sib_pos.add(str(s[k]))
             if duplicate or (po_set and po_set & sib_pos):
-                data["checks"] = None  # legacy-shape cache marker
-                data["check_reasons"] = []
                 data["suggestions"] = []
-                # replica_v1 cache marker: clearing reviewed_at makes the
+                # The cached-review marker: clearing reviewed_at makes the
                 # card's next open re-run the review against the fresh feed.
                 data["reviewed_at"] = None
                 data["issues"] = []

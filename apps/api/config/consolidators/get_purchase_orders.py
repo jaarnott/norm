@@ -1,8 +1,10 @@
 # ruff: noqa: F821 — sandbox-injected names; not imports.
 #
 # Canonical function_code for the `loadedhub.get_purchase_orders`
-# consolidator — THE purchase-order lookup (synced by
-# scripts/sync_invoice_consolidators.py). Replaces three agent-facing
+# consolidator — THE purchase-order lookup. Row definition:
+# GET_PURCHASE_ORDERS_TOOL in scripts/sync_invoice_receiving_config.py; this
+# code reaches the live row through scripts/sync_invoice_tool_code.py.
+# Replaces three agent-facing
 # tools: get_purchase_orders_summary, get_purchase_order_detail and the
 # orphaned list_purchase_orders (get_stock_purchase_order, a literal
 # duplicate of the detail tool, is deleted outright).

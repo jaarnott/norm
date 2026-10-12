@@ -142,9 +142,8 @@ class TestInvoiceButtons:
         me, mine, _ = world
         monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: object())
         monkeypatch.setattr(
-            IF,
-            "_get_or_create_unit",
-            lambda lh, name, db: ({"id": "u-1", "name": name, "ratio": 1}, True),
+            "app.services.invoice_catalog.get_or_create_unit",
+            lambda lh, name, db, **k: ({"id": "u-1", "name": name, "ratio": 1}, True),
         )
         r = client.post(
             "/api/invoice-fixes/create-unit",
@@ -157,22 +156,29 @@ class TestInvoiceButtons:
 
     def test_a_receive_is_recorded(self, client, db_session, world, monkeypatch):
         import app.routers.invoice_fixes as IF
+        from app.db.models import WorkingDocument
 
         me, mine, _ = world
+        db_session.add(
+            WorkingDocument(
+                doc_type="received_invoice",
+                connector_name="loadedhub",
+                venue_id=mine.id,
+                external_ref={"invoice_id": "i-1"},
+                data={"invoice_id": "i-1", "lines": []},
+            )
+        )
+        db_session.flush()
         monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: object())
         monkeypatch.setattr(
-            IF, "_do_receive", lambda lh, req: {"ok": True, "received": False}
+            "app.services.received_invoice.do_receive",
+            lambda lh, req: {"ok": True, "received": True},
         )
         r = client.post(
             "/api/invoice-fixes/receive",
-            json={
-                "venue_id": mine.id,
-                "invoice_id": "i-1",
-                "lines": [{"id": "l-1"}],
-                "receive": False,
-            },
+            json={"venue_id": mine.id, "invoice_id": "i-1"},
             headers=_headers(me),
         )
         assert r.status_code == 200, r.text
         row = db_session.query(Approval).filter(Approval.user_id == me.id).one()
-        assert row.notes == "saved changes to an invoice at Freeman & Grey: invoice i-1"
+        assert row.notes == "received an invoice at Freeman & Grey: invoice i-1"

@@ -1,17 +1,11 @@
 """Match supplier-invoice lines to a venue's stock catalogue — an LLM function.
 
-An "LLM function" in Norm is an internal handler whose body is one
-schema-constrained ``call_llm``: typed input → one bounded model call → typed
-output. No conversation, no tool choice, no writes. ``norm.resolve_dates`` is
-the precedent; this module backs the second one, ``norm.match_stock_items``,
-so the review engine (``review_and_receive_invoices``) can attach item-match
-suggestions to its artifact via the same ``call_api`` it uses for everything
-else. See docs/tool-architecture-strategy.md — this replaces the bespoke
-``/invoice-fixes/match-items`` reasoning endpoint rather than adding a new
-mechanism.
-
-Moved verbatim from ``routers/invoice_fixes.py`` (which re-imports the private
-names so its endpoints and tests keep working) — one matcher, every surface.
+One schema-constrained ``call_llm`` per call: typed input → one bounded model
+call → typed output. No conversation, no tool choice, no writes. The replica
+(``invoice_replica``) calls ``suggest_item_matches`` / ``suggest_supplier_match``
+directly; the engine tools ``norm.match_stock_items`` / ``norm.match_supplier``
+that wrapped them for the old sandboxed review engine were removed in Oct 2026
+— nothing called them once the review moved server-side.
 """
 
 from __future__ import annotations
@@ -70,24 +64,6 @@ def _fetch_stock_groups(lh) -> list[dict]:
         for r in rows
         if isinstance(r, dict) and r.get("id")
     ]
-
-
-def _new_item_lines(inv: dict) -> list[dict]:
-    """The invoice's live lines with no ``linkedItemId`` (a NEW/unmatched item)."""
-    out = []
-    for ln in inv.get("lines") or []:
-        if ln.get("deletedAt") or ln.get("linkedItemId"):
-            continue
-        out.append(
-            {
-                "id": ln.get("id"),
-                "description": ln.get("description") or "",
-                "code": ln.get("code") or "",
-                "brand": ln.get("brand") or "",
-                "unit": ln.get("unit") or "",
-            }
-        )
-    return out
 
 
 def _as_int(x) -> int | None:
@@ -366,29 +342,6 @@ def suggest_item_matches(
         return _match_stock_items(lines, groups, candidates, db, supplier_name)
     except Exception as exc:  # noqa: BLE001 — suggestions are best-effort
         logger.warning("suggest_item_matches failed: %s", exc)
-        return {}
-
-
-def suggest_item_matches_for_invoice(
-    venue_id: str, invoice_id: str, db: Session, config_db: Session
-) -> dict:
-    """Fetch the live invoice, extract its NEW-item lines, and match them."""
-    try:
-        from app.services.received_invoice import LoadedInvoiceClient
-
-        lh = LoadedInvoiceClient(db, config_db, venue_id)
-        inv = lh.invoice(invoice_id)
-        lines = _new_item_lines(inv)
-        return suggest_item_matches(
-            venue_id,
-            lines,
-            db,
-            config_db,
-            lh=lh,
-            supplier_name=inv.get("supplierName") if isinstance(inv, dict) else None,
-        )
-    except Exception as exc:  # noqa: BLE001 — suggestions are best-effort
-        logger.warning("suggest_item_matches_for_invoice failed: %s", exc)
         return {}
 
 

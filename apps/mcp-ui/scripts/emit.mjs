@@ -23,6 +23,8 @@ const SOURCES = [
   'apps/web/app/components/display/RecipeEditor.tsx',
   'apps/web/app/components/display/Combobox.tsx',
   'apps/web/app/components/display/recipeCost.ts',
+  'apps/web/app/components/display/invoiceReview.ts',
+  'apps/web/app/components/display/CatalogPicker.tsx',
   'apps/web/app/components/display/HtmlField.tsx',
   'apps/web/app/lib/pageDocument.ts',
   'apps/web/app/hooks/useActiveVenue.ts',
