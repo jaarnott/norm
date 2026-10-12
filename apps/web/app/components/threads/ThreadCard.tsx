@@ -119,8 +119,8 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
       onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
       title="Remove"
       aria-label="Remove thread"
-      className={compact ? 'n-icon-btn compact-remove' : 'n-icon-btn'}
-      style={{ width: 24, height: 24, flexShrink: 0, ...(compact ? { opacity: 0, transition: 'opacity 0.15s' } : {}) }}
+      className="n-icon-btn n-thread-remove"
+      style={{ width: 24, height: 24, flexShrink: 0 }}
     >
       <X size={14} aria-hidden />
     </button>
@@ -168,14 +168,18 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
         }}>
           {isAutomated ? (thread.automated_task?.title || getThreadTitle(thread)) : (getThreadSummary(thread) || getThreadTitle(thread))}
         </span>
-        {pill ? (
-          <span style={{ flexShrink: 0 }} title={runWaiting ? 'A run is waiting for your approval' : undefined}>
-            <Badge tone={pill.tone}>{pill.label}</Badge>
-          </span>
-        ) : (
-          <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{timeAgo(thread.created_at)}</span>
-        )}
-        {removeButton}
+        {/* The status pill or the age; on hover the remove button takes its
+            spot (globals.css .n-thread-when), as on the full cards. */}
+        <span className="n-thread-when">
+          {pill ? (
+            <span className="n-thread-age" title={runWaiting ? 'A run is waiting for your approval' : undefined}>
+              <Badge tone={pill.tone}>{pill.label}</Badge>
+            </span>
+          ) : (
+            <span className="n-thread-age">{timeAgo(thread.created_at)}</span>
+          )}
+          {removeButton}
+        </span>
       </div>
     );
   }
@@ -201,10 +205,12 @@ export default function ThreadCard({ thread, isSelected, onClick, onRemove, comp
           {cardLabel(thread)}
         </span>
         {isAutomated && <Badge><Timer size={10} strokeWidth={2} aria-hidden /> Saved</Badge>}
-        <span style={{ flexShrink: 0, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
-          {timeAgo(thread.created_at)}
+        {/* Its age; on hover the remove button takes the same spot
+            (globals.css .n-thread-when), so the X costs the panel no width. */}
+        <span className="n-thread-when">
+          <span className="n-thread-age">{timeAgo(thread.created_at)}</span>
+          {removeButton}
         </span>
-        {removeButton}
       </div>
 
       {/* Title */}

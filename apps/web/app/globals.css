@@ -59,17 +59,31 @@ button, input, select, textarea {
 .n-mobile-shell .n-page-title { display: none; }
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
-.compact-card:hover .compact-remove { opacity: 1 !important; }
-/* Keyboard focus shows the remove button as hover does — on the row or on the
-   button itself. :focus-visible, not :focus-within, so a row clicked with the
-   mouse (which takes focus) doesn't keep its button showing. */
-.compact-card:focus-visible .compact-remove,
-.compact-remove:focus-visible { opacity: 1 !important; }
 /* Thread rows sit in a scrolling list: keep the focus ring inside the row. */
 .n-thread-row:focus-visible { outline-offset: -2px; }
 /* Hover for rows and rail tiles whose resting background is set inline. */
 .n-rail-tile:not([aria-current="page"]):hover { background-color: var(--surface-alt) !important; color: var(--text) !important; }
 .n-thread-row:hover { background-color: var(--surface-alt); }
+/* A thread card's corner shows its age (Home's one-line rows: the status pill
+   or the age), and the remove button takes that spot on hover or keyboard
+   focus, so it costs the row no width. :focus-visible, not :focus-within, on
+   the row, so a row clicked with the mouse doesn't keep its button showing.
+   Opacity, not display, so the button stays reachable with Tab. Touch screens
+   can't hover: the full cards show both side by side, and Home's rows keep
+   the button invisible, as they always have. */
+.n-thread-when { position: relative; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--muted); }
+@media (hover: hover) {
+  .n-thread-when .n-thread-remove { position: absolute; right: -5px; top: 50%; transform: translateY(-50%); opacity: 0; transition: opacity 0.12s; }
+  .n-thread-row:hover .n-thread-remove,
+  .n-thread-row:focus-visible .n-thread-remove,
+  .n-thread-remove:focus-visible { opacity: 1; }
+  .n-thread-row:hover .n-thread-age,
+  .n-thread-row:focus-visible .n-thread-age,
+  .n-thread-when:focus-within .n-thread-age { visibility: hidden; }
+}
+@media (hover: none) {
+  .compact-card .n-thread-remove { opacity: 0; }
+}
 .split-drag-handle:hover .split-drag-pill { opacity: 1 !important; }
 /* Report grid chart cells — hover-driven handles and border via CSS, no React state */
 .grid-chart-cell { cursor: default; }

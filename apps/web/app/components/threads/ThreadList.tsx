@@ -154,7 +154,7 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
                 style={{
                   flex: '0 0 auto',
                   whiteSpace: 'nowrap',
-                  padding: '4px 8px',
+                  padding: '4px 6px',
                   fontSize: 'var(--fs-xs)',
                   fontWeight: on ? 600 : 500,
                   color: on ? 'var(--text)' : 'var(--text-soft)',

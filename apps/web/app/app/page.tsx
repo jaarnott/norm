@@ -1346,8 +1346,11 @@ export default function Home() {
         } : {
           display: 'flex',
           flexDirection: 'column',
-          width: (panelCollapsed || panelHidden) ? 0 : 360,
-          minWidth: (panelCollapsed || panelHidden) ? 0 : 360,
+          // 344 since the thread cards' remove button moved into the age's
+          // spot on hover (Oct 2026); it was 360. The four filter chips just
+          // fit at this width (ThreadList).
+          width: (panelCollapsed || panelHidden) ? 0 : 344,
+          minWidth: (panelCollapsed || panelHidden) ? 0 : 344,
           borderRight: (panelCollapsed || panelHidden) ? 'none' : '1px solid var(--line)',
           overflow: 'hidden',
           transition: 'width 0.2s ease, min-width 0.2s ease',
