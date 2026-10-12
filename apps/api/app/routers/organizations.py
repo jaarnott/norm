@@ -15,6 +15,7 @@ from app.db.models import (
     Connection,
 )
 from app.auth.dependencies import get_current_user, require_permission
+from app.services.oauth_service import needs_reconnect
 
 router = APIRouter()
 
@@ -581,7 +582,7 @@ async def list_venue_connectors(
                 "connector_name": c.connector_name,
                 "enabled": c.enabled == "true",
                 "has_oauth": bool(c.access_token),
-                "needs_reconnect": bool(c.needs_reconnect),
+                "needs_reconnect": needs_reconnect(c),
                 "last_auth_error": c.last_auth_error,
                 "oauth_metadata": c.oauth_metadata,
             }

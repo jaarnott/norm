@@ -267,11 +267,43 @@ def exchange_code(
     return token_data
 
 
+def token_is_dead(config_row: Connection | None, now: datetime | None = None) -> bool:
+    """True when this connection cannot produce a working token by itself: no
+    refresh token to renew with, and the access token is missing or expired.
+    Only a person reconnecting brings it back.
+
+    The flag below is set when a refresh is REJECTED; a row with nothing to
+    refresh with never gets that far, so on its own the flag called it healthy.
+    That is how six local venues showed "Connected" on 11 Oct 2026 while every
+    LoadedHub call failed with "No refresh token available".
+    """
+    if config_row is None or config_row.refresh_token:
+        return False
+    if not config_row.access_token:
+        return True
+    expires = config_row.token_expires_at
+    if expires is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return now >= expires - timedelta(seconds=60)
+
+
+def needs_reconnect(config_row: Connection | None) -> bool:
+    """Whether a person must reconnect this connection — flagged by a rejected
+    refresh, or dead with nothing to refresh with. Every surface that shows
+    connection health reads THIS, never the stored flag alone."""
+    return bool(
+        config_row is not None
+        and (config_row.needs_reconnect or token_is_dead(config_row))
+    )
+
+
 def _mark_needs_reconnect(config_row: Connection, error: str) -> None:
     """Flag a connection as broken. Caller commits.
 
-    Set only when the provider *rejects* a refresh (a 4xx on the token
-    endpoint) — a dead or revoked refresh token that a human must re-authorize.
+    Set when the provider *rejects* a refresh (a 4xx on the token endpoint) —
+    a dead or revoked refresh token that a human must re-authorize — and when
+    there is no refresh token at all and the access token has expired.
     Transient failures (network, timeout) raise before this point and leave the
     flag untouched, so a blip is not mistaken for "reconnect me".
     """
@@ -324,6 +356,17 @@ def refresh_access_token(
         query = query.filter(Connection.venue_id.is_(None))
     config_row = query.with_for_update().first()
     if not config_row or not config_row.refresh_token:
+        # Nothing to renew with. Once the access token has expired too, the
+        # connection is dead until someone reconnects: record it on the row
+        # the way a rejected refresh is recorded, so the connect card and
+        # Settings say so instead of showing it connected. (A still-valid
+        # access token is left alone — it works until it expires.)
+        if token_is_dead(config_row):
+            _mark_needs_reconnect(
+                config_row,
+                "No refresh token, and the access token has expired — reconnect",
+            )
+            db.commit()
         raise ValueError("No refresh token available")
 
     # Re-check under the lock — another caller may have just refreshed. A forced

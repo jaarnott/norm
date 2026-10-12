@@ -163,6 +163,94 @@ class TestConnectInfo:
         }  # Unrelated Venue excluded — no access
 
 
+class TestADeadTokenIsNotConnected:
+    """An access token past its expiry with no refresh token can never work
+    again — yet the card showed it "Connected", because only a REJECTED refresh
+    set the flag and a row with nothing to refresh never got that far. Local,
+    11 Oct 2026: six venues green, every LoadedHub call failing, and Norm's own
+    reply ("an auth failure — showing the reconnect card") contradicted by the
+    card it showed."""
+
+    def _row(self, db_session, venue, *, refresh, expires_in):
+        db_session.add(
+            Connection(
+                connector_name="loadedhub",
+                venue_id=venue.id,
+                config={},
+                enabled="true",
+                access_token="tok",
+                refresh_token=refresh,
+                token_expires_at=datetime.now(timezone.utc) + expires_in,
+            )
+        )
+        db_session.flush()
+
+    def test_connect_info_reads_the_token_not_just_the_flag(self, client, db_session):
+        dead = _make_venue(db_session, name="Dead")
+        renewable = _make_venue(db_session, name="Renewable")
+        live = _make_venue(db_session, name="Live")
+        _oauth_spec_row(db_session)
+        self._row(db_session, dead, refresh=None, expires_in=timedelta(hours=-1))
+        # Expired but renewable: the next call refreshes it — still connected.
+        self._row(db_session, renewable, refresh="r", expires_in=timedelta(hours=-1))
+        # No refresh token but a live access token works until it expires.
+        self._row(db_session, live, refresh=None, expires_in=timedelta(days=3))
+        headers = _manager_with_connectors_perm(db_session, venue=dead)
+        uid = _user_id_from(headers, db_session)
+        for v in (renewable, live):
+            db_session.add(
+                UserVenueAccess(id=str(uuid.uuid4()), user_id=uid, venue_id=v.id)
+            )
+        db_session.flush()
+
+        data = client.get("/api/connectors/loadedhub/connect-info", headers=headers)
+        statuses = {v["venue_name"]: v["status"] for v in data.json()["venues"]}
+        assert statuses == {
+            "Dead": "needs_reconnect",
+            "Renewable": "connected",
+            "Live": "connected",
+        }
+
+    def test_the_failed_call_flags_the_row(self, db_session):
+        import pytest
+
+        from app.services.oauth_service import refresh_access_token
+
+        venue = _make_venue(db_session)
+        _oauth_spec_row(db_session)
+        self._row(db_session, venue, refresh=None, expires_in=timedelta(hours=-1))
+        spec = (
+            db_session.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
+            .first()
+        )
+        with pytest.raises(ValueError, match="No refresh token available"):
+            refresh_access_token(spec, db_session, venue_id=venue.id)
+        row = db_session.query(Connection).filter(Connection.venue_id == venue.id).one()
+        assert row.needs_reconnect is True
+        assert "No refresh token" in row.last_auth_error
+
+    def test_a_live_token_without_refresh_is_left_alone(self, db_session):
+        # The keep-alive forces a redemption on every row; a copied access
+        # token (a dev box's) must not be condemned while it still works.
+        import pytest
+
+        from app.services.oauth_service import refresh_access_token
+
+        venue = _make_venue(db_session)
+        _oauth_spec_row(db_session)
+        self._row(db_session, venue, refresh=None, expires_in=timedelta(days=3))
+        spec = (
+            db_session.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == "loadedhub")
+            .first()
+        )
+        with pytest.raises(ValueError):
+            refresh_access_token(spec, db_session, venue_id=venue.id, force=True)
+        row = db_session.query(Connection).filter(Connection.venue_id == venue.id).one()
+        assert row.needs_reconnect is False
+
+
 class TestConnectInfoIsTruthfulForEveryCredentialShape:
     """connect-info used to read per-venue OAuth tokens only, so Norm's own
     internal pipe and prod's BambooHR (one org-wide basic-auth row, no token)

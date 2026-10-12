@@ -19,6 +19,7 @@ from app.auth.dependencies import get_current_user, require_role, require_permis
 from app.services.oauth_service import (
     build_authorize_url,
     exchange_code,
+    needs_reconnect,
     register_client,
 )
 
@@ -470,7 +471,7 @@ async def oauth_status(
     return {
         "connected": True,
         "expired": expired,
-        "needs_reconnect": bool(config_row.needs_reconnect),
+        "needs_reconnect": needs_reconnect(config_row),
         "last_auth_error": config_row.last_auth_error,
         "has_refresh_token": bool(config_row.refresh_token),
         "expires_at": config_row.token_expires_at.isoformat()
@@ -518,7 +519,7 @@ async def oauth_venues_status(
                 "venue_name": v.name,
                 "connected": connected,
                 "expired": expired,
-                "needs_reconnect": bool(c and c.needs_reconnect),
+                "needs_reconnect": needs_reconnect(c),
                 "last_auth_error": c.last_auth_error if c else None,
                 "has_refresh_token": bool(c and c.refresh_token),
                 "expires_at": c.token_expires_at.isoformat()

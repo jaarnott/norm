@@ -6,6 +6,7 @@ from app.db.engine import get_db, get_config_db
 from app.db.models import Connection, ConnectionSpec, User
 from app.auth.dependencies import get_current_user, require_permission
 from app.connectors import spec_rows
+from app.services.oauth_service import needs_reconnect
 
 router = APIRouter()
 
@@ -122,7 +123,7 @@ async def list_connectors(
                 # Connection health — bool(access_token) can't distinguish a
                 # live connection from one whose refresh token has died, so the
                 # UI keys "Reconnect needed" off this instead.
-                entry["needs_reconnect"] = bool(config_row.needs_reconnect)
+                entry["needs_reconnect"] = needs_reconnect(config_row)
                 entry["last_auth_error"] = config_row.last_auth_error
             result.append(entry)
 
@@ -193,7 +194,7 @@ async def connector_connect_info(
         if spec.auth_type == "oauth2":
             if not cfg.access_token:
                 return "not_connected"
-            if cfg.needs_reconnect:
+            if needs_reconnect(cfg):
                 return "needs_reconnect"
             return "connected"
         values = cfg.config or {}
