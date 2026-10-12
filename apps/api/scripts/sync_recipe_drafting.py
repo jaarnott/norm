@@ -141,6 +141,10 @@ DRAFT_RECIPE = {
     },
     "display_component": "recipe_editor",
     "display_props": {"title": "New recipe"},
+    # A card tool ends the turn on its cards unless it opts out; this one must
+    # go on to say what needs the chef (the first production draft's reply
+    # was one line, written before the cards).
+    "suppress_display_early_exit": True,
 }
 
 PLAYBOOK = {
