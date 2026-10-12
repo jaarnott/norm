@@ -65,6 +65,9 @@ OPEN_APP = {
         },
     },
     "display_component": "app_runner",
+    # Approval label (scripts/sync_approval_labels.py READS) — kept here too,
+    # or every run of this script strips it and validate_config fails.
+    "effect": "read",
 }
 
 SKILL_SPEC_ANCHOR = (
