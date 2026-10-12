@@ -466,6 +466,33 @@ _ONE_SHOT_MIN_MAX_TOKENS = 16_000
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
 _FALLBACK = {"fallbacks": "default"}
 
+#: Thinking for the light model (Haiku), which an organisation drops to once
+#: it has used its month's allowance: Haiku predates adaptive thinking, so it
+#: gets a fixed budget (well under max_tokens).
+_LIGHT_THINKING = {"type": "enabled", "budget_tokens": 4096}
+
+
+def _agent_request_options(model: str) -> dict:
+    """The agent-loop request settings that depend on the model.
+
+    Context editing goes to every model. The light model (Haiku) gets
+    fixed-budget thinking and no server-side refusal fallback — that beta and
+    adaptive thinking are for the models that have them."""
+    if "haiku" in model:
+        return {"betas": [_CONTEXT_EDITING_BETA], "thinking": _LIGHT_THINKING}
+    return {
+        "betas": [_CONTEXT_EDITING_BETA, _FALLBACK_BETA],
+        # `fallbacks` is not yet a named argument in this SDK version;
+        # extra_body puts it in the request body as-is.
+        "extra_body": _FALLBACK,
+        # Adaptive thinking makes reasoning a distinct content-block type, so
+        # the UI no longer has to guess which prose is "thinking" and which is
+        # the answer. `display` must be set explicitly: the default is
+        # "omitted", which streams thinking blocks with empty text and reads as
+        # a long silent pause before any output.
+        "thinking": _THINKING,
+    }
+
 
 def _effort(model: str) -> dict:
     """``output_config`` for the agent loop, or nothing for a model without it."""
@@ -723,6 +750,14 @@ def call_llm_with_tools(
     from app.services.models import agent_model
 
     resolved_model = agent_model(db, override=model)
+    # A conversation whose organisation has used its month's allowance carries
+    # on with the light model instead of stopping (Oct 2026 plans). Only when
+    # no model was asked for: an explicit choice is the caller's to make.
+    if model is None and thread_id and db is not None:
+        from app.services.billing_service import FALLBACK_MODEL, light_mode_for_thread
+
+        if light_mode_for_thread(db, thread_id):
+            resolved_model = FALLBACK_MODEL
 
     # Explicit per-call timeout, and no SDK auto-retry: retries are handled
     # manually below (and only before any token has streamed, so a mid-stream
@@ -792,19 +827,9 @@ def call_llm_with_tools(
                     # changed the start of the prompt, so the whole cached
                     # conversation was written again (~50k tokens a time).
                     **({"tool_choice": tool_choice} if tool_choice else {}),
-                    betas=[_CONTEXT_EDITING_BETA, _FALLBACK_BETA],
                     context_management=_context_management(),
-                    # `fallbacks` is not yet a named argument in this SDK
-                    # version; extra_body puts it in the request body as-is.
-                    extra_body=_FALLBACK,
                     **_effort(resolved_model),
-                    # Adaptive thinking makes reasoning a distinct content-block
-                    # type, so the UI no longer has to guess which prose is
-                    # "thinking" and which is the answer. `display` must be set
-                    # explicitly: the default is "omitted", which streams
-                    # thinking blocks with empty text and reads as a long silent
-                    # pause before any output.
-                    thinking=_THINKING,
+                    **_agent_request_options(resolved_model),
                 ) as stream:
                     # Raw events, not stream.text_stream — text_stream yields
                     # only text deltas, so thinking would be dropped on the

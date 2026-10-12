@@ -59,33 +59,48 @@ export interface SpecInventoryRow {
   code: string | null;
 }
 
+export type PlanId = 'core' | 'pro' | 'max';
+
 export interface BillingInfo {
   subscription: {
-    token_plan: 'basic' | 'standard' | 'max' | null;
-    token_quota: number;
+    plan: PlanId | null;
+    /** The plan under its old field name: the same value as ``plan``. */
+    token_plan: PlanId | null;
     status: 'active' | 'past_due' | 'canceled' | 'trialing' | null;
     billing_cycle_start: string | null;
     payment_method_last4: string | null;
     payment_method_brand: string | null;
   } | null;
+  /** Core, Pro and Max (Oct 2026). Each includes a month of usage; `multiple`
+   *  is how much more than Core's. */
+  plans: { id: PlanId; name: string; price_cents: number; multiple: number }[];
+  /** Usage is what Norm's model calls cost, shown to people as a percentage of
+   *  the plan's allowance — never as tokens or dollars. */
   usage: {
+    /** False only when Norm is paused: the plan is cancelled or past due. */
     allowed: boolean;
-    used: number;
-    quota: number;
-    remaining: number;
+    /** The allowance is used up, so Norm answers on its lighter model. */
+    light_mode: boolean;
+    plan: PlanId;
+    used_usd: number;
+    allowance_usd: number;
+    remaining_usd: number;
+    percent: number;
   };
+  /** One top-up adds as much usage as Core includes in a month. */
+  top_up: { price_cents: number; adds_core_months: number };
+  /** What each hired AI team member costs a month. */
+  agent_price_cents: number;
   agents: Record<string, boolean>;
   /** Hierarchy v2: the general form — team members with real prices. */
   agent_apps: { slug: string; name: string; key: string; price_cents: number; enabled: boolean }[];
   /** Priced Apps that are ON (member hired ∧ app enabled). */
   priced_apps: { slug: string; name: string; key: string; price_cents: number; enabled: boolean }[];
-  venue_count: number;
   monthly_cost_cents: number;
   cost_breakdown: {
     plan: number;
     agents: number;
-    apps?: number;
-    venues: number;
+    apps: number;
   };
 }
 

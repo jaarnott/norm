@@ -811,7 +811,7 @@ class Subscription(Base):
     )
     stripe_customer_id = Column(String, nullable=True, unique=True)
     stripe_subscription_id = Column(String, nullable=True, unique=True)
-    token_plan = Column(String, nullable=False, default="basic")  # basic|standard|max
+    token_plan = Column(String, nullable=False, default="core")  # core|pro|max
     token_quota = Column(Integer, nullable=False, default=1_000_000)
     billing_cycle_start = Column(DateTime(timezone=True), nullable=True)
     status = Column(
@@ -866,7 +866,8 @@ class TokenTopUp(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
-    tokens = Column(Integer, nullable=False)
+    tokens = Column(Integer, nullable=False)  # token-era top-ups; 0 since Oct 2026
+    usage_usd = Column(Numeric(10, 2), nullable=True)  # usage added (USD of model cost)
     amount_cents = Column(Integer, nullable=False)
     stripe_payment_intent_id = Column(String, nullable=True)
     status = Column(

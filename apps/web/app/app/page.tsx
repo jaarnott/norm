@@ -100,13 +100,14 @@ export default function Home() {
   // a venue-scoped page loaded with no venue at all used to put up the
   // reconnect panel on every fresh sign-in.
   const [venuesLoaded, setVenuesLoaded] = useState(false);
-  const [quotaExceeded, setQuotaExceeded] = useState<{ used: number; quota: number } | null>(null);
-  // Which Settings tab to open on — set by "Top up" in the quota dialog.
+  // Norm refused a message because the organisation's plan isn't active.
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
+  // Which Settings tab to open on — set by "Open billing" in the paused dialog.
   const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
   // …only for that visit: leaving Settings forgets it.
   useEffect(() => { if (activeAgent !== 'settings') setSettingsTab(undefined); }, [activeAgent]);
   const openBilling = useCallback(() => {
-    setQuotaExceeded(null);
+    setQuotaExceeded(false);
     setSettingsTab('billing');
     setActiveAgent('settings');
     setMobileView('settings');
@@ -697,7 +698,7 @@ export default function Home() {
               }
             }).catch(() => {});
           } else if (event.type === 'quota_exceeded') {
-            setQuotaExceeded({ used: event.used ?? 0, quota: event.quota ?? 0 });
+            setQuotaExceeded(true);
             streamErrored = true;
           } else if (event.type === 'error') {
             console.error('Stream error:', event.message);
@@ -1140,7 +1141,7 @@ export default function Home() {
     ));
 
     const mobileQuotaModal = quotaExceeded && (
-      <QuotaExceededModal used={quotaExceeded.used} quota={quotaExceeded.quota} onClose={() => setQuotaExceeded(null)} onTopUp={openBilling} />
+      <QuotaExceededModal onClose={() => setQuotaExceeded(false)} onOpenBilling={openBilling} />
     );
 
     // Every mobile screen but the menu: a top bar (menu, the screen's title,
@@ -1309,12 +1310,7 @@ export default function Home() {
   return (
     <div style={{ display: 'flex', height: '100dvh', overflow: 'hidden', position: 'relative', backgroundColor: 'var(--canvas)' }}>
       {quotaExceeded && (
-        <QuotaExceededModal
-          used={quotaExceeded.used}
-          quota={quotaExceeded.quota}
-          onClose={() => setQuotaExceeded(null)}
-          onTopUp={openBilling}
-        />
+        <QuotaExceededModal onClose={() => setQuotaExceeded(false)} onOpenBilling={openBilling} />
       )}
       {/* Left Sidebar */}
       <Sidebar

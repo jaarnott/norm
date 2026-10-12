@@ -258,7 +258,7 @@ def _ensure_org_subscriptions() -> None:
     log = logging.getLogger(__name__)
     db = SessionLocal()
     try:
-        from app.services.billing_service import PLAN_QUOTAS
+        from app.services.billing_service import DEFAULT_PLAN
 
         orgs = db.query(Organization).all()
         for org in orgs:
@@ -273,8 +273,8 @@ def _ensure_org_subscriptions() -> None:
                 db.add(
                     Subscription(
                         organization_id=org.id,
-                        token_plan="basic",
-                        token_quota=PLAN_QUOTAS["basic"]["tokens"],
+                        token_plan=DEFAULT_PLAN,
+                        token_quota=0,
                         status="trialing",
                     )
                 )

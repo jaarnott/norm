@@ -109,7 +109,24 @@ ENGINE_ONLY = {
 }
 
 
-def _member(slug, *, owns, name, description, icon, price=0, key=None, tagline=""):
+# Every hired AI team member is $10/month on one shared Stripe price
+# (STRIPE_PRICE_AGENT, quantity = members hired) — Oct 2026 pricing; keep in
+# step with billing_service.AGENT_PRICE_CENTS.
+AGENT_PRICE_CENTS = 1000
+AGENT_PRICE_KEY = "agent"
+
+
+def _member(
+    slug,
+    *,
+    owns,
+    name,
+    description,
+    icon,
+    price=AGENT_PRICE_CENTS,
+    key=AGENT_PRICE_KEY,
+    tagline="",
+):
     return {
         "slug": slug,
         "name": name,
@@ -179,8 +196,6 @@ APPS = [
         owns="procurement",
         name="Procurement",
         icon="🛒",
-        price=500,
-        key="procurement",
         description="Handles purchasing, suppliers and ordering.",
         tagline="Purchase orders, invoice receiving and reconciliation, stock and tenders.",
     ),
@@ -189,8 +204,6 @@ APPS = [
         owns="hr",
         name="HR",
         icon="🧑‍💼",
-        price=1000,
-        key="hr",
         description="Runs hiring, training and employee records.",
         tagline="Job posts, candidates, onboarding and employee records.",
     ),

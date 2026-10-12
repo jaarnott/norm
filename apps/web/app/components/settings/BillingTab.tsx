@@ -7,7 +7,7 @@ import { Elements, CardElement, useStripe, useElements } from '@stripe/react-str
 import { Check, CreditCard, ExternalLink, TriangleAlert, X } from 'lucide-react';
 import { apiFetch, getStoredUser } from '../../lib/api';
 import { can } from '../../lib/permissions';
-import type { BillingInfo, StripeInvoice } from '../../types';
+import type { BillingInfo, PlanId, StripeInvoice } from '../../types';
 import Badge from '../ui/Badge';
 import type { BadgeTone } from '../ui/Badge';
 import Button from '../ui/Button';
@@ -18,20 +18,14 @@ import PageState from '../ui/PageState';
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || '');
 
-const PLANS = [
-  { id: 'basic', name: 'Basic', price: 50, tokens: '1M', tokensNum: 1_000_000 },
-  { id: 'standard', name: 'Standard', price: 100, tokens: '3M', tokensNum: 3_000_000 },
-  { id: 'max', name: 'Max', price: 200, tokens: '10M', tokensNum: 10_000_000 },
-] as const;
-
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(0)}`;
 }
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
-  return n.toLocaleString();
+/** How much usage a plan includes, said the way the pricing page says it:
+ *  Core is the yardstick, bigger plans are multiples of it. */
+function planUsage(multiple: number): string {
+  return multiple > 1 ? `${multiple}× Core’s usage` : 'A month of everyday use';
 }
 
 /**
@@ -192,11 +186,11 @@ export default function BillingTab({ orgId }: { orgId: string }) {
   const [showCardForm, setShowCardForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [pendingPlan, setPendingPlan] = useState<string | null>(null);
+  const [pendingPlan, setPendingPlan] = useState<PlanId | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   // A plan switch or a top-up waiting on "are you sure?" — both cost money.
   const [confirming, setConfirming] = useState<
-    { kind: 'plan'; plan: string } | { kind: 'start'; plan: string } | { kind: 'topup'; units: number } | null
+    { kind: 'plan'; plan: PlanId } | { kind: 'start'; plan: PlanId } | { kind: 'topup'; units: number } | null
   >(null);
   // Anyone who can read billing sees the plan, usage and invoices; changing
   // what the organisation pays for needs billing:manage (owners).
@@ -224,7 +218,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
   useEffect(() => { fetchBilling(); fetchInvoices(); }, [fetchBilling, fetchInvoices]);
 
   // Confirmed in the dialog, which shows the reason if it fails.
-  const changePlan = async (plan: string) => {
+  const changePlan = async (plan: PlanId) => {
     const res = await send(() => apiFetch(`/api/billing/${orgId}/plan`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -234,7 +228,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
     fetchInvoices();
   };
 
-  const subscribe = async (plan: string) => {
+  const subscribe = async (plan: PlanId) => {
     setActionLoading('subscribe');
     setError(null);
     try {
@@ -257,7 +251,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
 
   // Confirmed in the dialog: with a card on file, starting a plan charges it
   // straight away.
-  const startPlan = async (plan: string) => {
+  const startPlan = async (plan: PlanId) => {
     const res = await send(() => apiFetch(`/api/billing/${orgId}/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -268,7 +262,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
     fetchInvoices();
   };
 
-  const handleSelectPlan = (plan: string) => {
+  const handleSelectPlan = (plan: PlanId) => {
     if (hasSubscription) {
       setConfirming({ kind: 'plan', plan });
     } else if (hasPaymentMethod) {
@@ -286,8 +280,8 @@ export default function BillingTab({ orgId }: { orgId: string }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ units }),
-    }), 'No tokens were bought');
-    // Paid: close now; the new quota and invoice follow when they load.
+    }), 'The top-up wasn’t bought');
+    // Paid: close now; the new allowance and invoice follow when they load.
     fetchBilling();
     fetchInvoices();
   };
@@ -298,22 +292,30 @@ export default function BillingTab({ orgId }: { orgId: string }) {
 
   const sub = billing.subscription;
   const usage = billing.usage;
-  const usagePercent = usage.quota > 0 ? Math.min(100, (usage.used / usage.quota) * 100) : 0;
+  const plans = billing.plans ?? [];
+  const usagePercent = Math.max(0, usage.percent ?? 0);
+  const meterPercent = Math.min(100, usagePercent);
   const hasSubscription = sub && sub.status && sub.status !== 'trialing';
   const hasPaymentMethod = sub && sub.payment_method_last4;
+  const lightMode = usage.light_mode;
   // The bar stays neutral until the "running low" point, then turns amber.
-  const nearLimit = usagePercent > 80;
-  const planName = PLANS.find(p => p.id === (sub?.token_plan || 'basic'))?.name ?? (sub?.token_plan || 'basic');
+  const nearLimit = lightMode || usagePercent >= 80;
+  const currentPlan = plans.find(p => p.id === (sub?.plan ?? usage.plan));
+  const planName = currentPlan?.name ?? 'Core';
+  const hired = (billing.agent_apps ?? []).filter(a => a.enabled);
   const teamRows = (billing.agent_apps ?? []).length + (billing.priced_apps ?? []).length;
-  const currentPlan = PLANS.find(p => p.id === sub?.token_plan);
+  const topUpCents = billing.top_up?.price_cents ?? 3000;
   const card = hasPaymentMethod
     ? `the ${sub.payment_method_brand ? `${sub.payment_method_brand.toUpperCase()} ` : ''}card ending ${sub.payment_method_last4}`
     : 'your card';
+  const upgradeHint = canManage
+    ? 'Top up below, or move to a bigger plan,'
+    : 'Ask whoever manages billing to top up or move to a bigger plan';
 
   // What the open "are you sure?" says and does.
   const confirmation = (() => {
     if (confirming?.kind === 'plan') {
-      const target = PLANS.find(p => p.id === confirming.plan);
+      const target = plans.find(p => p.id === confirming.plan);
       const name = target?.name ?? confirming.plan;
       return (
         <ConfirmDialog
@@ -324,15 +326,15 @@ export default function BillingTab({ orgId }: { orgId: string }) {
           onClose={() => setConfirming(null)}
         >
           <p style={{ margin: 0 }}>
-            {target ? `$${target.price} a month for ${target.tokens} tokens` : 'The new plan'}
-            {currentPlan ? `, instead of ${currentPlan.name} at $${currentPlan.price} for ${currentPlan.tokens}` : ''}.
+            {target ? `${formatCents(target.price_cents)} a month for ${planUsage(target.multiple).toLowerCase()}` : 'The new plan'}
+            {currentPlan ? `, instead of ${currentPlan.name} at ${formatCents(currentPlan.price_cents)}` : ''}.
             {' '}It starts now, and this month’s bill is prorated for the change.
           </p>
         </ConfirmDialog>
       );
     }
     if (confirming?.kind === 'start') {
-      const target = PLANS.find(p => p.id === confirming.plan);
+      const target = plans.find(p => p.id === confirming.plan);
       const name = target?.name ?? confirming.plan;
       return (
         <ConfirmDialog
@@ -343,23 +345,24 @@ export default function BillingTab({ orgId }: { orgId: string }) {
           onClose={() => setConfirming(null)}
         >
           <p style={{ margin: 0 }}>
-            Billing starts today on {card}: {target ? `$${target.price} a month for ${target.tokens} tokens` : 'the plan’s monthly price'}, plus the venue and team charges shown on this page.
+            Billing starts today on {card}: {target ? `${formatCents(target.price_cents)} a month` : 'the plan’s monthly price'}, plus {formatCents(billing.agent_price_cents)} a month for each AI team member you’ve hired.
           </p>
         </ConfirmDialog>
       );
     }
     if (confirming?.kind === 'topup') {
       const { units } = confirming;
+      const price = formatCents(units * topUpCents);
       return (
         <ConfirmDialog
-          title={`Buy ${formatTokens(units * 500_000)} tokens for $${units * 10}?`}
-          confirmLabel={`Pay $${units * 10}`}
+          title={`Top up for ${price}?`}
+          confirmLabel={`Pay ${price}`}
           busyLabel="Paying…"
           onConfirm={() => topUp(units)}
           onClose={() => setConfirming(null)}
         >
           <p style={{ margin: 0 }}>
-            ${units * 10} is charged to {card} now and the tokens are added straight away. They expire at the end of this billing period.
+            {price} is charged to {card} now, and {units === 1 ? 'a month of Core’s usage is' : `${units} months of Core’s usage are`} added straight away. It lasts until the end of this billing period.
           </p>
         </ConfirmDialog>
       );
@@ -380,52 +383,61 @@ export default function BillingTab({ orgId }: { orgId: string }) {
       )}
       {confirmation}
 
-      {/* Usage */}
-      <Section title="Token usage">
+      {/* Usage — a share of the plan's allowance; never tokens or dollars */}
+      <Section
+        title="Usage this period"
+        meta={sub?.billing_cycle_start ? <span>Since {new Date(sub.billing_cycle_start).toLocaleDateString()}</span> : undefined}
+      >
         <div className="n-card" style={{ padding: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 8, fontVariantNumeric: 'tabular-nums' }}>
-            <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>{formatTokens(usage.used)} used</span>
-            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{formatTokens(usage.remaining)} remaining of {formatTokens(usage.quota)}</span>
+            <span style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>
+              {usagePercent >= 100 ? 'All used' : `${Math.round(usagePercent)}% used`}
+            </span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>of what the {planName} plan includes</span>
           </div>
           <div
             role="progressbar"
-            aria-label="Token usage"
+            aria-label="Usage this period"
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={Math.round(usagePercent)}
+            aria-valuenow={Math.round(meterPercent)}
             style={{ height: 8, backgroundColor: 'var(--line-soft)', borderRadius: 999, overflow: 'hidden' }}
           >
             <div style={{
               height: '100%', borderRadius: 999, transition: 'width 0.3s',
-              width: `${usagePercent}%`,
+              width: `${meterPercent}%`,
               backgroundColor: nearLimit ? 'var(--warn)' : 'var(--text-soft)',
             }} />
           </div>
-          {usagePercent > 80 && (
+          {lightMode ? (
+            <p data-testid="light-mode-notice" style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--warn)', margin: '10px 0 0' }}>
+              <Icon icon={TriangleAlert} size="dense" style={{ marginTop: 2 }} />
+              <span>
+                This period’s usage is used up, so Norm is answering on a lighter, faster model until it resets.
+                {' '}{upgradeHint} to bring back the full model.
+              </span>
+            </p>
+          ) : nearLimit ? (
             <p style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--warn)', margin: '10px 0 0' }}>
               <Icon icon={TriangleAlert} size="dense" style={{ marginTop: 2 }} />
-              {canManage
-                ? 'Running low on tokens — consider upgrading your plan or purchasing a top-up.'
-                : 'Running low on tokens — ask whoever manages billing to upgrade the plan or buy a top-up.'}
+              <span>
+                Running low. When it’s used up Norm keeps working, on a lighter model, until the period resets.
+                {' '}{upgradeHint} to stay on the full model.
+              </span>
             </p>
-          )}
+          ) : null}
         </div>
       </Section>
 
       {/* Plans */}
       <Section
-        title="Token plan"
-        meta={sub?.status ? (
-          <>
-            <Badge tone={subscriptionTone(sub.status)}>{sentence(sub.status)}</Badge>
-            {sub.billing_cycle_start && <span>Billing cycle started {new Date(sub.billing_cycle_start).toLocaleDateString()}</span>}
-          </>
-        ) : undefined}
-        note={canManage ? undefined : 'Only someone who manages billing — usually the owner — can change the plan or the card, or buy more tokens.'}
+        title="Plan"
+        meta={sub?.status ? <Badge tone={subscriptionTone(sub.status)}>{sentence(sub.status)}</Badge> : undefined}
+        note={canManage ? undefined : 'Only someone who manages billing — usually the owner — can change the plan or the card, or top up.'}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12 }}>
-          {PLANS.map(plan => {
-            const isActive = sub?.token_plan === plan.id;
+          {plans.map(plan => {
+            const isActive = currentPlan?.id === plan.id;
             return (
               <div
                 key={plan.id}
@@ -453,8 +465,11 @@ export default function BillingTab({ orgId }: { orgId: string }) {
                     </Button>
                   ) : null}
                 </div>
-                <div style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, lineHeight: 1.3, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>${plan.price}</div>
-                <div style={{ fontSize: 'var(--fs-sm)', color: isActive ? 'var(--text-soft)' : 'var(--muted)' }}>{plan.tokens} tokens/month</div>
+                <div style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, lineHeight: 1.3, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
+                  {formatCents(plan.price_cents)}
+                  <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 400, color: 'var(--muted)' }}> /month</span>
+                </div>
+                <div style={{ fontSize: 'var(--fs-sm)', color: isActive ? 'var(--text-soft)' : 'var(--muted)' }}>{planUsage(plan.multiple)}</div>
               </div>
             );
           })}
@@ -462,11 +477,11 @@ export default function BillingTab({ orgId }: { orgId: string }) {
       </Section>
 
       {/* Monthly cost breakdown */}
-      <Section title="Monthly cost">
+      <Section title="Monthly cost" footnote="Reports and App Builder come with every plan.">
         <div className="n-card" style={{ overflow: 'hidden', fontSize: 'var(--fs-base)' }}>
-          <CostRow label={`Token plan (${planName})`} amount={`${formatCents(billing.cost_breakdown.plan)}/mo`} />
+          <CostRow label={`Plan (${planName})`} amount={`${formatCents(billing.cost_breakdown.plan)}/mo`} />
           <CostRow
-            label={`Team (${(billing.agent_apps ?? []).filter(a => a.enabled).map(a => a.name).join(', ') || 'none'})`}
+            label={hired.length > 0 ? `AI team (${hired.map(a => a.name).join(', ')})` : 'AI team (none hired)'}
             amount={`${formatCents(billing.cost_breakdown.agents)}/mo`}
           />
           {(billing.cost_breakdown.apps ?? 0) > 0 && (
@@ -475,7 +490,6 @@ export default function BillingTab({ orgId }: { orgId: string }) {
               amount={`${formatCents(billing.cost_breakdown.apps ?? 0)}/mo`}
             />
           )}
-          <CostRow label={`Venues (${billing.venue_count})`} amount={`${formatCents(billing.cost_breakdown.venues)}/mo`} />
           <CostRow total label="Total" amount={`${formatCents(billing.monthly_cost_cents)}/mo`} />
         </div>
       </Section>
@@ -563,23 +577,24 @@ export default function BillingTab({ orgId }: { orgId: string }) {
       {/* Top-ups — only for someone who may buy them */}
       {canManage && (
         <Section
-          title="Buy more tokens"
+          title="Top up"
           note={(
             <>
-              500K tokens per top-up at $10 each. Tokens expire at end of billing period.
+              Each top-up adds as much usage as Core includes in a month, for {formatCents(topUpCents)}. It lasts until the end of this billing period.
               {!hasPaymentMethod && <span style={{ color: 'var(--error)' }}> Add a payment method first.</span>}
             </>
           )}
         >
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {[1, 2, 5].map(units => (
+            {[1, 2, 3].map(units => (
               <Button
                 key={units}
+                data-testid={`topup-${units}`}
                 onClick={() => setConfirming({ kind: 'topup', units })}
                 disabled={actionLoading !== null || !hasPaymentMethod}
                 style={{ fontVariantNumeric: 'tabular-nums' }}
               >
-                {formatTokens(units * 500_000)} — ${units * 10}
+                {units === 1 ? 'One top-up' : `${units} top-ups`} — {formatCents(units * topUpCents)}
               </Button>
             ))}
           </div>

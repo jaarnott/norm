@@ -164,6 +164,8 @@ def _setup_tables():
             "ADD COLUMN IF NOT EXISTS id_field VARCHAR",
             "ALTER TABLE component_api_configs "
             "ADD COLUMN IF NOT EXISTS response_field_mapping JSON",
+            # Top-ups record the usage they add in dollars (Oct 2026 plans).
+            "ALTER TABLE token_top_ups ADD COLUMN IF NOT EXISTS usage_usd NUMERIC(10,2)",
         ):
             conn.execute(_sqltext(ddl))
     yield

@@ -251,7 +251,10 @@ async def post_message_stream(
 
                 err_msg = str(exc).lower()
                 if isinstance(exc, QuotaExceededError):
-                    quota_text = "You've used all your tokens for this billing period."
+                    quota_text = (
+                        "Norm is paused: this organisation's plan isn't active. "
+                        "An owner can sort it out in Settings → Billing."
+                    )
                     persisted_id = _persist_failed_turn(
                         req.thread_id, req.message, user.id, req.venue_id, quota_text
                     )

@@ -250,7 +250,7 @@ class TestStreamFailureNet:
         from app.services.billing_service import QuotaExceededError
 
         def boom(*a, **k):
-            raise QuotaExceededError(used=1000, quota=1000)
+            raise QuotaExceededError(used=30.0, quota=30.0)
 
         monkeypatch.setattr(messages_mod, "handle_message", boom)
 
@@ -266,7 +266,7 @@ class TestStreamFailureNet:
             .all()
         )
         assert msgs[0].role == "user" and msgs[0].content == "big question"
-        assert "tokens" in msgs[1].content
+        assert "plan isn't active" in msgs[1].content
 
 
 class TestNonStreamFailureNet:

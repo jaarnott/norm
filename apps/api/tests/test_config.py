@@ -181,9 +181,10 @@ class TestGetStripePriceId:
         s = Settings(
             STRIPE_PRICE_HR="price_hr_001",
             STRIPE_PRICE_PROCUREMENT="price_proc_002",
-            STRIPE_PRICE_VENUE="price_venue_003",
+            STRIPE_PRICE_AGENT="price_agent_003",
             _env_file=None,
         )
         assert s.get_stripe_price_id("hr") == "price_hr_001"
         assert s.get_stripe_price_id("procurement") == "price_proc_002"
-        assert s.get_stripe_price_id("venue") == "price_venue_003"
+        # Every hired team member shares one price since Oct 2026.
+        assert s.get_stripe_price_id("agent") == "price_agent_003"

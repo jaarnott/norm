@@ -138,6 +138,12 @@ def _set_enabled(
         "enable" if enabled else "disable",
         extra={"org_id": org_id, "app": slug, "by": user.id},
     )
+    # A team member's $10 rides on the subscription: hiring or retiring one
+    # updates the Stripe quantity (best effort; logged, never raised).
+    if not slug.startswith(CUSTOM_PREFIX) and app.tier == "agent":
+        from app.services.billing_service import sync_agent_count
+
+        sync_agent_count(db, org_id, config_db)
     return {"slug": slug, "enabled": enabled}
 
 

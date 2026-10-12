@@ -381,15 +381,6 @@ async def create_venue(
     db.add(UserVenueAccess(user_id=user.id, venue_id=venue.id))
     db.commit()
 
-    # Sync venue count with Stripe billing
-    try:
-        from app.services.billing_service import sync_venue_count
-
-        sync_venue_count(db, org_id)
-        db.commit()
-    except Exception:
-        pass  # Don't fail venue creation if billing sync fails
-
     return {
         "id": venue.id,
         "name": venue.name,
@@ -481,8 +472,6 @@ async def delete_venue(
         raise HTTPException(404, "Venue not found")
     _require_org_permission(db, user, venue.organization_id, "org:venues")
 
-    org_id = venue.organization_id
-
     # Venue-scoped config — remove entirely.
     # (user_venue_access.venue_id is NOT NULL, so it must be deleted, not nulled.)
     db.query(UserVenueAccess).filter(UserVenueAccess.venue_id == venue_id).delete(
@@ -550,15 +539,6 @@ async def delete_venue(
 
     db.delete(venue)
     db.commit()
-
-    # Sync venue count with Stripe billing
-    try:
-        from app.services.billing_service import sync_venue_count
-
-        sync_venue_count(db, org_id)
-        db.commit()
-    except Exception:
-        pass  # Don't fail venue deletion if billing sync fails
 
     return {"ok": True}
 

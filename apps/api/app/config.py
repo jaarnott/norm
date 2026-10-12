@@ -66,12 +66,18 @@ class Settings(BaseSettings):
     BILLING_ENFORCEMENT: bool = False
 
     # Stripe price IDs (set per environment)
+    # Plans (billing_service.PLANS) and the one price every hired AI team
+    # member shares (quantity = members hired). Oct 2026.
+    STRIPE_PRICE_CORE: str = ""
+    STRIPE_PRICE_PRO: str = ""
+    STRIPE_PRICE_MAX: str = ""
+    STRIPE_PRICE_AGENT: str = ""
+    # The token plans and per-member prices these replaced — still read when
+    # an existing subscription item is matched during a plan change.
     STRIPE_PRICE_BASIC: str = ""
     STRIPE_PRICE_STANDARD: str = ""
-    STRIPE_PRICE_MAX: str = ""
     STRIPE_PRICE_HR: str = ""
     STRIPE_PRICE_PROCUREMENT: str = ""
-    STRIPE_PRICE_VENUE: str = ""
 
     # ── Connectors ──────────────────────────────────────────────────────
     OAUTH_REDIRECT_URI: str = ""

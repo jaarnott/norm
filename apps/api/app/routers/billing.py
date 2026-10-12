@@ -58,7 +58,7 @@ async def get_billing(
 
 
 class SetupBody(BaseModel):
-    token_plan: str = "basic"
+    token_plan: str = "core"
 
 
 @router.post("/{org_id}/setup")
@@ -81,7 +81,7 @@ async def setup_billing(
 
 
 class SubscribeBody(BaseModel):
-    token_plan: str = "basic"
+    token_plan: str = "core"
 
 
 @router.post("/{org_id}/subscribe")
@@ -195,7 +195,9 @@ async def update_agents(
 
 
 class TopUpBody(BaseModel):
-    units: int = 1  # each unit = 500K tokens for $10
+    units: int = (
+        1  # each unit adds a Core-sized month of usage (billing_service.TOPUP_*)
+    )
 
 
 @router.post("/{org_id}/topup")

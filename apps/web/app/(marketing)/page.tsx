@@ -71,7 +71,7 @@ export default function HomePage() {
               </Link>
               <Link href="/features" className="mkt-btn mkt-btn--secondary">See what Norm does</Link>
             </div>
-            <p className="mkt-small">Free for 7 days. Then from $50 a month, plus $10 per venue.</p>
+            <p className="mkt-small">Free for 7 days. Then from $49 a month, with no charge per venue.</p>
           </div>
 
           <div className="mkt-hero-visual">
@@ -350,7 +350,7 @@ export default function HomePage() {
           <h2 className="mkt-h2">Start with a free week.</h2>
           <div className="mkt-stack mkt-stack--lg">
             <p className="mkt-lead">
-              Then from $50 a month, plus $10 per venue. Every plan includes every feature; plans differ only in how much Norm can do each month.
+              Then from $49 a month, plus $10 for each AI team member you hire. Every plan includes every feature and reports; plans differ only in how much Norm can do each month.
             </p>
             <div className="mkt-actions">
               <Link href={SIGNUP_HREF} className="mkt-btn mkt-btn--primary">Start your free week</Link>
