@@ -38,17 +38,25 @@ TOOL = {
     "method": "GET",  # read-only consolidator: auto-executes, nestable
     # Tightened 7 Oct 2026: each rule stated once (the tool list is ~65% of
     # every prompt).
+    # Oct 2026: venues and include on vs_actual too — every venue in one call,
+    # and only the side (actual / rostered) the question needs.
     "description": (
         "Labour for a period in plain English, on the venue's trading day — THE labour "
-        "tool. view: 'attendance' (default; rostered vs actual hours and cost, booked "
-        "leave split out and never counted as worked; group_by staff/day/detail; "
-        "venues takes a list or 'all') | 'roster' (the full roster, drawn as the grid) "
-        "| 'vs_actual' (rostered vs actual per day, venue totals) | 'timeclock' "
-        "(clock-ins; worked and leave hours summed separately) | 'staff' (names, "
-        "roles, rates; no period). staff_name narrows every view but vs_actual. Ask "
-        "ONCE for the whole period per venue. On attendance, flag no-shows (rostered, "
-        "never clocked in), unrostered clock-ins, and hours more than 20% over roster."
+        "tool. view: 'attendance' (default; rostered vs actual hours and cost from the "
+        "roster and clock-ins, booked leave split out and never counted as worked; "
+        "group_by staff/day/detail) | 'roster' (the full roster, drawn as the grid) | "
+        "'vs_actual' (Loaded's Roster vs actual report: rostered vs actual hours and "
+        "cost per day) | 'timeclock' (clock-ins; worked and leave hours summed "
+        "separately) | 'staff' (names, roles, rates; no period). attendance and "
+        "vs_actual take venues (a list or 'all') for every venue in ONE call, group_by "
+        "'day' for each venue's days, and include 'actual' | 'rostered' | 'both' "
+        "(default) — ask only for what you need. staff_name narrows every view but "
+        "vs_actual. Ask ONCE for the whole period. On attendance, flag no-shows "
+        "(rostered, never clocked in), unrostered clock-ins, and hours more than 20% "
+        "over roster."
     ),
+    # A read: it reaches the agent and MCP without an approval card.
+    "effect": "read",
     "required_fields": [],
     "optional_fields": [
         "period",
@@ -60,6 +68,7 @@ TOOL = {
         "staff_name",
         "group_by",
         "interval",
+        "include",
     ],
     "field_descriptions": {
         "period": (
@@ -75,8 +84,8 @@ TOOL = {
             "'attendance' (default) | 'roster' | 'vs_actual' | 'timeclock' | 'staff'."
         ),
         "venues": (
-            "attendance only: 'all' or a list of venue names — one row of totals per "
-            "venue."
+            "attendance and vs_actual: 'all' or a list of venue names — one row per "
+            "venue, every venue in one call."
         ),
         "staff_name": (
             "One person — part of their first or last name, any case. Not for "
@@ -84,12 +93,18 @@ TOOL = {
         ),
         "group_by": (
             "attendance: 'staff' (default) | 'day' (with unrostered count) | 'detail' "
-            "(shift by shift: rostered, clock-ins, leave)."
+            "(shift by shift: rostered, clock-ins, leave). With venues: 'day' adds "
+            "each venue's days (attendance and vs_actual; vs_actual default 'total')."
         ),
         "interval": "vs_actual: bucket d.hh:mm:ss (default daily).",
+        "include": (
+            "attendance and vs_actual: 'actual' | 'rostered' | 'both' (default). On "
+            "attendance, 'actual' skips the roster fetch and 'rostered' the clock-ins."
+        ),
     },
     "field_schema": {
         "venues": {"description": "'all' or a list of venue names"},
+        "include": {"type": "string", "enum": ["actual", "rostered", "both"]},
     },
     "max_result_chars": 60_000,
     "read_only": True,

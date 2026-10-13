@@ -436,3 +436,87 @@ class TestReviewFixes:
         assert "unknown group_by 'role'" in out["error"]
         assert not any(a == "get_roster" for a, _ in api.seen)
         assert run(Api(), group_by="Day")["rows"]  # case-insensitive
+
+
+class TestInclude:
+    """include ('actual' | 'rostered' | 'both') — fetch and answer only the
+    side the question needs. A worked-hours question used to pay for the
+    roster too, and an actual-only answer carried rostered zeros that read as
+    'nobody was rostered'."""
+
+    def _fetched(self, api):
+        return [a for a, _p in api.seen]
+
+    def test_actual_skips_the_roster_and_drops_its_columns(self):
+        api = Api()
+        out = run(api, include="actual")
+        assert "get_roster" not in self._fetched(api)
+        assert "get_timeclock_entries" in self._fetched(api)
+        assert out["include"] == "actual"
+        assert out["totals"]["actual_hours"] == 9.2
+        for key in ("rostered_hours", "rostered_cost", "variance"):
+            assert key not in out["totals"]
+
+    def test_rostered_skips_the_clockins(self):
+        api = Api()
+        out = run(api, include="rostered")
+        assert "get_timeclock_entries" not in self._fetched(api)
+        assert out["totals"]["rostered_hours"] == 7.75
+        assert "actual_hours" not in out["totals"]
+
+    def test_the_words_a_model_reaches_for_map_onto_the_three(self):
+        api = Api()
+        out = run(api, include="worked")
+        assert out["include"] == "actual"
+        assert "get_roster" not in self._fetched(api)
+
+    def test_an_unknown_include_is_refused(self):
+        out = run(Api(), include="sometimes")
+        assert "include" in out["error"]
+
+    def test_both_is_the_default_and_answers_everything(self):
+        out = run(Api())
+        assert "include" not in out
+        assert out["totals"]["variance"] == 1.45
+
+
+class TestVsActualAcrossVenues:
+    """Before Oct 2026 vs_actual read one venue per call, so a group wage
+    question took a refused call and then one call per venue (prod thread
+    ba8653f6: five)."""
+
+    def test_every_venue_in_one_call(self):
+        api = Api()
+        out = run(api, view="vs_actual", venues="all")
+        fetched = [p["venue"] for a, p in api.seen if a == "get_roster_vs_actual"]
+        assert sorted(fetched) == ["Bessie & Royals", "La Zeppa"]  # connected only
+        rows = {r["venue"]: r for r in out["rows"]}
+        assert rows["La Zeppa"]["rostered_hours"] == 7.75
+        assert rows["La Zeppa"]["actual_cost"] == 210.0
+        assert out["totals"]["actual_hours"] == 18.4
+        assert out["totals"]["cost_variance"] == 40.0
+
+    def test_day_adds_each_venues_days(self):
+        out = run(Api(), view="vs_actual", venues="all", group_by="day")
+        row = out["rows"][0]
+        assert len(row["days"]) == 1
+        assert row["days"][0]["actual_hours"] == 9.2
+
+    def test_include_trims_the_report(self):
+        out = run(Api(), view="vs_actual", venues="all", include="rostered")
+        assert out["include"] == "rostered"
+        assert "actual_hours" not in out["rows"][0]
+        assert out["totals"]["rostered_cost"] == 380.0
+
+    def test_a_failing_venue_is_excluded_and_said(self):
+        api = Api()
+        api.fail_venue = "La Zeppa"
+        out = run(api, view="vs_actual", venues="all")
+        lz = next(r for r in out["rows"] if r["venue"] == "La Zeppa")
+        assert lz["errors"]
+        assert "La Zeppa" in out["note"]
+        assert out["totals"]["actual_hours"] == 9.2
+
+    def test_group_by_is_total_or_day(self):
+        out = run(Api(), view="vs_actual", venues="all", group_by="staff")
+        assert "total" in out["error"]

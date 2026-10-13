@@ -19,12 +19,18 @@
 #     envelope — passthrough, no summarising. The roster card and the
 #     claude.ai roster artifact parse this exact shape, and the shift
 #     write path needs every field (ids, rates, clock times) intact.
-#   - vs_actual: rostered vs actual cost/hours per bucket (interval,
-#     default daily).
+#   - vs_actual: Loaded's own Roster vs actual report — rostered vs
+#     actual cost/hours per bucket (interval, default daily). venues
+#     accepts a list or 'all' (one report call per venue, Oct 2026), with
+#     group_by 'total' (default) or 'day' for each venue's days.
 #   - timeclock: the clock-in entries with a summary; the three required
 #     boolean flags ride as strings because the executor's required-field
 #     check is falsy-based (a real False reads as "missing").
 #   - staff: the staff reference list, slimmed.
+#
+# include ('actual' | 'rostered' | 'both', default both) — on attendance
+# it skips the fetch that isn't needed (the roster, for a worked-hours
+# question); on vs_actual, whose report carries both, it trims the columns.
 #
 # The period arrives in plain English and resolves through Norm's
 # venue-aware trading calendar; explicit start/end stay the exact-times
@@ -50,6 +56,7 @@ _CONSUMED = (
     "staff_name",
     "group_by",
     "interval",
+    "include",
 )
 
 _DOW_NAMES = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
@@ -75,6 +82,36 @@ _TIMECLOCK_FLAGS = {
     "include_only_clockins": "false",
     "should_truncate_shifts": "true",
 }
+
+
+#: What the caller wants back. Synonyms a model reaches for map onto the three.
+_INCLUDE = {
+    "both": "both",
+    "all": "both",
+    "actual": "actual",
+    "actuals": "actual",
+    "worked": "actual",
+    "labour": "actual",
+    "rostered": "rostered",
+    "roster": "rostered",
+}
+
+_ROSTERED_KEYS = ("rostered_hours", "rostered_cost")
+_ACTUAL_KEYS = ("actual_hours", "actual_cost", "leave_hours", "leave_cost")
+#: Only meaningful with both sides.
+_BOTH_KEYS = ("variance", "cost_variance", "unrostered")
+
+
+def _trim(row, include):
+    """Drop the side the caller didn't ask for, and the comparisons that need
+    both — a zero rostered_hours on an actual-only answer would read as
+    'nobody was rostered'."""
+    if include == "both" or not isinstance(row, dict):
+        return row
+    drop = set(_BOTH_KEYS) | set(
+        _ACTUAL_KEYS if include == "rostered" else _ROSTERED_KEYS
+    )
+    return {k: v for k, v in row.items() if k not in drop}
 
 
 def _rows_of(payload):
@@ -341,24 +378,47 @@ def _is_leave(entry):
     return str(entry.get("type") or "") == "Leave"
 
 
-def _fetch_pair(venue, start, end, call_api, call_api_parallel):
-    """One venue's (roster, timeclock) fetch."""
+def _pair_calls(venue, start, end, include):
+    """The (roster, timeclock) calls a venue needs — only the side(s) asked
+    for. Returns (calls, sides) where sides names each call in order."""
     venue_params = {"venue": venue} if venue else {}
-    calls = [
-        (
-            "loadedhub",
-            "get_roster",
-            {"start_datetime": start, "end_datetime": end, **venue_params},
-        ),
-        (
-            "loadedhub",
-            "get_timeclock_entries",
-            {"start_time": start, "end_time": end, **_TIMECLOCK_FLAGS, **venue_params},
-        ),
-    ]
-    if call_api_parallel:
-        return call_api_parallel(calls)
-    return [call_api(c, a, p) for (c, a, p) in calls]
+    calls, sides = [], []
+    if include != "actual":
+        calls.append(
+            (
+                "loadedhub",
+                "get_roster",
+                {"start_datetime": start, "end_datetime": end, **venue_params},
+            )
+        )
+        sides.append("roster")
+    if include != "rostered":
+        calls.append(
+            (
+                "loadedhub",
+                "get_timeclock_entries",
+                {
+                    "start_time": start,
+                    "end_time": end,
+                    **_TIMECLOCK_FLAGS,
+                    **venue_params,
+                },
+            )
+        )
+        sides.append("timeclock")
+    return calls, sides
+
+
+def _fetch_pair(venue, start, end, call_api, call_api_parallel, include="both"):
+    """One venue's [roster, timeclock] — a side not asked for is []."""
+    calls, sides = _pair_calls(venue, start, end, include)
+    results = (
+        call_api_parallel(calls)
+        if call_api_parallel
+        else [call_api(c, a, p) for (c, a, p) in calls]
+    )
+    got = dict(zip(sides, results))
+    return [got.get("roster", []), got.get("timeclock", [])]
 
 
 def _as_list(payload):
@@ -375,6 +435,7 @@ def _attendance(window, venue, params, call_api, call_api_parallel, log):
     end = window["end"]
     staff_name = params.get("staff_name", "")
     group_by = params.get("group_by", "staff")
+    include = params.get("include", "both")
     window_out = {
         "start": start,
         "end": end,
@@ -382,7 +443,11 @@ def _attendance(window, venue, params, call_api, call_api_parallel, log):
     }
 
     log(
-        "Fetching roster + timeclock for "
+        "Fetching "
+        + {"both": "roster + timeclock", "actual": "timeclock", "rostered": "roster"}[
+            include
+        ]
+        + " for "
         + venue
         + " ("
         + str(start)[:10]
@@ -390,7 +455,7 @@ def _attendance(window, venue, params, call_api, call_api_parallel, log):
         + str(end)[:10]
         + ")"
     )
-    results = _fetch_pair(venue, start, end, call_api, call_api_parallel)
+    results = _fetch_pair(venue, start, end, call_api, call_api_parallel, include)
     for payload in results:
         if isinstance(payload, dict) and payload.get("error"):
             return {
@@ -526,14 +591,22 @@ def _attendance(window, venue, params, call_api, call_api_parallel, log):
             + str(len(leave_rows))
             + " leave"
         )
-        return {
+        out = {
             "view": "attendance",
             "window": window_out,
             "rostered": rostered_rows,
             "clockins": clockin_rows,
             "leave": leave_rows,
-            "totals": totals,
+            "totals": _trim(totals, include),
         }
+        if include == "actual":
+            out.pop("rostered")
+        elif include == "rostered":
+            out.pop("clockins")
+            out.pop("leave")
+        if include != "both":
+            out["include"] = include
+        return out
 
     # ── staff + day views: collect flat shifts for aggregation ───────────
     shifts = []
@@ -685,39 +758,43 @@ def _attendance(window, venue, params, call_api, call_api_parallel, log):
         + " staff, grouped by "
         + group_by
     )
-    return {
+    out = {
         "view": "attendance",
         "window": window_out,
-        "rows": rows,
-        "totals": totals,
+        "rows": [_trim(r, include) for r in rows],
+        "totals": _trim(totals, include),
         "summary": str(staff_count) + " staff, grouped by " + group_by,
     }
+    if include != "both":
+        out["include"] = include
+    return out
 
 
-def _attendance_group(window, venues, staff_name, call_api, call_api_parallel, log):
+def _attendance_group(
+    window,
+    venues,
+    staff_name,
+    call_api,
+    call_api_parallel,
+    log,
+    include="both",
+    group_by="staff",
+):
     """Per-venue attendance totals in one call (venues list or 'all').
 
     staff_name narrows every venue's totals to that person — it used to be
     dropped on this path, so a one-person question across venues answered
-    for everyone (consolidator review, 1 Oct 2026)."""
+    for everyone (consolidator review, 1 Oct 2026). group_by 'day' adds each
+    venue's days; it used to be ignored here, so a day-by-day question across
+    venues came back as totals (Oct 2026). include skips the side not asked
+    for — 'actual' needs only the clock-ins, half the Loaded calls."""
     start, end = window["start"], window["end"]
     req_start, req_end = _normalise(start), _normalise(end)
-    calls = []
+    calls, owners = [], []
     for v in venues:
-        calls.append(
-            (
-                "loadedhub",
-                "get_roster",
-                {"start_datetime": start, "end_datetime": end, "venue": v},
-            )
-        )
-        calls.append(
-            (
-                "loadedhub",
-                "get_timeclock_entries",
-                {"start_time": start, "end_time": end, **_TIMECLOCK_FLAGS, "venue": v},
-            )
-        )
+        vcalls, vsides = _pair_calls(v, start, end, include)
+        calls.extend(vcalls)
+        owners.extend((v, side) for side in vsides)
     log(
         "Fanning out "
         + str(len(calls))
@@ -730,14 +807,32 @@ def _attendance_group(window, venues, staff_name, call_api, call_api_parallel, l
         if call_api_parallel
         else [call_api(c, a, p) for (c, a, p) in calls]
     )
+    by_venue = {v: {"roster": [], "timeclock": []} for v in venues}
+    for (v, side), payload in zip(owners, results):
+        by_venue[v][side] = payload
 
     def in_range(dt_str):
         n = _normalise(dt_str)
         return n and req_start <= n <= req_end
 
+    def _day_row(day):
+        try:
+            label = _fmt_date(datetime.date.fromisoformat(day))
+        except ValueError:
+            label = day
+        return {
+            "date": label,
+            "_sort": day,
+            "rostered_hours": 0.0,
+            "rostered_cost": 0.0,
+            "actual_hours": 0.0,
+            "actual_cost": 0.0,
+        }
+
     rows = []
-    for i, v in enumerate(venues):
-        roster_data, clockin_data = results[2 * i], results[2 * i + 1]
+    for v in venues:
+        roster_data = by_venue[v]["roster"]
+        clockin_data = by_venue[v]["timeclock"]
         row = {"venue": v}
         errs = []
         for payload in (roster_data, clockin_data):
@@ -748,6 +843,7 @@ def _attendance_group(window, venues, staff_name, call_api, call_api_parallel, l
             rows.append(row)
             continue
         r_h = r_c = a_h = a_c = l_h = l_c = 0.0
+        days = {}
         for roster in _as_list(roster_data):
             for shift in roster.get("rosteredShifts", []):
                 st = shift.get("clockinTime", "")
@@ -759,8 +855,13 @@ def _attendance_group(window, venues, staff_name, call_api, call_api_parallel, l
                     staff_name,
                 ):
                     continue
-                r_h += float(shift.get("totalHours", 0) or 0)
-                r_c += float(shift.get("totalCost", 0) or 0)
+                h = float(shift.get("totalHours", 0) or 0)
+                c = float(shift.get("totalCost", 0) or 0)
+                r_h += h
+                r_c += c
+                d = days.setdefault(_normalise(st)[:10], _day_row(_normalise(st)[:10]))
+                d["rostered_hours"] += h
+                d["rostered_cost"] += c
         for c in _as_list(clockin_data):
             st = c.get("clockinTime", "")
             if not st or not in_range(st):
@@ -771,12 +872,19 @@ def _attendance_group(window, venues, staff_name, call_api, call_api_parallel, l
                 staff_name,
             ):
                 continue
+            h = float(c.get("totalHours", 0) or 0)
+            cost = float(c.get("totalCost", 0) or 0)
+            d = days.setdefault(_normalise(st)[:10], _day_row(_normalise(st)[:10]))
             if _is_leave(c):
-                l_h += float(c.get("totalHours", 0) or 0)
-                l_c += float(c.get("totalCost", 0) or 0)
+                l_h += h
+                l_c += cost
+                d["leave_hours"] = d.get("leave_hours", 0.0) + h
+                d["leave_cost"] = d.get("leave_cost", 0.0) + cost
             else:
-                a_h += float(c.get("totalHours", 0) or 0)
-                a_c += float(c.get("totalCost", 0) or 0)
+                a_h += h
+                a_c += cost
+                d["actual_hours"] += h
+                d["actual_cost"] += cost
         row["rostered_hours"] = round(r_h, 2)
         row["rostered_cost"] = round(r_c, 2)
         row["actual_hours"] = round(a_h, 2)
@@ -785,6 +893,17 @@ def _attendance_group(window, venues, staff_name, call_api, call_api_parallel, l
         if l_h:
             row["leave_hours"] = round(l_h, 2)
             row["leave_cost"] = round(l_c, 2)
+        row = _trim(row, include)
+        if group_by == "day":
+            day_rows = []
+            for d in sorted(days.values(), key=lambda x: x["_sort"]):
+                d.pop("_sort", None)
+                for k in list(d):
+                    if isinstance(d[k], float):
+                        d[k] = round(d[k], 2)
+                d["variance"] = round(d["actual_hours"] - d["rostered_hours"], 2)
+                day_rows.append(_trim(d, include))
+            row["days"] = day_rows
         rows.append(row)
 
     def _total(key):
@@ -809,8 +928,14 @@ def _attendance_group(window, venues, staff_name, call_api, call_api_parallel, l
             "description": window.get("description"),
         },
         "rows": rows,
-        "totals": totals,
+        "totals": _trim(totals, include),
     }
+    if include != "both":
+        result["include"] = include
+    if group_by not in ("day", "staff"):
+        result["group_by_note"] = (
+            "group_by '" + group_by + "' is per venue — ask one venue for it"
+        )
     if staff_name:
         result["staff_name"] = staff_name
     skipped = [r["venue"] for r in rows if r.get("errors")]
@@ -858,16 +983,13 @@ def _roster(window, params, call_api, log):
     return {"view": "roster", "window": window, "data": data}
 
 
+_VS_ACTUAL_ROSTERED = ("rosteredHours", "rosteredCost")
+_VS_ACTUAL_ACTUAL = ("actualHours", "actualCost")
+
+
 def _vs_actual(window, params, call_api, log):
-    if (params.get("staff_name") or "").strip():
-        return {
-            "view": "vs_actual",
-            "window": window,
-            "error": (
-                "vs_actual is the venue's totals per day — it can't be narrowed "
-                "to one person. Use view 'attendance' with staff_name instead."
-            ),
-        }
+    """One venue's report, passed through as Loaded returns it."""
+    include = params.get("include", "both")
     args = {
         "start": window["start"],
         "end": window["end"],
@@ -878,11 +1000,122 @@ def _vs_actual(window, params, call_api, log):
     data = call_api("loadedhub", "get_roster_vs_actual", args)
     if isinstance(data, dict) and data.get("error"):
         return {"view": "vs_actual", "window": window, "error": str(data["error"])}
+    if include != "both" and isinstance(data, list):
+        drop = _VS_ACTUAL_ACTUAL if include == "rostered" else _VS_ACTUAL_ROSTERED
+        data = [
+            {k: v for k, v in r.items() if k not in drop} if isinstance(r, dict) else r
+            for r in data
+        ]
     result = {"view": "vs_actual", "window": window}
     summary = _summarise(data)
     if summary:
         result["summary"] = summary
+    if include != "both":
+        result["include"] = include
     result["data"] = data
+    return result
+
+
+def _vs_actual_group(window, venues, params, call_api, call_api_parallel, log):
+    """Loaded's Roster vs actual report for every venue in one call — one
+    report per venue, fanned out. Before Oct 2026 this view read one venue per
+    call, so a group wage question took a refused call and then one call per
+    venue (prod thread ba8653f6: five)."""
+    include = params.get("include", "both")
+    split = params.get("group_by") == "day"
+    interval = params.get("interval") or "1.00:00:00"
+    calls = [
+        (
+            "loadedhub",
+            "get_roster_vs_actual",
+            {
+                "start": window["start"],
+                "end": window["end"],
+                "interval": interval,
+                "venue": v,
+            },
+        )
+        for v in venues
+    ]
+    log("Fanning out " + str(len(calls)) + " roster-vs-actual report(s)")
+    results = (
+        call_api_parallel(calls)
+        if call_api_parallel
+        else [call_api(c, a, p) for (c, a, p) in calls]
+    )
+
+    def _num(row, key):
+        try:
+            return float(row.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _figures(r_h, r_c, a_h, a_c):
+        return {
+            "rostered_hours": round(r_h, 2),
+            "rostered_cost": round(r_c, 2),
+            "actual_hours": round(a_h, 2),
+            "actual_cost": round(a_c, 2),
+            "variance": round(a_h - r_h, 2),
+            "cost_variance": round(a_c - r_c, 2),
+        }
+
+    rows = []
+    for v, data in zip(venues, results):
+        if isinstance(data, dict) and data.get("error"):
+            rows.append({"venue": v, "errors": [str(data["error"])]})
+            continue
+        r_h = r_c = a_h = a_c = 0.0
+        days = []
+        for b in _rows_of(data) or []:
+            br_h, br_c = _num(b, "rosteredHours"), _num(b, "rosteredCost")
+            ba_h, ba_c = _num(b, "actualHours"), _num(b, "actualCost")
+            r_h += br_h
+            r_c += br_c
+            a_h += ba_h
+            a_c += ba_c
+            if split:
+                st = _normalise(b.get("startTime") or "")
+                try:
+                    label = _fmt_date(datetime.date.fromisoformat(st[:10]))
+                except ValueError:
+                    label = st[:10]
+                days.append(
+                    _trim({"date": label, **_figures(br_h, br_c, ba_h, ba_c)}, include)
+                )
+        row = {"venue": v, **_trim(_figures(r_h, r_c, a_h, a_c), include)}
+        if split:
+            row["days"] = days
+        rows.append(row)
+
+    good = [r for r in rows if not r.get("errors")]
+
+    def _total(key):
+        return round(sum(float(r.get(key) or 0) for r in good), 2)
+
+    totals = _figures(
+        _total("rostered_hours"),
+        _total("rostered_cost"),
+        _total("actual_hours"),
+        _total("actual_cost"),
+    )
+    result = {
+        "view": "vs_actual",
+        "window": {
+            "start": window["start"],
+            "end": window["end"],
+            "description": window.get("description"),
+        },
+        "rows": rows,
+        "totals": _trim(totals, include),
+    }
+    if include != "both":
+        result["include"] = include
+    skipped = [r["venue"] for r in rows if r.get("errors")]
+    if skipped:
+        result["note"] = (
+            "some venues had errors and are excluded from totals: " + ", ".join(skipped)
+        )
     return result
 
 
@@ -987,6 +1220,17 @@ def run(params, call_api, log, call_api_parallel=None):
         # A reference list — no window needed.
         return _staff(params, call_api, log)
 
+    include = _INCLUDE.get(str(params.get("include") or "both").strip().lower())
+    if include is None:
+        return {
+            "error": (
+                "unknown include '"
+                + str(params.get("include"))
+                + "' — use actual, rostered or both"
+            )
+        }
+    params = {**params, "include": include}
+
     window, err = _resolve_window(params, call_api, log)
     if err:
         return err
@@ -1014,6 +1258,8 @@ def run(params, call_api, log, call_api_parallel=None):
                     call_api,
                     call_api_parallel,
                     log,
+                    include=include,
+                    group_by=group_by,
                 )
             merged = dict(params)
             merged["venue"] = venues[0]
@@ -1029,16 +1275,41 @@ def run(params, call_api, log, call_api_parallel=None):
             log,
         )
 
+    if view == "vs_actual":
+        if (params.get("staff_name") or "").strip():
+            return {
+                "view": "vs_actual",
+                "window": window,
+                "error": (
+                    "vs_actual is the venue's totals per day — it can't be narrowed "
+                    "to one person. Use view 'attendance' with staff_name instead."
+                ),
+            }
+        group_by = str(params.get("group_by") or "total").strip().lower()
+        if group_by not in ("total", "day"):
+            return {
+                "window": window,
+                "error": "vs_actual group_by is 'total' or 'day'",
+            }
+        params = {**params, "group_by": group_by}
+        if params.get("venues"):
+            venues, verr = _resolve_venues(params, call_api)
+            if verr:
+                verr["window"] = window
+                return verr
+            return _vs_actual_group(
+                window, venues, params, call_api, call_api_parallel, log
+            )
+        return _vs_actual(window, params, call_api, log)
+
     if params.get("venues"):
         return {
             "window": window,
             "error": (
-                "venues is for view='attendance' (per-venue totals) — the "
-                "other views read one venue per call"
+                "venues is for view 'attendance' or 'vs_actual' — roster and "
+                "timeclock read one venue per call"
             ),
         }
     if view == "roster":
         return _roster(window, params, call_api, log)
-    if view == "vs_actual":
-        return _vs_actual(window, params, call_api, log)
     return _timeclock(window, params, call_api, log)
