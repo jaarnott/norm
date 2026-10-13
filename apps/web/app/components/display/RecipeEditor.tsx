@@ -19,6 +19,7 @@ import { useActiveVenue } from '../../hooks/useActiveVenue';
 import Badge from '../ui/Badge';
 import BackLink from '../ui/BackLink';
 import Button from '../ui/Button';
+import Dialog from '../ui/Dialog';
 import Icon from '../ui/Icon';
 import IconButton from '../ui/IconButton';
 import PageHeader from '../ui/PageHeader';
@@ -345,10 +346,13 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
   const [docVersion, setDocVersion] = useState<number>(() => (embedded || fromBlock ? 0 : openSession?.docVersion ?? 0));
   const lastVersionRef = useRef<number>(fromBlock ? 0 : openSession?.docVersion ?? 0);
   const lastEditRef = useRef<number>(0);
-  // Creating a stock item for a line that matches nothing (the received-invoice
-  // card's "Link or create", minus the supplier). Groups load on first use.
+  // Creating a stock item for a line that matches nothing: the ingredient
+  // picker's last row ("Create stock item …") opens a dialog for the name,
+  // group and unit (the received-invoice card's create, minus the supplier).
+  // Groups load on first use.
   const [groups, setGroups] = useState<StockGroup[] | null>(null);
-  const [itemForm, setItemForm] = useState<{ key: string; name: string; groupId: string } | null>(null);
+  const [itemModal, setItemModal] = useState<{ key: string; name: string; groupId: string; unitId: string } | null>(null);
+  const [itemError, setItemError] = useState<string | null>(null);
   const [creatingItem, setCreatingItem] = useState(false);
 
   // Layout only: how much room the component has — its OWN width, since a chat
@@ -558,7 +562,6 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
       }
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromBlock, initialDocId]);
 
   // Catch-up poll: while a recipe is open as a working document, re-read it so an
@@ -751,12 +754,13 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     setDraft((d) => (d ? { ...d, recipe_type: t, is_counted_in_stocktake: t === 'component' } : d));
   };
 
-  // Create a stock item for a drafted line that matches nothing. The new item
-  // is created in the line's unit (its counting unit is that unit's base), so
-  // the unit must be picked first.
-  const openItemForm = async (l: EditLine) => {
-    setError(null);
-    setItemForm({ key: l.key, name: (l.match?.as_written?.name || l.name || '').toUpperCase(), groupId: '' });
+  // Create a stock item for a line that matches nothing. The dialog opens
+  // from the picker's create row with the typed text as the name (in
+  // capitals, the catalogue's convention) and the line's unit, if it has
+  // one; the item is created in that unit, its counting unit the unit's base.
+  const openItemModal = async (l: EditLine, typed?: string) => {
+    setItemError(null);
+    setItemModal({ key: l.key, name: (typed || l.match?.as_written?.name || l.name || '').toUpperCase(), groupId: '', unitId: l.unit_id || '' });
     if (!groups && venueId) {
       try {
         const r = await apiFetch(`/api/recipe-editor/stock-groups?venue_id=${encodeURIComponent(venueId)}`);
@@ -765,16 +769,15 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     }
   };
   const createItem = async () => {
-    if (!itemForm || !venueId || !draft) return;
-    const l = draft.lines.find((x) => x.key === itemForm.key);
-    if (!l) return;
-    if (!l.unit_id) { setError("Pick the line's unit first — the new item is created in it."); return; }
+    if (!itemModal || !venueId || !draft) return;
+    const l = draft.lines.find((x) => x.key === itemModal.key);
+    if (!l) { setItemModal(null); return; }
     setCreatingItem(true);
-    setError(null);
+    setItemError(null);
     try {
       const res = await apiFetch('/api/recipe-editor/create-item', {
         method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, name: itemForm.name, group_id: itemForm.groupId, unit_id: l.unit_id }),
+        body: JSON.stringify({ venue_id: venueId, name: itemModal.name, group_id: itemModal.groupId, unit_id: itemModal.unitId }),
       });
       if (!res.ok) {
         const t = await res.json().catch(() => ({}));
@@ -787,12 +790,46 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
         unit_id: out.unit_id, unit_name: out.unit_name, unit_ratio: num(out.unit_ratio) || 1,
         stock_unit_name: out.counting_unit_name ?? null, stock_unit_ratio: num(out.counting_unit_ratio) || 1,
       });
-      setItemForm(null);
+      setItemModal(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not create the stock item');
+      setItemError(e instanceof Error ? e.message : 'Could not create the stock item');
     }
     setCreatingItem(false);
   };
+  const itemDialog = itemModal && (
+    <Dialog title="Create stock item" width={440} onClose={() => { if (!creatingItem) setItemModal(null); }} closeButton>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <label>
+          <span className="n-label">Name</span>
+          <input className="n-input" value={itemModal.name} onChange={(e) => setItemModal({ ...itemModal, name: e.target.value })} style={{ width: '100%' }} autoFocus />
+        </label>
+        <label>
+          <span className="n-label">Stock group</span>
+          <select className="n-select" value={itemModal.groupId} onChange={(e) => setItemModal({ ...itemModal, groupId: e.target.value })} style={{ width: '100%' }}>
+            <option value="">{groups ? 'Choose a group' : 'Loading groups…'}</option>
+            {(groups || []).map((g) => <option key={g.id} value={g.id}>{g.category ? `${g.category} · ${g.name}` : g.name}</option>)}
+          </select>
+        </label>
+        <label>
+          <span className="n-label">Unit</span>
+          <select className="n-select" value={itemModal.unitId} onChange={(e) => setItemModal({ ...itemModal, unitId: e.target.value })} style={{ width: '100%' }}>
+            <option value="">Choose a unit</option>
+            {[...units].sort((a, b) => a.name.localeCompare(b.name)).map((u) => <option key={u.id} value={u.id}>{u.name}{u.type ? ` · ${u.type}` : ''}</option>)}
+          </select>
+          <span style={{ display: 'block', marginTop: 4, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+            The unit this recipe measures it in. It is counted in that unit&apos;s base (kilo, litre or each); add a supplier when it is first received.
+          </span>
+        </label>
+        {itemError && <div role="alert" style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>{itemError}</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+          <Button onClick={() => setItemModal(null)} disabled={creatingItem}>Cancel</Button>
+          <Button variant="primary" onClick={createItem} disabled={creatingItem || !itemModal.name.trim() || !itemModal.groupId || !itemModal.unitId}>
+            {creatingItem ? 'Creating…' : 'Create & use'}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
 
   const pickIngredient = (key: string, o: ComboOption) => {
     const patch: Partial<EditLine> = { kind: (o.kind as 'item' | 'recipe') || 'item', ref_id: o.id, name: o.name };
@@ -976,37 +1013,21 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     const lineHelp = (l: EditLine) => {
       if (!editable || !needsChef(l)) return null;
       const missing = [!l.ref_id && 'ingredient', !l.unit_id && 'unit'].filter(Boolean) as string[];
-      const reasons = l.match?.status === 'unresolved' ? l.match.reasons : [];
+      const reasons = l.match?.status === 'unresolved' ? [...l.match.reasons] : [];
       const cands = !l.ref_id ? l.match?.candidates || [] : [];
-      const form = itemForm?.key === l.key ? itemForm : null;
+      // Nothing matched: the way out is the picker's own "Create stock item" row.
+      const none = !l.ref_id && cands.length === 0;
       return (
         <div style={{ marginTop: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
-          {reasons.length > 0 && <div>{reasons.join('; ')}.</div>}
+          {reasons.length > 0 && <div>{reasons.join('; ')}{none ? ' — search above, or create it from the list.' : '.'}</div>}
           {reasons.length === 0 && missing.length > 0 && <div>Needs {missing.join(' and ')}.</div>}
-          {(cands.length > 0 || !l.ref_id) && !form && (
+          {cands.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 4 }}>
               {cands.map((c) => (
                 <Button key={c.id} size="sm" onClick={() => pickIngredient(l.key, { id: c.id, name: c.name, kind: c.kind })} title={c.kind === 'recipe' ? 'Sub-recipe' : 'Stock item'}>
                   {c.name}
                 </Button>
               ))}
-              {!l.ref_id && (
-                <Button size="sm" variant="secondary" icon={Plus} onClick={() => openItemForm(l)}>Create stock item</Button>
-              )}
-            </div>
-          )}
-          {form && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 6 }}>
-              <input className="n-input" aria-label="New stock item name" value={form.name} onChange={(e) => setItemForm({ ...form, name: e.target.value })} style={{ flex: '1 1 160px', minWidth: 0 }} />
-              <select className="n-select" aria-label="Stock group" value={form.groupId} onChange={(e) => setItemForm({ ...form, groupId: e.target.value })} style={{ flex: '1 1 140px' }}>
-                <option value="">{groups ? 'Stock group' : 'Loading groups…'}</option>
-                {(groups || []).map((g) => <option key={g.id} value={g.id}>{g.category ? `${g.category} · ${g.name}` : g.name}</option>)}
-              </select>
-              <Button size="sm" variant="primary" onClick={createItem} disabled={creatingItem || !form.name.trim() || !form.groupId || !l.unit_id} title={!l.unit_id ? "Pick the line's unit first" : undefined}>
-                {creatingItem ? 'Creating…' : 'Create & use'}
-              </Button>
-              <Button size="sm" onClick={() => setItemForm(null)} disabled={creatingItem}>Cancel</Button>
-              {!l.unit_id && <span style={{ color: 'var(--muted)' }}>Pick the line&apos;s unit first.</span>}
             </div>
           )}
         </div>
@@ -1019,6 +1040,11 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
       return {
         help,
         rowStyle: (help ? { background: 'var(--warn-bg)' } : l.item_deleted ? { background: 'var(--error-bg)' } : undefined) as React.CSSProperties | undefined,
+        // A row that carries the help block grows; its cells sit at the top,
+        // level with the first line, not floating in the middle. Text-only
+        // cells get a little extra so they line up with the inputs' text.
+        top: (help ? { verticalAlign: 'top' } : {}) as React.CSSProperties,
+        textTop: (help ? { paddingTop: 14 } : {}) as React.CSSProperties,
         grip: editable ? (
           <span
             draggable
@@ -1043,6 +1069,8 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
             options={ingredientOptions}
             onType={(t) => updateLine(l.key, { name: t, ref_id: null })}
             onPick={(o) => pickIngredient(l.key, o)}
+            onCreate={(t) => openItemModal(l, t)}
+            createLabel={(t) => `Create stock item “${t}”`}
             placeholder="Search ingredient or sub-recipe"
           />
         ) : (
@@ -1098,20 +1126,20 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
             const p = linePieces(l);
             return (
               <tr key={l.key} {...p.dnd} style={p.rowStyle}>
-                {editable && <td style={gripCell}>{p.grip}</td>}
-                <td className="num" style={firstCell}>{p.qty}</td>
-                <td style={cell}>{p.unit}</td>
-                <td style={cell}>
+                {editable && <td style={{ ...gripCell, ...p.top }}>{p.grip}</td>}
+                <td className="num" style={{ ...firstCell, ...p.top }}>{p.qty}</td>
+                <td style={{ ...cell, ...p.top }}>{p.unit}</td>
+                <td style={{ ...cell, ...p.top }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>{p.ingredient}</div>
                     {p.deleted}
                   </div>
                   {p.help}
                 </td>
-                <td style={{ ...cell, color: 'var(--muted)' }}>{p.stockUnit}</td>
-                <td className="num" style={{ ...cell, color: 'var(--muted)' }} title={editable ? 'Cost per stock unit' : undefined}>{p.stockCost}</td>
-                <td className="num" style={{ ...lastCell, ...p.costStyle }} title={p.costTitle}>{p.cost}</td>
-                {editable && <td style={removeCell}>{p.remove}</td>}
+                <td style={{ ...cell, ...p.top, ...p.textTop, color: 'var(--muted)' }}>{p.stockUnit}</td>
+                <td className="num" style={{ ...cell, ...p.top, ...p.textTop, color: 'var(--muted)' }} title={editable ? 'Cost per stock unit' : undefined}>{p.stockCost}</td>
+                <td className="num" style={{ ...lastCell, ...p.top, ...p.textTop, ...p.costStyle }} title={p.costTitle}>{p.cost}</td>
+                {editable && <td style={{ ...removeCell, ...p.top }}>{p.remove}</td>}
               </tr>
             );
           })}
@@ -1172,6 +1200,7 @@ export default function RecipeEditor({ data, props }: DisplayBlockProps) {
     const stacked = fit !== 'wide';
     const body = (
       <>
+        {itemDialog}
         {errorBlock}
         {viewingPast && (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', marginBottom: 16, borderRadius: 'var(--radius)', background: 'var(--info-bg)', color: 'var(--info)', fontSize: 'var(--fs-sm)' }}>
