@@ -321,3 +321,110 @@ class TestFailuresSayWhoseFaultTheyAre:
             body={"type": "error", "error": {"type": "invalid_request_error"}},
         )
         assert "transient" not in _error_result(exc)
+
+
+class TestSupplierDetails:
+    """The second, small read made only when Norm will CREATE a supplier: the
+    business's own address and contacts, for the new Loaded record."""
+
+    def _patch_llm(self, monkeypatch, result=None, fail=False):
+        calls = []
+
+        def fake_call_llm(**kwargs):
+            calls.append(kwargs)
+            if fail:
+                raise RuntimeError("Anthropic 529")
+            return result, None
+
+        import app.interpreter.llm_interpreter as llm
+
+        monkeypatch.setattr(llm, "call_llm", fake_call_llm)
+        return calls
+
+    def test_reads_once_then_serves_from_cache(self, db_session, monkeypatch):
+        calls = self._patch_llm(
+            monkeypatch, {"city": "Auckland", "email": "Orders@Tickety.co.nz"}
+        )
+        lh = _FakeLoaded()
+        first = ie.read_supplier_details(
+            db_session, lh, "file-1", supplier_name="Tickety-Boo Ltd"
+        )
+        assert first == {"city": "Auckland", "email": "orders@tickety.co.nz"}
+        # The supplier is named, and the buyer's blocks are ruled out.
+        assert "'Tickety-Boo Ltd'" in calls[0]["user_prompt"]
+        assert "bill-to" in calls[0]["user_prompt"]
+        second = ie.read_supplier_details(
+            db_session, lh, "file-1", supplier_name="Tickety-Boo Ltd"
+        )
+        assert second == first
+        assert len(calls) == 1 and lh.downloads == ["file-1"]
+
+    def test_the_main_extraction_cache_is_untouched(self, db_session, monkeypatch):
+        # Its own cache action, so reset-validation (which clears
+        # download_invoice_file rows) and PDF_SCHEMA's key never see it.
+        self._patch_llm(monkeypatch, {"city": "Auckland"})
+
+        def count(action):
+            return (
+                db_session.query(DocumentExtraction)
+                .filter(DocumentExtraction.action == action)
+                .count()
+            )
+
+        main, own = count("download_invoice_file"), count("read_supplier_details")
+        ie.read_supplier_details(
+            db_session, _FakeLoaded(), "file-1", supplier_name="Tickety-Boo Ltd"
+        )
+        assert count("download_invoice_file") == main
+        assert count("read_supplier_details") == own + 1
+
+    def test_a_failure_is_an_empty_answer_and_not_cached(
+        self, db_session, monkeypatch
+    ):
+        self._patch_llm(monkeypatch, fail=True)
+        out = ie.read_supplier_details(
+            db_session, _FakeLoaded(), "file-1", supplier_name="Tickety-Boo Ltd"
+        )
+        assert out == {}
+        assert (
+            db_session.query(DocumentExtraction)
+            .filter(DocumentExtraction.action == "read_supplier_details")
+            .count()
+            == 0
+        )
+        assert (
+            ie.read_supplier_details(
+                db_session, _FakeLoaded(fail=True), "file-1", supplier_name="X"
+            )
+            == {}
+        )
+
+    def test_nothing_is_read_without_a_file_or_a_name(self, db_session, monkeypatch):
+        calls = self._patch_llm(monkeypatch, {"city": "Auckland"})
+        assert ie.read_supplier_details(db_session, None, "", supplier_name="X") == {}
+        assert (
+            ie.read_supplier_details(db_session, None, "file-1", supplier_name="")
+            == {}
+        )
+        assert calls == []
+
+    def test_only_plausible_values_survive(self):
+        assert ie.clean_supplier_details(
+            {
+                "address_lines": "  12   Wharf Road ",
+                "city": None,
+                "postcode": 1010,
+                "phone": True,
+                "email": "not an email",
+                "contact_name": "x" * 200,
+                "account_number": " CB-0042 ",
+            }
+        ) == {
+            "address_lines": ["12 Wharf Road"],
+            "postcode": "1010",
+            "account_number": "CB-0042",
+        }
+        assert ie.clean_supplier_details(
+            {"address_lines": ["a", "", "b", "c", "d"]}
+        ) == {"address_lines": ["a", "b", "c"]}
+        assert ie.clean_supplier_details(None) == {}

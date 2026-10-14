@@ -382,11 +382,57 @@ def get_or_create_brand(lh, name: str) -> tuple[dict, bool]:
     return {"id": brand_id, "name": created.get("name") or name}, True
 
 
-def get_or_create_supplier(lh, name: str) -> tuple[dict, bool]:
+def supplier_body(name: str, details: dict | None = None) -> dict:
+    """The POST /suppliers body: the name, plus the details the invoice
+    prints (invoice_extraction.read_supplier_details) in Loaded's fields.
+    Only what was read is sent. Two fields are deliberately left at Loaded's
+    defaults: ``emailEnabled`` (it makes Loaded EMAIL purchase orders to that
+    address, and an invoice prints the accounts address as often as the
+    orders one) and ``unitCostIncludesTax`` (Norm reads every cost ex tax)."""
+    body: dict = {"name": name}
+    details = details if isinstance(details, dict) else {}
+    lines = [str(x) for x in details.get("address_lines") or [] if x][:3]
+    for i, line in enumerate(lines):
+        body[f"address{i + 1}"] = line
+    for src, dst in (
+        ("city", "city"),
+        ("postcode", "postcode"),
+        ("phone", "phone1"),
+        ("contact_name", "contactName"),
+        ("account_number", "customerNumber"),
+    ):
+        if details.get(src):
+            body[dst] = str(details[src])
+    if details.get("email"):
+        body["emails"] = [{"email": str(details["email"]), "isPrimary": True}]
+    return body
+
+
+def draft_supplier_details(db: Session, venue_id: str, invoice_id: str) -> dict:
+    """The details the review read for the supplier this invoice's draft
+    proposes creating (the create_supplier suggestion's payload) — so a
+    create from the card takes them without the card carrying them."""
+    from app.services.received_invoice import open_drafts
+
+    if not invoice_id:
+        return {}
+    for doc in open_drafts(db, venue_id, invoice_id):
+        for sg in (doc.data or {}).get("suggestions") or []:
+            if isinstance(sg, dict) and sg.get("kind") == "create_supplier":
+                details = (sg.get("payload") or {}).get("details")
+                if isinstance(details, dict) and details:
+                    return details
+    return {}
+
+
+def get_or_create_supplier(
+    lh, name: str, details: dict | None = None
+) -> tuple[dict, bool]:
     """The Loaded supplier for ``name`` — resolved if a record already covers it
     (normalized containment, the supplier-matching convention — never a
     duplicate record), else created (POST /suppliers, verified live 08 Aug
-    2026: 201 + the created object)."""
+    2026: 201 + the created object) with ``details`` (``supplier_body``). An
+    existing record is never touched."""
     name = (name or "").strip()
     if not name:
         raise CatalogError(400, "a supplier name is required")
@@ -403,7 +449,9 @@ def get_or_create_supplier(lh, name: str) -> tuple[dict, bool]:
             and (cand == target or cand in target or target in cand)
         ):
             return {"id": s.get("id"), "name": s.get("name")}, False
-    created = lh.request("POST", "/1.0/stock/internal/suppliers", {"name": name})
+    created = lh.request(
+        "POST", "/1.0/stock/internal/suppliers", supplier_body(name, details)
+    )
     if not isinstance(created, dict) or not created.get("id"):
         raise CatalogError(502, "Loaded did not return the created supplier")
     return {"id": created.get("id"), "name": created.get("name") or name}, True

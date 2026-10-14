@@ -195,8 +195,14 @@ class TestLineSuggestions:
         assert s["current"] == 5.0 and s["proposed"] == 4.95
         assert "the invoice bills quantity 4.95" in s["explanation"]
         assert s["apply"] == {"quantity_received": 4.95}
-        # suggestions never block
-        assert data["confidence"] == "ready"
+        # As Loaded has it, 5 kg doesn't come to the invoice's total — Loaded
+        # would refuse the receive — so the totals stand in the way until the
+        # quantity is accepted.
+        totals = next(i for i in data["issues"] if i["code"] == "totals_inconsistent")
+        assert totals["fix"] == [s["id"]]
+        assert data["confidence"] == "needs_review"
+        IR.apply_suggestion(data, s)
+        assert IR.compute_confidence(data) == "ready"
 
     def test_a_quantity_loaded_cannot_store_is_not_suggested(self):
         """Loaded keeps quantities to 2dp — measured across all 868 it holds in
@@ -1078,6 +1084,12 @@ class TestDerivedSubtotal:
         fields = {s.get("field") for s in data["suggestions"]}
         assert "subtotal" not in fields
         assert "total" in fields  # the printed total still rides as one
+
+    def test_a_printed_discount_is_never_a_header_suggestion(self):
+        # The receive never sends Loaded a discount, so accepting one only
+        # took it off the card's total (Fresh Connection 30049130, $41 short).
+        data = _review(extraction=EXTRACTION(discount_amount=5.5))
+        assert "discount_amount" not in {s.get("field") for s in data["suggestions"]}
 
     def test_receive_writes_the_derived_subtotal(self):
         # Loaded's stored subtotal (0 here) is ignored — the receive carries
@@ -2040,6 +2052,28 @@ class TestAutopilotWillNotInventADuplicateSupplier:
         assert done == ["created supplier 'SERVICE FOODS LTD'"]
         assert data["linked_supplier_id"] == "sup-new"
 
+    def test_the_new_supplier_takes_its_invoice_details(self, monkeypatch):
+        writes = self._lh(monkeypatch, [])
+        data, settings = self._data()
+        details = {"city": "Auckland", "email": "orders@servicefoods.co.nz"}
+        data["suggestions"][0]["payload"]["details"] = details
+
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
+
+        assert writes == [
+            (
+                "POST",
+                "/1.0/stock/internal/suppliers",
+                {
+                    "name": "SERVICE FOODS LTD",
+                    "city": "Auckland",
+                    "emails": [
+                        {"email": "orders@servicefoods.co.nz", "isPrimary": True}
+                    ],
+                },
+            )
+        ]
+
 
 class TestSplitOrderClearsItsOwnRemedy:
     """Loaded's PO↔invoice link is 1:1, so when a supplier splits an order the
@@ -2286,26 +2320,22 @@ class TestDefectRecommendations:
                 "why": "2 x 10.00 = 20.00; the printed 90.00 fails the check",
             }
         )
-        issue = next(i for i in data["issues"] if i["code"] == "totals_inconsistent")
-        assert issue["gate"] == "receive_unreconciled_totals"
         s = next(s for s in data["suggestions"] if s["field"] == "total_cost")
         assert s["proposed"] == 20.0
-        assert s["fixes"] == issue["id"] and issue["fix"] == [s["id"]]
         assert s["confidence"] == "high"
         assert "2 x 10.00" in s["explanation"]
         # ...and the corrected figure is IN the replica: the Replica tab shows it
         assert data["replica"]["lines"][0]["total_cost"] == 20.0
+        # The check is on what the suggestions leave, and that adds up (2 x
+        # 10.00 + 3.00 = 23.00): no totals blocker, whatever the copy printed.
+        assert not [i for i in data["issues"] if i["code"] == "totals_inconsistent"]
 
     def test_totals_diagnosis_failure_leaves_the_fallback_only(self):
         data = self._misread_totals_case(lambda p: {})
-        issue = next(i for i in data["issues"] if i["code"] == "totals_inconsistent")
-        # Loaded's lines already add up, so receiving on them is the answer —
-        # a confirm, behind the totals switch.
+        # Loaded's lines already add up, so there is nothing to block and
+        # nothing to confirm — the totals match as they stand.
+        assert not [i for i in data["issues"] if i["code"] == "totals_inconsistent"]
         assert not [s for s in data["suggestions"] if s.get("fixes")]
-        confirm = next(s for s in data["suggestions"] if s["id"] in issue["fix"])
-        assert confirm["kind"] == "confirm"
-        assert confirm["gate"] == "receive_unreconciled_totals"
-        assert "add up to the invoice total" in confirm["explanation"]
 
     def _ambiguous_case(self, pairing_ask):
         # rep-0 claims ld-1 (unique salmon); rep-1's only salmon hits are
@@ -2526,6 +2556,7 @@ class TestDestructiveGates:
                     "line_id": None,
                     "gate": VA.RECEIVE_UNRECONCILED_TOTALS,
                     "message": "x",
+                    "clears_when": {"scope": "header", "op": "balances"},
                 },
             ],
         }
@@ -2541,8 +2572,45 @@ class TestDestructiveGates:
         )
         assert data["lines"][0]["struck"] is True
         assert any("struck" in d for d in done)
-        assert any("receive unreconciled totals" in d for d in done)
+        # The totals switch no longer waves the blocker through: it stands
+        # down because, with the phantom struck, the invoice adds up.
+        assert not any("receive unreconciled totals" in d for d in done)
         assert IR.compute_confidence(data) == "ready"
+
+    def test_the_totals_switch_alone_never_clears_totals_that_dont_match(self):
+        data = {
+            "invoice_id": "inv-1",
+            "total": 50.0,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 1,
+                    "unit_cost": 10.0,
+                    "sale_tax_rate": 0.15,
+                }
+            ],
+            "suggestions": [],
+            "suggestion_actions": [],
+            "issues": [
+                {
+                    "id": "totals_inconsistent",
+                    "code": "totals_inconsistent",
+                    "blocking": True,
+                    "gate": VA.RECEIVE_UNRECONCILED_TOTALS,
+                    "message": "x",
+                    "clears_when": {"scope": "header", "op": "balances"},
+                }
+            ],
+        }
+        IR.autopilot_accept(
+            None,
+            None,
+            "v-1",
+            "inv-1",
+            data,
+            self._settings(VA.RECEIVE_UNRECONCILED_TOTALS),
+        )
+        assert IR.compute_confidence(data) == "needs_review"
 
 
 class TestDecisionsSurviveARereview:
@@ -3070,3 +3138,26 @@ class TestTheUnitGatePicksAUnit:
         rl = replica["lines"][0]
         assert rl["linked_unit_id"] == "u-each"
         assert rl["unit_guess"] is True and rl["unit_by"] == "chooser"
+
+    def test_a_last_resort_pick_says_so_on_the_card(self):
+        from app.services import replica_finish as RF
+
+        replica = {
+            "lines": [{"id": "rep-0", "description": "Pistachio Jam-Can"}],
+            "issues": [
+                {"id": "unit_missing:rep-0", "code": "unit_missing", "line_id": "rep-0"}
+            ],
+        }
+        forced = {
+            "id": "u-each",
+            "name": "Each",
+            "ratio": 1,
+            "why": "'Each' is Norm's best guess from the venue's units; check it",
+        }
+        RF.settle_units({"lines": []}, replica, {}, [], lambda ln: forced, [])
+        rl = replica["lines"][0]
+        assert rl["linked_unit_id"] == "u-each" and rl["unit_guess"] is True
+        assert rl["unit_why"] == (
+            "no unit could be read from the invoice for 'Pistachio Jam-Can' — "
+            "'Each' is Norm's best guess from the venue's units; check it"
+        )

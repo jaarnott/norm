@@ -37,6 +37,7 @@ fingerprint pair.
 
 from __future__ import annotations
 
+import copy
 import datetime
 import decimal
 import logging
@@ -63,7 +64,13 @@ from app.services.invoice_po_reference import (
     seed_working_from_loaded,
 )
 from app.services.invoice_replica import build_replica
-from app.services.replica_finish import TOTALS_ISSUE, _totals_view, finish_replica
+from app.services.replica_finish import (
+    LOADED_ROUNDING,
+    TOTALS_ISSUE,
+    _totals_view,
+    finish_replica,
+    spread_costs,
+)
 from app.services.received_invoice import (
     LoadedInvoiceClient,
     _norm,
@@ -377,6 +384,7 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
             # would be silently rounded to 0.57 by Loaded and the suggestion
             # would come straight back on the next open.
             apply={"quantity_received": copy_qty},
+            sure=not rl.get("quantity_received_guess"),
             fixes=fixes.get("quantity_received"),
             confidence=rl.get("fixes_confidence")
             if "quantity_received" in fixes
@@ -567,10 +575,12 @@ def _create_item_suggestion(
 # Header values worth suggesting. subtotal is deliberately ABSENT: it is
 # derived from the lines, so the receive always writes the derived value
 # (receive_request_from_doc) and a stored/suggested subtotal would only
-# drift from edits.
+# drift from edits. So is the discount: the receive never sends Loaded one,
+# so accepting it only took it off the card's total — Fresh Connection
+# 30049130 (14 Oct 2026) read $41 short after "apply all". A printed discount
+# comes off the line costs instead (replica_finish.read_printed_prices).
 _HEADER_VALUE_FIELDS = (
     ("tax_amount", "tax"),
-    ("discount_amount", "discount"),
     ("total", "total"),
 )
 
@@ -845,6 +855,23 @@ def _brand_suggestions(data: dict, suggestions: list[dict]) -> None:
         )
 
 
+def _supplier_details_text(details: dict) -> str:
+    """The details a new supplier takes, as one line for the card."""
+    place = ", ".join(
+        [*(details.get("address_lines") or []), details.get("city") or ""]
+    ).strip(", ")
+    if details.get("postcode"):
+        place = f"{place} {details['postcode']}".strip()
+    parts = [
+        place,
+        details.get("phone"),
+        details.get("email"),
+        details.get("contact_name"),
+        details.get("account_number") and f"account {details['account_number']}",
+    ]
+    return " · ".join(p for p in parts if p)
+
+
 def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> None:
     fixes = replica.get("fixes") or {}
     if replica.get("reference_number") and _norm(
@@ -908,15 +935,26 @@ def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> N
             )
     if replica.get("supplier_create_name") and not data.get("linked_supplier_id"):
         name = replica["supplier_create_name"]
+        explanation = (
+            replica.get("supplier_why")
+            or f"no Loaded supplier is called '{name}' — create it"
+        )
+        payload = {"supplier_name": name}
+        details = replica.get("supplier_details") or {}
+        if details:
+            payload["details"] = details
+            explanation += (
+                ", with the details its invoice prints: "
+                + _supplier_details_text(details)
+            )
         _sugg(
             suggestions,
             "create_supplier",
             field="linked_supplier_id",
             current=None,
             proposed=name,
-            explanation=replica.get("supplier_why")
-            or f"no Loaded supplier is called '{name}' — create it",
-            payload={"supplier_name": name},
+            explanation=explanation,
+            payload=payload,
             gate=_VA.AUTO_CREATE_SUPPLIERS,
         )
     elif replica.get("linked_supplier_id") and replica.get(
@@ -1103,10 +1141,145 @@ _ISSUE_GATES = {
 }
 
 
-def totals_reconcile(data: dict) -> bool:
-    """Does this document add up?"""
+def totals_balance(data: dict) -> bool:
+    """Do these working values come to the invoice's total, as Loaded adds
+    them up (within its rounding)? The ONE totals check: the totals blocker
+    clears on it, so nothing is received — by a person's Accept, autopilot or
+    a switch — that Loaded would show (or refuse) as not adding up."""
     _, _, derived, declared = _totals_view(data)
-    return declared is None or abs(derived - declared) <= 0.02
+    return declared is None or abs(derived - declared) <= LOADED_ROUNDING + 1e-9
+
+
+def _all_applied(data: dict, suggestions: list[dict]) -> dict:
+    """The working values once every suggestion is accepted — the card's
+    "accept all", on a copy."""
+    post = copy.deepcopy({k: v for k, v in data.items() if k != "loaded_snapshot"})
+    for s in suggestions:
+        try:
+            apply_suggestion(post, s)
+        except Exception as exc:  # noqa: BLE001 — a check, never an error
+            logger.info("accept-all check skipped %s: %s", s.get("id"), exc)
+    return post
+
+
+def balance_after_suggestions(
+    data: dict, suggestions: list[dict], issues: list[dict]
+) -> None:
+    """The totals check, on the values the suggestions leave — not the copy's
+    own printed figures (the user, 14 Oct 2026: "the goal is autoreceive so we
+    need to make sure that after all suggestions are applied the totals
+    always match, that should be our check"). In place.
+
+    - Accepting every suggestion must come to the total. If it wouldn't, the
+      costs are spread so it does: the last resort, a guess applied unattended
+      only with the receive-unreconciled-totals switch.
+    - The totals blocker stands whenever the WORKING values don't come to the
+      total, and clears only when they do (``clears_when`` ``balances``) —
+      however they got there. Its fix is every suggestion that moves the
+      money. Autopilot applies only sure suggestions (and guesses whose switch
+      is on), so a check on "everything applied" alone would let it receive
+      an invoice that doesn't add up; and Fresh Connection 30049130 read
+      "Ready to receive" at $138.32 on a $179.40 invoice because accepting the
+      fixes used to be enough to clear the blocker."""
+    if any(s.get("kind") == "delete_invoice" for s in suggestions):
+        return  # nothing will be received
+    existing = next((i for i in issues if i.get("code") == TOTALS_ISSUE), None)
+    issue_id = (existing or {}).get("id") or TOTALS_ISSUE
+
+    post = _all_applied(data, suggestions)
+    if not totals_balance(post):
+        _, _, came_to, declared = _totals_view(post)
+        gap = round((declared or 0.0) - came_to, 2)
+        # An added line keeps the cost the invoice prints; the lines already
+        # there carry the difference.
+        added = {
+            str((s.get("payload") or {}).get("id"))
+            for s in suggestions
+            if s.get("kind") == "add_line"
+        }
+        by_id = {str(s.get("id")): s for s in suggestions}
+        for lid, cost in spread_costs(post, fixed=added).items():
+            ln = _line(data, lid) or {}
+            explanation = (
+                f"with every other suggestion applied the invoice is {gap:+.2f} "
+                f"off its total and no single misread figure explains it — "
+                f"{cost:.4f} makes it balance"
+            )
+            s = by_id.get(f"line_value:unit_cost:{lid}")
+            if s is None:
+                _sugg(
+                    suggestions,
+                    "line_value",
+                    field="unit_cost",
+                    line_id=lid,
+                    current=ln.get("unit_cost"),
+                    proposed=cost,
+                    explanation=explanation,
+                    apply={"unit_cost": cost},
+                    sure=False,
+                    fixes=issue_id,
+                )
+            else:
+                s.update(
+                    proposed=cost,
+                    apply={"unit_cost": cost},
+                    explanation=explanation,
+                    sure=False,
+                    fixes=issue_id,
+                )
+        # A spread that lands back on Loaded's own cost proposes nothing.
+        suggestions[:] = [
+            s
+            for s in suggestions
+            if not (
+                s.get("kind") == "line_value"
+                and s.get("field") == "unit_cost"
+                and not _differ(
+                    (_line(data, s.get("line_id")) or {}).get("unit_cost"),
+                    s.get("proposed"),
+                    _MONEY_TOL,
+                )
+            )
+        ]
+        if not totals_balance(_all_applied(data, suggestions)):
+            logger.warning(
+                "totals still don't balance after the spread on %s",
+                data.get("invoice_id"),
+            )
+
+    if totals_balance(data):
+        # As it stands it adds up: nothing to stop the receive.
+        if existing is not None:
+            issues.remove(existing)
+        for s in suggestions:
+            if s.get("fixes") == issue_id:
+                s["fixes"] = None
+        return
+
+    _, _, came_to, declared = _totals_view(data)
+    issue = existing or {"id": issue_id, "code": TOTALS_ISSUE, "line_id": None}
+    issue.update(
+        blocking=True,
+        gate=_VA.RECEIVE_UNRECONCILED_TOTALS,
+        message=f"the invoice comes to {came_to:.2f}, not its total {declared:.2f}",
+        clears_when={"scope": "header", "op": "balances"},
+    )
+    if existing is None:
+        issues.append(issue)
+    # Its fix: every suggestion that moves the money. A guess among them is
+    # Norm's to apply alone only with the totals switch.
+    gap = came_to - (declared or 0.0)
+    for s in suggestions:
+        if s.get("fixes") not in (None, issue_id):
+            continue
+        _, _, after, after_total = _totals_view(_all_applied(data, [s]))
+        # A cost, quantity, line or the invoice total itself.
+        moves = abs((after - (after_total or 0.0)) - gap) >= 0.005
+        if not moves and s.get("fixes") is None:
+            continue
+        s["fixes"] = issue_id
+        if s.get("sure") is False and not s.get("gate"):
+            s["gate"] = _VA.RECEIVE_UNRECONCILED_TOTALS
 
 
 def _finalise_issues(
@@ -1188,7 +1361,9 @@ LOADED_WRITE_ORDER = ("create_supplier", "create_unit", "create_item", "create_b
 #: Blockers a venue switch waves through on its own: the switch IS the answer
 #: ("receive without an order", "receive on totals that don't add up"), so
 #: nothing has to be applied for it to stand down.
-_SWITCH_SETTLES = ("po_missing", "po_unresolved", TOTALS_ISSUE, "unit_unconfirmed")
+_SWITCH_SETTLES = ("po_missing", "po_unresolved", "unit_unconfirmed")
+# Not the totals: their switch lets autopilot apply the spread (a guess), and
+# the blocker then clears because the invoice balances — never by decree.
 
 _DELETE_CODES = (
     "duplicate_invoice",
@@ -1286,12 +1461,10 @@ def _confirm_for(data: dict, replica: dict | None, issue: dict) -> dict | None:
             if "receive without" in message
             else f"{message} — receive without it"
         )
-    elif code == TOTALS_ISSUE:
-        field = "total"
-        explanation = (replica or {}).get("totals_why") or (
-            f"{issue.get('message')} — receive on the values as entered"
-        )
     else:
+        # Not the totals: "receive on the values as entered" was an Accept
+        # that cleared the blocker while Loaded would refuse the receive. The
+        # totals stand down only when they match (balance_after_suggestions).
         return None
     return {
         "id": f"confirm:{issue.get('id')}",
@@ -1367,6 +1540,8 @@ def _clears(data: dict, issue: dict) -> bool:
         v = (_line(data, cw.get("line_id")) or {}).get(cw.get("field"))
     else:
         v = data.get(cw.get("field"))
+    if cw.get("op") == "balances":
+        return totals_balance(data)
     if cw.get("op") == "not_null":
         return v is not None
     if cw.get("op") == "truthy":
@@ -1398,6 +1573,8 @@ def is_settled(data: dict, issue: dict, last: dict[str, dict] | None = None) -> 
         "dismissed",
     ):
         return True
+    if (issue.get("clears_when") or {}).get("op") == "balances":
+        return False  # accepted fixes count only if the totals now match
     fix = issue.get("fix") or []
     return bool(fix) and all(
         (last.get(str(f)) or {}).get("action") == "accepted" for f in fix
@@ -1683,7 +1860,9 @@ def autopilot_accept(
                             invoice_id,
                         )
                         continue
-                    supplier, _ = catalog.get_or_create_supplier(_client(), name)
+                    supplier, _ = catalog.get_or_create_supplier(
+                        _client(), name, details=payload.get("details")
+                    )
                     data["linked_supplier_id"] = supplier["id"]
                     data["supplier_name"] = supplier.get("name") or name
                     _record(s.get("id"), {}, {"linked_supplier_id": supplier["id"]})
@@ -1993,15 +2172,28 @@ def review_invoice(
                 or (isinstance(data.get("total"), (int, float)) and data["total"] < 0)
             )
             # The venue's unit chooser — the last answer for a line nothing
-            # gives a unit (replica_finish.settle_units).
+            # gives a unit (replica_finish.settle_units). Its final pass may
+            # not decline: a line with no unit stops autopilot outright.
             choose = None
             if db is not None:
                 from app.services.unit_guess import guess_unit, llm_chooser
 
                 ask = llm_chooser(db)
+                insist = llm_chooser(db, insist=True)
 
                 def choose(ln: dict) -> dict | None:
-                    return guess_unit(ln, units or [], ask_llm=ask)[0]
+                    unit, why = guess_unit(ln, units or [], ask_llm=ask, insist=insist)
+                    return {**unit, "why": why} if unit else None
+
+            # A supplier Norm will create takes the details its invoice prints.
+            read_details = None
+            if db is not None:
+                from app.services.invoice_extraction import read_supplier_details
+
+                def read_details(name: str) -> dict:
+                    return read_supplier_details(
+                        db, lh, str(file_id), supplier_name=name
+                    )
 
             def finish(pairs: dict[str, str]) -> None:
                 # The order the invoice names is evidence for the rules (which
@@ -2027,6 +2219,7 @@ def review_invoice(
                     totals_ask=totals_ask,
                     db=db,
                     extraction=extraction,
+                    read_supplier_details=read_details,
                 )
 
             suggestions, extra_issues, pairs = build_suggestions(
@@ -2134,6 +2327,9 @@ def review_invoice(
                         },
                     }
                 )
+            # The totals check runs on what the suggestions leave, last, so it
+            # sees every other answer.
+            balance_after_suggestions(data, suggestions, issues)
             link_fixes(data, replica, issues, suggestions)
             data["suggestions"] = suggestions
             data["issues"] = issues

@@ -13,6 +13,8 @@ What Norm only guessed is ``sure: False`` — never applied unattended unless it
 ``gate`` (a venue switch) is on.
 """
 
+import pytest
+
 from app.services import invoice_review as IR
 from app.services import replica_finish as RF
 from app.services import venue_autopilot as VA
@@ -186,9 +188,9 @@ class TestSupplierAndPhantomLines:
             ]
         }
 
-    def _decide(self, replica, suppliers):
+    def _decide(self, replica, suppliers, read_details=None):
         data = {"lines": []}
-        RF.settle_supplier(data, replica, suppliers, [])
+        RF.settle_supplier(data, replica, suppliers, [], read_details)
         suggestions: list = []
         IR._header_suggestions(data, replica, suggestions)
         issue = {
@@ -227,6 +229,54 @@ class TestSupplierAndPhantomLines:
         assert s["payload"] == {"supplier_name": "Tickety-Boo Liquor Ltd"}
         assert s["gate"] == VA.AUTO_CREATE_SUPPLIERS
         assert issue["fix"] == [s["id"]]
+
+    def test_a_new_supplier_carries_what_its_invoice_prints(self):
+        asked = []
+        details = {
+            "address_lines": ["12 Wharf Road"],
+            "city": "Auckland",
+            "phone": "09 555 0101",
+            "email": "orders@tickety.co.nz",
+        }
+
+        def read(name):
+            asked.append(name)
+            return details
+
+        replica = self._replica("Tickety-Boo Liquor Ltd")
+        _, [s] = self._decide(
+            replica, [{"id": "sup-bf", "name": "Bidfood"}], read_details=read
+        )
+        assert asked == ["Tickety-Boo Liquor Ltd"]
+        assert replica["supplier_details"] == details
+        assert s["payload"] == {
+            "supplier_name": "Tickety-Boo Liquor Ltd",
+            "details": details,
+        }
+        # The card says what the record will hold before anyone accepts it.
+        assert s["explanation"].endswith(
+            "with the details its invoice prints: 12 Wharf Road, Auckland · "
+            "09 555 0101 · orders@tickety.co.nz"
+        )
+
+    def test_a_near_match_reads_nothing(self):
+        # Linking an existing record writes nothing to it, so there is
+        # nothing to read the invoice for.
+        asked = []
+        self._decide(
+            self._replica("SERVICE FOODS LTD"),
+            [{"id": "sup-sf", "name": "SERVICE FOODS AUCKLAND"}],
+            read_details=lambda name: asked.append(name) or {},
+        )
+        assert asked == []
+
+    def test_an_unreadable_invoice_still_creates_the_supplier(self):
+        _, [s] = self._decide(
+            self._replica("Tickety-Boo Liquor Ltd"),
+            [],
+            read_details=lambda name: {},
+        )
+        assert s["payload"] == {"supplier_name": "Tickety-Boo Liquor Ltd"}
 
     def test_a_phantom_line_is_struck(self):
         data = {
@@ -394,6 +444,578 @@ class TestSpreadToTotal:
         assert RF.spread_costs(data) == {}
 
 
+class TestTotalsDoTheCardsArithmetic:
+    """The totals rule works the invoice out the way the card and Loaded do
+    (Loaded's calculateFooterTotals): lines, tax at each line's rate, less the
+    discount. It used to keep the line's stored tax — Loaded's, for Loaded's
+    cost — so every spread balanced to the wrong total. Fresh Connection
+    30049130 (14 Oct 2026): 5 × 42.99 spread to 29.4315 against tax still
+    15% of 42.99, and the card came to $138.32 on a $179.40 invoice."""
+
+    def _line(self, q, c, rate=0.15, **over):
+        return {
+            "id": "a",
+            "quantity_received": q,
+            "unit_cost": c,
+            "sale_tax_rate": rate,
+            **over,
+        }
+
+    def test_tax_is_worked_from_the_rate_not_the_stored_figure(self):
+        data = {"total": 23.0, "lines": [self._line(2, 10.0, tax_amount=99.0)]}
+        line_sum, tax, derived, declared = RF._totals_view(data)
+        assert (line_sum, round(tax, 2), derived) == (20.0, 3.0, 23.0)
+
+    def test_the_discount_comes_off_the_total(self):
+        data = {"total": 18.0, "discount_amount": 5.0, "lines": [self._line(2, 10.0)]}
+        assert RF._totals_view(data)[2] == 18.0
+
+    def test_costs_that_include_tax(self):
+        data = {"unit_cost_includes_tax": True, "lines": [self._line(1, 11.5)]}
+        _, tax, derived, _ = RF._totals_view(data)
+        assert (round(tax, 2), derived) == (1.5, 11.5)
+
+    def test_a_spread_moves_the_tax_with_the_cost(self):
+        data = {"total": 179.4, "lines": [self._line(5, 42.99, tax_amount=32.2425)]}
+        moved = RF.spread_costs(data)
+        assert moved == {"a": 31.2}  # was 29.4315: 179.40 − 32.24 stale tax
+        data["lines"][0]["unit_cost"] = moved["a"]
+        _, _, derived, declared = RF._totals_view(data)
+        assert derived == declared
+
+
+class TestPricesAndDiscountsAreReadExactly:
+    """Prices printed including GST, and a discount off the bottom, are worked
+    out exactly — every printed figure must then agree — instead of spread as
+    a guess. The receive never sends Loaded a discount, so it comes off the
+    line costs: what the venue paid per unit."""
+
+    def _view(self, *lines, total, discount=None):
+        return {
+            "total": total,
+            "discount_amount": discount,
+            "lines": [
+                {"id": i, "quantity_received": q, "unit_cost": c, "sale_tax_rate": 0.15}
+                for i, q, c in lines
+            ],
+        }
+
+    def _printed(self, **figures):
+        return {
+            "subtotal": None,
+            "tax_amount": None,
+            "discount_amount": None,
+            **figures,
+        }
+
+    def test_fresh_connection_30049130(self):
+        """5 × $42.99 incl GST, less $30.91 ex GST: $31.20 a carton ex GST,
+        $23.40 GST, $179.40 — every figure the invoice prints."""
+        r = RF.read_printed_prices(
+            self._view(("a", 5, 42.99), total=179.4),
+            self._printed(
+                subtotal=186.91, discount_amount=30.91, tax_amount=23.4, total=179.4
+            ),
+        )
+        assert r["lines"] == {"a": {"unit_cost": 31.2}} and r["discount"]
+        assert "prices include GST" in r["whys"]["a"]
+        assert "30.91 discount (ex GST)" in r["whys"]["a"] and not r["guess"]
+
+    def test_a_discount_off_the_bottom(self):
+        r = RF.read_printed_prices(
+            self._view(("a", 6, 10.0), ("b", 4, 10.0), total=103.5),
+            self._printed(
+                subtotal=100.0, discount_amount=10.0, tax_amount=13.5, total=103.5
+            ),
+        )
+        assert r["lines"] == {"a": {"unit_cost": 9.0}, "b": {"unit_cost": 9.0}}
+        assert r["discount"]
+
+    def test_a_discount_printed_including_gst(self):
+        r = RF.read_printed_prices(
+            self._view(("a", 10, 10.0), total=103.5),
+            self._printed(
+                subtotal=100.0, discount_amount=11.5, tax_amount=13.5, total=103.5
+            ),
+        )
+        assert r["lines"] == {"a": {"unit_cost": 9.0}}
+        assert "(incl GST)" in r["whys"]["a"]
+
+    def test_prices_including_gst_alone(self):
+        r = RF.read_printed_prices(
+            self._view(("a", 2, 11.5), total=23.0),
+            self._printed(subtotal=20.0, tax_amount=3.0, total=23.0),
+        )
+        assert r["lines"] == {"a": {"unit_cost": 10.0}} and not r["discount"]
+        assert "discount" not in r["whys"]["a"]
+
+    def test_lines_that_already_agree_are_left_alone(self):
+        assert (
+            RF.read_printed_prices(
+                self._view(("a", 10, 10.0), total=115.0),
+                self._printed(subtotal=100.0, tax_amount=15.0, total=115.0),
+            )
+            is None
+        )
+
+    def test_a_discount_already_inside_the_lines_is_not_taken_twice(self):
+        # Lion prints line totals net of discount and the discount for
+        # information (94817415): lines + tax already make the total.
+        assert (
+            RF.read_printed_prices(
+                self._view(("a", 10, 10.0), total=115.0),
+                self._printed(
+                    subtotal=100.0, discount_amount=12.0, tax_amount=15.0, total=115.0
+                ),
+            )
+            is None
+        )
+
+    def test_the_total_alone_is_not_enough_evidence(self):
+        # Without a printed subtotal or tax, "the prices include GST" could be
+        # a total that happens to equal the lines.
+        assert (
+            RF.read_printed_prices(
+                self._view(("a", 2, 11.5), total=23.0), self._printed(total=23.0)
+            )
+            is None
+        )
+
+    def test_a_reading_the_subtotal_contradicts_is_refused(self):
+        assert (
+            RF.read_printed_prices(
+                self._view(("a", 2, 11.5), total=23.0),
+                self._printed(subtotal=23.0, total=23.0),
+            )
+            is None
+        )
+
+    def test_a_credit_note_is_left_to_the_other_rules(self):
+        replica = self._printed(subtotal=20.0, tax_amount=3.0, total=23.0)
+        replica["is_credit_note"] = True
+        assert (
+            RF.read_printed_prices(self._view(("a", 2, 11.5), total=23.0), replica)
+            is None
+        )
+
+    def _settle(self, *, issue: bool):
+        data = {
+            "total": 179.4,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 5.0,
+                    "unit_cost": 42.99,
+                    "total_cost": 214.95,
+                    "tax_amount": 32.2425,
+                    "sale_tax_rate": 0.15,
+                }
+            ],
+        }
+        replica = {
+            "subtotal": 186.91,
+            "tax_amount": 23.4,
+            "discount_amount": 30.91,
+            "total": 179.4,
+            "issues": (
+                [
+                    {
+                        "id": "totals_inconsistent",
+                        "code": "totals_inconsistent",
+                        "message": "x",
+                    }
+                ]
+                if issue
+                else []
+            ),
+            "lines": [
+                {
+                    "id": "rep-0",
+                    "quantity_received": 5,
+                    "unit_cost": 42.99,
+                    "sale_tax_rate": 0.15,
+                }
+            ],
+        }
+        log: list = []
+        RF.settle_totals(
+            data,
+            replica,
+            {"rep-0": "ld-1"},
+            None,
+            lambda p: pytest.fail("the model was asked"),
+            None,
+            log,
+        )
+        return replica, log
+
+    def test_the_answer_is_sure_and_fixes_the_blocker(self):
+        replica, log = self._settle(issue=True)
+        rl = replica["lines"][0]
+        assert rl["unit_cost"] == 31.2 and rl["unit_cost_guess"] is False
+        assert rl["fixes"] == {"unit_cost": "totals_inconsistent"}
+        assert rl["unit_cost_why"].endswith(
+            "31.20 a unit ex GST makes every printed figure agree"
+        )
+        # Inside the costs now — as its own figure it would come off twice.
+        assert replica["discount_amount"] is None
+        assert replica["discount_absorbed"] == 30.91
+
+    def test_it_runs_even_when_the_copy_raised_no_blocker(self):
+        # A discount satisfies the copy's own check yet the receive can't send
+        # it, so it is read whether or not anything was flagged.
+        replica, _ = self._settle(issue=False)
+        assert replica["lines"][0]["unit_cost"] == 31.2
+        assert "fixes" not in replica["lines"][0]
+
+
+class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
+    """The user, 14 Oct 2026: "the goal is autoreceive so we need to make sure
+    that after all suggestions are applied the totals always match, that
+    should be our check, not any check on the totals before". Fresh
+    Connection 30049130 read "Ready to receive" at $138.32 on a $179.40
+    invoice: accepting the totals fixes was enough to clear the blocker."""
+
+    BLOCKER = {
+        "id": "totals_inconsistent",
+        "code": "totals_inconsistent",
+        "blocking": True,
+        "fix": ["line_value:unit_cost:ld-1"],
+        "clears_when": {"scope": "header", "op": "balances"},
+        "message": "x",
+    }
+
+    def _doc(self, cost):
+        return {
+            "total": 23.0,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 2,
+                    "unit_cost": cost,
+                    "sale_tax_rate": 0.15,
+                }
+            ],
+            "suggestion_actions": [
+                {"suggestion_id": "line_value:unit_cost:ld-1", "action": "accepted"}
+            ],
+        }
+
+    def test_accepted_fixes_are_not_enough_on_their_own(self):
+        assert IR.is_settled(self._doc(11.0), self.BLOCKER) is False
+
+    def test_it_clears_when_the_working_values_match(self):
+        assert IR.is_settled(self._doc(10.0), self.BLOCKER) is True
+
+    def test_within_loadeds_rounding_is_a_match(self):
+        # Loaded receives up to 10c out as "Rounding"; 2 x 10.04 + tax = 23.09.
+        assert IR.is_settled(self._doc(10.04), self.BLOCKER) is True
+        assert IR.is_settled(self._doc(10.06), self.BLOCKER) is False
+
+    def _balance(self, data, suggestions, issues):
+        IR.balance_after_suggestions(data, suggestions, issues)
+        return suggestions, issues
+
+    def test_suggestions_that_leave_it_off_get_a_balancing_fix(self):
+        data = {
+            "invoice_id": "inv-1",
+            "total": 34.5,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 2,
+                    "unit_cost": 10.0,
+                    "sale_tax_rate": 0.15,
+                }
+            ],
+        }
+        # The invoice says 30.00 ex GST, but its price reads 11.50: accepting
+        # it would still be $8.05 short.
+        price = {
+            "id": "line_value:unit_cost:ld-1",
+            "kind": "line_value",
+            "field": "unit_cost",
+            "line_id": "ld-1",
+            "proposed": 11.5,
+            "apply": {"unit_cost": 11.5},
+            "sure": True,
+        }
+        suggestions, issues = self._balance(data, [price], [])
+        [issue] = issues
+        assert issue["clears_when"] == {"scope": "header", "op": "balances"}
+        assert issue["gate"] == VA.RECEIVE_UNRECONCILED_TOTALS
+        [s] = suggestions  # the price suggestion now carries the balancing cost
+        assert s["proposed"] == 15.0 and s["sure"] is False
+        assert s["gate"] == VA.RECEIVE_UNRECONCILED_TOTALS
+        assert s["fixes"] == issue["id"]
+        assert IR.totals_balance(IR._all_applied(data, suggestions))
+
+    def test_a_suggestion_that_would_unbalance_a_matching_invoice_goes(self):
+        # Loaded's 2 x 10.00 already comes to 23.00; a list price that would
+        # break it is spread straight back to Loaded's cost — and dropped.
+        data = {
+            "invoice_id": "inv-1",
+            "total": 23.0,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 2,
+                    "unit_cost": 10.0,
+                    "sale_tax_rate": 0.15,
+                }
+            ],
+        }
+        price = {
+            "id": "line_value:unit_cost:ld-1",
+            "kind": "line_value",
+            "field": "unit_cost",
+            "line_id": "ld-1",
+            "proposed": 11.5,
+            "apply": {"unit_cost": 11.5},
+            "sure": True,
+        }
+        suggestions, issues = self._balance(data, [price], [])
+        assert suggestions == [] and issues == []
+
+    def test_a_total_correction_is_a_fix_of_the_totals(self):
+        data = {
+            "invoice_id": "inv-1",
+            "total": 25.0,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 2,
+                    "unit_cost": 10.0,
+                    "sale_tax_rate": 0.15,
+                }
+            ],
+        }
+        total = {
+            "id": "header_value:total",
+            "kind": "header_value",
+            "field": "total",
+            "proposed": 23.0,
+            "apply": {"total": 23.0},
+            "sure": True,
+        }
+        suggestions, issues = self._balance(data, [total], [])
+        [issue] = issues
+        assert suggestions[0]["fixes"] == issue["id"]
+
+    def test_an_added_line_keeps_its_printed_cost(self):
+        data = {
+            "invoice_id": "inv-1",
+            "total": 40.25,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 1,
+                    "unit_cost": 10.0,
+                    "sale_tax_rate": 0.15,
+                }
+            ],
+        }
+        add = {
+            "id": "add_line:rep-1",
+            "kind": "add_line",
+            "payload": {
+                "id": "new-1",
+                "description": "Freight",
+                "quantity_received": 1,
+                "unit_cost": 20.0,
+                "sale_tax_rate": 0.15,
+            },
+            "sure": True,
+        }
+        suggestions, _ = self._balance(data, [add], [])
+        moved = {
+            s["line_id"]: s["proposed"]
+            for s in suggestions
+            if s["kind"] == "line_value"
+        }
+        assert moved == {"ld-1": 15.0}  # 15 + 20 = 35, + 5.25 GST = 40.25
+
+    def test_a_copy_that_doesnt_reconcile_is_no_blocker_if_the_result_does(self):
+        data = {
+            "invoice_id": "inv-1",
+            "total": 23.0,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 2,
+                    "unit_cost": 10.0,
+                    "sale_tax_rate": 0.15,
+                }
+            ],
+        }
+        fix = {
+            "id": "header_value:tax_amount",
+            "kind": "header_value",
+            "fixes": "totals_inconsistent",
+            "apply": {"tax_amount": 3.0},
+        }
+        issue = {
+            "id": "totals_inconsistent",
+            "code": "totals_inconsistent",
+            "blocking": True,
+            "message": "x",
+        }
+        suggestions, issues = self._balance(data, [fix], [issue])
+        assert issues == []
+        assert suggestions[0]["fixes"] is None
+
+    def test_a_draft_about_to_be_deleted_is_not_checked(self):
+        data = {
+            "total": 99.0,
+            "lines": [{"id": "ld-1", "quantity_received": 1, "unit_cost": 1.0}],
+        }
+        _, issues = self._balance(
+            data, [{"id": "delete_invoice", "kind": "delete_invoice"}], []
+        )
+        assert issues == []
+
+
+class TestBidfoodLineDiscounts:
+    """Bidfood prints its list price and charges about 5% less on the line
+    (La Zeppa 110185654: 1 x 66.25, line 62.94). Loaded held the net 62.94 —
+    right — and the review proposed the list price as a SURE fix, leaving the
+    invoice $3.81 over once accepted. The line total is what was charged."""
+
+    def _view(self):
+        return {
+            "total": 72.38,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 1.0,
+                    "unit_cost": 66.25,
+                    "sale_tax_rate": 0.15,
+                    "printed_total": 62.94,
+                }
+            ],
+        }
+
+    def test_the_line_total_is_the_cost(self):
+        r = RF.read_printed_prices(
+            self._view(),
+            {
+                "subtotal": 62.94,
+                "tax_amount": 9.44,
+                "total": 72.38,
+                "discount_amount": None,
+            },
+        )
+        assert r["lines"] == {"ld-1": {"unit_cost": 62.94}} and not r["guess"]
+        assert "the line total is what was charged" in r["whys"]["ld-1"]
+
+    def test_a_whole_multiple_is_a_quantity_guess(self):
+        # Bidfood 110167263: "2 x 41.11", line 164.44 — 4 at 41.11 (or 2 at
+        # 82.22); the figures can't say which.
+        view = {
+            "total": 189.11,
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "quantity_received": 2.0,
+                    "unit_cost": 41.11,
+                    "sale_tax_rate": 0.15,
+                    "printed_total": 164.44,
+                }
+            ],
+        }
+        printed = {
+            "subtotal": 164.44,
+            "tax_amount": 24.67,
+            "total": 189.11,
+            "discount_amount": None,
+        }
+        r = RF.read_printed_prices(view, printed)
+        assert r["lines"] == {"ld-1": {"quantity_received": 4.0, "unit_cost": 41.11}}
+        assert r["guess"] == {"ld-1"} and "check the quantity" in r["whys"]["ld-1"]
+
+    def test_lines_the_invoice_doesnt_bill_and_zero_leftovers_are_ignored(self):
+        # Bidfood 110185651 / 110167264: a $0 PECORINO and a duplicate feta.
+        view = {
+            "total": 15.82,
+            "lines": [
+                {
+                    "id": "dup",
+                    "quantity_received": 1.0,
+                    "unit_cost": 13.76,
+                    "sale_tax_rate": 0.15,
+                    "struck": True,
+                },
+                {
+                    "id": "zero",
+                    "quantity_received": 0.0,
+                    "unit_cost": 13.34,
+                    "sale_tax_rate": 0.15,
+                },
+                {
+                    "id": "feta",
+                    "quantity_received": 1.0,
+                    "unit_cost": 14.48,
+                    "sale_tax_rate": 0.15,
+                    "printed_total": 13.76,
+                },
+            ],
+        }
+        printed = {
+            "subtotal": 13.76,
+            "tax_amount": 2.06,
+            "total": 15.82,
+            "discount_amount": None,
+        }
+        r = RF.read_printed_prices(view, printed)
+        assert r["lines"] == {"feta": {"unit_cost": 13.76}}
+
+    def test_the_total_and_gst_are_enough_when_the_subtotal_is_odd(self):
+        # Lion 94817415 prints a subtotal without its fuel surcharge.
+        view = {
+            "total": 126.5,
+            "lines": [
+                {
+                    "id": "beer",
+                    "quantity_received": 4.0,
+                    "unit_cost": 28.69,
+                    "sale_tax_rate": 0.15,
+                    "printed_total": 99.4,
+                },
+                {
+                    "id": "fuel",
+                    "quantity_received": 1.0,
+                    "unit_cost": 10.6,
+                    "sale_tax_rate": 0.15,
+                    "printed_total": 10.6,
+                },
+            ],
+        }
+        printed = {
+            "subtotal": 99.4,
+            "tax_amount": 16.5,
+            "total": 126.5,
+            "discount_amount": 15.36,
+        }
+        r = RF.read_printed_prices(view, printed)
+        assert r["lines"] == {"beer": {"unit_cost": 24.85}}
+
+    def test_not_when_the_invoice_says_otherwise(self):
+        # Printed figures that add up to the list price: the line total is the
+        # misread, not the price.
+        assert (
+            RF.read_printed_prices(
+                {**self._view(), "total": 76.19},
+                {
+                    "subtotal": 66.25,
+                    "tax_amount": 9.94,
+                    "total": 76.19,
+                    "discount_amount": None,
+                },
+            )
+            is None
+        )
+
+
 class TestTheReviewLeavesNoBlockerWithoutAFix:
     """Real reviews over the shapes that used to reach the card bare. The
     contract is blockers_without_a_fix(data) == [] — also logged as a warning
@@ -413,15 +1035,16 @@ class TestTheReviewLeavesNoBlockerWithoutAFix:
         assert all(s.get("fixes") == issue["id"] for s in fix)
         assert IR.blockers_without_a_fix(data) == []
 
-    def test_totals_where_the_lines_already_balance_say_so(self):
-        # Only the invoice's printed total is off; Loaded's lines add up.
+    def test_totals_where_the_lines_already_balance_need_nothing(self):
+        # Only the invoice's printed total is off; Loaded's lines add up to
+        # Loaded's total. The Replica keeps Loaded's total (proposing the
+        # misprint would unbalance it), so accept-all matches: no blocker.
         data = _review(
             extraction=EXTRACTION(total_incl_tax=300.0), totals_ask=lambda p: {}
         )
-        issue = next(i for i in data["issues"] if i["code"] == "totals_inconsistent")
-        [confirm] = [s for s in data["suggestions"] if s["id"] in issue["fix"]]
-        assert confirm["kind"] == "confirm"
-        assert "add up to the invoice total (252.75)" in confirm["explanation"]
+        assert not [i for i in data["issues"] if i["code"] == "totals_inconsistent"]
+        assert not [s for s in data["suggestions"] if s.get("field") == "total"]
+        assert data["replica"]["total"] == 252.75
         assert IR.blockers_without_a_fix(data) == []
 
     def test_a_header_misread_becomes_a_header_fix(self):

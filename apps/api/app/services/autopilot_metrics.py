@@ -244,6 +244,16 @@ def simulate_autopilot(data: dict) -> dict | None:
         if not isinstance(i, dict) or not i.get("blocking"):
             continue
         fix = [by_id[f] for f in i.get("fix") or [] if f in by_id]
+        if (i.get("clears_when") or {}).get("op") == "balances":
+            # The totals: cleared only by adding up, never by fixes alone.
+            if _clears(sim, i):
+                continue
+            waiting = [f for f in fix if f.get("gate") and str(f["id"]) not in applied]
+            for f in waiting:
+                _note(f.get("gate"))
+            if not waiting and str(i.get("code")) not in ungated:
+                ungated.append(str(i.get("code")))
+            continue
         if fix and all(str(f["id"]) in applied for f in fix):
             continue  # what the Replica is sure of clears it — no flag needed
         gated = [f for f in fix if f.get("gate")]

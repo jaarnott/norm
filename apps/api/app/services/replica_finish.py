@@ -55,6 +55,20 @@ _ARBITER_HEADER_FIELD = {
 #: A cent of drift across a dozen lines is rounding, not a disagreement.
 _TOTALS_TOL = 0.02
 
+#: Loaded receives an invoice whose total is within ten cents of its own
+#: arithmetic, showing the difference as "Rounding" (Mercury's
+#: calculateFooterTotals, LOADED-5809); further out it refuses the receive
+#: (invoice-totals-mismatch, Bidfood 90ea78ed at 19c). So "the totals match"
+#: means this.
+LOADED_ROUNDING = 0.10
+
+
+def _agree(a: float, b: float, tol: float = _TOTALS_TOL) -> bool:
+    """Within ``tol`` — with room for float error, since 56.74 − 56.72 is
+    0.020000000000004 and two cents would otherwise read as more than two."""
+    return abs(a - b) <= tol + 1e-9
+
+
 _PO_LIST = "/1.0/stock/internal/purchase-orders?from=1901-01-01&to=9999-12-31"
 
 
@@ -391,9 +405,9 @@ def settle_units(
                     _unit(chosen["id"], chosen.get("name"), chosen.get("ratio")),
                     ("chooser"),
                 )
-                why = (
-                    f"no unit could be read from the invoice for '{desc}' — "
-                    f"'{chosen.get('name')}' is the closest of the venue's units"
+                why = f"no unit could be read from the invoice for '{desc}' — " + (
+                    chosen.get("why")
+                    or f"'{chosen.get('name')}' is the closest of the venue's units"
                 )
         if pick is None:
             log.append(f"line {k + 1} unit: nothing to go on — a person must choose")
@@ -408,14 +422,22 @@ def settle_units(
 
 
 def settle_supplier(
-    data: dict, replica: dict, suppliers: list[dict] | None, log: list
+    data: dict,
+    replica: dict,
+    suppliers: list[dict] | None,
+    log: list,
+    read_details=None,
 ) -> None:
     """The supplier, when the printed name matches no Loaded record and
     Loaded's draft has none either: the closest record (a guess), else a new
     supplier under the printed name. Autopilot may create one only when
     nothing is close (see invoice_review.autopilot_accept) — a duplicate
     supplier sends every later invoice from that business to the wrong
-    extraction layout."""
+    extraction layout.
+
+    A new supplier also carries the address and contacts its invoice prints
+    (``read_details(name)`` → invoice_extraction.read_supplier_details), so
+    the record Norm creates is one a venue can order from, not a bare name."""
     if data.get("linked_supplier_id") or replica.get("linked_supplier_id"):
         return
     issue = next(
@@ -451,6 +473,9 @@ def settle_supplier(
     else:
         replica["supplier_create_name"] = name
         replica["supplier_why"] = f"no Loaded supplier is called '{name}' — create it"
+        details = read_details(name) if read_details else None
+        if details:
+            replica["supplier_details"] = details
     log.append(f"supplier: {replica['supplier_why']}")
 
 
@@ -537,59 +562,273 @@ def settle_order(data: dict, replica: dict, lh, log: list) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _line_total(ln: dict) -> float:
+    q, c = _f(ln.get("quantity_received")), _f(ln.get("unit_cost"))
+    if q is not None and c is not None:
+        return round(q * c, 4)
+    return _f(ln.get("total_cost")) or 0.0
+
+
 def _totals_view(data: dict) -> tuple[float, float, float, float | None]:
     """``(line_sum, tax, derived_total, declared_total)`` — the arithmetic the
-    card shows and the receive sends: each line as quantity × unit cost."""
+    card and Loaded both do (Loaded's ``calculateFooterTotals``): each line as
+    quantity × unit cost, its tax at its own rate, and the total as lines +
+    tax − the invoice's discount.
+
+    Tax is worked from the rate, never read off the line: Loaded stored that
+    figure for Loaded's cost, so a rule that moved the cost and kept it
+    balanced to the wrong total (Fresh Connection 30049130, 14 Oct 2026:
+    42.99 → 29.43 against tax still 15% of 42.99). A line with no rate keeps
+    its stored tax; with no tax on any line, the header's stands."""
+    incl = bool(data.get("unit_cost_includes_tax"))
     live = [ln for ln in _lines(data) if not ln.get("struck")]
+    line_sum = tax = 0.0
+    taxed = False
+    for ln in live:
+        lt = _line_total(ln)
+        line_sum += lt
+        rate = _f(ln.get("sale_tax_rate"))
+        if rate is not None:
+            tax += lt - lt / (1 + rate) if incl else lt * rate
+            taxed = True
+        else:
+            t = _f(ln.get("tax_amount")) or 0.0
+            tax += t
+            taxed = taxed or bool(t)
+    if not taxed:
+        tax = _f(data.get("tax_amount")) or 0.0
+    excl = line_sum - tax if incl else line_sum
+    discount = _f(data.get("discount_amount")) or 0.0
+    derived = round(round(excl, 2) + round(tax, 2) - discount, 2)
+    return line_sum, tax, derived, _f(data.get("total"))
 
-    def _line_total(ln: dict) -> float:
-        q, c = _f(ln.get("quantity_received")), _f(ln.get("unit_cost"))
-        if q is not None and c is not None:
-            return round(q * c, 4)
-        return _f(ln.get("total_cost")) or 0.0
 
-    line_sum = sum(_line_total(ln) for ln in live)
-    line_tax = [t for t in (_f(ln.get("tax_amount")) for ln in live) if t]
-    tax = sum(line_tax) if line_tax else (_f(data.get("tax_amount")) or 0.0)
-    return line_sum, tax, round(line_sum + tax, 2), _f(data.get("total"))
+def _exact_total(data: dict) -> float:
+    """The invoice total before Loaded rounds the subtotal and tax to cents —
+    what a spread solves against, so a rounded-away fraction of a cent of tax
+    doesn't move the costs."""
+    line_sum, tax, _, _ = _totals_view(data)
+    incl = bool(data.get("unit_cost_includes_tax"))
+    return line_sum + (0.0 if incl else tax) - (_f(data.get("discount_amount")) or 0.0)
 
 
-def spread_costs(data: dict) -> dict[str, float]:
+def _gross(ln: dict, incl: bool) -> float:
+    """What a dollar of this line's cost adds to the invoice total: the dollar
+    and its tax. Just the dollar when costs include tax, or when the line has
+    no rate (its stored tax doesn't move with the cost)."""
+    rate = _f(ln.get("sale_tax_rate"))
+    return 1.0 if incl or rate is None else 1.0 + rate
+
+
+def spread_costs(
+    data: dict, fixed: set[str] | frozenset = frozenset()
+) -> dict[str, float]:
     """The last answer to totals that don't add up: each line's cost moved by
-    its share of the difference, so the lines plus tax equal the invoice total
-    — the remainder cent on the biggest line. ``{line_id: new unit cost}`` for
-    the lines that move; empty when the lines already add up."""
-    line_sum, tax, derived, declared = _totals_view(data)
-    if declared is None or abs(derived - declared) <= _TOTALS_TOL:
+    its share of the difference, so the invoice comes to its total — the
+    remainder cent on the biggest line. A line's tax moves with its cost, so
+    each moves by its share ÷ (1 + its rate). ``{line_id: new unit cost}`` for
+    the lines that move; empty when the lines already add up. ``fixed``: ids
+    of lines that count toward the total but must not move."""
+    _, _, derived, declared = _totals_view(data)
+    if declared is None or _agree(derived, declared):
         return {}
+    incl = bool(data.get("unit_cost_includes_tax"))
     live = []
     for ln in _lines(data):
-        if ln.get("struck"):
+        if ln.get("struck") or str(ln.get("id")) in fixed:
             continue
         q, c = _f(ln.get("quantity_received")), _f(ln.get("unit_cost"))
         if q and c is not None:
-            live.append((ln, q, c))
-    weight = sum(abs(q * c) for _, q, c in live)
+            live.append((ln, q, c, _gross(ln, incl)))
+    weight = sum(abs(q * c * g) for _, q, c, g in live)
     if not live or not weight:
         return {}
     # Measured over EVERY line (one without a quantity or cost still counts
     # toward the total), spread over those that can move.
-    delta = (declared - tax) - line_sum
-    target = sum(round(q * c, 4) for _, q, c in live) + delta
+    gap = declared - _exact_total(data)
     new_cost = {
-        str(ln["id"]): round(c + delta * abs(q * c) / weight / q, 4)
-        for ln, q, c in live
+        str(ln["id"]): round(c + gap * abs(q * c * g) / weight / (q * g), 4)
+        for ln, q, c, g in live
     }
-    total_now = sum(round(q * new_cost[str(ln["id"])], 4) for ln, q, _ in live)
-    big, bq, _ = max(live, key=lambda t: abs(t[1] * t[2]))
+    trial = {
+        **data,
+        "lines": [
+            {**ln, "unit_cost": new_cost.get(str(ln.get("id")), ln.get("unit_cost"))}
+            for ln in _lines(data)
+        ],
+    }
+    _, _, now, _ = _totals_view(trial)
+    big, bq, _, bg = max(live, key=lambda t: abs(t[1] * t[2] * t[3]))
     new_cost[str(big["id"])] = round(
-        new_cost[str(big["id"])] + (target - total_now) / bq, 4
+        new_cost[str(big["id"])] + (declared - now) / (bq * bg), 4
     )
     return {
         lid: cost
-        for (ln, _q, c), (lid, cost) in zip(live, new_cost.items())
+        for (ln, _q, c, _g), (lid, cost) in zip(live, new_cost.items())
         if abs(cost - c) >= 0.00005
     }
+
+
+def read_printed_prices(view: dict, replica: dict) -> dict | None:
+    """Ways an invoice's figures are all right but were read wrong, worked out
+    from the figures themselves instead of spread as a guess:
+
+    - a line whose printed total isn't quantity × price: the line total is
+      what was charged. Bidfood prints its list price and charges about 5%
+      less (La Zeppa 110185654: 1 × 66.25, line 62.94) — the cost is line
+      total ÷ quantity. When the line total is a whole multiple of the price
+      (Bidfood 110167263: "2 × 41.11", line 164.44) the quantity was likely
+      misread instead — 4 at 41.11, or 2 at 82.22; the figures can't say
+      which, so that one is a guess;
+    - prices printed INCLUDING GST, filed as ex-tax: each cost ÷ (1 + rate);
+    - a discount printed off the bottom: the receive can't send Loaded a
+      discount, so it comes off every line's cost by the same share — what
+      the venue actually paid per unit. Fresh Connection 30049130 (14 Oct
+      2026) was this and the one before: 5 × $42.99 incl GST, less $30.91 ex
+      GST = $31.20 a carton ex GST, $23.40 GST, $179.40.
+
+    A reading counts only when Loaded's arithmetic on it reaches the printed
+    total AND the printed GST or subtotal agrees too — two figures, not one
+    (Lion 94817415 prints a subtotal without its fuel surcharge, so demanding
+    every figure turned away a reading its total and GST both confirm).
+
+    Lines the invoice doesn't bill (struck in the view) and $0 leftovers are
+    ignored. Returns ``{"lines": {view line id: {"unit_cost", maybe
+    "quantity_received"}}, "whys": {id: str}, "discount": bool, "guess":
+    {ids}}``, or None when the lines already reach the total or nothing fits.
+    """
+    if replica.get("is_credit_note") or view.get("unit_cost_includes_tax"):
+        return None
+    total = _f(replica.get("total"))
+    subtotal, printed_tax = _f(replica.get("subtotal")), _f(replica.get("tax_amount"))
+    if not total or total < 0 or (subtotal is None and printed_tax is None):
+        return None
+    rows = []
+    for ln in _lines(view):
+        if ln.get("struck"):
+            continue
+        q, c, r = (
+            _f(ln.get("quantity_received")),
+            _f(ln.get("unit_cost")),
+            _f(ln.get("sale_tax_rate")),
+        )
+        if not q:
+            continue  # a $0 leftover adds nothing
+        if c is None or r is None:
+            return None  # a line we can't reason about — leave it to the guess
+        rows.append((str(ln.get("id")), q, c, r, _f(ln.get("printed_total"))))
+    if not rows:
+        return None
+    loaded_discount = _f(view.get("discount_amount")) or 0.0
+    # Loaded already carrying a discount keeps it (the receive leaves it).
+    discount = 0.0 if loaded_discount else abs(_f(replica.get("discount_amount")) or 0)
+    tol = _TOTALS_TOL + 0.01 * len(rows)
+    rates = {i: r for i, _q, _c, r, _p in rows}
+
+    def figures(qty: dict, cost: dict) -> tuple[float, float, float]:
+        ex = sum(qty[i] * cost[i] for i in qty)
+        tx = sum(qty[i] * cost[i] * rates[i] for i in qty)
+        return ex, tx, round(round(ex, 2) + round(tx, 2) - loaded_discount, 2)
+
+    def evidence(qty: dict, cost: dict, off: float = 0.0) -> bool:
+        ex, tx, came_to = figures(qty, cost)
+        if not _agree(came_to, total):
+            return False
+        tax_ok = printed_tax is not None and _agree(tx, printed_tax, tol)
+        sub_ok = subtotal is not None and (
+            _agree(ex, subtotal, tol) or _agree(ex + off, subtotal, tol)
+        )
+        return tax_ok or sub_ok
+
+    qty0 = {i: q for i, q, _c, _r, _p in rows}
+    cost0 = {i: c for i, _q, c, _r, _p in rows}
+    if _agree(figures(qty0, cost0)[2], total):
+        return None
+
+    def result(qty, cost, whys, *, discount_off=False, guess=()) -> dict:
+        lines = {}
+        for i in qty:
+            change = {}
+            if not _agree(cost[i], cost0[i], 0.00005):
+                change["unit_cost"] = cost[i]
+            if not _agree(qty[i], qty0[i], 0.0005):
+                change["quantity_received"] = qty[i]
+            if change:
+                change.setdefault("unit_cost", cost[i])
+                lines[i] = change
+        return {
+            "lines": lines,
+            "whys": {i: whys[i] for i in lines},
+            "discount": discount_off,
+            "guess": set(guess) & set(lines),
+        }
+
+    # 1. The line totals are what was charged.
+    qty1, cost1, whys1, guessed = dict(qty0), dict(cost0), {}, set()
+    for i, q, c, _r, charged in rows:
+        if charged is None or abs(q * c - charged) <= 0.01:
+            continue
+        k = charged / c if c else 0.0
+        if round(k) >= 1 and abs(k - round(k)) < 1e-3 and abs(round(k) - q) >= 1:
+            qty1[i] = float(round(k))
+            guessed.add(i)
+            whys1[i] = (
+                f"the invoice charges {charged:.2f} for the line: {round(k)} at "
+                f"{c:.2f}, not the {q:g} it prints (or {q:g} at {charged / q:.2f}) — "
+                "check the quantity"
+            )
+        else:
+            cost1[i] = round(charged / q, 4)
+            whys1[i] = (
+                f"the invoice charges {charged:.2f} for the line, not {q:g} × "
+                f"{c:.2f} = {q * c:.2f} — the line total is what was charged"
+            )
+    if whys1 and evidence(qty1, cost1):
+        return result(qty1, cost1, whys1, guess=guessed)
+
+    # 2. Prices including GST, and/or a discount off the bottom.
+    readings = [
+        (False, "ex"),
+        (False, "incl"),
+        (True, None),
+        (True, "ex"),
+        (True, "incl"),
+    ]
+    for incl, kind in readings:
+        if kind and not discount:
+            continue
+        ex = {i: c / (1 + r) if incl else c for i, _q, c, r, _p in rows}
+        s_ex = sum(qty0[i] * ex[i] for i in ex)
+        gross = sum(qty0[i] * ex[i] * (1 + rates[i]) for i in ex)
+        off = 0.0 if not kind else discount if kind == "ex" else discount * s_ex / gross
+        if s_ex <= 0 or off >= s_ex:
+            continue
+        # Land exactly on the printed subtotal (before the discount or after
+        # it) when it is printed and agrees.
+        if subtotal is not None and _agree(s_ex, subtotal, tol):
+            net = subtotal - off
+        elif subtotal is not None and _agree(s_ex - off, subtotal, tol):
+            net = subtotal
+        else:
+            net = s_ex - off
+        cost = {i: round(ex[i] * net / s_ex, 4) for i in ex}
+        big = max(ex, key=lambda i: abs(qty0[i] * ex[i]))
+        cost[big] = round(
+            cost[big] + (net - sum(qty0[i] * cost[i] for i in cost)) / qty0[big], 4
+        )
+        if not evidence(qty0, cost, off):
+            continue
+        parts = []
+        if incl:
+            parts.append("the invoice's prices include GST")
+        if kind:
+            parts.append(
+                f"its {discount:.2f} discount ({kind} GST) is taken off the line "
+                "costs (Loaded is never sent a discount)"
+            )
+        why = " and ".join(parts)
+        return result(qty0, cost, {i: why for i in cost}, discount_off=bool(kind))
+    return None
 
 
 def settle_totals(
@@ -607,17 +846,29 @@ def settle_totals(
     1. a misread figure — the model is asked which printed number is wrong,
        and its answer counts only if correcting it makes every figure agree
        (``invoice_arbiter`` validates);
-    2. Loaded's lines already add up to the invoice total — then the invoice's
-       printed figures are the odd ones out, and receiving on the lines as
-       entered is the answer;
-    3. else the costs are spread so the lines balance (a guess).
+    2. Loaded's lines already add up to Loaded's total — then the invoice's
+       printed figures are the odd ones out, and the Replica keeps Loaded's
+       total.
+
+    Whether the invoice then balances is decided AFTER the suggestions exist,
+    on everything they apply (``invoice_review.balance_after_suggestions``):
+    that is the check, and spreading the costs is its last resort. The
+    copy's own figures failing to reconcile only tells this rule to look.
+
+    Before any of that, and whether or not the copy's totals were flagged:
+    prices printed including GST, or a discount off the bottom, are read
+    exactly (``read_printed_prices``). A discount is otherwise invisible to
+    the copy's check (lines + tax − discount = total holds) yet the receive
+    can't send it, so Loaded would land on the wrong total.
     """
     issue = next(
         (i for i in replica.get("issues") or [] if i.get("code") == TOTALS_ISSUE), None
     )
+    issue_id = (issue or {}).get("id") or TOTALS_ISSUE
+    if _settle_printed_reading(data, replica, pairs, issue, issue_id, log):
+        return
     if issue is None:
         return
-    issue_id = issue.get("id") or TOTALS_ISSUE
     verdict: dict = {}
     if extraction and (ask is not None or db is not None):
         from app.services import invoice_arbiter
@@ -673,71 +924,96 @@ def settle_totals(
         log.append(f"totals: {why}")
         return
 
-    # The invoice as the Replica answers it: Loaded's lines with each paired
-    # line's quantity and cost as the Replica has them (a weight Loaded can't
-    # store already re-priced — Bidfood 90ea78ed). Often that alone balances,
-    # and then those line answers ARE the fix.
+    # Loaded's lines, with the Replica's answers on them, already come to
+    # Loaded's total: then the printed figures are the odd ones out, and the
+    # Replica keeps Loaded's total. Proposing the printed one would unbalance
+    # an invoice that adds up, and the balancing after the suggestions
+    # (invoice_review.balance_after_suggestions) would bend every cost to fit
+    # a misprint.
     view = _answer_view(data, replica, pairs)
-    moved = spread_costs(view)
-    rep_for = {str(w): str(r) for r, w in pairs.items()}
-    if not moved:
-        from app.services.invoice_review import _MONEY_TOL, _QTY_TOL, _differ
-
-        working = {str(ln.get("id")): ln for ln in _lines(data)}
-        changed = 0
-        for v in _lines(view):
-            rl = rep_lines.get(rep_for.get(str(v.get("id")), ""))
-            ln = working.get(str(v.get("id"))) or {}
-            if rl is None:
-                continue
-            if _differ(
-                ln.get("quantity_received"), v.get("quantity_received"), _QTY_TOL
-            ):
-                mark_fix(rl, "quantity_received", issue_id)
-                changed += 1
-            if _differ(ln.get("unit_cost"), v.get("unit_cost"), _MONEY_TOL):
-                mark_fix(rl, "unit_cost", issue_id)
-                changed += 1
-        if changed:
-            log.append(
-                f"totals: the invoice's own line figures balance it ({changed} "
-                "change(s))"
-            )
-            return
-        _, _, derived, _ = _totals_view(data)
-        replica["totals_why"] = (
-            f"the invoice's printed totals don't add up, but the lines as entered "
-            f"add up to the invoice total ({derived:.2f}) — receive on them"
+    _, _, derived, declared = _totals_view(view)
+    printed = _f(replica.get("total"))
+    if (
+        declared is not None
+        and printed is not None
+        and _agree(derived, declared, LOADED_ROUNDING)
+        and not _agree(printed, declared)
+    ):
+        replica["total"] = declared
+        replica["total_why"] = (
+            f"the invoice's printed totals don't add up, but its lines come to "
+            f"Loaded's total ({declared:.2f}) — keep it"
         )
-        log.append(f"totals: {replica['totals_why']}")
-        return
-    _line_sum, _, derived, declared = _totals_view(view)
-    gap = round((declared or 0.0) - derived, 2)
-    for lid, cost in moved.items():
-        rl = rep_lines.get(rep_for.get(lid, ""))
-        if rl is None:
-            continue  # a line the invoice doesn't bill — struck, not repriced
+        log.append(f"totals: {replica['total_why']}")
+
+
+def _settle_printed_reading(
+    data: dict,
+    replica: dict,
+    pairs: dict[str, str],
+    issue: dict | None,
+    issue_id: str,
+    log: list,
+) -> bool:
+    """Apply ``read_printed_prices`` to the Replica's lines. Sure where the
+    figures decide it; a guess where they can't (a whole-multiple line)."""
+    view = _answer_view(data, replica, pairs)
+    reading = read_printed_prices(view, replica)
+    if not reading or not reading["lines"]:
+        return False
+    rep_for = {str(w): str(r) for r, w in pairs.items()}
+    rep_lines = {str(rl.get("id")): rl for rl in _lines(replica)}
+    # A line the Replica adds carries its own id in the view.
+    targets = {
+        vid: rep_lines.get(rep_for.get(vid, "")) or rep_lines.get(vid)
+        for vid in reading["lines"]
+    }
+    if any(rl is None for rl in targets.values()):
+        return False
+    for vid, change in reading["lines"].items():
+        rl, guess = targets[vid], vid in reading["guess"]
+        why = reading["whys"][vid]
+        if "quantity_received" in change:
+            rl["quantity_received"] = change["quantity_received"]
+            rl["quantity_received_why"] = why
+            rl["quantity_received_guess"] = guess
+            if issue is not None:
+                mark_fix(rl, "quantity_received", issue_id)
+        cost = change["unit_cost"]
         q = _f(rl.get("quantity_received"))
         rl["unit_cost"] = cost
         if q is not None:
             rl["total_cost"] = round(q * cost, 4)
         rl["unit_cost_set"] = True
-        rl["unit_cost_guess"] = True
-        rl["unit_cost_why"] = (
-            f"the lines don't add up to the invoice total ({gap:+.2f}) and no single "
-            f"misread figure explains it — {cost:.4f} makes the invoice balance"
+        rl["unit_cost_guess"] = guess
+        shown = (
+            f"{cost:.2f}"
+            if abs(cost * 100 - round(cost * 100)) < 1e-6
+            else f"{cost:.4f}"
         )
-        mark_fix(rl, "unit_cost", issue_id)
+        rl["unit_cost_why"] = (
+            why
+            if guess
+            else f"{why} — {shown} a unit ex GST makes every printed figure agree"
+        )
+        if issue is not None:
+            mark_fix(rl, "unit_cost", issue_id)
+    if reading["discount"]:
+        # Inside the costs now; as a figure of its own it would come off twice.
+        replica["discount_absorbed"] = replica.get("discount_amount")
+        replica["discount_amount"] = None
     log.append(
-        f"totals: no misread figure — costs spread across {len(moved)} lines "
-        f"({gap:+.2f})"
+        "totals: the invoice's figures read exactly — "
+        + "; ".join(sorted(set(reading["whys"].values())))[:400]
     )
+    return True
 
 
 def _answer_view(data: dict, replica: dict, pairs: dict[str, str]) -> dict:
-    """Loaded's draft with the Replica's quantity and unit cost on every line
-    the two share — what the invoice adds up to once its line answers are
-    accepted. Header figures stay Loaded's: the total is what the lines must
+    """The invoice as accepting its review would leave it: Loaded's draft
+    with the Replica's quantity and unit cost on every line the two share,
+    the lines the invoice doesn't bill struck, and the ones only the invoice
+    has added. Header figures stay Loaded's: the total is what the lines must
     reach."""
     from app.services.invoice_review import _reconciled_unit_cost, _storable_qty
 
@@ -747,7 +1023,10 @@ def _answer_view(data: dict, replica: dict, pairs: dict[str, str]) -> dict:
     for ln in _lines(data):
         v = dict(ln)
         rl = rep_lines.get(rep_for.get(str(ln.get("id")), ""))
-        if rl is not None:
+        if rl is None:
+            # A line the invoice doesn't bill: accepting the review strikes it.
+            v["struck"] = True
+        else:
             if rl.get("quantity_received") is not None:
                 v["quantity_received"] = _storable_qty(rl.get("quantity_received"))
             cost = (
@@ -757,10 +1036,34 @@ def _answer_view(data: dict, replica: dict, pairs: dict[str, str]) -> dict:
             )
             if _f(cost) is not None:
                 v["unit_cost"] = cost
+            # What the invoice charged for the line — read_printed_prices
+            # weighs it against quantity × price.
+            v["printed_total"] = rl.get("total_cost")
         lines.append(v)
+    # A line the invoice bills that Loaded's draft lacks: accepting the review
+    # adds it (Aitkens 178549's freight).
+    paired = set(pairs)
+    for rl in _lines(replica):
+        if str(rl.get("id")) in paired:
+            continue
+        lines.append(
+            {
+                "id": str(rl.get("id")),
+                "description": rl.get("description"),
+                "quantity_received": _storable_qty(rl.get("quantity_received")),
+                "unit_cost": rl.get("unit_cost")
+                if rl.get("unit_cost_set")
+                else _reconciled_unit_cost(rl)[0],
+                "sale_tax_rate": rl.get("sale_tax_rate"),
+                "printed_total": rl.get("total_cost"),
+            }
+        )
     return {
         "tax_amount": data.get("tax_amount"),
         "total": data.get("total"),
+        # Both change what the lines must come to — the card counts them.
+        "discount_amount": data.get("discount_amount"),
+        "unit_cost_includes_tax": data.get("unit_cost_includes_tax"),
         "lines": lines,
     }
 
@@ -808,12 +1111,18 @@ def finish_replica(
     totals_ask=None,
     db=None,
     extraction: dict | None = None,
+    read_supplier_details=None,
 ) -> None:
     """Apply every rule to ``replica`` in place. ``pairs`` maps replica line
     ids to the Loaded lines they describe (``invoice_review.pair_lines``)."""
     log = replica.setdefault("resolution_log", [])
     rules = (
-        ("supplier", lambda: settle_supplier(data, replica, suppliers, log)),
+        (
+            "supplier",
+            lambda: settle_supplier(
+                data, replica, suppliers, log, read_supplier_details
+            ),
+        ),
         ("items", lambda: settle_items(data, replica, pairs, catalogue, log)),
         ("units", lambda: settle_units(data, replica, pairs, units, choose_unit, log)),
         ("order", lambda: settle_order(data, replica, lh, log)),

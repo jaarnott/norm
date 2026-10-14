@@ -131,8 +131,10 @@ interface Suggestion {
 interface ClearsWhen {
   scope: 'line' | 'header';
   line_id?: string;
-  field: string;
-  op: 'not_null' | 'truthy' | 'equals';
+  field?: string;
+  // 'balances': the working values come to the invoice total (the totals
+  // blocker — invoice_review.totals_balance).
+  op: 'not_null' | 'truthy' | 'equals' | 'balances';
   value?: unknown;
 }
 // The review payload this card renders (invoice_review.DOC_SCHEMA). A draft
@@ -446,18 +448,47 @@ const moneyFieldLabels: Record<string, string> = {
 // ISO string → the YYYY-MM-DD a <input type="date"> wants (and back on change).
 const dateVal = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : '');
 
+// Loaded receives a total within ten cents of its own arithmetic as
+// "Rounding"; further out it refuses (replica_finish.LOADED_ROUNDING).
+const LOADED_ROUNDING = 0.1;
+
+// Loaded's arithmetic (its calculateFooterTotals): lines, tax at each line's
+// rate, less the discount. The totals the card shows and the totals blocker
+// both use it, as the server does (replica_finish._totals_view).
+function docTotals(doc: DocData): { excl: number; tax: number; discount: number; incl: number } {
+  const includesTax = !!doc.unit_cost_includes_tax;
+  let excl = 0;
+  let tax = 0;
+  for (const l of doc.lines || []) {
+    if (l.struck) continue; // struck lines are dropped from the receive
+    const lt = (l.quantity_received ?? 0) * (l.unit_cost ?? 0);
+    const t = lineTax(lt, l.sale_tax_rate, includesTax);
+    tax += t;
+    excl += includesTax ? lt - t : lt;
+  }
+  const discount = doc.discount_amount ?? 0;
+  const excl2 = round2(excl);
+  const tax2 = round2(tax);
+  return { excl: excl2, tax: tax2, discount, incl: round2(excl2 + tax2 - discount) };
+}
+
 // The tiny clears_when evaluator — the SAME dumb predicate the server runs
 // (invoice_review._clears): scope line → find the line, else the header;
-// then not_null / truthy / equals. Nothing more.
+// then not_null / truthy / equals; or 'balances' — the working values come
+// to the invoice total. Nothing more.
 function evalClears(data: DocData, issue: Issue): boolean {
   const cw = issue.clears_when;
   if (!cw) return false;
+  if (cw.op === 'balances') {
+    if (typeof data.total !== 'number') return true;
+    return Math.abs(docTotals(data).incl - data.total) <= LOADED_ROUNDING + 1e-9;
+  }
   let v: unknown;
   if (cw.scope === 'line') {
     const ln = (data.lines || []).find((l) => String(l.id) === String(cw.line_id));
-    v = ln ? (ln as unknown as Record<string, unknown>)[cw.field] : undefined;
+    v = ln && cw.field ? (ln as unknown as Record<string, unknown>)[cw.field] : undefined;
   } else {
-    v = (data as unknown as Record<string, unknown>)[cw.field];
+    v = cw.field ? (data as unknown as Record<string, unknown>)[cw.field] : undefined;
   }
   if (cw.op === 'not_null') return v !== null && v !== undefined;
   if (cw.op === 'truthy') return !!v;
@@ -1263,6 +1294,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const issueStateOf = (i: Issue): IssueState => {
     if (evalClears(docLive, i)) return 'resolved';
     if (stateOf(i.id) !== 'pending') return 'checked';
+    // The totals stand down only when they match — accepted fixes are not
+    // enough on their own (the same rule as invoice_review.is_settled).
+    if (i.clears_when?.op === 'balances') return 'open';
     // Every suggestion that is its fix accepted — the same rule as the
     // server's invoice_review.is_settled.
     if (fixAccepted(i, (id) => stateOf(id) === 'accepted')) return 'resolved';
@@ -1427,21 +1461,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     || supplierBlocking || noLines || manualBlockingOpen.length > 0;
 
   const includesTax = !!doc.unit_cost_includes_tax;
-  const totals = useMemo(() => {
-    let excl = 0;
-    let tax = 0;
-    for (const l of doc.lines) {
-      if (l.struck) continue; // struck lines are dropped from the receive
-      const lt = (l.quantity_received ?? 0) * (l.unit_cost ?? 0);
-      const t = lineTax(lt, l.sale_tax_rate, includesTax);
-      tax += t;
-      excl += includesTax ? lt - t : lt;
-    }
-    const discount = doc.discount_amount ?? 0;
-    const excl2 = round2(excl);
-    const tax2 = round2(tax);
-    return { excl: excl2, tax: tax2, discount, incl: round2(excl2 + tax2 - discount) };
-  }, [doc.lines, includesTax, doc.discount_amount]);
+  const totals = useMemo(() => docTotals(doc), [doc]);
 
   const candidatePos = useMemo(
     () => pos.filter((p) => !p.supplier_id || p.supplier_id === doc.linked_supplier_id),

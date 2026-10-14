@@ -1165,7 +1165,9 @@ def _invoice_create(
             out = {"brand_id": brand["id"], "brand_name": brand["name"]}
             label = brand["name"]
         else:
-            supplier, created = catalog.get_or_create_supplier(lh, name)
+            supplier, created = catalog.get_or_create_supplier(
+                lh, name, catalog.draft_supplier_details(db, venue_id, invoice_id)
+            )
             out = {"supplier_id": supplier["id"], "supplier_name": supplier["name"]}
             label = supplier["name"]
     except catalog.CatalogError as e:

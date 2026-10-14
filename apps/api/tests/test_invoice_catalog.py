@@ -435,3 +435,112 @@ class TestEndpoints:
         }
         r = client.get("/api/invoice-fixes/brands?venue_id=v-1", headers=admin_headers)
         assert r.json() == {"brands": [{"id": "b-1", "name": "Bundy"}]}
+
+
+class _SupplierLoaded:
+    """Loaded's supplier list; records every write."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.writes = []
+
+    def get(self, path):
+        assert path == "/1.0/stock/internal/suppliers"
+        return self._rows
+
+    def request(self, method, path, body=None):
+        self.writes.append((method, path, body))
+        return {"id": "s-new", "name": (body or {}).get("name")}
+
+
+class TestANewSupplierTakesItsInvoiceDetails:
+    """A supplier Norm creates from an invoice carries the address and
+    contacts that invoice prints. Onboarding a venue onto Loaded through
+    invoice autopilot (14 Oct 2026) creates most of its suppliers this way,
+    and a bare name left every record to be filled in by hand."""
+
+    DETAILS = {
+        "address_lines": ["Unit 4", "12 Wharf Road"],
+        "city": "Auckland",
+        "postcode": "1010",
+        "phone": "09 555 0101",
+        "email": "orders@tickety.co.nz",
+        "contact_name": "Mere Smith",
+        "account_number": "CB-0042",
+    }
+
+    def _suggestion(self, details):
+        return {
+            "id": "create_supplier:linked_supplier_id",
+            "kind": "create_supplier",
+            "payload": {"supplier_name": "Tickety-Boo Ltd", "details": details},
+        }
+
+    def test_the_details_land_in_loadeds_fields(self):
+        assert CAT.supplier_body("Tickety-Boo Ltd", self.DETAILS) == {
+            "name": "Tickety-Boo Ltd",
+            "address1": "Unit 4",
+            "address2": "12 Wharf Road",
+            "city": "Auckland",
+            "postcode": "1010",
+            "phone1": "09 555 0101",
+            "contactName": "Mere Smith",
+            "customerNumber": "CB-0042",
+            "emails": [{"email": "orders@tickety.co.nz", "isPrimary": True}],
+        }
+
+    def test_nothing_read_is_a_bare_name(self):
+        assert CAT.supplier_body("X Ltd") == {"name": "X Ltd"}
+        assert CAT.supplier_body("X Ltd", {}) == {"name": "X Ltd"}
+
+    def test_purchase_orders_are_never_switched_to_email(self):
+        # emailEnabled makes Loaded EMAIL every purchase order to that address
+        # — and an invoice prints the accounts address as often as the
+        # orders one. Costs stay ex tax: Norm reads every invoice that way.
+        body = CAT.supplier_body("X Ltd", self.DETAILS)
+        assert "emailEnabled" not in body
+        assert "unitCostIncludesTax" not in body
+
+    def test_an_existing_record_is_never_touched(self):
+        lh = _SupplierLoaded([{"id": "s-1", "name": "Tickety-Boo"}])
+        sup, created = CAT.get_or_create_supplier(lh, "Tickety-Boo Ltd", self.DETAILS)
+        assert (sup["id"], created) == ("s-1", False)
+        assert lh.writes == []
+
+    def test_the_card_create_takes_what_the_review_read(
+        self, client, admin_headers, monkeypatch, db_session, vid
+    ):
+        _draft(
+            db_session,
+            vid,
+            "inv-1",
+            {"lines": [], "suggestions": [self._suggestion(self.DETAILS)]},
+        )
+        lh = _SupplierLoaded([{"id": "s-9", "name": "Bidfood"}])
+        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, v: lh)
+        r = client.post(
+            "/api/invoice-fixes/create-supplier",
+            headers=admin_headers,
+            json={"venue_id": vid, "invoice_id": "inv-1", "name": "Tickety-Boo Ltd"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["created"] is True
+        assert lh.writes == [
+            (
+                "POST",
+                "/1.0/stock/internal/suppliers",
+                CAT.supplier_body("Tickety-Boo Ltd", self.DETAILS),
+            )
+        ]
+
+    def test_another_venues_draft_lends_nothing(self, db_session, vid):
+        _draft(
+            db_session,
+            vid,
+            "inv-1",
+            {"lines": [], "suggestions": [self._suggestion(self.DETAILS)]},
+        )
+        assert CAT.draft_supplier_details(db_session, vid, "inv-1") == self.DETAILS
+        assert CAT.draft_supplier_details(db_session, "other-venue", "inv-1") == {}
+        assert CAT.draft_supplier_details(db_session, vid, "inv-2") == {}
+        assert CAT.draft_supplier_details(db_session, vid, "") == {}

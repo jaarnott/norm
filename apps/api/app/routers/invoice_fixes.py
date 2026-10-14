@@ -441,6 +441,9 @@ def create_stock_brand(
 class CreateSupplierRequest(BaseModel):
     venue_id: str
     name: str
+    # The invoice it's created from: a new record takes the details the
+    # review read off that invoice (catalog.draft_supplier_details).
+    invoice_id: str | None = None
 
 
 @router.post("/invoice-fixes/create-supplier")
@@ -454,7 +457,8 @@ def create_supplier(
     record already covers it, else created. The invoice takes it locally."""
     card_actions.venue_for(db, user, body.venue_id)
     lh = _Loaded(db, config_db, body.venue_id)
-    supplier, created = _catalog(catalog.get_or_create_supplier, lh, body.name)
+    details = catalog.draft_supplier_details(db, body.venue_id, body.invoice_id or "")
+    supplier, created = _catalog(catalog.get_or_create_supplier, lh, body.name, details)
     if created:
         card_actions.record(
             db, user, body.venue_id, "created a supplier", f"'{supplier['name']}'"

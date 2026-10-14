@@ -411,16 +411,8 @@ def _is_infrastructure_error(exc: Exception) -> bool:
     return bool(_LOADED_5XX.search(text) or _LOADED_NETWORK.search(text))
 
 
-def _extract_uncached(
-    session: Session,
-    lh,
-    file_id: str,
-    instructions: str,
-    cache_key: str,
-    thread_id: str | None,
-) -> dict:
-    from app.interpreter.llm_interpreter import call_llm
-
+def _document_block(lh, file_id: str) -> dict:
+    """The invoice copy as an Anthropic content block."""
     import base64 as _b64
 
     from app.services.attachments import build_content_block
@@ -434,7 +426,20 @@ def _extract_uncached(
     # build_content_block picks image vs document AND fits an oversized image
     # inside Anthropic's per-image limit — the same builder chat attachments
     # and recipe extraction already use.
-    block = build_content_block(raw, _sniff_media_type(raw, content_type), None)
+    return build_content_block(raw, _sniff_media_type(raw, content_type), None)
+
+
+def _extract_uncached(
+    session: Session,
+    lh,
+    file_id: str,
+    instructions: str,
+    cache_key: str,
+    thread_id: str | None,
+) -> dict:
+    from app.interpreter.llm_interpreter import call_llm
+
+    block = _document_block(lh, file_id)
     parsed, _ = call_llm(
         system_prompt=extraction_system_prompt(),
         user_prompt=instructions or "Extract the fields from the attached document.",
@@ -548,3 +553,116 @@ def extract_invoice_copies_parallel(
         ):
             results[i] = parsed
     return results
+
+
+# ── The supplier's own details ──────────────────────────────────────────────
+#
+# Read only when the review decides a NEW Loaded supplier is needed
+# (replica_finish.settle_supplier), so the record Norm creates carries the
+# address and contacts printed on the invoice instead of a bare name. A
+# separate, small read on purpose: adding these fields to PDF_SCHEMA would
+# change the main cache key and re-extract every invoice, for an answer only
+# a first invoice from an unknown business ever needs.
+
+SUPPLIER_DETAILS_SCHEMA = {
+    "address_lines": (
+        "list of strings — the SUPPLIER's street or postal address lines, "
+        "WITHOUT the city and postcode (at most 3); [] when none is printed"
+    ),
+    "city": "string or null — the supplier's city or town",
+    "postcode": "string or null — the supplier's postcode",
+    "phone": "string or null — the supplier's main phone number, as printed",
+    "email": "string or null — the supplier's email address",
+    "contact_name": (
+        "string or null — a named PERSON at the supplier (sales rep, account "
+        "manager); null when no person is named"
+    ),
+    "account_number": (
+        "string or null — the BUYER's account / customer number with this "
+        "supplier ('Account No', 'Customer No', 'Cust Code', 'Acc #')"
+    ),
+}
+
+#: Longest value written to a Loaded supplier field — a longer one is a
+#: paragraph the model swept up, not an address line or a phone number.
+_DETAIL_MAX = 120
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _detail_text(value: object) -> str | None:
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return None
+    text = " ".join(str(value).split())
+    return text if text and len(text) <= _DETAIL_MAX else None
+
+
+def clean_supplier_details(raw: object) -> dict:
+    """The model's answer, kept to fields that look like what they claim to
+    be. Empty when nothing usable came back."""
+    raw = raw if isinstance(raw, dict) else {}
+    out: dict = {}
+    lines = raw.get("address_lines")
+    if isinstance(lines, str):
+        lines = [lines]
+    lines = [t for t in (_detail_text(x) for x in lines or []) if t][:3]
+    if lines:
+        out["address_lines"] = lines
+    for key in ("city", "postcode", "phone", "contact_name", "account_number"):
+        text = _detail_text(raw.get(key))
+        if text:
+            out[key] = text
+    email = _detail_text(raw.get("email"))
+    if email and _EMAIL.match(email):
+        out["email"] = email.lower()
+    return out
+
+
+def read_supplier_details(
+    db: Session,
+    lh,
+    file_id: str,
+    *,
+    supplier_name: str,
+    thread_id: str | None = None,
+) -> dict:
+    """The contact details ``supplier_name`` prints on its invoice
+    (SUPPLIER_DETAILS_SCHEMA, cleaned) — ``{}`` when the copy can't be read
+    or prints none. Cached per file. Never raises: a supplier created with a
+    bare name is still a supplier."""
+    if not file_id or not supplier_name:
+        return {}
+    instructions = (
+        f"This invoice was issued by the supplier '{supplier_name}'. Read THAT "
+        "business's own details as printed — usually in its letterhead, "
+        "footer or remittance block. Never the customer's: the bill-to, "
+        "deliver-to and ship-to blocks are the buyer and must be ignored."
+    )
+    key = _extraction_cache_key(
+        "loadedhub",
+        "read_supplier_details",
+        {"file_id": str(file_id)},
+        SUPPLIER_DETAILS_SCHEMA,
+        instructions,
+    )
+    cached = _extraction_cache_get(db, key)
+    if cached is not None:
+        return clean_supplier_details(cached)
+    try:
+        from app.interpreter.llm_interpreter import call_llm
+
+        parsed, _ = call_llm(
+            system_prompt=extraction_system_prompt(SUPPLIER_DETAILS_SCHEMA),
+            user_prompt=instructions,
+            db=db,
+            thread_id=thread_id,
+            call_type="extraction",
+            max_tokens=1024,
+            documents=[_document_block(lh, file_id)],
+        )
+    except Exception as exc:  # noqa: BLE001 — the details are a nicety
+        logger.info("supplier details unread for file %s: %s", file_id, exc)
+        return {}
+    if not isinstance(parsed, dict) or "error" in parsed:
+        return {}
+    _extraction_cache_put(db, key, "loadedhub", "read_supplier_details", parsed)
+    return clean_supplier_details(parsed)
