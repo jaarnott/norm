@@ -301,14 +301,13 @@ class TestLineSuggestions:
         )
 
     def _resolver_answer(self, **over):
-        row = {
-            "line_id": "rep-0",
-            "unit_id": "u-5l",
+        answer = {
+            "size": "5 L",
             "confidence": "high",
             "why": "sibling lines print 5L at the same price",
         }
-        row.update(over)
-        return lambda payload: {"lines": [row]}
+        answer.update(over)
+        return lambda prompt: answer
 
     def test_resolver_pick_is_the_blockers_fix_behind_its_switch(self):
         data = self._sizeless_case(self._resolver_answer())
@@ -362,16 +361,16 @@ class TestLineSuggestions:
             tax_amount=34.32,
             total_incl_tax=263.10,
         )
-        ask = lambda payload: {  # noqa: E731
-            "lines": [
-                {
-                    "line_id": "rep-1",
-                    "unit_id": "u-each",
-                    "confidence": confidence,
-                    "why": "a service charge with no physical size",
-                }
-            ]
-        }
+
+        def ask(prompt):
+            # Only the copy-only Freight line is asked about.
+            assert "Freight" in prompt.split("Line:")[1]
+            return {
+                "size": "each",
+                "confidence": confidence,
+                "why": "a service charge with no physical size",
+            }
+
         return _review(
             detail=det, extraction=ext, reference=REFERENCE(unit_resolver_ask=ask)
         )
@@ -434,7 +433,7 @@ class TestLineSuggestions:
         assert "unit_missing" not in _issue_codes(data)
 
     def test_without_a_resolver_answer_the_each_suggestion_stands(self):
-        data = self._sizeless_case(lambda p: {"lines": []}, unit="EA")
+        data = self._sizeless_case(lambda p: {}, unit="EA")
         s = next(s for s in data["suggestions"] if s["field"] == "unit")
         assert s["apply"]["linked_unit_id"] == "u-each"
 

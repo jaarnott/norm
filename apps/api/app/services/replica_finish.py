@@ -340,10 +340,17 @@ def settle_units(
             and ur.get("unit_id")
             and ur.get("unit_id") != rl.get("linked_unit_id")
             and ur.get("confidence") in (("high",) if to_add else ("high", "medium"))
-            and not (ln or {}).get("linked_unit_id")
+            and (
+                not (ln or {}).get("linked_unit_id")
+                # A re-check of a unit Norm only guessed: a high answer
+                # replaces the guess even though Loaded's line carries it.
+                or (rl.get("unit_recheck") and ur.get("confidence") == "high")
+            )
         ):
             why = (
-                f"no size is printed for '{desc}' — {ur.get('why')}"
+                f"'{rl.get('unit')}' was Norm's guess for '{desc}' — {ur.get('why')}"
+                if rl.get("unit_recheck")
+                else f"no size is printed for '{desc}' — {ur.get('why')}"
                 if not rl.get("linked_unit_id")
                 else (
                     f"'{rl.get('unit')}' is how '{desc}' is charged, not the pack "

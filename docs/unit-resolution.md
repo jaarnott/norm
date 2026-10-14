@@ -1,6 +1,6 @@
 # How Norm decides a product's unit (self-healing units)
 
-*Last reworked 28 Aug 2026 — "analyser on top". If you are about to change how a
+*Last reworked 14 Oct 2026 — no person-confirmed tier; 28 Aug 2026 — "analyser on top". If you are about to change how a
 product's delivered unit is chosen, read this first.*
 
 ## The problem this solves
@@ -18,21 +18,32 @@ correcting units. Norm has to catch and fix its own dud units.
 ## The sources, and the order between them
 
 Norm keeps a shared, cross-customer memory of each product's unit
-(`supplier_products`, keyed by supplier + code). A row's unit can come from three
-sources, and the order is what matters:
+(`supplier_products`, keyed by supplier + code). A row's unit can come from two
+ranked sources, and the order is what matters:
 
-1. **An admin's dojo-verified unit** (`human`) — set as a dojo baseline. The top
-   truth.
-2. **The resolver's verdict** (`enriched`) — the analyser worked the unit out
-   from evidence. The authority below a human verification.
-3. **The AI's raw read** (`printed`) — what the extraction read off an invoice.
+1. **The resolver's verdict** (`enriched`) — the analyser worked the unit out
+   from evidence. The answer.
+2. **The AI's raw read** (`printed`) — what the extraction read off an invoice.
    **Provisional only.**
 
-The rank lives in `supplier_catalog._RANK` (`{"human": 2, "enriched": 1,
-"printed": 0}`). A verdict outranks a read, so a resolver answer can never be
-buried by a poisoned read; a human verification outranks both. The change on
-28 Aug 2026 was lifting `enriched` **above** `printed` (it used to sit below).
-One source was **removed** as a ranking input:
+The rank lives in `supplier_catalog._RANK` (`{"enriched": 1, "printed": 0}`). A
+verdict outranks a read, so a resolver answer can never be buried by a poisoned
+read. The change on 28 Aug 2026 was lifting `enriched` **above** `printed` (it
+used to sit below).
+
+**There is no person-confirmed tier** (removed 14 Oct 2026). It used to sit on
+top — an admin's dojo baseline (`human`), 74 products. The user: *"the human
+does not add any value in us getting to autopilot across 1000s of venues with
+100s of invoices each per month."* The numbers agree: on products whose size
+isn't in the name, the six Cook Brothers venues' own Loaded set-ups were right
+about 85% of the time, and Norm with web search 93% (unit-size test, 14 Oct
+2026). Those 74 rows were demoted the same day (69 already carried Norm's own,
+matching verdict; 5 are re-checked as reads). Nothing can write the tier back:
+`observe_extraction` only records reads, `SupplierProduct` refuses any other
+provenance, and `test_supplier_catalog.TestThereIsNoPersonConfirmedTier` fails
+if it returns.
+
+One more source is kept as evidence but **never ranks**:
 
 - **`practice`** (what a receive actually used) — kept as evidence for the
   hygiene report, but **never a ranking source**: a receive can carry a user's
@@ -53,21 +64,37 @@ receiving a provisional (possibly poisoned) unit.
    size, so a sizeless spirit/wine returns **null** rather than a made-up count.
 2. **A read is provisional; a verdict is trusted.** At receive, a line whose only
    answer would be a raw read (or a poisoned catalogue read) is put through the
-   **unit resolver** (`unit_resolver.py`) — the batched call built to work a unit
-   out. Lines that already carry a resolver verdict are used as-is (no model
-   call).
-3. **The verdict is remembered, with its confidence.**
-   `supplier_catalog.learn_from_resolver` records HIGH and MEDIUM verdicts as
-   `enriched` (with the confidence); **LOW is left unrecorded so the line is put
-   through the resolver again on its next sighting.** Because the memory is
-   shared across all customers, a unit resolved once — by any venue — is
-   available to everyone, and a low-confidence answer improves as more evidence
-   (siblings, a bigger venue) arrives.
-4. **The resolver leans on world knowledge, not the venue's Loaded catalogue.**
-   Its confidence comes mainly from sibling lines on the same invoice and
-   product/world knowledge (a rum is a volume, lemons sell by the kilo); the
-   venue's own stock list is a minor input, so a brand-new venue with an empty
-   Loaded catalogue still resolves confidently.
+   **unit estimator** (`unit_resolver.py`). Lines that already carry a verdict
+   are used as-is (no model call).
+3. **The estimator (14 Oct 2026).** One call per line, in parallel: Opus with
+   web search estimates the real size of ONE delivered unit like a purchasing
+   manager — identify the product, find the formats it is actually sold in
+   (this supplier's own listing first), read the supplier's price level off the
+   rest of the invoice, price each real format against it. **Code, not the
+   model, turns the size into a venue unit** (`match_unit`: same type, same
+   amount — '1 kg' → Kilo, never '1 L' → Each); a size the venue lacks becomes a
+   unit to create (`unit_name_for`, gated by `auto_create_units`). Answers are
+   cached per invoice line, so re-opening a card costs nothing. Measured on 45
+   products whose size the invoice didn't print: **93% exact**, against ~85% for
+   the six Cook Brothers venues' own Loaded set-ups of the same products. It
+   replaced one batched choose-a-unit-id call (65% on the same test).
+4. **Only HIGH is a verdict.** `supplier_catalog.learn_from_resolver` records a
+   HIGH answer as `enriched` (high was right 65 of 66 times). Medium (17 of 22),
+   low, or no answer is recorded as a **guess** (`evidence['guess']`): used on
+   the invoice, asked again on the next one.
+5. **A guess never sticks.** A receive saves the line's unit on Loaded's supplier
+   product, and the next invoice reads that first — so a guess would have become
+   the answer forever. Now, when the unit on Loaded's supplier product is one
+   Norm only guessed (`unsettled_guess`), the line is asked about again
+   (`unit_recheck`), and a HIGH answer replaces the guess. Once a verdict exists
+   it outranks the guessed unit (`guessed_before`). A unit the venue set up
+   itself, which Norm never guessed, is left exactly as it was.
+6. **Products with no code are learned too.** The catalogue keys a product by
+   supplier + stock code, else by its normalised wording (`product_key`) —
+   Factory Group prints no codes at all (0 of 27 lines on INV-0446).
+7. **Evidence, not practice.** The estimator sees the invoice and Norm's own
+   catalogue facts about the same product from other suppliers; it is NOT told
+   how a venue happens to stock the item.
 
 No manual cleanup list, no reliance on a human receive: a poisoned row corrects
 itself the next time the product is seen anywhere.
@@ -101,8 +128,8 @@ heals) settles it.
   that carries it (clear reads are not sent to the resolver). It is caught only if
   the line reaches the resolver via the catalogue (no verified verdict yet). This
   is a deliberate cost/latency trade; revisit if such reads prove common.
-- The verdict is **sticky**: once a high/medium verdict is stored it is trusted
-  and not re-run. A product whose packaging genuinely changes would need its
+- The verdict is **sticky**: once a HIGH verdict is stored it is trusted and not
+  re-run. A product whose packaging genuinely changes would need its
   verdict cleared. ("Most-recent-wins within the top tier" is the open
   alternative.)
 
@@ -116,6 +143,8 @@ heals) settles it.
 - **Receive-path unit resolution:** `app/services/invoice_replica.py`
   (the per-line unit block, ~lines 641-1017) — walks variant → page read →
   catalogue verdict → printed column → resolver.
-- **The resolver:** `app/services/unit_resolver.py`.
+- **The estimator:** `app/services/unit_resolver.py` (prompt, `match_unit`,
+  `unit_name_for`); web search runs through `call_llm(tools=…, effort=…)`.
 - **Tests:** `tests/test_supplier_catalog.py`, `tests/test_invoice_replica.py`
-  (`TestCatalogueTierAndResolver`), `tests/test_unit_resolver.py`.
+  (`TestCatalogueTierAndResolver`, `TestAGuessIsCheckedAgain`),
+  `tests/test_unit_resolver.py`.

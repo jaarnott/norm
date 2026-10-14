@@ -54,6 +54,8 @@ def call_llm(
     call_type: str = "interpretation",
     max_tokens: int = 4096,
     documents: list[dict] | None = None,
+    tools: list[dict] | None = None,
+    effort: str | None = None,
 ) -> tuple[dict, str | None]:
     """Make a single Anthropic API call and return (parsed_json, llm_call_id).
 
@@ -63,6 +65,11 @@ def call_llm(
     ``documents`` accepts Anthropic content blocks (e.g. base64 PDF
     ``{"type": "document", "source": {...}}``) prepended to the user turn,
     for structured extraction from files.
+
+    ``tools`` takes SERVER tools only (web search): the API runs them inside
+    the call, so there is no client loop — a turn the server pauses is resumed
+    here, and the answer is read from the text after the last tool result.
+    ``effort`` overrides the one-shot default (``LLM_ONE_SHOT_EFFORT``).
     """
     from app.services.circuit_breaker import anthropic_breaker
     from app.services.secrets import get_api_key
@@ -112,26 +119,29 @@ def call_llm(
     extra_request: dict = {}
     if supports_effort(resolved_model):
         max_tokens = max(max_tokens, _ONE_SHOT_MIN_MAX_TOKENS)
-        extra_request["output_config"] = {"effort": settings.LLM_ONE_SHOT_EFFORT}
+        extra_request["output_config"] = {
+            "effort": effort or settings.LLM_ONE_SHOT_EFFORT
+        }
+    if tools:
+        extra_request["tools"] = tools
 
-    try:
+    def _create(messages: list[dict]):
         # Retry transient failures, the same way call_llm_with_tools does. This
         # path had only the SDK's own retry, which does not cover Anthropic
         # answering 200 and then failing — and this is the path that reads
-        # invoice copies, up to 10 concurrent document calls per venue, the most
-        # overload-prone thing Norm does. On 24-25 Aug 2026 that cost 27 invoices
-        # a day, each reported to the user as an "unreadable copy" when the
-        # document was perfectly readable.
+        # invoice copies, up to 10 concurrent document calls per venue, the
+        # most overload-prone thing Norm does. On 24-25 Aug 2026 that cost 27
+        # invoices a day, each reported to the user as an "unreadable copy"
+        # when the document was perfectly readable.
         for attempt in range(_LLM_MAX_ATTEMPTS):
             try:
-                response = client.messages.create(
+                return client.messages.create(
                     model=resolved_model,
                     max_tokens=max_tokens,
                     system=system_prompt,
-                    messages=[{"role": "user", "content": user_content}],
+                    messages=messages,
                     **extra_request,
                 )
-                break
             except Exception as call_exc:
                 # A 4xx is never retried: retrying cannot fix a bad request, and
                 # three attempts would triple the cost of every genuine failure.
@@ -150,15 +160,29 @@ def call_llm(
                     time.sleep(_llm_retry_backoff(attempt))
                     continue
                 raise
+
+    try:
         from app.services.llm_cost import Usage
 
+        first = {"role": "user", "content": user_content}
+        response = _create([first])
         usage = Usage.from_response(response.usage)
-        # First TEXT block, not content[0] — a response can lead with a
-        # non-text block, and indexing blindly would read the wrong one.
-        raw = next(
-            (b.text for b in response.content if getattr(b, "type", None) == "text"),
-            "",
-        )
+        # A server tool can pause a long turn: re-send it as it stands and the
+        # server resumes where it left off (no "continue" message). Bounded.
+        for _ in range(_MAX_PAUSE_CONTINUATIONS):
+            if not tools or getattr(response, "stop_reason", None) != "pause_turn":
+                break
+            response = _create(
+                [first, {"role": "assistant", "content": response.content}]
+            )
+            more = Usage.from_response(response.usage)
+            usage = Usage(
+                input=usage.input + more.input,
+                output=usage.output + more.output,
+                cache_read=usage.cache_read + more.cache_read,
+                cache_write=usage.cache_write + more.cache_write,
+            )
+        raw = _answer_text(response.content, after_tools=bool(tools))
         duration_ms = int((time.time() - t0) * 1000)
         parsed = _parse_response(raw)
 
@@ -995,6 +1019,34 @@ def call_llm_with_tools(
                 # for a guess.
             )
         raise
+
+
+#: How many times a turn a server tool paused is resumed before giving up.
+_MAX_PAUSE_CONTINUATIONS = 3
+
+
+def _answer_text(content, *, after_tools: bool) -> str:
+    """The reply's text. Normally the first text block — a response can lead
+    with a non-text block, so never content[0]. With server tools, the answer
+    is the text AFTER the last tool result (earlier text is the model's
+    preamble between searches), joined: citations split it across blocks."""
+    blocks = list(content or [])
+    if after_tools:
+        last_tool = max(
+            (
+                i
+                for i, b in enumerate(blocks)
+                if str(getattr(b, "type", "")).endswith("tool_result")
+                or getattr(b, "type", None) == "server_tool_use"
+            ),
+            default=-1,
+        )
+        return "".join(
+            b.text
+            for b in blocks[last_tool + 1 :]
+            if getattr(b, "type", None) == "text"
+        )
+    return next((b.text for b in blocks if getattr(b, "type", None) == "text"), "")
 
 
 def _parse_response(raw: str) -> dict:

@@ -4,10 +4,9 @@
 
 The offline half of unit accuracy: entries the pages could not answer —
 conflicts, practice-only rows, unknowns with sightings — get ONE reasoned
-verdict each, written at provenance ``enriched``. That tier sits BELOW
-printed and human, so enrichment can only answer where they are silent, or
-break a printed tie by agreeing with one side (see
-supplier_catalog._recompute_current). It also classifies ``category``
+verdict each, written at provenance ``enriched`` — the top of the ranking
+since 28 Aug 2026, above a printed read (see supplier_catalog._RANK and
+_recompute_current; there is no person-confirmed tier). It also classifies ``category``
 (beverage/food/packaging/fee) for every processed row — the input the
 category rules and the hygiene report run on.
 
@@ -70,7 +69,7 @@ _SYSTEM_PROMPT = (
 def _entry_payload(row, related: list[str]) -> dict:
     ev = row.evidence or {}
     sightings = {}
-    for tier in ("human", "printed", "enriched", "practice"):
+    for tier in ("printed", "enriched", "practice"):
         bucket = ev.get(tier) or {}
         if bucket:
             sightings[tier] = [

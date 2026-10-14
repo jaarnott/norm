@@ -2,11 +2,11 @@
 
     python -m scripts.backfill_supplier_catalog [--dry-run]
 
-Two passes, in provenance order:
-1. Dojo baselines (config DB) — admin-verified expected extractions,
-   provenance ``human`` (the top tier: a person confirmed these values).
-2. The CURRENT environment's extraction archive (``document_extractions``) —
-   sizes the suppliers printed on real invoice pages, provenance ``printed``.
+One source: the CURRENT environment's extraction archive
+(``document_extractions``) — sizes the suppliers printed on real invoice
+pages, provenance ``printed`` (provisional; the resolver's verdict outranks
+it). Dojo baselines used to seed a person-confirmed ``human`` tier on top;
+that tier was removed on 14 Oct 2026.
 
 Idempotent: evidence is deduped per invoice number, so re-runs (and the live
 observe-on-extract write-back re-seeing the same invoices) accumulate
@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    from app.db.config_models import SupplierInvoiceSpec, SupplierProduct
+    from app.db.config_models import SupplierProduct
     from app.db.engine import SessionLocal, _ConfigSessionLocal
     from app.db.models import DocumentExtraction
     from app.services import supplier_catalog
@@ -46,38 +46,14 @@ def main(argv: list[str] | None = None) -> int:
     config_db = (_ConfigSessionLocal or SessionLocal)()
     stats: Counter = Counter()
     try:
-        # ---- Pass 1: dojo baselines (human) ----
-        from app.db.config_models import SupplierSpecSample
-
-        spec_names = {s.id: s.name for s in config_db.query(SupplierInvoiceSpec).all()}
-        for sample in (
-            config_db.query(SupplierSpecSample)
-            .filter(SupplierSpecSample.expected.isnot(None))
-            .all()
-        ):
-            key = spec_names.get(sample.spec_id)
-            if not key:
-                stats["baseline_no_spec"] += 1
-                continue
-            out = supplier_catalog.observe_extraction(
-                config_db,
-                sample.expected,
-                provenance="human",
-                supplier_key=key,
-            )
-            stats["baseline_lines"] += out["observed"]
-            stats["baselines"] += 1
-
-        # ---- Pass 2: the extraction archive (printed) ----
+        # ---- The extraction archive (printed) ----
         rows = (
             db.query(DocumentExtraction)
             .filter(DocumentExtraction.action == "download_invoice_file")
             .all()
         )
         for row in rows:
-            out = supplier_catalog.observe_extraction(
-                config_db, row.data, provenance="printed"
-            )
+            out = supplier_catalog.observe_extraction(config_db, row.data)
             if out["skipped"] == "no supplier spec":
                 stats["archive_no_spec"] += 1
             else:
@@ -93,12 +69,9 @@ def main(argv: list[str] | None = None) -> int:
         conflicts = sum(
             1
             for p in products
-            if p.unit_name is None
-            and any((p.evidence or {}).get(t) for t in ("human", "printed"))
+            if p.unit_name is None and (p.evidence or {}).get("printed")
         )
         print(
-            f"baselines: {stats['baselines']} observed "
-            f"({stats['baseline_lines']} sized lines); "
             f"archive rows: {stats['archive_rows']} observed "
             f"({stats['archive_lines']} sized lines), "
             f"{stats['archive_no_spec']} skipped (no supplier spec)"

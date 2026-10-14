@@ -2113,9 +2113,7 @@ def review_invoice(
             try:
                 from app.services import supplier_catalog
 
-                supplier_catalog.observe_extraction(
-                    config_db, extraction, provenance="printed"
-                )
+                supplier_catalog.observe_extraction(config_db, extraction)
                 config_db.commit()
             except Exception as exc:  # noqa: BLE001
                 logger.info("catalogue observe failed: %s", exc)

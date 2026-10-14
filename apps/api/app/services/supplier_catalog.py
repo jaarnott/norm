@@ -6,11 +6,11 @@ printed evidence from extractions, keep provenance honest, answer lookups.
 Nothing here calls a model — enrichment is a later, separate phase.
 
 Two rules carry the whole design:
-- Authority order: an admin's dojo-verified unit ('human') is the top truth,
-  then the resolver's worked-out verdict ('enriched'); a raw extraction read
-  ('printed') is only provisional, so a poisoned read never buries a verdict. A
-  venue receive ('practice') is kept as evidence but never wins the ranking
-  (28 Aug 2026 — enriched lifted above printed; see docs/unit-resolution.md).
+- Authority order: the resolver's worked-out verdict ('enriched') is the
+  truth; a raw extraction read ('printed') is only provisional, so a poisoned
+  read never buries a verdict. Nobody's say-so outranks Norm's verdict: a
+  venue receive ('practice') is kept as evidence but never wins, and there is
+  no person-confirmed tier (see docs/unit-resolution.md).
 - Conflict is data, not a vote: two different sizes at one tier leave
   ``unit_name`` empty with both sightings kept — a question for the resolver,
   never a majority decision.
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -35,15 +36,19 @@ from app.services.invoice_units import (
 
 logger = logging.getLogger(__name__)
 
-# Authority order for a product's unit: an admin's dojo-verified unit ('human')
-# is the top truth, then the resolver's worked-out verdict ('enriched'); a raw
-# extraction read ('printed') is only provisional and is outranked by both.
-# 'practice' (a receive) is recorded as evidence but is NOT a ranking source — a
-# receive can carry a user's mistake and must never bury a read or a verdict. A
-# provenance absent here scores -1 (never answers). 28 Aug 2026: 'enriched'
-# lifted ABOVE 'printed' (was printed>enriched), 'practice' dropped from the
-# ranking; 'human' stays on top (dojo baselines write it — config_models.py).
-_RANK = {"human": 2, "enriched": 1, "printed": 0}
+# Authority order for a product's unit: the resolver's worked-out verdict
+# ('enriched') outranks a raw extraction read ('printed'), which is only
+# provisional. 'practice' (a receive) is recorded as evidence but is NOT a
+# ranking source — a receive can carry a user's mistake and must never bury a
+# read or a verdict. A provenance absent here scores -1 (never answers).
+# 14 Oct 2026: the 'human' tier (an admin's dojo baseline, on top) is gone —
+# the user: "the human does not add any value in us getting to autopilot
+# across 1000s of venues". Units come from what invoices print and what Norm
+# works out; people set them up right about 85% of the time, Norm with search
+# about 93% (unit-size test, 14 Oct). Its 74 rows were demoted the same day
+# (backup: ~/backups/supplier_products_human_tier_2026-10-14.json on norm-dev).
+# Do not add a tier above 'enriched' — test_supplier_catalog guards it.
+_RANK = {"enriched": 1, "printed": 0}
 
 # Bare weight words = random-weight billing (meat/produce priced per kg).
 # A SIZED weight ('1kg', '500g') is a fixed pack — the digit is the tell.
@@ -51,6 +56,22 @@ _RANDOM_WEIGHT_WORDS = {"kilo", "kilos", "kg", "kgs", "kilogram", "kilograms"}
 
 _MAX_INVOICES_KEPT = 20
 _MAX_DESCRIPTIONS_KEPT = 5
+
+#: A product its supplier prints no code for is filed under its wording.
+_DESC_KEY = "desc:"
+
+
+def product_key(code: object, description: object = None) -> str | None:
+    """The catalogue key for one supplier product: its stock code, else its
+    description, normalised so the same wording finds the same row. Some
+    suppliers print no codes at all — Factory Group, 0 of 27 lines on
+    INV-0446 (14 Oct 2026) — and keyed on codes alone the catalogue could
+    learn nothing about them, so every invoice asked again."""
+    c = str(code or "").strip()
+    if c:
+        return c
+    words = re.sub(r"[^a-z0-9]+", " ", str(description or "").lower()).strip()
+    return f"{_DESC_KEY}{words}" if len(words) >= 3 else None
 
 
 def supplier_key_for(printed_name: object, config_db: Session) -> str | None:
@@ -182,10 +203,12 @@ def observe_extraction(
     config_db: Session,
     extraction: dict,
     *,
-    provenance: str = "printed",
     supplier_key: str | None = None,
 ) -> dict:
-    """Harvest one extraction's printed size evidence into the catalogue.
+    """Harvest one extraction's printed size evidence into the catalogue —
+    always as a ``printed`` read (provisional). There is deliberately no way
+    to record a unit as anything stronger: only the resolver's verdict
+    (``apply_enrichment``) outranks a read.
 
     Best-effort by contract: callers (the live review path, the backfill)
     must never fail because of this. Returns {"observed": N, "skipped": why}
@@ -196,17 +219,15 @@ def observe_extraction(
     key = supplier_key or supplier_key_for(extraction.get("supplier_name"), config_db)
     if not key:
         return {"observed": 0, "skipped": "no supplier spec"}
-    if provenance not in _RANK:
-        return {"observed": 0, "skipped": f"unknown provenance {provenance!r}"}
     invoice_no = str(extraction.get("invoice_number") or "") or None
     now = datetime.now(timezone.utc)
     observed = 0
     for ln in extraction.get("lines") or []:
         if not isinstance(ln, dict):
             continue
-        code = str(ln.get("code") or "").strip()
+        code = product_key(ln.get("code"), ln.get("description"))
         if not code:
-            continue  # codeless lines need description fingerprints (later)
+            continue
         row = (
             config_db.query(SupplierProduct)
             .filter(
@@ -235,7 +256,7 @@ def observe_extraction(
         classified = _classify_uom(ln.get("unit_of_measure"))
         if classified:
             pack_type, ukey, unit_type = classified
-            bucket = ev.setdefault(provenance, {})
+            bucket = ev.setdefault("printed", {})
             _merge_sighting(
                 bucket,
                 ukey,
@@ -287,7 +308,7 @@ def observe_practice(
     for ln in lines or []:
         if not isinstance(ln, dict):
             continue
-        code = str(ln.get("code") or "").strip()
+        code = product_key(ln.get("code"), ln.get("description"))
         unit_name = str(ln.get("unit") or "").strip()
         if not code or not unit_name:
             continue
@@ -409,56 +430,110 @@ def apply_enrichment(
 
 
 def learn_from_resolver(config_db: Session, supplier_key: str | None, lines) -> int:
-    """Record resolver verdicts as enrichment — the self-healing write.
+    """Record what the unit estimator worked out — the self-healing write.
 
-    The batched unit resolver reasons from richer evidence than the offline
-    enrichment script (sibling lines, venue stocking, cross-supplier rows),
-    so a decisive verdict IS an enrichment verdict — recording it means the
-    NEXT invoice for this (supplier, code) resolves from the catalogue tier
-    without spending a model call ('HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7',
-    4366904, 19 Aug 2026). We record HIGH and MEDIUM verdicts (with their
-    confidence); LOW is left unrecorded so the line is put through the resolver
-    again on its next sighting. Because the enriched tier now outranks a raw
-    read, this verdict wins over an earlier printed read — that is how a
-    poisoned row heals (28 Aug 2026). Count words never become an answer, and a
-    row that already carries a verdict is left alone. Caller owns the commit.
+    Every line the estimator was asked about (``unit_asked``) leaves a trace,
+    keyed by ``product_key`` so a codeless supplier's products count too:
+
+    - a HIGH answer is Norm's verdict (provenance ``enriched``): the next
+      invoice for this product resolves from the catalogue with no model call.
+      High was right 65 of 66 times in the 14 Oct 2026 unit-size test.
+    - anything less — medium (17 of 22 right, below the ~85% a person
+      manages), low, or no answer at all — is recorded as a GUESS
+      (``evidence['guess']``). The invoice still uses it, but the next
+      invoice for the product asks again (``unsettled_guess``) instead of
+      trusting the unit the receive saved on Loaded's supplier product.
+
+    A verdict settles an earlier guess. Count words never become an answer,
+    and a product that already has a verdict is left alone. Caller owns the
+    commit.
     """
     if not supplier_key:
         return 0
+    now = datetime.now(timezone.utc)
     written = 0
     for ln in lines or []:
         if not isinstance(ln, dict):
             continue
-        ur = ln.get("unit_resolved")
-        if not isinstance(ur, dict) or ur.get("confidence") not in ("high", "medium"):
+        # An answer that only confirmed the unit in use is still an answer.
+        ur = next(
+            (
+                ln[k]
+                for k in ("unit_resolved", "unit_agreed")
+                if isinstance(ln.get(k), dict)
+            ),
+            {},
+        )
+        if not (ln.get("unit_asked") or ur):
             continue
-        code = str(ln.get("code") or "").strip()
+        key = product_key(ln.get("code"), ln.get("description"))
+        if not key:
+            continue
         unit_name = str(ur.get("unit_name") or ur.get("create_name") or "").strip()
-        classified = _classify_uom(unit_name)
-        if not code or not unit_name or classified is None:
-            continue  # a count word must never become an answer
-        if catalog_unit_for_line(config_db, supplier_key, code) is not None:
-            continue  # a resolver verdict already answers — leave it alone
-        row = lookup(config_db, supplier_key, code)
+        classified = _classify_uom(unit_name) if unit_name else None
+        if classified is None and (parse_unit(unit_name) or ("",))[0] == "count":
+            # A printed 'EA' is how a line is charged, never a size — which is
+            # why a read can't answer with a count word. The estimator's
+            # 'each' is a judgement (a box of straws IS counted as one), and
+            # refusing it would re-ask about every box of cups on every invoice.
+            classified = ("fixed", _unit_norm(unit_name), "count")
+        row = lookup(config_db, supplier_key, key)
+        if row is not None and catalog_unit_for_line(config_db, supplier_key, key):
+            continue  # a verdict already answers — leave it alone
         if row is None:
             row = SupplierProduct(
-                supplier_key=supplier_key, code=code, provenance="enriched"
+                supplier_key=supplier_key,
+                code=key,
+                provenance="enriched" if ur.get("confidence") == "high" else "printed",
             )
             if ln.get("description"):
                 row.description = str(ln["description"]).strip()
             config_db.add(row)
-        apply_enrichment(
-            config_db,
-            row,
-            unit_name=unit_name,
-            pack_type=classified[0],
-            unit_type=classified[2],
-            category=None,
-            why=str(ur.get("why") or "").strip() + " (invoice unit resolver)",
-            confidence=str(ur.get("confidence") or "high"),
-        )
+        why = str(ur.get("why") or "").strip()
+        if ur.get("confidence") == "high" and classified is not None:
+            apply_enrichment(
+                config_db,
+                row,
+                unit_name=unit_name,
+                pack_type=classified[0],
+                unit_type=classified[2],
+                category=None,
+                why=f"{why} (unit estimator)".strip(),
+                confidence="high",
+            )
+            ev = copy.deepcopy(row.evidence or {})
+            if isinstance(ev.get("guess"), dict):
+                ev["guess"]["settled"] = True
+                row.evidence = ev
+        else:
+            ev = copy.deepcopy(row.evidence or {})
+            ev["guess"] = {
+                "unit": unit_name or None,
+                "confidence": ur.get("confidence") or "none",
+                "why": why,
+                "at": now.isoformat(),
+                "settled": False,
+            }
+            row.evidence = ev
+            row.updated_at = now
         written += 1
     return written
+
+
+def unsettled_guess(row: SupplierProduct | None) -> bool:
+    """Norm only GUESSED this product's unit and has no verdict yet: whatever
+    unit a receive saved for it in Loaded is that guess, so the next invoice
+    asks again rather than trusting it."""
+    guess = ((row.evidence or {}) if row is not None else {}).get("guess")
+    return isinstance(guess, dict) and not guess.get("settled")
+
+
+def guessed_before(row: SupplierProduct | None) -> bool:
+    """Norm once guessed this product's unit (settled or not) — so a unit
+    Loaded holds for it may be that guess, and a verdict outranks it."""
+    return isinstance(
+        ((row.evidence or {}) if row is not None else {}).get("guess"), dict
+    )
 
 
 _STOP_WORDS = {"the", "and", "with", "for", "pack", "each", "carton", "box"}
@@ -491,6 +566,8 @@ def related_evidence(
     q = (
         config_db.query(SupplierProduct)
         .filter(SupplierProduct.unit_name.isnot(None))
+        # What venues happened to do is not evidence of what a product is.
+        .filter(SupplierProduct.provenance.in_(("enriched", "printed")))
         .filter(or_(*(SupplierProduct.description.ilike(f"%{w}%") for w in words)))
         .limit(50)
     )

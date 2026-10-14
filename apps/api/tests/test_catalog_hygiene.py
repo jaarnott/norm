@@ -118,7 +118,6 @@ class TestSummary:
                     {"code": "1", "description": "A 700ML", "unit_of_measure": "700ml"}
                 ],
             },
-            provenance="printed",
         )
         res = client.get("/api/supplier-catalog/summary", headers=admin_headers)
         assert res.status_code == 200

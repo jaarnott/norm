@@ -717,6 +717,36 @@ def build_replica(
                     # non-blocking note. Only set for a unit WE read off the copy
                     # — never a bare unlinked string Loaded's OCR left behind.
                     unit_create_name = str(derived)
+        # A unit Loaded holds for this product may be one Norm only GUESSED
+        # (a receive saves the line's unit on the supplier product, and the
+        # next invoice reads it back first). Norm's verdict outranks such a
+        # unit; with no verdict yet, the line is asked about again below.
+        unit_recheck = False
+        if unit_source == "variant" and catalog_key:
+            try:
+                from app.services import supplier_catalog
+
+                pkey = supplier_catalog.product_key(
+                    el.get("code"), el.get("description")
+                )
+                prow = supplier_catalog.lookup(config_db, catalog_key, pkey)
+                verdict = (
+                    supplier_catalog.catalog_unit_for_line(config_db, catalog_key, pkey)
+                    if supplier_catalog.guessed_before(prow)
+                    else None
+                )
+                if verdict:
+                    vrec = _resolve_unit_record(verdict["unit_name"], units)
+                    if vrec is not None and vrec.get("id") != unit_rec.get("id"):
+                        log.append(
+                            f"line {i + 1} unit: '{unit_rec.get('name')}' was Norm's "
+                            f"guess — Norm's verdict is '{vrec.get('name')}'"
+                        )
+                        unit_rec, unit_source = vrec, "catalogue"
+                elif supplier_catalog.unsettled_guess(prow):
+                    unit_recheck = True
+            except Exception:  # noqa: BLE001 — the catalogue never blocks
+                pass
         if unit_rec is None and derived and not is_packaging_word(derived):
             # The page's own derived unit — the page outranks everything
             # below for the document in hand.
@@ -731,7 +761,9 @@ def build_replica(
                 from app.services import supplier_catalog
 
                 answer = supplier_catalog.catalog_unit_for_line(
-                    config_db, catalog_key, el.get("code")
+                    config_db,
+                    catalog_key,
+                    supplier_catalog.product_key(el.get("code"), el.get("description")),
                 )
             except Exception:  # noqa: BLE001 — the catalogue never blocks
                 answer = None
@@ -903,44 +935,38 @@ def build_replica(
             # stands regardless, and the resolver's offer turns that Accept
             # from a shrug into an informed choice.
             unit_residual.append(i)
+        elif unit_recheck:
+            # The unit in use is one Norm only guessed for this product (see
+            # above): ask again. The guess stands as the line's unit until a
+            # high-confidence answer replaces it (replica_finish).
+            unit_residual.append(i)
+            out_lines[-1]["unit_recheck"] = True
 
-    # ---- The residual unit resolver: one batched LLM call per invoice ----
-    # Sibling lines are the evidence (three Malfy lines printing 700ML at the
-    # same price answer the sizeless fourth), so the whole invoice rides as
-    # context. Output is metadata + suggestions, never a silent link: the
-    # unit_missing blocker above stands until a person accepts (or autopilot's
-    # receive_without_unit gate applies a high-confidence pick).
+    # ---- The unit estimator: every line nothing above could size ----
+    # One web-searching call per line (unit_resolver), the whole invoice as
+    # context — its prices are the scale the estimate is read against. Output
+    # is metadata + suggestions, never a silent link: the unit_missing blocker
+    # above stands until a person accepts or autopilot's receive_without_unit
+    # gate applies the pick.
     if unit_residual and (unit_resolver_ask is not None or db is not None):
         from app.services import unit_resolver as _ur
 
         evidence_by_line: dict[str, str] = {}
         category_by_line: dict[str, str] = {}
-        unit_names = {u.get("id"): u.get("name") for u in units or []}
         for j in unit_residual:
-            item_j = resolved[j].get("item")
-            if item_j:
-                stocked = sorted(
-                    {
-                        str(unit_names.get(v.get("unitId")))
-                        for v in item_j.get("suppliers") or []
-                        if v.get("unitId") and unit_names.get(v.get("unitId"))
-                    }
-                )
-                if stocked:
-                    evidence_by_line[f"rep-{j}"] = (
-                        f"the venue currently stocks the matched item "
-                        f"'{item_j.get('name')}' at {', '.join(stocked)} — "
-                        "evidence, not authority (venue setups contain "
-                        "mistakes)"
-                    )
+            # How a venue happens to stock the matched item is NOT sent: venue
+            # set-ups are right about 85% of the time (14 Oct 2026), and a
+            # re-check would only read Norm's own guess back.
+            out_lines[j]["unit_asked"] = True
             if config_db is not None:
                 try:
                     from app.services import supplier_catalog
 
+                    pkey_j = supplier_catalog.product_key(
+                        ext_lines[j].get("code"), ext_lines[j].get("description")
+                    )
                     if catalog_key:
-                        row = supplier_catalog.lookup(
-                            config_db, catalog_key, ext_lines[j].get("code")
-                        )
+                        row = supplier_catalog.lookup(config_db, catalog_key, pkey_j)
                         if row is not None and row.category != "unknown":
                             category_by_line[f"rep-{j}"] = row.category
                     # Cross-supplier catalogue evidence: the same product
@@ -950,13 +976,10 @@ def build_replica(
                     related = supplier_catalog.related_evidence(
                         config_db,
                         ext_lines[j].get("description"),
-                        exclude=(catalog_key or "", str(ext_lines[j].get("code"))),
+                        exclude=(catalog_key or "", str(pkey_j)),
                     )
                     if related:
-                        prior = evidence_by_line.get(f"rep-{j}")
-                        evidence_by_line[f"rep-{j}"] = "; ".join(
-                            ([prior] if prior else []) + related
-                        )
+                        evidence_by_line[f"rep-{j}"] = "; ".join(related)
                 except Exception:  # noqa: BLE001
                     pass
         try:
@@ -991,30 +1014,36 @@ def build_replica(
             unit_j = r_j.get("unit")
             if unit_j is None and not r_j.get("create_name"):
                 continue
-            # The resolver confirming the count-word resolution (Each IS the
-            # delivered unit — a crate charge, say) is agreement, not news.
-            if unit_j and unit_j.get("id") == out_lines[j].get("linked_unit_id"):
-                continue
-            out_lines[j]["unit_resolved"] = {
+            answer = {
                 "unit_id": (unit_j or {}).get("id"),
                 "unit_name": (unit_j or {}).get("name"),
                 "unit_ratio": (unit_j or {}).get("ratio"),
                 "create_name": r_j.get("create_name"),
+                "size": r_j.get("size"),
                 "confidence": r_j.get("confidence"),
                 "why": r_j.get("why"),
             }
-            # A decisive "the right unit doesn't exist here yet" feeds the
-            # existing create-unit suggestion path (human-accepted; autopilot
-            # gates it behind auto_create_units).
+            # The estimate confirming the unit already in use (a crate charge
+            # really IS Each; a re-check agreeing with Norm's guess) is not a
+            # change to offer — but it is an answer the catalogue learns from.
+            if unit_j and unit_j.get("id") == out_lines[j].get("linked_unit_id"):
+                out_lines[j]["unit_agreed"] = answer
+                continue
+            out_lines[j]["unit_resolved"] = answer
+            # "The right unit doesn't exist here yet" feeds the existing
+            # create-unit suggestion path (human-accepted; autopilot gates it
+            # behind auto_create_units). Medium counts: picking a wrong-sized
+            # existing unit instead would book the wrong stock.
             if (
                 unit_j is None
                 and r_j.get("create_name")
-                and r_j.get("confidence") == "high"
+                and r_j.get("confidence") in ("high", "medium")
                 and not out_lines[j].get("unit_create_name")
             ):
                 out_lines[j]["unit_create_name"] = r_j["create_name"]
             log.append(
-                f"line {j + 1} unit: nothing says the size — resolver offers "
+                f"line {j + 1} unit: nothing says the size — Norm estimates "
+                f"'{r_j.get('size')}' → "
                 f"'{(unit_j or {}).get('name') or r_j.get('create_name')}' "
                 f"({r_j.get('confidence')}: {r_j.get('why')})"
             )

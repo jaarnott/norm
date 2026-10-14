@@ -1,8 +1,8 @@
 """Catalogue hygiene — where a venue's Loaded setup disagrees with truth.
 
 The report the provenance hierarchy exists to power: venue practice is never
-truth, so when Norm's supplier-product catalogue (printed/human/enriched
-tiers) or the category rules say a stocking unit is wrong, that is a finding
+truth, so when Norm's supplier-product catalogue (its enriched verdicts and
+printed reads) or the category rules say a stocking unit is wrong, that is a finding
 — per venue, per item, with the evidence named. The canonical case: a
 beverage syrup stocked as 'Each' at every venue — an error, not a
 preference.
@@ -77,9 +77,7 @@ def catalog_summary(
     for r in rows:
         by_prov[r.provenance] = by_prov.get(r.provenance, 0) + 1
         by_supplier[r.supplier_key] = by_supplier.get(r.supplier_key, 0) + 1
-        if r.unit_name is None and any(
-            (r.evidence or {}).get(t) for t in ("human", "printed")
-        ):
+        if r.unit_name is None and (r.evidence or {}).get("printed"):
             conflicts.append(
                 {
                     "supplier": r.supplier_key,

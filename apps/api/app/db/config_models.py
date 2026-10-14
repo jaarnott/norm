@@ -25,7 +25,7 @@ from sqlalchemy import (
     LargeBinary,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, validates
 
 
 def _uuid() -> str:
@@ -458,11 +458,12 @@ class SupplierProduct(ConfigBase):
     Truth never comes from venue practice (all venues can share one mistake —
     a venue stocking a syrup as Each is an error, not a preference).
     ``provenance`` ranks where the current unit came from and lower tiers can
-    NEVER overwrite higher ones:
-      human    — a Norm admin verified it (dojo baselines seed this)
-      printed  — the supplier printed the size on an invoice page
-      enriched — LLM/world-knowledge enrichment (later phase)
-      practice — what venues chose at receive time (advisory only, later)
+    NEVER overwrite higher ones (supplier_catalog._RANK):
+      enriched — the resolver's worked-out verdict: the answer
+      printed  — the size read off an invoice page: provisional, re-checked
+      practice — what venues chose at receive time: evidence only, never ranks
+    There is no person-confirmed tier (removed 14 Oct 2026): at the scale
+    receiving runs, units come from invoices and Norm, not from people.
 
     ``pack_type`` keeps food honest: 'fixed' (one physical size — resolvable
     from here), 'random_weight' (meat/produce — the unit is Kilo, always),
@@ -491,12 +492,23 @@ class SupplierProduct(ConfigBase):
     category = Column(String, nullable=False, default="unknown")
     provenance = Column(String, nullable=False, default="printed")
     # {"printed": {"<unit_norm>": {"count": N, "invoices": [...], "name": ...}},
-    #  "human": {...}, "descriptions": [...], "count_only": N}
+    #  "enriched": {...}, "practice": {...}, "descriptions": [...], "count_only": N}
     evidence = Column(JSON, nullable=False, default=dict)
     first_seen = Column(DateTime(timezone=True), default=_now)
     last_seen = Column(DateTime(timezone=True), default=_now)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    #: Every provenance a row can hold. No person-confirmed tier, by design
+    #: (removed 14 Oct 2026 — see supplier_catalog._RANK); a write of any
+    #: other value fails here, whichever code path attempts it.
+    PROVENANCES = ("enriched", "printed", "practice")
+
+    @validates("provenance")
+    def _known_provenance(self, _key, value):
+        if value not in self.PROVENANCES:
+            raise ValueError(f"unknown supplier-product provenance {value!r}")
+        return value
 
 
 # ── Transitional aliases (connector → Connection rename, 29 Aug 2026) ──
