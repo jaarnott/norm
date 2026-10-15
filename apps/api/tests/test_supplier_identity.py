@@ -10,6 +10,7 @@ hand-rolled string comparison in several places that disagreed.
 from types import SimpleNamespace
 
 from app.services.supplier_identity import (
+    plausible_matches,
     admissible_aliases,
     alias_candidates,
     alias_conflict,
@@ -152,6 +153,55 @@ class TestAliasCandidates:
     def test_deleted_suppliers_are_never_candidates(self):
         dead = [{"id": "sf", "name": "SERVICE FOODS AUCKLAND", "removedAt": "2026-01"}]
         assert alias_candidates(["SERVICE FOODS LTD"], dead) == []
+
+
+class TestPlausibleMatches:
+    """Could this existing supplier be the business the invoice prints? The
+    question behind "the closest supplier" and behind autopilot refusing to
+    create a duplicate. Applegum Cafe SI650438 (15 Oct 2026): 'Blue Seas Food
+    Services' was proposed as 'PFD Food Services' — they share only trade
+    words — and autopilot could never create Blue Seas because of it.
+    Every case here is a real printed name against its venue's suppliers."""
+
+    def _names(self, printed, suppliers):
+        rows = [{"id": str(i), "name": n} for i, n in enumerate(suppliers)]
+        return [s["name"] for s in plausible_matches(printed, rows)]
+
+    def test_trade_words_alone_are_not_the_same_business(self):
+        assert self._names("Blue Seas Food Services", ["PFD Food Services"]) == []
+        assert self._names("Tasman Liquor Company Limited", ["Allied Liquor"]) == []
+        assert (
+            self._names("BIDFRESH CHRISTCHURCH", ["Service Foods Christchurch"]) == []
+        )
+        assert (
+            self._names(
+                "Mt Roskill Liquor Merchants Ltd Gilmours", ["Federal Merchants"]
+            )
+            == []
+        )
+
+    def test_a_shared_distinctive_word_is(self):
+        assert self._names("Neat Meat Limited", ["CARVE MEAT", "NEAT MEATS"]) == [
+            "NEAT MEATS"
+        ]
+        assert self._names("Aitken & Co Limited", ["Aitkens"]) == ["Aitkens"]
+        assert self._names("Bidfood Limited", ["Bidfoods fresh produce"]) == [
+            "Bidfoods fresh produce"
+        ]
+
+    def test_a_name_of_trade_words_must_match_as_a_phrase(self):
+        # The 10 Aug 2026 duplicate: SERVICE FOODS LTD is Service Foods
+        # Auckland — and not Bidvest Food Service, which has the words only.
+        assert self._names(
+            "SERVICE FOODS LTD", ["Bidvest Food Service", "SERVICE FOODS AUCKLAND"]
+        ) == ["SERVICE FOODS AUCKLAND"]
+
+    def test_deleted_and_placeholder_records_never_match(self):
+        rows = [
+            {"id": "1", "name": "NEAT MEATS", "removedAt": "2026-01"},
+            {"id": "2", "name": "[Unnamed Supplier]"},
+        ]
+        assert plausible_matches("Neat Meat Limited", rows) == []
 
 
 class TestSupplierResolution:

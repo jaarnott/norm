@@ -219,6 +219,150 @@ def alias_candidates(names, suppliers, *, limit: int = 3) -> list[dict]:
     return [s for _, _, s in scored[:limit]]
 
 
+#: Words that say what a supplier SELLS, not who it is. Two businesses that
+#: share only these are not the same business: 'Blue Seas Food Services' is
+#: not 'PFD Food Services' (Applegum Cafe SI650438, 15 Oct 2026 — linked to
+#: PFD as "the closest", which also stopped autopilot creating Blue Seas).
+#: Places are here too: half the account's suppliers are in Auckland.
+_TRADE_WORDS = {
+    "and",
+    "of",
+    "online",
+    "direct",
+    "group",
+    "holdings",
+    "enterprises",
+    "international",
+    "global",
+    "trading",
+    "traders",
+    "trade",
+    "imports",
+    "merchant",
+    "merchants",
+    "importers",
+    "export",
+    "exports",
+    "industries",
+    "products",
+    "solutions",
+    "food",
+    "foods",
+    "service",
+    "services",
+    "fresh",
+    "produce",
+    "wholesale",
+    "wholesaler",
+    "wholesalers",
+    "distributor",
+    "distributors",
+    "distribution",
+    "supply",
+    "supplies",
+    "supplier",
+    "suppliers",
+    "hospitality",
+    "catering",
+    "caterer",
+    "caterers",
+    "market",
+    "markets",
+    "meat",
+    "meats",
+    "butcher",
+    "butchery",
+    "seafood",
+    "seafoods",
+    "fish",
+    "poultry",
+    "dairy",
+    "bakery",
+    "bakehouse",
+    "bread",
+    "beverage",
+    "beverages",
+    "drinks",
+    "liquor",
+    "wine",
+    "wines",
+    "spirits",
+    "beer",
+    "brewing",
+    "brewery",
+    "coffee",
+    "tea",
+    "packaging",
+    "cleaning",
+    "hygiene",
+    "chemicals",
+    "kitchen",
+    "specialty",
+    "speciality",
+    "gourmet",
+    "quality",
+    "premium",
+    "farm",
+    "farms",
+    "new",
+    "zealand",
+    "auckland",
+    "wellington",
+    "christchurch",
+    "dunedin",
+    "hamilton",
+    "tauranga",
+    "north",
+    "south",
+    "island",
+    "east",
+    "west",
+    "central",
+}
+
+
+def _stem(word: str) -> str:
+    """'Seas' and 'Sea', 'Bidfoods' and 'Bidfood' are one word."""
+    return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
+
+def plausible_matches(name: object, suppliers, *, limit: int = 3) -> list[dict]:
+    """The account's suppliers that could be the business ``name`` prints —
+    the ones a new record would duplicate — best first.
+
+    A shared DISTINCTIVE word is required: sharing only trade words ('Food',
+    'Services', 'Fresh') proves nothing. A name made only of trade words
+    ('SERVICE FOODS LTD') is its own identity, so a match must carry it as a
+    phrase — 'SERVICE FOODS AUCKLAND' does (the duplicate that sent every
+    Service Foods invoice to the wrong layout, 10 Aug 2026); 'Bidvest Food
+    Service' has the words but not the name.
+
+    ``alias_candidates`` stays the broad prefilter for which alias lists are
+    worth fetching; this is the narrow question "is it the same business?"."""
+    mine = {_stem(w) for w in words(name)}
+    trade = {_stem(w) for w in _TRADE_WORDS}
+    core = mine - trade
+    if not mine:
+        return []
+    # The name as one phrase, legal suffixes dropped: 'servicefoods'.
+    phrase = "".join(
+        w
+        for w in "".join(c if c.isalnum() else " " for c in str(name).lower()).split()
+        if w not in _NOISE
+    )
+    scored = []
+    for s in live_suppliers(suppliers):
+        theirs = {_stem(w) for w in words(s.get("name"))}
+        if core:
+            score = len(core & theirs)
+        else:
+            score = len(mine) if phrase in norm(s.get("name")) else 0
+        if score:
+            scored.append((-score, len(norm(s.get("name"))), s))
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return [s for _, _, s in scored[:limit]]
+
+
 def resolve_supplier(names, suppliers, aliases_by_id=None):
     """Identity hints → the account's supplier record, or (None, None).
 

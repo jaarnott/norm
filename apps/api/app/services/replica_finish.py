@@ -436,8 +436,10 @@ def settle_supplier(
     read_details=None,
 ) -> None:
     """The supplier, when the printed name matches no Loaded record and
-    Loaded's draft has none either: the closest record (a guess), else a new
-    supplier under the printed name. Autopilot may create one only when
+    Loaded's draft has none either: a record that may be the same business
+    (a guess — ``supplier_identity.plausible_matches``: a shared distinctive
+    word, not just 'Food Services'), else a new supplier under the printed
+    name. Autopilot may create one only when
     nothing is close (see invoice_review.autopilot_accept) — a duplicate
     supplier sends every later invoice from that business to the wrong
     extraction layout.
@@ -468,7 +470,7 @@ def settle_supplier(
         and not s.get("removedAt")
         and not s.get("datestampDeleted")
     ]
-    close = supplier_identity.alias_candidates([name], live) if live else []
+    close = supplier_identity.plausible_matches(name, live) if live else []
     best = close[0] if close else None
     if isinstance(best, dict) and best.get("id"):
         replica["linked_supplier_id"] = best["id"]

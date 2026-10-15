@@ -2037,6 +2037,17 @@ class TestAutopilotWillNotInventADuplicateSupplier:
         assert writes == [], "autopilot created a supplier that already exists"
         assert data.get("linked_supplier_id") is None
 
+    def test_trade_words_in_common_dont_stop_the_create(self, monkeypatch):
+        # 'PFD Food Services' is not SERVICE FOODS — sharing 'food' and
+        # 'service' is not being the same business.
+        writes = self._lh(monkeypatch, [{"id": "sup-1", "name": "PFD Food Services"}])
+        data, settings = self._data()
+        data["suggestions"][0]["payload"]["supplier_name"] = "Blue Seas Food Services"
+
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
+
+        assert [w[2]["name"] for w in writes] == ["Blue Seas Food Services"]
+
     def test_a_genuinely_new_supplier_is_created(self, monkeypatch):
         writes = self._lh(
             monkeypatch, [{"id": "sup-9", "name": "Hancocks Wine & Spirits"}]

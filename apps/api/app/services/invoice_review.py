@@ -1511,6 +1511,13 @@ def link_fixes(
             for s in fix:
                 if s.get("kind") == "confirm":
                     s["gate"] = issue.get("gate")
+        elif issue.get("code") == "supplier_unresolved" and not any(
+            s.get("kind") == "create_supplier" for s in fix
+        ):
+            # Its answer is an existing record that may be the same business —
+            # a person's call. "Auto-create suppliers" can't get past it:
+            # autopilot never creates a supplier something plausibly matches.
+            issue["gate"] = None
         issue["fix"] = [s["id"] for s in fix]
 
 
@@ -1852,7 +1859,7 @@ def autopilot_accept(
                         and not r.get("removedAt")
                         and not r.get("datestampDeleted")
                     ]
-                    if supplier_identity.alias_candidates([name], live):
+                    if supplier_identity.plausible_matches(name, live):
                         logger.info(
                             "autopilot will not create supplier '%s' on %s: an "
                             "existing supplier is a plausible match",

@@ -197,6 +197,7 @@ class TestSupplierAndPhantomLines:
             "id": "supplier_unresolved",
             "code": "supplier_unresolved",
             "blocking": True,
+            "gate": VA.AUTO_CREATE_SUPPLIERS,  # as _ISSUE_GATES assigns it
             "message": "x",
         }
         IR.link_fixes(data, replica, [issue], suggestions)
@@ -218,6 +219,26 @@ class TestSupplierAndPhantomLines:
         }
         assert s["sure"] is False  # the closest record is a guess
         assert issue["fix"] == [s["id"]]
+
+    def test_sharing_only_trade_words_is_not_close(self):
+        # Applegum Cafe SI650438: proposed as PFD Food Services, while its
+        # blocker said "auto-create suppliers" — which could never act.
+        issue, suggestions = self._decide(
+            self._replica("Blue Seas Food Services"),
+            [{"id": "sup-pfd", "name": "PFD Food Services"}],
+        )
+        [s] = suggestions
+        assert s["kind"] == "create_supplier"
+        assert s["payload"]["supplier_name"] == "Blue Seas Food Services"
+        assert issue["fix"] == [s["id"]]
+        assert issue["gate"] == VA.AUTO_CREATE_SUPPLIERS  # the switch that acts
+
+    def test_a_near_match_is_a_persons_call_not_a_switch(self):
+        issue, _ = self._decide(
+            self._replica("SERVICE FOODS LTD"),
+            [{"id": "sup-sf", "name": "SERVICE FOODS AUCKLAND"}],
+        )
+        assert issue.get("gate") is None
 
     def test_nothing_close_is_created(self):
         issue, suggestions = self._decide(
