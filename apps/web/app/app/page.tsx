@@ -898,6 +898,13 @@ export default function Home() {
       return { report_id: null };
     }
 
+    // A card whose work finished elsewhere (a background job) asks for the
+    // thread again, so the summary Norm posted shows.
+    if (action.action === 'reload_thread') {
+      await handleAction(threadId, 'reload');
+      return { ok: true };
+    }
+
     // Send a message on behalf of the user (e.g., venue picker selection)
     if (action.action === 'send_message' && action.params?.message) {
       sendMessage(action.params.message as string);

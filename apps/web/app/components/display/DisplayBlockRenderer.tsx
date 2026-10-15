@@ -27,6 +27,7 @@ import VenuePicker from './VenuePicker';
 import StockPicker from './StockPicker';
 import McpEmbed from './McpEmbed';
 import ConnectorConnectCard from './ConnectorConnectCard';
+import BackgroundJobCard from './BackgroundJobCard';
 
 export interface DisplayBlockProps {
   data: Record<string, unknown>;
@@ -80,6 +81,7 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   dashboard_view: DashboardView,
   mcp_embed: McpEmbed,
   connector_connect: ConnectorConnectCard,
+  background_job: BackgroundJobCard,
 };
 
 /** Every registered display-component key — what the admin catalogue derives from. */

@@ -447,11 +447,14 @@ async def delete_venue(
       record of what was ordered or what an agent did; those columns are all
       nullable precisely so the history can outlive the venue.
     """
+    from sqlalchemy import func
+
     from app.db.models import (
         AppCall,
         AppFile,
         AppRecord,
         AutomatedTask,
+        BackgroundJob,
         EmailLog,
         InvoiceAutopilotOutcome,
         HiringCriteria,
@@ -507,6 +510,18 @@ async def delete_venue(
         synchronize_session=False
     )
 
+    # A background job still working for this venue stops (a running one
+    # between invoices); its record of what it did is history, below.
+    db.query(BackgroundJob).filter(
+        BackgroundJob.venue_id == venue_id, BackgroundJob.status == "queued"
+    ).update(
+        {BackgroundJob.status: "cancelled", BackgroundJob.finished_at: func.now()},
+        synchronize_session=False,
+    )
+    db.query(BackgroundJob).filter(
+        BackgroundJob.venue_id == venue_id, BackgroundJob.status == "running"
+    ).update({BackgroundJob.cancel_requested: True}, synchronize_session=False)
+
     # History and user-owned records — keep the row, drop the venue reference.
     for model in (
         Thread,
@@ -532,6 +547,8 @@ async def delete_venue(
         Memory,
         # What an app did while the venue existed is audit, not venue config.
         AppCall,
+        # So is what a background job did for it.
+        BackgroundJob,
     ):
         db.query(model).filter(model.venue_id == venue_id).update(
             {model.venue_id: None}, synchronize_session=False

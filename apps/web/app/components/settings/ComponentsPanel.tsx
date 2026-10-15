@@ -136,6 +136,10 @@ const COMPONENT_META: Record<string, { label?: string; description?: string; int
     label: 'Connector Connect Card',
     description: 'Prompts the user to (re)connect a connector when credentials are missing or expired.',
   },
+  background_job: {
+    label: 'Background Job',
+    description: 'Live progress of a long job Norm runs outside the conversation (e.g. receiving 200 invoices), with Cancel.',
+  },
 };
 
 const titleCase = (key: string) => key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());

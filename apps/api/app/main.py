@@ -39,6 +39,7 @@ from app.routers import (  # noqa: E402
     component_apis,
     apps as apps_router,
     invoice_fixes,
+    background_jobs as background_jobs_router,
     approval_preferences,
     recipe_editor,
     uploads,
@@ -103,6 +104,7 @@ app.include_router(roles.router, prefix="/api")
 app.include_router(email.router, prefix="/api")
 app.include_router(component_apis.router, prefix="/api")
 app.include_router(invoice_fixes.router, prefix="/api")
+app.include_router(background_jobs_router.router, prefix="/api")
 app.include_router(apps_router.router, prefix="/api")
 app.include_router(marketplace.router, prefix="/api")
 app.include_router(recipe_editor.router, prefix="/api")
@@ -301,6 +303,21 @@ def _start_sensei_worker() -> None:
     ):
         return
     from app.services.sensei_runner import start_worker
+
+    start_worker()
+
+
+@app.on_event("startup")
+def _start_job_worker() -> None:
+    # Background jobs (services/background_jobs): long work that runs outside
+    # the chat request — claims queued jobs and picks up ones whose worker
+    # died (a deploy restarted the instance). Not under pytest — tests drive
+    # worker_tick() directly.
+    import os as _os
+
+    if "PYTEST_CURRENT_TEST" in _os.environ or _os.environ.get("JOB_WORKER") == "off":
+        return
+    from app.services.background_jobs import start_worker
 
     start_worker()
 

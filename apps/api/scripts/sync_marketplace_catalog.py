@@ -278,6 +278,10 @@ APPS = [
                 description="Connect or reconnect a system from chat.",
             ),
             _c(
+                "background_job",
+                description="Live progress of a long job Norm runs in the background.",
+            ),
+            _c(
                 "automated_task_preview",
                 description="Preview of a scheduled task in chat.",
             ),

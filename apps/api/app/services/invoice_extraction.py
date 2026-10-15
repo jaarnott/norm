@@ -664,5 +664,7 @@ def read_supplier_details(
         return {}
     if not isinstance(parsed, dict) or "error" in parsed:
         return {}
-    _extraction_cache_put(db, key, "loadedhub", "read_supplier_details", parsed)
+    from app.connectors.function_executor import _extraction_cache_put_durable
+
+    _extraction_cache_put_durable(db, key, "loadedhub", "read_supplier_details", parsed)
     return clean_supplier_details(parsed)

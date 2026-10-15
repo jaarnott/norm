@@ -370,6 +370,7 @@ PLATFORM_COMPONENTS = frozenset(
         "dashboard_view",
         "mcp_embed",
         "connector_connect",
+        "background_job",
     }
 )
 

@@ -533,6 +533,12 @@ def _execute_loop(
             # is gone now that thinking is a distinct block type.)
             reasoning = _extract_text(response)
             _emit_event({"type": "stream_cancel"})
+            # Recorded NOW, before the tools run (it used to be added after
+            # they returned): a turn cut off mid-tool still shows what Norm
+            # was doing and why — 14 Oct 2026, a 25-minute receive died and
+            # its "I'm widening the window" was lost with it.
+            if reasoning:
+                thinking_steps.append(_ts_step(f"[reasoning] {reasoning}"))
 
             pending_writes: list[ToolCall] = []
 
@@ -660,6 +666,12 @@ def _execute_loop(
 
             if read_only_tcs:
                 db.flush()
+                # Committed before anything runs, with the turn's steps so
+                # far: a long tool that outlives the request (Cloud Run cuts
+                # it off at 25 minutes) leaves its call and the reasoning
+                # behind it, instead of a thread with no trace of the turn.
+                task.thinking_steps = list(thinking_steps) or None
+                db.commit()
 
             # --- Phase C: Execute read-only tools ---
             execution_results: dict[str, dict] = {}
@@ -957,6 +969,22 @@ def _execute_loop(
                             }
                         )
 
+                # A tool that started a background job (services/background_jobs)
+                # gets the job's live card in the thread.
+                job = (
+                    tc.result_payload.get("_job")
+                    if isinstance(tc.result_payload, dict)
+                    else None
+                )
+                if isinstance(job, dict) and job.get("id"):
+                    display_blocks.append(
+                        {
+                            "component": "background_job",
+                            "data": {"job_id": job["id"]},
+                            "props": {},
+                        }
+                    )
+
             # --- Phase E: Process write blocks ---
             write_tool_results: dict[str, dict] = {}
             asks: list[tuple] = []
@@ -1204,7 +1232,7 @@ def _execute_loop(
             # distinguish it from short status thinking steps.
             intermediate_text = _extract_text(response)
             if intermediate_text:
-                thinking_steps.append(_ts_step(f"[reasoning] {intermediate_text}"))
+                # (Already a thinking step — recorded before the tools ran.)
                 # Keep it as answer text too. Previously each iteration
                 # overwrote the last, so only the final iteration survived into
                 # the stored Message — that is the "we only show the last

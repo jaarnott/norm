@@ -246,7 +246,7 @@ def _estimate_all(prompts: dict[str, str], ask, db) -> dict[str, dict]:
 
     from app.connectors.function_executor import (
         _extraction_cache_get,
-        _extraction_cache_put,
+        _extraction_cache_put_durable,
     )
 
     out: dict[str, dict] = {}
@@ -277,8 +277,10 @@ def _estimate_all(prompts: dict[str, str], ask, db) -> dict[str, dict]:
                 lambda ci: ci[0].run(one, ci[1]), zip(contexts, todo)
             ):
                 out[lid] = ans
+                # Saved there and then: a batch cut off later keeps every
+                # estimate it already paid for.
                 if db is not None and _measure(ans.get("size")) is not None:
-                    _extraction_cache_put(
+                    _extraction_cache_put_durable(
                         db, _cache_key(prompts[lid]), "norm", "unit_estimate", ans
                     )
     return out

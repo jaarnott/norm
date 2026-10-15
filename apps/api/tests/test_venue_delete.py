@@ -18,6 +18,7 @@ import uuid
 import pytest
 
 from app.db.models import (
+    BackgroundJob,
     Connection,
     Thread,
     ToolCall,
@@ -116,6 +117,30 @@ class TestDeleteVenue:
         surviving = db_session.query(ToolCall).filter(ToolCall.id == tc.id).first()
         assert surviving is not None, "tool call history must not be deleted"
         assert surviving.venue_id is None, "venue reference should be cleared"
+
+    def test_a_venue_with_background_jobs_can_be_deleted_and_they_stop(
+        self, client, db_session, admin_headers, venue
+    ):
+        """A queued job is cancelled, a running one is asked to stop between
+        invoices, and both keep their record with the venue dropped."""
+        queued = BackgroundJob(
+            kind="receive_invoices", title="q", status="queued", venue_id=venue.id
+        )
+        running = BackgroundJob(
+            kind="receive_invoices", title="r", status="running", venue_id=venue.id
+        )
+        db_session.add_all([queued, running])
+        db_session.flush()
+
+        resp = client.delete(f"/api/venues/{venue.id}", headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+
+        db_session.expire_all()
+        queued = db_session.query(BackgroundJob).filter_by(id=queued.id).one()
+        running = db_session.query(BackgroundJob).filter_by(id=running.id).one()
+        assert (queued.status, queued.venue_id) == ("cancelled", None)
+        assert queued.finished_at is not None
+        assert (running.cancel_requested, running.venue_id) == (True, None)
 
     def test_venue_scoped_config_is_removed(
         self, client, db_session, admin_user, admin_headers, venue

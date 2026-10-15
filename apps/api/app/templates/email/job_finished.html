@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{% if status == "done" %}Finished{% elif status == "cancelled" %}Stopped{% else %}Didn't finish{% endif %}</h1>
+<p>Hi {{ user_name }},</p>
+<p>{{ summary }}</p>
+<a href="{{ link }}" class="btn">Open the conversation</a>
+{% endblock %}

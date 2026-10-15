@@ -756,6 +756,48 @@ class AutomatedTask(Base):
     conversation_thread = relationship("Thread", foreign_keys=[conversation_thread_id])
 
 
+class BackgroundJob(Base):
+    """A long piece of work that runs outside the chat request.
+
+    A chat request is cut off after 25 minutes (Cloud Run), and a batch that
+    big — receiving 200 invoices — was losing everything it had done (14 Oct
+    2026: two runs, ~$15, nothing saved). A job is claimed by a worker
+    (services/background_jobs), heartbeats while it runs, saves its progress
+    as it goes, and is picked up again by another worker if its heartbeat goes
+    stale (a deploy restarted the instance). The thread it started from gets a
+    live card for it and, at the end, Norm's summary.
+    """
+
+    __tablename__ = "background_jobs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    kind = Column(String, nullable=False)  # e.g. receive_invoices
+    title = Column(String, nullable=False, default="")
+    organization_id = Column(String, ForeignKey("organizations.id"), nullable=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    thread_id = Column(String, ForeignKey("threads.id"), nullable=True)
+    # queued | running | done | failed | cancelled
+    status = Column(String, nullable=False, default="queued")
+    params = Column(JSON, nullable=False, default=dict)
+    # {"total", "done", counters..., "current", "done_ids": [...]}
+    progress = Column(JSON, nullable=False, default=dict)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    claimed_by = Column(String, nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_background_jobs_status", "status"),
+        Index("ix_background_jobs_thread", "thread_id"),
+    )
+
+
 class AutomatedTaskRun(Base):
     __tablename__ = "automated_task_runs"
 

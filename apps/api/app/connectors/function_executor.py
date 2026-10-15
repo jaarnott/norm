@@ -91,6 +91,34 @@ def _extraction_cache_put(
         logger.debug("extraction cache write skipped: %s", exc)
 
 
+def _extraction_cache_put_durable(
+    db: Session, cache_key: str, connector: str, action: str, data: Any
+) -> None:
+    """Store an extraction and COMMIT it now, on its own short transaction.
+
+    ``_extraction_cache_put`` rides the caller's transaction — right for a
+    request that commits at the end, wrong for a long batch: a chat cut off at
+    25 minutes rolled back every unit estimate it had paid for, and the retry
+    paid again (14 Oct 2026). Same connection's bind, so a test's outer
+    transaction still holds it (a nested join, not a real commit).
+    """
+    from sqlalchemy.orm import Session as _Session
+
+    try:
+        own = _Session(bind=db.get_bind())
+    except Exception:  # noqa: BLE001 — fall back to the caller's transaction
+        _extraction_cache_put(db, cache_key, connector, action, data)
+        return
+    try:
+        _extraction_cache_put(own, cache_key, connector, action, data)
+        own.commit()
+    except Exception as exc:  # noqa: BLE001 — cache write is best-effort
+        logger.debug("durable extraction cache write skipped: %s", exc)
+        own.rollback()
+    finally:
+        own.close()
+
+
 # Default ceiling on connector API calls per function execution. A consolidator
 # can raise it via consolidator_config.max_api_calls when its workload is
 # legitimately larger (e.g. per-invoice fan-out), bounded by _HARD_MAX_API_CALLS.

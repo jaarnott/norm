@@ -2592,6 +2592,22 @@ def _set_approval_preference(params: dict, db: Session, thread_id: str | None) -
     }
 
 
+def _is_chat_thread(db: Session, thread_id: str) -> bool:
+    """A person's conversation, not a scheduled task's run (that one keeps
+    running inline — its summary already lands in its task's conversation)."""
+    from app.db.models import AutomatedTaskRun
+
+    try:
+        return (
+            db.query(AutomatedTaskRun.id)
+            .filter(AutomatedTaskRun.thread_id == thread_id)
+            .first()
+            is None
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @register("norm", "review_invoices")
 def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict:  # noqa: ARG001
     """Batch replica review — the ONE engine behind invoice reviewing.
@@ -2609,9 +2625,12 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
     (approve_all | approve_fixes | autopilot), ``max_sensei``,
     ``require_valid_po``.
     """
+    import time as _time
+
     from app.db.engine import _ConfigSessionLocal
+    from app.services import invoice_receive_job as IRJ
     from app.services.approvals import receiving_settings_for_thread
-    from app.services.invoice_review import review_invoices
+    from app.services.invoice_review import list_window_invoices, review_invoices
 
     venue_id, venue_err = _scoped_venue_id(params, db)
     if not venue_id:
@@ -2622,10 +2641,75 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
         return {"success": False, "error": "invoice_ids must be a list"}
     if invoice_ids is None and params.get("invoice_id"):
         invoice_ids = [str(params["invoice_id"])]
+    mode = str(params.get("mode") or "approve_all")
+    max_sensei = int(params.get("max_sensei") or 0)
+    require_valid_po = params.get("require_valid_po") is not False
+
+    # A scheduled task's run isn't held to a request's time limit; a chat (or
+    # an MCP call) is.
+    in_request = not thread_id or _is_chat_thread(db, thread_id)
 
     try:
         cdb = _ConfigSessionLocal()
         try:
+            if invoice_ids is None and thread_id and in_request:
+                # A big batch doesn't fit in a chat request (cut off at 25
+                # minutes — 14 Oct 2026 lost two ~200-invoice runs whole): it
+                # becomes a background job, and the chat answers at once with
+                # a live card for it.
+                from app.db.models import Thread, Venue
+                from app.services.received_invoice import LoadedInvoiceClient
+
+                try:
+                    lh = LoadedInvoiceClient(db, cdb, str(venue_id))
+                    rows = list_window_invoices(
+                        lh,
+                        from_date=params.get("from_date"),
+                        to_date=params.get("to_date"),
+                    )
+                except Exception as exc:  # noqa: BLE001 — the batch lists again
+                    logger.info("invoice window listing failed: %s", exc)
+                    rows = None
+                if rows is not None and len(rows) > IRJ.JOB_THRESHOLD:
+                    venue = db.query(Venue).filter(Venue.id == str(venue_id)).first()
+                    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+                    job, created = IRJ.start(
+                        db,
+                        venue_id=str(venue_id),
+                        venue_name=getattr(venue, "name", None) or "the venue's",
+                        thread_id=thread_id,
+                        user_id=getattr(thread, "user_id", None),
+                        rows=rows,
+                        mode=mode,
+                        require_valid_po=require_valid_po,
+                        max_sensei=max_sensei,
+                        from_date=params.get("from_date"),
+                        to_date=params.get("to_date"),
+                    )
+                    from app.services.background_jobs import serialize
+
+                    return {
+                        "success": True,
+                        "data": {
+                            "job": {**serialize(job), "already_running": not created},
+                            "cards": [],
+                            "verdicts": [],
+                            "received": [],
+                            "skipped": [],
+                            "sensei": [],
+                            "mode": mode,
+                        },
+                    }
+                if rows is not None:
+                    invoice_ids = [r["id"] for r in rows]
+
+            def _save(iid: str, record: dict, data: dict | None) -> None:
+                # Saved as each invoice finishes, so a chat that is cut off
+                # keeps every draft it reviewed (the end-of-turn fan-out then
+                # updates the same documents).
+                if data is not None and record.get("outcome") not in IRJ._RECEIVED:
+                    IRJ.save_draft(db, thread_id, str(venue_id), data)
+
             out = review_invoices(
                 db,
                 cdb,
@@ -2633,12 +2717,18 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
                 [str(i) for i in invoice_ids] if invoice_ids is not None else None,
                 from_date=params.get("from_date"),
                 to_date=params.get("to_date"),
-                mode=str(params.get("mode") or "approve_all"),
-                max_sensei=int(params.get("max_sensei") or 0),
-                require_valid_po=params.get("require_valid_po") is not False,
+                mode=mode,
+                max_sensei=max_sensei,
+                require_valid_po=require_valid_po,
                 # Whose rung and switches: the conversation's owner — the
                 # person asking, or a scheduled task's creator.
                 settings=receiving_settings_for_thread(db, thread_id),
+                on_invoice=_save if thread_id else None,
+                # Stop starting new invoices well inside the request limit;
+                # the rest come back as `remaining` for the next run.
+                deadline=(
+                    _time.monotonic() + IRJ.CHAT_BUDGET_SECONDS if in_request else None
+                ),
             )
         finally:
             cdb.close()

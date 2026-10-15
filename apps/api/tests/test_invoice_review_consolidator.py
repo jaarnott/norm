@@ -410,3 +410,41 @@ class TestReceiveOneFoldedIn:
             t for app in catalog.APPS for t in (app["composition"].get("tools") or [])
         }
         assert "loadedhub.receive_loadedhub_invoice" not in claims
+
+
+class TestABigBatchRunsInTheBackground:
+    """A window too big for a chat request comes back from the review service
+    as a started job (14 Oct 2026: ~200 invoices, cut off at 25 minutes,
+    nothing saved). The report carries the job's card and tells the model not
+    to wait for it or start it again."""
+
+    def _job(self, **over):
+        job = {
+            "id": "job-1",
+            "title": "Receiving Applegum Cafe invoices",
+            "status": "queued",
+            "progress": {"total": 212, "done": 0},
+            "already_running": False,
+        }
+        job.update(over)
+        return job
+
+    def test_the_job_and_its_card_come_back(self):
+        api = Api(response={"job": self._job(), "mode": "autopilot"})
+        out = run_consolidator(api, mode="autopilot")
+        assert out["_job"] == {"id": "job-1"}
+        assert out["background_job"]["invoices"] == 212
+        assert out["fix_invoices"] == [] and out["reviewed"] == 0
+        assert "don't wait for it and don't start it again" in out["message"]
+
+    def test_a_job_already_running_is_reported_not_restarted(self):
+        api = Api(response={"job": self._job(already_running=True, status="running")})
+        out = run_consolidator(api, mode="autopilot")
+        assert out["background_job"]["already_running"] is True
+        assert "already working through" in out["message"]
+
+    def test_a_batch_stopped_by_its_time_budget_says_what_is_left(self):
+        api = Api(response={"cards": [], "remaining": ["a", "b", "c"]})
+        out = run_consolidator(api)
+        assert out["not_reached"] == 3
+        assert "carries on with the rest" in out["not_reached_note"]

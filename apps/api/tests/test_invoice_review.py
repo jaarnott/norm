@@ -3171,3 +3171,79 @@ class TestTheUnitGatePicksAUnit:
             "no unit could be read from the invoice for 'Pistachio Jam-Can' — "
             "'Each' is Norm's best guess from the venue's units; check it"
         )
+
+
+class TestABatchSavesAsItGoes:
+    """A long batch reports each invoice as it finishes, and stops between
+    invoices when cancelled or out of time — handing back the ones it never
+    reached (14 Oct 2026: a 200-invoice batch inside a chat request was cut
+    off at 25 minutes and lost every review it had done)."""
+
+    def _stub(self, monkeypatch):
+        class _Lh:
+            def invoice(self, iid):
+                return {"id": iid, "referenceNumber": f"R{iid}", "supplierName": "Alsco"}
+
+            def get(self, path):
+                return []
+
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda *a, **k: _Lh())
+        monkeypatch.setattr(IR, "account_suppliers", lambda lh: [])
+        monkeypatch.setattr(IR, "extract_invoice_copies_parallel", lambda *a, **k: [])
+        monkeypatch.setattr(
+            "app.services.spec_dojo.prefetch_replica_reference", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            IR,
+            "review_invoice",
+            lambda db, cdb, vid, iid, **kw: {
+                "invoice_id": iid,
+                "reference_number": f"R{iid}",
+                "confidence": "needs_review",
+                "issues": [],
+                "suggestions": [],
+            },
+        )
+
+    def test_each_invoice_is_reported_as_it_finishes(self, monkeypatch):
+        self._stub(monkeypatch)
+        seen = []
+        out = IR.review_invoices(
+            None,
+            None,
+            "v-1",
+            ["a", "b", "c"],
+            on_invoice=lambda iid, rec, data: seen.append(
+                (iid, rec["outcome"], data["invoice_id"])
+            ),
+        )
+        assert seen == [
+            ("a", "needs review", "a"),
+            ("b", "needs review", "b"),
+            ("c", "needs review", "c"),
+        ]
+        assert out["remaining"] == [] and out["stopped"] is None
+
+    def test_a_cancel_stops_between_invoices(self, monkeypatch):
+        self._stub(monkeypatch)
+        seen = []
+        out = IR.review_invoices(
+            None,
+            None,
+            "v-1",
+            ["a", "b", "c"],
+            on_invoice=lambda iid, rec, data: seen.append(iid),
+            should_stop=lambda: len(seen) >= 1,
+        )
+        assert seen == ["a"]
+        assert out["remaining"] == ["b", "c"] and out["stopped"] == "cancelled"
+
+    def test_out_of_time_hands_back_the_rest(self, monkeypatch):
+        import time
+
+        self._stub(monkeypatch)
+        out = IR.review_invoices(
+            None, None, "v-1", ["a", "b"], deadline=time.monotonic() - 1
+        )
+        assert out["remaining"] == ["a", "b"] and out["stopped"] == "out of time"
+        assert out["cards"] == []

@@ -2542,10 +2542,21 @@ def review_invoices(
     max_sensei: int = 0,
     require_valid_po: bool = True,
     settings: dict | None = None,
+    on_invoice=None,
+    should_stop=None,
+    deadline: float | None = None,
 ) -> dict:
     """Review a batch of invoices; under ``mode="autopilot"`` auto-accept
     every suggestion (recorded, actor ``norm``) and receive the ones with no
     blocking issues.
+
+    Long batches (14 Oct 2026 — 200 invoices ran past the chat's 25-minute
+    cut-off and lost everything): ``on_invoice(invoice_id, record, data)`` is
+    called as EACH invoice finishes (``data`` is its doc payload, or None when
+    it couldn't be reviewed) so the caller saves it there and then;
+    ``should_stop()`` (a cancel) and ``deadline`` (a ``time.monotonic()``
+    value) are checked before each invoice, and the ones not reached come back
+    in ``remaining`` for the next run.
 
     Mode policy (mirrors the consolidator's run modes):
     - ``approve_all`` / anything unknown: review + cards only, never receives.
@@ -2577,19 +2588,9 @@ def review_invoices(
     lh = LoadedInvoiceClient(db, config_db, venue_id)
 
     if invoice_ids is None:
-        rows = lh.get(
-            "/1.0/stock/internal/invoices"
-            "?from=1901-01-01&to=9999-12-31&status=NotReceived&page=0&pageSize=200"
-        )
-        rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
         invoice_ids = [
-            str(r["id"])
-            for r in rows
-            if isinstance(r, dict)
-            and r.get("id")
-            and not r.get("isReceived")
-            and not r.get("deletedAt")
-            and _in_window(r.get("createdAt") or r.get("issuedAt"), from_date, to_date)
+            r["id"]
+            for r in list_window_invoices(lh, from_date=from_date, to_date=to_date)
         ]
 
     details: dict[str, dict] = {}
@@ -2666,11 +2667,33 @@ def review_invoices(
     except Exception as exc:  # noqa: BLE001 — per-invoice fetches still work
         logger.info("replica reference prefetch failed: %s", exc)
 
+    import time as _time
+
+    def _report(iid: str, record: dict, data: dict | None) -> None:
+        if on_invoice is None:
+            return
+        try:
+            on_invoice(iid, record, data)
+        except Exception:  # noqa: BLE001 — saving one never sinks the batch
+            logger.exception("on_invoice failed for %s", iid)
+
+    for rec in unfetched:
+        _report(rec["invoice_id"], rec, None)
+
     cards: list[dict] = []
     verdicts: list[dict] = []
     received: list[dict] = []
     skipped: list[dict] = []
-    for iid in order:
+    remaining: list[str] = []
+    stopped: str | None = None
+    for n, iid in enumerate(order):
+        if should_stop is not None and should_stop():
+            stopped = "cancelled"
+        elif deadline is not None and _time.monotonic() > deadline:
+            stopped = "out of time"
+        if stopped:
+            remaining = order[n:]
+            break
         det = details[iid]
         try:
             data = review_invoice(
@@ -2686,14 +2709,15 @@ def review_invoices(
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("review failed for %s: %s", iid, exc)
-            skipped.append(
-                {
-                    "invoice_id": iid,
-                    "reference_number": det.get("referenceNumber"),
-                    "outcome": "review failed",
-                    "reasons": [str(exc)],
-                }
-            )
+            failed = {
+                "invoice_id": iid,
+                "reference_number": det.get("referenceNumber"),
+                "supplier_name": det.get("supplierName"),
+                "outcome": "review failed",
+                "reasons": [str(exc)],
+            }
+            skipped.append(failed)
+            _report(iid, failed, None)
             continue
 
         gated: list[str] = []
@@ -2708,14 +2732,15 @@ def review_invoices(
             if data.get("is_deleted"):
                 # A gated delete removed the draft — terminal; there is
                 # nothing left to receive or card.
-                received.append(
-                    {
-                        "invoice_id": iid,
-                        "reference_number": data.get("reference_number"),
-                        "outcome": "deleted",
-                        "reasons": gated,
-                    }
-                )
+                deleted = {
+                    "invoice_id": iid,
+                    "reference_number": data.get("reference_number"),
+                    "supplier_name": data.get("supplier_name"),
+                    "outcome": "deleted",
+                    "reasons": gated,
+                }
+                received.append(deleted)
+                _report(iid, deleted, data)
                 continue
 
         standing = [
@@ -2781,10 +2806,12 @@ def review_invoices(
                     ),
                 )
                 logger.info("autopilot received %s: %s", iid, out)
+                _report(iid, {**verdict, "outcome": "received"}, data)
             except Exception as exc:  # noqa: BLE001 — a failed write is a skip
                 verdict["reasons"] = [f"receive failed: {exc}"]
                 skipped.append({**verdict, "outcome": "receive failed"})
                 cards.append(data)
+                _report(iid, {**verdict, "outcome": "receive failed"}, data)
         else:
             outcome = (
                 "ready to receive — awaiting approval"
@@ -2793,6 +2820,7 @@ def review_invoices(
             )
             skipped.append({**verdict, "outcome": outcome})
             cards.append(data)
+            _report(iid, {**verdict, "outcome": outcome}, data)
         verdicts.append(verdict)
 
     return {
@@ -2804,7 +2832,40 @@ def review_invoices(
         # The rung actually applied — the venue's setting, lowered by the
         # caller's ceiling — so the report can say what really governed it.
         "mode": mode,
+        # Invoices not reached (cancelled, or out of time): the next run's.
+        "remaining": remaining,
+        "stopped": stopped,
     }
+
+
+def list_window_invoices(
+    lh, *, from_date: str | None = None, to_date: str | None = None
+) -> list[dict]:
+    """The venue's unreceived invoices in a date window, newest first, as
+    ``{id, supplier_name, reference_number, date, total}`` — what a batch
+    reviews, and what a background job counts and works through."""
+    rows = lh.get(
+        "/1.0/stock/internal/invoices"
+        "?from=1901-01-01&to=9999-12-31&status=NotReceived&page=0&pageSize=200"
+    )
+    rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
+    out = [
+        {
+            "id": str(r["id"]),
+            "supplier_name": r.get("supplierName"),
+            "reference_number": r.get("referenceNumber"),
+            "date": r.get("issuedAt") or r.get("createdAt"),
+            "total": r.get("total"),
+        }
+        for r in rows
+        if isinstance(r, dict)
+        and r.get("id")
+        and not r.get("isReceived")
+        and not r.get("deletedAt")
+        and _in_window(r.get("createdAt") or r.get("issuedAt"), from_date, to_date)
+    ]
+    out.sort(key=lambda r: str(r.get("date") or ""), reverse=True)
+    return out
 
 
 def _in_window(created: object, from_date: str | None, to_date: str | None) -> bool:

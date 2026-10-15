@@ -267,6 +267,20 @@ def build_conversation_messages(
     if manifest:
         content += "\n\n" + manifest
 
+    # Background jobs this conversation started, with their live state — so
+    # "how are we going?" is answered from the job, not by starting it again
+    # (14 Oct 2026: asked mid-job, Norm re-ran the whole 25-minute batch).
+    try:
+        from app.services.background_jobs import thread_manifest
+
+        jobs = (
+            thread_manifest(thread, db) if thread is not None and db is not None else ""
+        )
+        if jobs:
+            content += "\n\n" + jobs
+    except Exception:  # noqa: BLE001 — never fail a turn over this
+        logger.exception("background job manifest failed; continuing without it")
+
     # Files attached anywhere in this conversation, so the model can re-open one
     # with get_attachment on a later turn.
     from app.services.attachments import attachment_manifest

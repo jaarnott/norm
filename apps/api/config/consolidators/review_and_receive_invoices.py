@@ -110,9 +110,58 @@ def run(params, call_api, log, call_api_parallel=None):
             + str(result.get("error") if isinstance(result, dict) else result)
         }
 
+    # A big batch runs as a background job (services/background_jobs): the
+    # review service started it, its live card goes into the conversation, and
+    # the job posts the result there when it finishes.
+    job = result.get("job")
+    if isinstance(job, dict) and job.get("id"):
+        total = (job.get("progress") or {}).get("total")
+        if job.get("already_running"):
+            message = (
+                "A background job is already working through this venue's "
+                "invoices (" + str(job.get("title")) + "). Its card in the "
+                "conversation shows live progress. Tell the person — don't "
+                "start it again."
+            )
+        else:
+            message = (
+                "This is a big batch (" + str(total) + " invoices), so it runs "
+                "as a background job instead of in this conversation. Its live "
+                "card is in the conversation; it saves each invoice as it goes, "
+                "posts the result here when it finishes and emails the person. "
+                "Tell the person that in a sentence or two — don't wait for it "
+                "and don't start it again."
+            )
+        log("Background job " + str(job.get("id")) + ": " + str(total) + " invoices")
+        return {
+            "venue": venue,
+            "from_date": from_date,
+            "to_date": to_date,
+            "background_job": {
+                "id": job.get("id"),
+                "title": job.get("title"),
+                "invoices": total,
+                "status": job.get("status"),
+                "already_running": bool(job.get("already_running")),
+            },
+            "_job": {"id": job.get("id")},
+            "message": message,
+            "reviewed": 0,
+            "results": [],
+            "received": [],
+            "skipped": [],
+            "fixes": [],
+            "fix_invoices": [],
+            "mode": result.get("mode") or mode,
+            "summary": {"received": 0, "skipped": 0},
+        }
+
     cards = result.get("cards") or []
     received_in = result.get("received") or []
     skipped_in = result.get("skipped") or []
+    # A chat-run batch stops starting new invoices well before the request
+    # limit; what it reviewed is saved, the rest come back here.
+    not_reached = len(result.get("remaining") or [])
     for s in result.get("sensei") or []:
         log(
             "sensei: trained on '"
@@ -223,4 +272,12 @@ def run(params, call_api, log, call_api_parallel=None):
         "mode_unset": applied == "unset" if result.get("mode") else mode_unset,
         "auto_submit": applied == "autopilot" if result.get("mode") else autopilot,
         "summary": {"received": len(received_in), "skipped": len(skipped_in)},
+        "not_reached": not_reached,
+        "not_reached_note": (
+            str(not_reached)
+            + " invoice(s) weren't reached before the time limit. Everything "
+            "reviewed is saved; running this again carries on with the rest."
+            if not_reached
+            else ""
+        ),
     }
