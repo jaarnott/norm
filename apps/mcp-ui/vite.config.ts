@@ -24,9 +24,27 @@ function sandboxApi(): Plugin {
   };
 }
 
+// Web-only components the shared editors import but never render when
+// embedded: swapped for an empty stub, so their dependencies (pdf.js for the
+// invoice-copy pane) don't inline into the bundle.
+const WEB_ONLY = new Set([resolve(__dirname, '../web/app/components/settings/InvoicePdfPane.tsx')]);
+const WEB_ONLY_STUB = resolve(__dirname, 'src/web-only-stub.tsx');
+
+function webOnly(): Plugin {
+  return {
+    name: 'norm-web-only',
+    enforce: 'pre',
+    async resolveId(source, importer) {
+      if (!importer || !/InvoicePdfPane(\.tsx)?$/.test(source)) return null;
+      const resolved = await this.resolve(source, importer, { skipSelf: true });
+      return resolved && WEB_ONLY.has(resolved.id) ? WEB_ONLY_STUB : null;
+    },
+  };
+}
+
 // Everything inlines into ONE html file: MCP Apps are served as a single
 // resource over JSON-RPC, and the host's sandbox blocks external origins.
 export default defineConfig({
-  plugins: [sandboxApi(), react(), viteSingleFile()],
+  plugins: [sandboxApi(), webOnly(), react(), viteSingleFile()],
   build: { outDir: 'dist', assetsInlineLimit: 100000000, chunkSizeWarningLimit: 4000 },
 });

@@ -10,6 +10,7 @@ import type { SettingsTab } from '../components/settings/SettingsPanel';
 import LoginForm from '../components/auth/LoginForm';
 import FunctionalPage from '../components/pages/FunctionalPage';
 import QuotaExceededModal from '../components/layout/QuotaExceededModal';
+import { SIDE_PANEL_EVENT, type SidePanelRequest } from '../lib/sidePanel';
 import ConnectorConnectCard from '../components/display/ConnectorConnectCard';
 import { requestOpenRecipe } from '../components/display/RecipeEditor';
 import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../components/pages/pageRegistry';
@@ -1085,6 +1086,27 @@ export default function Home() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [drawerOpen]);
+
+  // A view that needs the width (the invoice copy beside the receive card)
+  // folds the panel away, and hands it back when it closes — but only a panel
+  // it folded: one the person had already closed stays closed (lib/sidePanel).
+  const panelFoldedForView = useRef(false);
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      const { collapse } = (e as CustomEvent<SidePanelRequest>).detail || { collapse: false };
+      if (collapse) {
+        setPanelCollapsed((was) => {
+          if (!was) panelFoldedForView.current = true;
+          return true;
+        });
+      } else if (panelFoldedForView.current) {
+        panelFoldedForView.current = false;
+        setPanelCollapsed(false);
+      }
+    };
+    window.addEventListener(SIDE_PANEL_EVENT, onRequest);
+    return () => window.removeEventListener(SIDE_PANEL_EVENT, onRequest);
+  }, []);
 
   const handleMobileBack = useCallback(() => {
     setMobileView('home');

@@ -183,6 +183,7 @@
   cursor: pointer;
 }
 .n-icon-btn:hover:not(:disabled) { background: var(--surface-alt); color: var(--text); }
+.n-icon-btn[aria-pressed="true"] { background: var(--surface-alt); color: var(--text); }
 .n-icon-btn:disabled { opacity: 0.45; cursor: default; }
 @media (pointer: coarse) {
   .n-icon-btn { width: 40px; height: 40px; }

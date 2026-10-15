@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ZoomIn, ZoomOut } from 'lucide-react';
+import { ExternalLink, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import Button from '../ui/Button';
 import IconButton from '../ui/IconButton';
@@ -16,14 +16,37 @@ import PageState from '../ui/PageState';
  *
  * pdf.js renders each page once at 2x the container width (zoom headroom);
  * zoom/pan are pure CSS transforms, so interaction stays cheap. The worker
- * is served from /pdf.worker.min.mjs (copied from pdfjs-dist into public/ —
- * bundler-independent; re-copy it when the dependency is upgraded).
+ * is served from /pdf.worker.min.mjs, copied into public/ from
+ * pdfjs-dist/legacy/build — bundler-independent; re-copy it from there when
+ * the dependency is upgraded. LEGACY on purpose (library and worker must
+ * match): pdf.js 6's modern build calls Uint8Array.prototype.toHex, which
+ * only Chrome 140+ / iOS 18.2+ have — on an older iPad behind the bar, every
+ * copy failed with "n.toHex is not a function" (14 Oct 2026).
+ *
+ * Also the receive card's inline copy view (14 Oct 2026): ``src`` loads any
+ * copy (a Loaded invoice file), and a copy that is a PHOTO — suppliers send
+ * plenty — shows as an image. What the file is comes from its first bytes,
+ * not its content-type header (a supplier's server talking).
  */
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 6;
 
-export default function InvoicePdfPane({ sampleId }: { sampleId: string }) {
+export default function InvoicePdfPane({
+  sampleId,
+  src,
+  onClose,
+  onPopOut,
+}: {
+  /** A dojo sample's copy. */
+  sampleId?: string;
+  /** Any copy, fetched through the API (takes precedence over sampleId). */
+  src?: string;
+  onClose?: () => void;
+  /** Open the copy in its own tab. */
+  onPopOut?: () => void;
+}) {
+  const url = src || `/api/supplier-invoice-specs/samples/${sampleId}/pdf`;
   const containerRef = useRef<HTMLDivElement>(null);
   const pagesRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -52,12 +75,38 @@ export default function InvoicePdfPane({ sampleId }: { sampleId: string }) {
     let cancelled = false;
     setState('loading');
     commit(1, { x: 0, y: 0 });
+    let objectUrl: string | null = null;
     (async () => {
       try {
-        const res = await apiFetch(`/api/supplier-invoice-specs/samples/${sampleId}/pdf`);
+        const res = await apiFetch(url);
         if (!res.ok) throw new Error(`pdf fetch ${res.status}`);
         const data = await res.arrayBuffer();
-        const pdfjs = await import('pdfjs-dist');
+        const head = new Uint8Array(data.slice(0, 4));
+        const isPdf = String.fromCharCode(...head) === '%PDF';
+        if (!isPdf) {
+          // A photo of the invoice: one image, scaled to the width like a page.
+          const host = pagesRef.current;
+          if (cancelled || !host) return;
+          objectUrl = URL.createObjectURL(new Blob([data], { type: res.headers.get('content-type') || 'image/jpeg' }));
+          const img = document.createElement('img');
+          img.src = objectUrl;
+          img.alt = 'Invoice copy';
+          img.draggable = false;
+          img.style.width = '100%';
+          img.style.display = 'block';
+          img.style.boxShadow = '0 0 0 1px var(--line)';
+          await new Promise<void>((ok, fail) => {
+            img.onload = () => ok();
+            img.onerror = () => fail(new Error('not an image'));
+          });
+          if (cancelled) return;
+          host.innerHTML = '';
+          host.appendChild(img);
+          setPageCount(1);
+          setState('ready');
+          return;
+        }
+        const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
         pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
         const doc = await pdfjs.getDocument({ data }).promise;
         if (cancelled) return;
@@ -90,14 +139,16 @@ export default function InvoicePdfPane({ sampleId }: { sampleId: string }) {
         }
         setPageCount(doc.numPages);
         setState('ready');
-      } catch {
+      } catch (e) {
+        console.warn('invoice copy could not be shown', (e as Error)?.message || e);
         if (!cancelled) setState('error');
       }
     })();
     return () => {
       cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [sampleId]);
+  }, [url]);
 
   const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
 
@@ -207,6 +258,8 @@ export default function InvoicePdfPane({ sampleId }: { sampleId: string }) {
           <Button size="sm" variant="quiet" onClick={() => commit(1, { x: 0, y: 0 })} title="Fit to width">
             Fit
           </Button>
+          {onPopOut && <IconButton icon={ExternalLink} label="Open in a new tab" onClick={onPopOut} />}
+          {onClose && <IconButton icon={X} label="Close the invoice copy" onClick={onClose} />}
         </span>
       </div>
       <div

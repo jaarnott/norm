@@ -35,6 +35,8 @@ import Badge, { type BadgeTone } from '../ui/Badge';
 import Button from '../ui/Button';
 import Icon from '../ui/Icon';
 import IconButton from '../ui/IconButton';
+import InvoicePdfPane from '../settings/InvoicePdfPane';
+import { requestSidePanel } from '../../lib/sidePanel';
 import PageState from '../ui/PageState';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { autoFocusField, PickerDialog, PickerList, type PickerOption } from './CatalogPicker';
@@ -511,6 +513,25 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // Expanding a compact (chat) card opens the FULL editor in a centered
   // overlay — the conversation column is too narrow for the full table.
   const overlay = compact && expandedFull;
+  // The invoice copy beside the card (web only). Opening it folds the thread
+  // panel away for the width, and closing — or leaving the card — hands it back.
+  const [copyOpen, setCopyOpen] = useState(false);
+  useEffect(() => {
+    if (!copyOpen) return;
+    requestSidePanel(true);
+    return () => requestSidePanel(false);
+  }, [copyOpen]);
+  // Side by side needs room for both panes; narrower, the copy stacks above
+  // the card (and must not stick, or it would cover the lines beneath).
+  const copyRowRef = useRef<HTMLDivElement>(null);
+  const [copySideBySide, setCopySideBySide] = useState(true);
+  useEffect(() => {
+    const el = copyRowRef.current;
+    if (!copyOpen || !el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([e]) => setCopySideBySide(e.contentRect.width >= 2 * 420 + 12));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [copyOpen]);
   const workingDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
   const venueId = (props?.activeVenueId as string) || (data as Record<string, unknown>)?.venue_id as string | undefined;
 
@@ -2711,7 +2732,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               </a>
             )}
             {!embedded && doc.file_id && (
-              <IconButton icon={FileText} label="View invoice copy" onClick={() => openCopy()} />
+              <IconButton
+                icon={FileText}
+                label={copyOpen ? 'Hide the invoice copy' : 'View invoice copy'}
+                aria-pressed={copyOpen}
+                onClick={() => setCopyOpen((v) => !v)}
+              />
             )}
             {/* Dojo intake is the "Can't receive" button below — one intake
                 for admin and non-admin alike; it files the PDF AND kicks the
@@ -3500,7 +3526,22 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     </div>
   );
 
-  if (!overlay) return card;
+  // The copy and the card side by side, half the width each — the dojo's
+  // pane in the dojo's layout (Settings → Supplier specs).
+  const copySrc =
+    copyOpen && !embedded && venueId && doc.file_id
+      ? `/api/invoice-fixes/file?venue_id=${venueId}&file_id=${encodeURIComponent(doc.file_id)}`
+      : null;
+  const view = copySrc ? (
+    <div ref={copyRowRef} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div style={{ flex: '1 1 420px', minWidth: 320, ...(copySideBySide ? { position: 'sticky' as const, top: 8 } : {}) }}>
+        <InvoicePdfPane src={copySrc} onClose={() => setCopyOpen(false)} onPopOut={() => openCopy()} />
+      </div>
+      <div style={{ flex: '1 1 420px', minWidth: 320 }}>{card}</div>
+    </div>
+  ) : card;
+
+  if (!overlay) return view;
   return (
     <>
       {/* In-flow stub keeps the thread from jumping while the full editor is
@@ -3514,7 +3555,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         {/* Constrained to the card's width so clicks BESIDE the card hit the
             backdrop (a full-width block here used to swallow them — closing
             only worked below the card). */}
-        <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: 1200, margin: '0 auto' }}>{card}</div>
+        <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: copySrc ? 1800 : 1200, margin: '0 auto' }}>{view}</div>
       </div>
     </>
   );
