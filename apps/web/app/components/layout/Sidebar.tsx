@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { Home, Package, UserRound, Clock, ChartColumnBig, Megaphone, ChefHat, Blocks, Settings, LogOut, UserRoundPlus, type LucideIcon } from 'lucide-react';
+import { Home, Package, UserRound, Clock, ChartColumnBig, Megaphone, ChefHat, PartyPopper, Blocks, Settings, LogOut, UserRoundPlus, type LucideIcon } from 'lucide-react';
 import { colors } from '../../lib/theme';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import Icon from '../ui/Icon';
@@ -24,6 +24,10 @@ export const AGENTS: AgentTab[] = [
   { id: 'marketing', label: 'Marketing', icon: Megaphone, color: colors.marketing },
   { id: 'reports', label: 'Reports', icon: ChartColumnBig, color: colors.reports },
   { id: 'executive_chef', label: 'Exec Chef', icon: ChefHat, color: colors.executive_chef },
+  // Norm Functions — hired only while the organisation's functions_mode is on.
+  // The per-member accents are retired, so no key of its own in lib/theme.ts
+  // (which the MCP bundle hashes): the same neutral the others map to.
+  { id: 'functions', label: 'Functions', icon: PartyPopper, color: colors.textSecondary },
   { id: 'app_builder', label: 'App Builder', icon: Blocks, color: colors.app_builder },
 ];
 

@@ -207,7 +207,11 @@ gh workflow run deploy.yml -f environment=production -f image_tag=<git-sha>
 Or GitHub Actions UI: Actions → Deploy → Run workflow → `production` → paste the SHA.
 
 To roll back fast without the pipeline, point the Cloud Run service at a previous
-image tag directly (images are tagged by git SHA in the `norm-testing` registry):
+image tag directly (images are tagged by git SHA in the `norm-testing` registry).
+**Once connector tokens are encrypted** (`TOKEN_ENCRYPTION_KEYS` set and
+`scripts/encrypt_connection_tokens.py --apply` run), an image from before Norm
+Functions can't read them — run `encrypt_connection_tokens.py --decrypt` against that
+environment first, or every connector sends `enc:v1:` ciphertext as its token:
 
 ```bash
 gcloud run services update norm-api-production \
@@ -404,5 +408,6 @@ Use it to visually verify UI changes on `http://localhost:3000`:
 | LLM | `app/interpreter/llm_interpreter.py` |
 | Email | `app/services/email_service.py`, `app/templates/email/` |
 | Invoice units | `docs/unit-resolution.md` (how a product's delivered unit is chosen — self-healing), `app/services/supplier_catalog.py`, `app/services/unit_resolver.py`, `app/services/invoice_replica.py` |
+| Norm Functions | `docs/norm-functions.md` (architecture, jobs, ship runbook, cut-over), `app/db/functions_models.py`, `app/services/functions/`, `app/routers/{functions,functions_inbox,functions_forms,public}.py`, `apps/web/app/components/functions/` |
 | Deploy | `.github/workflows/deploy.yml`, `.github/workflows/deploy-env.yml` |
 | Infra | `infra/terraform/main.tf`, `infra/terraform/modules/` |

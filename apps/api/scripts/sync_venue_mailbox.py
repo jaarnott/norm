@@ -1,5 +1,6 @@
 """Add the ``venue_mailbox`` connector: a Google account connected to a VENUE,
-for interview calendar invites and candidate packs (Oct 2026).
+for interview calendar invites and candidate packs (Oct 2026), and — since
+Norm Functions — the venue's mailbox itself (sync, sends, drafts, labels).
 
 Norm Hiring sends interview invites from the job venue's own mailbox, as
 Orbit does (``services/app_calendar.py``). Norm's email connections are per
@@ -10,6 +11,12 @@ venue (``connector_configs.venue_id``, ``user_id`` NULL), and Settings → Venue
 lists it with a Connect button for every venue without further UI work.
 
 Scopes, least first:
+  * ``gmail.modify`` — Norm Functions: read the mailbox (metadata sync and
+    live bodies), send through it, keep drafts in it and file threads with
+    its "Actioned - …" labels. It covers messages.send, drafts and labels,
+    and is everything except permanent deletion. Connecting from Functions
+    asks with ``include_granted_scopes``, so a mailbox connected earlier for
+    calendar invites keeps them;
   * ``calendar.events`` — create / update / delete the invite events;
   * ``drive.file`` — upload the candidate pack and share it with the guests.
     Only files Norm itself creates — never the rest of the mailbox's Drive;
@@ -24,10 +31,18 @@ already (a re-run never clobbers it), the ``gmail`` spec, the config DB's
 ``system_secrets`` (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET), or this shell's
 environment — never printed. As of Oct 2026 NONE of those holds one: a Google
 Cloud OAuth client (type "Web application") has to be created first, with
-``<env>/api/oauth/callback`` as its redirect URIs, the Calendar and Drive APIs
-enabled, and these scopes on its consent screen (Internal, for the group's
-Workspace, avoids Google's app verification). The door reports "Calendar API
-is switched off" when the API isn't enabled.
+``<env>/api/oauth/callback`` AND ``<env>/api/functions/inbox/mailboxes/oauth/callback``
+(Functions' connect, which attaches the mailbox as it lands) as its redirect
+URIs, the Gmail, Calendar and Drive APIs enabled, and these scopes on its
+consent screen (Internal, for the group's Workspace, avoids Google's app
+verification). The door reports "Calendar API is switched off" when the API
+isn't enabled.
+
+Changing SCOPES later needs care: ``oauth_service.refresh_access_token``
+sends the spec's scopes on every refresh, and Google refuses a refresh that
+asks for a scope the grant never had (``invalid_scope``) — every venue
+connected under the old list would read "reconnect". (No venue had connected
+when ``gmail.modify`` was added: there was no Google client yet.)
 
 No tools and no endpoints: nothing LLM-facing. The connection is used only by
 the built-in apps' ``calendar`` door.
@@ -54,6 +69,7 @@ CLIENT_FROM = "gmail"
 SCOPES = " ".join(
     [
         "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/drive.file",
     ]
@@ -71,9 +87,11 @@ SPEC = {
     "endpoints": [],
     "credential_fields": [],
     "api_documentation": (
-        "A Google account connected to a venue. Norm Hiring sends interview "
-        "calendar invites from it (interviewers as guests) and attaches the "
-        "candidate pack from its Drive. Connect one per venue in Settings → Venues."
+        "A Google account connected to a venue. Norm Functions mirrors and "
+        "sends its mail (Inbox, proposals, client portal links); Norm Hiring "
+        "sends interview calendar invites from it (interviewers as guests) and "
+        "attaches the candidate pack from its Drive. Connect one per venue in "
+        "the Functions Inbox or Settings → Venues."
     ),
     "enabled": True,
 }

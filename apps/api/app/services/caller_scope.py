@@ -12,8 +12,9 @@ organisation, a leak with two (consolidator review, Oct 2026).
 Each entry point sets the scope once — an agent tool call from its thread's
 user (``tool_loop._execute_tool_call``), the shared executor behind MCP,
 charts and apps from the venue it was authorised for
-(``tool_executor.execute_connector_tool``), a page request from the signed-in
-user — and the code underneath reads it. A context variable, not a param, so
+(``tool_executor.execute_connector_tool``), an MCP call also from its token's
+user (``mcp.execution``), a page request from the signed-in user — and the
+code underneath reads it. A context variable, not a param, so
 nothing a model sends can choose it. Worker threads get a copy
 (function_executor's ``call_api_parallel``).
 
@@ -26,7 +27,7 @@ from __future__ import annotations
 
 import contextvars
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy.orm import Session
 
@@ -38,6 +39,14 @@ class Scope:
     #: A platform admin with no organisation of their own sees every venue,
     #: as they always have.
     unrestricted: bool = False
+    #: The person acting — an agent thread's user, an MCP token's user. Set
+    #: only where the call came in, never from a tool's params, so a model
+    #: can't choose who it acts as. None = nobody known (built-ins that act
+    #: for a person refuse).
+    user_id: str | None = None
+    #: The venues an MCP token was consented for; None = no limit beyond the
+    #: person's own access.
+    venue_ids: frozenset[str] | None = None
 
 
 _SCOPE: contextvars.ContextVar[Scope | None] = contextvars.ContextVar(
@@ -56,6 +65,16 @@ def use(scope: Scope | None):
     if scope is None:
         yield current()
         return
+    outer = current()
+    if (
+        outer is not None
+        and scope.user_id is None
+        and outer.user_id
+        and outer.org_id == scope.org_id
+    ):
+        # The same organisation, narrowed (e.g. to the venue a tool runs at):
+        # still the same person acting, within the same consent.
+        scope = replace(scope, user_id=outer.user_id, venue_ids=outer.venue_ids)
     token = _SCOPE.set(scope)
     try:
         yield scope
@@ -85,7 +104,7 @@ def for_user(db: Session, user) -> Scope | None:
 
     org = org_id_for_user(user.id, db)
     if org:
-        return Scope(org)
+        return Scope(org, user_id=user.id)
     orgs = {
         row[0]
         for row in db.query(Venue.organization_id)
@@ -95,9 +114,9 @@ def for_user(db: Session, user) -> Scope | None:
         if row[0]
     }
     if len(orgs) == 1:
-        return Scope(orgs.pop())
+        return Scope(orgs.pop(), user_id=user.id)
     if getattr(user, "role", None) == "admin":
-        return Scope(None, unrestricted=True)
+        return Scope(None, unrestricted=True, user_id=user.id)
     return None
 
 

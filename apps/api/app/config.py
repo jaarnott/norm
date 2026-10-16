@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     OAUTH_REDIRECT_URI: str = ""
     BAMBOOHR_SUBDOMAIN: str = ""
     BAMBOOHR_API_KEY: str = ""
+    # Fernet keys for connector OAuth tokens at rest (app/db/encrypted.py),
+    # comma-separated, NEWEST FIRST: the first encrypts, any of them decrypts.
+    # One per environment, from Secret Manager — never the shared config DB.
+    # Empty = new tokens are stored in plaintext (existing ciphertext can't be
+    # read), so set it before running scripts/encrypt_connection_tokens.py.
+    TOKEN_ENCRYPTION_KEYS: str = ""
 
     # ── Email ─────────────────────────────────────────────────────────
     RESEND_API_KEY: str = ""

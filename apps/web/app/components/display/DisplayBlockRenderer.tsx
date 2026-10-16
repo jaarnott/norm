@@ -28,6 +28,13 @@ import StockPicker from './StockPicker';
 import McpEmbed from './McpEmbed';
 import ConnectorConnectCard from './ConnectorConnectCard';
 import BackgroundJobCard from './BackgroundJobCard';
+import FunctionsDashboard from '../functions/FunctionsDashboard';
+import FunctionsEnquiries from '../functions/FunctionsEnquiries';
+import FunctionsEvents from '../functions/FunctionsEvents';
+import FunctionsInbox from '../functions/FunctionsInbox';
+import FunctionsContacts from '../functions/FunctionsContacts';
+import FunctionsReports from '../functions/FunctionsReports';
+import FunctionsSettings from '../functions/FunctionsSettings';
 
 export interface DisplayBlockProps {
   data: Record<string, unknown>;
@@ -48,7 +55,7 @@ export interface DisplayBlockProps {
 // block (the latest), and a draft_recipe call opens one card per recipe —
 // they need to sit inline, each its own card. The Recipes page is unaffected
 // (it is a functional page, not a block).
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'menu_engineering', 'supplier_tenders', 'dashboard_view', 'apps_dashboard', 'app_runner']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'menu_engineering', 'supplier_tenders', 'dashboard_view', 'apps_dashboard', 'app_runner', 'functions_dashboard', 'functions_enquiries', 'functions_events', 'functions_inbox', 'functions_contacts', 'functions_reports', 'functions_settings']);
 
 // The single source of truth for which display components EXIST. The admin
 // Settings → Components panel derives its catalogue from these keys (with a
@@ -74,6 +81,13 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   recipe_editor: RecipeEditor,
   menu_engineering: MenuEngineering,
   supplier_tenders: SupplierTenders,
+  functions_dashboard: FunctionsDashboard,
+  functions_enquiries: FunctionsEnquiries,
+  functions_events: FunctionsEvents,
+  functions_inbox: FunctionsInbox,
+  functions_contacts: FunctionsContacts,
+  functions_reports: FunctionsReports,
+  functions_settings: FunctionsSettings,
   tool_approval: ToolApprovalCard,
   receive_invoice_editor: ReceiveInvoiceEditor,
   venue_picker: VenuePicker,

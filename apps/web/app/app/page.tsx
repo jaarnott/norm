@@ -59,6 +59,9 @@ export default function Home() {
   const [filter, setFilter] = useState<'all' | 'awaiting_approval' | 'awaiting_user_input' | 'completed'>('all');
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [activePage, setActivePage] = useState<string | null>(null);
+  // Bumped when a page asks to be re-opened at new deep-link params (the
+  // `norm:open-page` event below) so its component remounts and re-reads them.
+  const [pageNonce, setPageNonce] = useState(0);
   // PINNED apps as dynamic page entries (id `app:<slug>`), refreshed when the
   // Apps page toggles a pin. Sits beside FUNCTIONAL_PAGES, never inside it.
   const [appPages, setAppPages] = useState<FunctionalPageConfig[]>([]);
@@ -208,6 +211,17 @@ export default function Home() {
         connectFromLoad.current = false;
         setConnectConnector(connect);
       }
+      // ?page=<functional page id> opens that page (e.g. the Norm Functions
+      // staff emails link to ?page=functions-events&event=<id>); the page reads
+      // its own extra params. Chat threads keep ?thread=, so pages use other
+      // names (Functions' mail threads are ?mail_thread=).
+      const page = params.get('page');
+      const pageCfg = page && !threadId ? FUNCTIONAL_PAGES.find(p => p.id === page) : undefined;
+      if (pageCfg) {
+        setActiveAgent(pageCfg.agent);
+        setActivePage(pageCfg.id);
+        if (isMobile) setMobileView('detail');
+      }
     } catch {
       /* no-op */
     }
@@ -227,6 +241,49 @@ export default function Home() {
     };
     window.addEventListener('norm:connector-auth', onAuthFail);
     return () => window.removeEventListener('norm:connector-auth', onAuthFail);
+  }, []);
+
+  // In-app navigation between functional pages: a page dispatches a cancelable
+  // `norm:open-page` {page, params} event (Norm Functions' cross-page links);
+  // handling it here swaps the page without reloading the app. The params go
+  // in the address bar, where the page reads them on mount.
+  useEffect(() => {
+    const onOpenPage = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { page?: string; params?: Record<string, unknown> } | undefined;
+      const cfg = detail?.page ? FUNCTIONAL_PAGES.find(p => p.id === detail.page) : undefined;
+      if (!cfg) return;
+      e.preventDefault();
+      const sp = new URLSearchParams({ page: cfg.id });
+      for (const [k, v] of Object.entries(detail?.params ?? {})) {
+        if (v === null || v === undefined || v === '' || v === false) continue;
+        sp.set(k, v === true ? '1' : String(v));
+      }
+      window.history.pushState(window.history.state, '', `${window.location.pathname}?${sp.toString()}`);
+      setSelectedThreadId(null);
+      setActiveAgent(cfg.agent);
+      setActivePage(cfg.id);
+      setPageNonce(n => n + 1);
+      if (isMobile) setMobileView('detail');
+    };
+    window.addEventListener('norm:open-page', onOpenPage);
+    return () => window.removeEventListener('norm:open-page', onOpenPage);
+  }, [isMobile]);
+
+  // `norm:open-settings` {tab}: a page (Functions settings) asks for Norm's own
+  // Settings at a tab — company or venues.
+  useEffect(() => {
+    const onOpenSettings = (e: Event) => {
+      const tab = (e as CustomEvent).detail?.tab as SettingsTab | undefined;
+      if (tab !== 'company' && tab !== 'venues') return;
+      e.preventDefault();
+      setActivePage(null);
+      setSelectedThreadId(null);
+      setActiveAgent('settings');
+      setSettingsTab(tab);
+      setMobileView('settings');
+    };
+    window.addEventListener('norm:open-settings', onOpenSettings);
+    return () => window.removeEventListener('norm:open-settings', onOpenSettings);
   }, []);
 
   // The reconnect panel belongs to the page that failed, not the whole app.
@@ -1204,7 +1261,7 @@ export default function Home() {
       const content = connectPanel ? connectPanel : mobileView === 'detail' && activePage ? (() => {
         const pageConfig = findPage(activePage);
         if (!pageConfig) return null;
-        return <FunctionalPage key={pageConfig.id} config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} venuesLoaded={venuesLoaded} />;
+        return <FunctionalPage key={`${pageConfig.id}:${pageNonce}`} config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} venuesLoaded={venuesLoaded} />;
       })() : selectedThread ? (
         <ThreadDetail thread={selectedThread} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} onRetry={retryFailedSend} loading={loading} openThread={openThread || null} />
       ) : (
@@ -1443,7 +1500,7 @@ export default function Home() {
             if (!pageConfig) return null;
             return (
               <FunctionalPage
-                key={pageConfig.id}
+                key={`${pageConfig.id}:${pageNonce}`}
                 config={pageConfig}
                 thread={selectedThread}
                 onSend={sendMessage}

@@ -23,7 +23,9 @@ What changes for people once the code that reads these is deployed:
   tools at "Ask me" (report only).
 
 Inert on code that predates it (nothing else reads these keys), so it can be
-applied before or after the deploy.
+applied before or after the deploy. The ``norm_functions`` rows must exist
+first (scripts/sync_norm_functions.py writes them, already labelled from this
+file) — before then this script stops at "norm_functions.… is not a tool row".
 
 Usage (from apps/api, .env loaded):
     uv run python scripts/sync_approval_labels.py --dry-run
@@ -64,6 +66,13 @@ READS = [
     "norm.search_tool_result",
     "norm.show_connect",
     "norm_reports.render_chart",
+    "norm_functions.find_enquiries",
+    "norm_functions.get_enquiry",
+    "norm_functions.find_events",
+    "norm_functions.get_event",
+    "norm_functions.find_threads",
+    "norm_functions.read_thread",
+    "norm_functions.get_venue_profile",
 ]
 
 #: Drafts — prepare something a person finishes in an editor; the editor's
@@ -74,6 +83,10 @@ DRAFTS = [
     "norm.create_purchase_order",
     "norm.save_app",  # private to its author until shared
     "norm.show_roster",  # opens the roster editor; its Save writes
+    # Norm Functions: a draft in the Inbox, a proposal on the enquiry — staff
+    # send them there, or approve send_email / send_proposal on a card.
+    "norm_functions.draft_email",
+    "norm_functions.build_proposal",
 ]
 
 
@@ -103,6 +116,18 @@ WRITES = {
         "change what Norm may do without asking you", allow_auto=False
     ),
     "norm.remember": _auto("remember what you tell it"),
+    # Norm Functions (Oct 2026). Record changes ask, and a person may let
+    # them through; anything that reaches a customer always asks (owner:
+    # every customer send and every priced email needs approval).
+    "norm_functions.record_enquiry": _ask("change function enquiries"),
+    "norm_functions.record_event": _ask("change booked functions"),
+    "norm_functions.file_thread": _ask("file and link venue inbox threads"),
+    "norm_functions.send_email": _ask(
+        "send emails to function customers", allow_auto=False
+    ),
+    "norm_functions.send_proposal": _ask(
+        "send proposals to function customers", allow_auto=False
+    ),
     "loadedhub.review_and_receive_invoices": {
         "default": "ask",
         "allow_auto": True,

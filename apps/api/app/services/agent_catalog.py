@@ -78,6 +78,14 @@ def _internal_connectors(config_db: Session) -> set[str]:
     return _cached("internal_connectors", build)
 
 
+def _is_internal(connector: str, internal: set[str]) -> bool:
+    """Norm's own pipe: a spec needing no credential — or a connector named
+    as Norm's own (``norm`` / ``norm_*``, prompt_builder's rule), which holds
+    before its spec row is written (Norm Functions' ``norm_functions``
+    between the deploy and its sync, and in every test database)."""
+    return connector in internal or connector == "norm" or connector.startswith("norm_")
+
+
 def _component_api_connectors(config_db: Session) -> dict[str, set[str]]:
     """component_key -> connector names its component-api rows call."""
 
@@ -136,7 +144,9 @@ def required_connections_for_app(app_row, config_db: Session) -> set[str]:
 
     required -= USER_SCOPED_CONNECTORS
     internal = _internal_connectors(config_db)
-    return {c for c in required if c not in internal or c in INTERNAL_BRANDS}
+    return {
+        c for c in required if not _is_internal(c, internal) or c in INTERNAL_BRANDS
+    }
 
 
 def connection_display_name(connector_name: str, config_db: Session) -> str:
@@ -206,6 +216,14 @@ REGISTERED_COMPONENTS = frozenset(
         "mcp_embed",
         "connector_connect",
         "background_job",
+        # Norm Functions pages (native module, app `functions`)
+        "functions_dashboard",
+        "functions_enquiries",
+        "functions_events",
+        "functions_inbox",
+        "functions_contacts",
+        "functions_reports",
+        "functions_settings",
     }
 )
 
@@ -390,7 +408,7 @@ def _custom_required_connections(app, db: Session, config_db: Session) -> set[st
         if isinstance(a, dict) and a.get("connector")
     }
     internal = _internal_connectors(config_db)
-    return {c for c in conns if c not in internal or c in INTERNAL_BRANDS}
+    return {c for c in conns if not _is_internal(c, internal) or c in INTERNAL_BRANDS}
 
 
 def _catalog_app_entry(
@@ -432,6 +450,28 @@ def _catalog_app_entry(
     }
 
 
+def _functions_view(
+    rows: list, organization_id: str | None, db: Session
+) -> tuple[list, set[str]]:
+    """The catalog as this organisation sees Norm Functions in it.
+
+    While its ``functions_mode`` is off, Functions' member and App are not
+    there at all — not "available to hire": hiring can't switch them on, the
+    mode does (Settings → Company). While it's on and the seed hasn't written
+    the rows yet, unsaved stand-ins built from the declaration the seed uses
+    (services/functions/catalog.py) take their place, so the team page, the
+    sidebar and the page gate agree with entitlements. Returns the rows and
+    the stand-in slugs — rows with nothing behind them to hire, retire or
+    switch."""
+    from app.services.functions.catalog import CATALOG_SLUGS, stand_in_rows
+    from app.services.functions.entitlement import functions_mode
+
+    if functions_mode(db, organization_id) == "off":
+        return [r for r in rows if r.slug not in CATALOG_SLUGS], set()
+    missing = set(CATALOG_SLUGS - {r.slug for r in rows})
+    return rows + stand_in_rows(missing), missing
+
+
 def team_payload(organization_id: str | None, db: Session, config_db: Session) -> dict:
     """Everything the team page and the sidebar need, in one response.
 
@@ -441,6 +481,8 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
 
     `gating_active: false` (no tier='agent' rows yet, or no org) tells the web
     to show everything — the dark-launch/fail-open contract.
+
+    Norm Functions follows its organisation's functions_mode (_functions_view).
     """
     from app.services.entitlements import (
         ALL_MEMBERS,
@@ -452,7 +494,7 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
         hired_agent_slugs,
     )
 
-    rows = _catalog_rows(config_db)
+    rows, stand_ins = _functions_view(_catalog_rows(config_db), organization_id, db)
     agent_rows = [
         a
         for a in rows
@@ -475,6 +517,8 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
             continue
         entry = _catalog_app_entry(row, agent_rows, ctx, config_db, db, organization_id)
         entry["enabled"] = is_on(row.slug)
+        if row.slug in stand_ins:
+            entry["switchable"] = False  # no catalog row to switch yet
         all_apps.append(entry)
 
     # A custom app a first-party catalog row already fronts (Norm Hiring ->
@@ -547,7 +591,8 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
                 "name": a.name,
                 "icon": a.icon,
                 "tagline": comp.get("tagline") or a.description,
-                "hireable": True,
+                # a stand-in has no catalog row to hire or retire
+                "hireable": a.slug not in stand_ins,
                 "hired": (not gating_active) or slug in hired,
                 "enabled_explicitly": a.slug in entitled,
                 "price_cents": a.price_cents or 0,
@@ -739,7 +784,8 @@ def app_map_payload(
         "time_attendance": 4,
         "hr": 5,
         "marketing": 6,
-        "app_builder": 7,
+        "functions": 7,
+        "app_builder": 8,
     }
     apps.sort(key=lambda a: (order.get(a["member"] or "", 9), a["name"]))
     return {"apps": apps, "findings": ownership_findings(config_db)}

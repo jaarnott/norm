@@ -30,6 +30,11 @@ bundled=false until enabled. ``hired_agent_slugs``/``apps_on`` resolve those
 two levels; both return None while no tier='agent' rows exist, which is the
 dark-launch switch — code deploys everywhere before the shared config DB
 changes shape.
+
+Norm Functions (Oct 2026) adds a switch of its own, the organisation's
+``functions_mode``: ``off`` wins over anything the catalog says, and while its
+member and App rows are not in the catalog yet, an organisation whose mode is
+on counts as having both (services/functions/catalog.py declares them).
 """
 
 from __future__ import annotations
@@ -90,7 +95,27 @@ def entitled_slugs(
         except Exception:  # pragma: no cover — migration not applied yet
             logger.warning("org_app_entitlements unavailable — failing open")
             overrides = {}
-    return {a.slug for a in apps if overrides.get(a.slug, bool(a.bundled))}
+    entitled = {a.slug for a in apps if overrides.get(a.slug, bool(a.bundled))}
+    return _functions_off_wins(entitled, organization_id, db)
+
+
+def _functions_off_wins(
+    entitled: set[str], organization_id: str | None, db: Session
+) -> set[str]:
+    """Norm Functions' catalog rows — its team member and its App — count only
+    while the org's ``functions_mode`` is on: ``off`` beats any entitlement,
+    so an organisation that hasn't been switched on is neither shown Functions
+    nor billed for it (billing reads this same set). The mode is only read
+    when one of those rows is entitled."""
+    from app.services.functions.catalog import CATALOG_SLUGS
+
+    if not entitled & CATALOG_SLUGS:
+        return entitled
+    from app.services.functions.entitlement import functions_mode
+
+    if functions_mode(db, organization_id) == "off":
+        return entitled - CATALOG_SLUGS
+    return entitled
 
 
 def _declared_connections(app) -> set[str]:
@@ -184,6 +209,23 @@ def hired_agent_slugs(
     for a in agent_rows:
         if a.slug in entitled:
             hired.update(a.composition["owns_agents"])
+    return _with_functions_stand_in(hired, organization_id, db, agent_rows)
+
+
+def _with_functions_stand_in(
+    hired: set[str], organization_id: str, db: Session, agent_rows
+) -> set[str]:
+    """Until the seed writes Norm Functions' member row, the member counts as
+    hired exactly when the org's ``functions_mode`` is on — the fallback its
+    App gets in services/functions/entitlement.py, so the Functions tab
+    appears for a shadow or live org without a write to the shared config
+    DB. Once the row exists, entitled_slugs decides (mode included)."""
+    from app.services.functions.catalog import MEMBER_SLUG
+    from app.services.functions.entitlement import functions_mode
+
+    owned = {s for a in agent_rows for s in a.composition["owns_agents"]}
+    if MEMBER_SLUG not in owned and functions_mode(db, organization_id) != "off":
+        hired.add(MEMBER_SLUG)
     return hired
 
 
@@ -300,7 +342,12 @@ def apps_on(
         custom_on.discard(key)
         if catalog_slug in on:
             custom_on.add(key)
-    return on | custom_on
+    # Norm Functions is also switched by the org's functions_mode, and counts
+    # as on without a catalog row while none exists (services/functions/
+    # entitlement.py has the rule).
+    from app.services.functions.entitlement import adjust_apps_on
+
+    return adjust_apps_on(on | custom_on, organization_id, db, apps)
 
 
 def _custom_apps_on(organization_id: str, db: Session, hired: set[str]) -> set[str]:
@@ -347,10 +394,15 @@ def agent_entitled(
         return True
     if domain in hired:
         return True
+    from app.services.functions.catalog import MEMBER_SLUG
+
     owned = {
         slug
         for a in _agent_rows(_catalog(config_db))
         for slug in a.composition["owns_agents"]
     }
+    # Norm Functions' member is gated before its row exists too: it is hired
+    # only while the org's functions_mode is on (_with_functions_stand_in).
+    owned.add(MEMBER_SLUG)
     # A domain no agent row owns is unhireable, therefore ungateable.
     return domain not in owned

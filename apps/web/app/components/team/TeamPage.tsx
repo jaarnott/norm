@@ -385,7 +385,9 @@ export default function TeamPage({ user }: { user?: PageUser | null }) {
       </>
     ),
     price: m.price_cents > 0 ? `${price(m.price_cents)}/month · all venues` : 'Free',
-    action: isOwner && (m.hired ? (
+    // Not hireable = no catalog row behind it yet (Functions, switched on by
+    // the organisation's Functions mode) — nothing to hire or retire.
+    action: isOwner && m.hireable && (m.hired ? (
       <Button size="sm" variant="secondary" onClick={() => setRetiring(m)}>
         Retire
       </Button>

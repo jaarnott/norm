@@ -583,18 +583,28 @@ class NormMcpContext(McpContext):
 
     def _execute(self, tool: McpTool, params: dict, venue_id: str | None):
         from app.connectors.tool_executor import execute_connector_tool
+        from app.services import caller_scope
 
-        return execute_connector_tool(
-            tool.connector,
-            tool.action,
-            params,
-            self.db,
-            self.config_db,
-            venue_id=venue_id,
-            # Never fall back to another venue's credentials on an
-            # authenticated, venue-scoped request.
-            strict_venue=True,
+        # Who is acting: the token's user, within the venues they consented
+        # to. Built-ins that act for a person read it from the scope (it is
+        # never a param, so the client can't pick the user).
+        acting = caller_scope.Scope(
+            self.principal.organization_id,
+            user_id=self.principal.user_id,
+            venue_ids=frozenset(self.principal.venue_ids),
         )
+        with caller_scope.use(acting):
+            return execute_connector_tool(
+                tool.connector,
+                tool.action,
+                params,
+                self.db,
+                self.config_db,
+                venue_id=venue_id,
+                # Never fall back to another venue's credentials on an
+                # authenticated, venue-scoped request.
+                strict_venue=True,
+            )
 
     def _call_playbook(self, tool: McpTool, params: dict, venue_id: str | None) -> dict:
         from app.mcp.workflows import execute_playbook_tool

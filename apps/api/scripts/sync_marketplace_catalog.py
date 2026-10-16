@@ -40,6 +40,11 @@ This script also performs the one-time rollout moves, all idempotent:
 Idempotent; the config DB is shared across every environment, so committing
 reaches production. Dry-run first.
 
+Norm Functions' two rows are declared in app/services/functions/catalog.py
+(the team payload stands them in until they exist here). Their member needs
+its agent_configs row first: run scripts/sync_norm_functions.py before this,
+or the validation below refuses with "unknown agent 'functions'".
+
 Usage:
     .venv/bin/python scripts/sync_marketplace_catalog.py --dry-run
     .venv/bin/python scripts/sync_marketplace_catalog.py
@@ -50,6 +55,11 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+from app.services.functions.catalog import (  # noqa: E402 — path set above
+    APP as FUNCTIONS_APP,
+    MEMBER as FUNCTIONS_MEMBER,
+)
 
 
 def _c(key, page=None, full_width=False, description="", connections=None):
@@ -231,6 +241,8 @@ APPS = [
         description="Writes and schedules campaigns and social posts, reports on reach.",
         tagline="Campaigns, social posts and reach.",
     ),
+    # Shown only to organisations whose functions_mode is on (shadow or live).
+    _member(**FUNCTIONS_MEMBER),
     # ── Apps (tier='app'): one member each (Norm Core: all) ──────────────
     _app(
         "norm-core",
@@ -534,6 +546,9 @@ APPS = [
         description="Social posts and analytics via Metricool (tools to come).",
         extra={"component_connections": ["metricool"]},
     ),
+    # A native Norm module, like Loaded Stock's pages: React components gated by
+    # `app: 'functions'`, data in Norm's own fn_* tables.
+    _app(**FUNCTIONS_APP),
     _app(
         "app-builder",
         note="To build or change an App, open the build_an_app skill first.",

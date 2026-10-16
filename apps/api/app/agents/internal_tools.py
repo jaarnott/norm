@@ -3488,3 +3488,6 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
             "logic_source": version.logic_source if version else None,
         },
     }
+
+
+from app.agents import functions_tools  # noqa: E402,F401 — registers the norm_functions tools

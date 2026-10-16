@@ -7,6 +7,7 @@ Provides:
 - POST /oauth/disconnect/{connector} — remove stored OAuth tokens
 """
 
+import html
 import logging
 
 from fastapi import APIRouter, HTTPException, Depends, Request
@@ -25,6 +26,10 @@ from app.services.oauth_service import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+#: Norm Hiring's calendar invites and Norm Functions' mailbox share this
+#: per-venue Google connection; its callback runs the mailbox checks.
+VENUE_MAILBOX = "venue_mailbox"
 
 
 def _get_redirect_uri(request: Request) -> str:
@@ -121,8 +126,13 @@ async def oauth_authorize(
             raise HTTPException(502, f"OAuth client registration failed: {exc}")
 
     redirect_uri = _get_redirect_uri(request)
-    # For email connectors, scope tokens to the current user
-    user_id = user.id if spec.category == "email" else None
+    # For email connectors, scope tokens to the current user. A venue mailbox
+    # records who started the connect instead: its callback is handled by the
+    # Functions mailbox checks (accounts.finish_settings_connect), which store
+    # the grant on the VENUE once the address is verified.
+    user_id = (
+        user.id if spec.category == "email" or connector == VENUE_MAILBOX else None
+    )
     try:
         authorize_url = build_authorize_url(
             spec,
@@ -261,6 +271,26 @@ async def oauth_callback(
         raise HTTPException(400, f"Connector spec not found: {connector_name}")
 
     redirect_uri = _get_redirect_uri(request)
+
+    if connector_name == VENUE_MAILBOX:
+        # Never exchange_code here: it files the tokens before anyone knows
+        # whose mailbox they are, and this connection is the one a Norm
+        # Functions mailbox runs on. The Functions checks (state starter,
+        # address owned by no other organisation, not swapping a live
+        # Functions mailbox) run first; nothing is stored on a refusal.
+        from app.services.functions.mailbox.accounts import finish_settings_connect
+
+        outcome = finish_settings_connect(
+            db, config_db, code=code, state=state, redirect_uri=redirect_uri
+        )
+        return HTMLResponse(
+            content=_result_page(
+                success=outcome.ok,
+                connector=spec.display_name,
+                message=html.escape(outcome.message),
+            ),
+            status_code=200 if outcome.ok else 400,
+        )
 
     try:
         token_data = exchange_code(spec, code, state, redirect_uri, db)

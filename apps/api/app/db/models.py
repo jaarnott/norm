@@ -20,6 +20,8 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 
+from app.db.encrypted import EncryptedText
+
 
 def _uuid() -> str:
     return str(uuid.uuid4())
@@ -58,6 +60,12 @@ class User(Base):
 
 class Organization(Base):
     __tablename__ = "organizations"
+    __table_args__ = (
+        CheckConstraint(
+            "functions_mode IN ('off', 'shadow', 'live')",
+            name="ck_organizations_functions_mode",
+        ),
+    )
 
     id = Column(String, primary_key=True, default=_uuid)
     name = Column(String, nullable=False)
@@ -65,6 +73,23 @@ class Organization(Base):
     billing_email = Column(String, nullable=True)
     plan = Column(String, nullable=False, default="starter")  # starter|pro|enterprise
     is_active = Column(Boolean, nullable=False, default=True)
+    # Company settings (Oct 2026, Norm Functions). Money is stored in cents
+    # with no currency on the row — the company's currency and tax wording
+    # apply. default_timezone is for org-level dates only: anything at a venue
+    # uses venues.timezone (services/functions/timeutil.py).
+    currency = Column(String(3), nullable=False, default="NZD", server_default="NZD")
+    default_timezone = Column(
+        String,
+        nullable=False,
+        default="Pacific/Auckland",
+        server_default="Pacific/Auckland",
+    )
+    tax_label = Column(
+        String, nullable=False, default="incl. GST", server_default="incl. GST"
+    )
+    #: Norm Functions switch: off | shadow (imported, read-only) | live.
+    #: Checked in the service layer, the public router and the Gmail client.
+    functions_mode = Column(String, nullable=False, default="off", server_default="off")
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -130,6 +155,13 @@ class UserVenueAccess(Base):
 
 class Venue(Base):
     __tablename__ = "venues"
+    __table_args__ = (
+        # Redundant with the primary key as a uniqueness rule — it exists so
+        # Norm Functions tables can reference (organization_id, venue_id)
+        # together, which makes a cross-organisation venue reference
+        # impossible rather than merely unlikely.
+        UniqueConstraint("organization_id", "id", name="uq_venues_org_id"),
+    )
 
     id = Column(String, primary_key=True, default=_uuid)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=True)
@@ -444,8 +476,11 @@ class Connection(Base):
     )  # for per-user OAuth (email connectors)
     config = Column(JSON, nullable=False, default=dict)
     enabled = Column(String, nullable=False, default="true")
-    access_token = Column(Text, nullable=True)
-    refresh_token = Column(Text, nullable=True)
+    # Encrypted at rest when TOKEN_ENCRYPTION_KEYS is set (app/db/encrypted.py):
+    # still TEXT in the database and plain strings in Python, so nothing that
+    # reads or writes them changes. Plaintext rows read back as they are.
+    access_token = Column(EncryptedText, nullable=True)
+    refresh_token = Column(EncryptedText, nullable=True)
     token_expires_at = Column(DateTime(timezone=True), nullable=True)
     oauth_metadata = Column(JSON, nullable=True)
     # Connection health. Set when a token refresh (or a live call's reactive

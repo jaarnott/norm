@@ -16,6 +16,7 @@ if settings.SENTRY_DSN:
     )
 
 from app.db import mcp_models  # noqa: F401, E402 — register MCP tables on Base.metadata
+from app.db import functions_models  # noqa: F401, E402 — register Functions tables on Base.metadata
 from app.routers import (  # noqa: E402
     health,
     venues,
@@ -123,6 +124,15 @@ app.include_router(mcp.router)
 app.include_router(well_known.router)  # /.well-known/* — must be at host root
 app.include_router(mcp_admin.router, prefix="/api")
 app.include_router(approval_preferences.router, prefix="/api")
+from app.routers import functions as functions_router  # noqa: E402
+from app.routers import functions_forms, functions_inbox  # noqa: E402
+from app.routers import public as public_router  # noqa: E402
+
+# Norm Functions (native module). /api/public/* serves customers — no login.
+app.include_router(functions_router.router, prefix="/api")
+app.include_router(functions_inbox.router, prefix="/api")
+app.include_router(functions_forms.router, prefix="/api")
+app.include_router(public_router.router, prefix="/api")
 app.include_router(mcp_oauth.router, prefix="/api")
 
 

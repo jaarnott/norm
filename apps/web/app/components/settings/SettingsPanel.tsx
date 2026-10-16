@@ -8,6 +8,7 @@ import type { AgentConfig, AgentBinding, VenueDetail, Organization, OrgMember } 
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
 import ConsolidatorCoveragePanel from './ConsolidatorCoveragePanel';
 import BillingTab from './BillingTab';
+import CompanySettingsTab from './CompanySettingsTab';
 import ConnectionsMatrix from './ConnectionsMatrix';
 import AppMapPanel from './AppMapPanel';
 import EmailTab from './EmailTab';
@@ -1321,7 +1322,7 @@ function UsersTab({ canManage }: { canManage: boolean }) {
   );
 }
 
-export type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
+export type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   return perms.some(p => can(user, p));
@@ -1656,6 +1657,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
   addGroup('Organisation', [
     [true, 'venues', 'Venues'],
     [true, 'members', 'Users'],
+    [!!orgId, 'company', 'Company'],
     [showRoles, 'roles', 'Roles'],
     [showBilling, 'billing', 'Billing'],
     [showEmail, 'email', 'Email'],
@@ -1755,6 +1757,9 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
 
           {/* ============ MEMBERS TAB ============ */}
           {tab === 'members' && <UsersTab canManage={can(storedUser, 'org:members')} />}
+
+          {/* ============ COMPANY TAB (currency, time zone, tax, Functions mode) ============ */}
+          {tab === 'company' && orgId && <CompanySettingsTab orgId={orgId} />}
 
           {/* ============ CONNECTORS TAB ============ */}
           {tab === 'app-map' && isAdmin && <AppMapPanel />}

@@ -17,7 +17,41 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/api/:path*",
-        destination: "http://localhost:8000/api/:path*",
+        // API_PROXY_TARGET lets a second checkout's dev server (a worktree)
+        // talk to its own API instead of the main checkout's.
+        destination: `${process.env.API_PROXY_TARGET || "http://localhost:8000"}/api/:path*`,
+      },
+    ];
+  },
+  async headers() {
+    // Norm Functions' customer pages. /q (quote) and /e (event portal) carry a
+    // secret link in the path: no referrer may leak it, search engines must
+    // not keep it, and no other site may frame the page (a framed Confirm
+    // button is a clickjacking target). /f (web form) exists to be framed by
+    // venue websites, so framing stays open there. The embeds load on venue
+    // sites: short cache so a fix reaches them within minutes.
+    const noIndex = { key: "X-Robots-Tag", value: "noindex, nofollow" };
+    const noReferrer = { key: "Referrer-Policy", value: "no-referrer" };
+    const unframed = [
+      noIndex,
+      noReferrer,
+      { key: "X-Frame-Options", value: "DENY" },
+      { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+    ];
+    return [
+      { source: "/q/:path*", headers: unframed },
+      { source: "/e/:path*", headers: unframed },
+      {
+        source: "/f/:path*",
+        headers: [noIndex, noReferrer, { key: "Content-Security-Policy", value: "frame-ancestors *" }],
+      },
+      {
+        source: "/embed/:file*",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=300, stale-while-revalidate=86400" },
+          { key: "Cross-Origin-Resource-Policy", value: "cross-origin" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+        ],
       },
     ];
   },

@@ -159,9 +159,14 @@ async def refresh_tokens_endpoint(
     """
     _authorize(x_scheduler_secret)
 
+    from app.db.encrypted import write_key_canary
     from app.services.oauth_service import refresh_all_tokens
 
+    # The marker scripts/encrypt_connection_tokens.py checks before it
+    # re-encrypts anything: written under THIS service's newest key.
+    canary = write_key_canary()
     result = refresh_all_tokens()
+    result["key_canary"] = canary
     logger.info(
         "refresh-tokens: refreshed=%d failed=%d skipped=%d",
         len(result["refreshed"]),
@@ -174,6 +179,68 @@ async def refresh_tokens_endpoint(
             failure["connector"],
             failure["error"],
         )
+    return result
+
+
+@router.post("/internal/sync-mailboxes")
+async def sync_mailboxes_endpoint(
+    x_scheduler_secret: str = Header(default=""),
+):
+    """Sync every connected Norm Functions venue mailbox (Gmail → mirror).
+
+    Called every minute by Cloud Scheduler. The work runs in a threadpool
+    under a ~45s deadline (a mailbox with a backlog carries on next minute);
+    per-mailbox leases make overlapping ticks and concurrent "sync now"
+    calls safe. Answers 503 while any active mailbox has gone more than ten
+    minutes without a clean sync, so the existing 5xx alerting notices a
+    stalled mailbox — a dead grant is not "active" (it emails the venue's
+    people once instead).
+    """
+    _authorize(x_scheduler_secret)
+    from fastapi.responses import JSONResponse
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services.functions.mailbox.sync import sync_mailboxes
+
+    result = await run_in_threadpool(sync_mailboxes, deadline_seconds=45)
+    worked = [r for r in result["results"] if not r.get("skipped")]
+    if worked or result["healed"]:
+        logger.info(
+            "sync-mailboxes: %d synced, %d failed, %d healed",
+            sum(1 for r in worked if r.get("ok")),
+            sum(1 for r in worked if r.get("ok") is False),
+            len(result["healed"]),
+        )
+    if result["lagging"]:
+        logger.error(
+            "sync-mailboxes: %d mailbox(es) lagging: %s",
+            len(result["lagging"]),
+            ", ".join(a["google_email"] for a in result["lagging"]),
+        )
+        return JSONResponse(status_code=503, content=result)
+    return result
+
+
+@router.post("/internal/functions-retention")
+def functions_retention_endpoint(
+    x_scheduler_secret: str = Header(default=""),
+):
+    """Daily Norm Functions retention: OTP state older than a day, expired or
+    revoked portal sessions, and form-submission IP hashes / user agents older
+    than six months (services/functions/retention.py). Plain ``def`` so the
+    sync DB work runs in the threadpool, not on the event loop."""
+    _authorize(x_scheduler_secret)
+
+    from app.db.engine import SessionLocal
+    from app.services.functions.retention import purge
+
+    db = SessionLocal()
+    try:
+        result = purge(db)
+        db.commit()
+    finally:
+        db.close()
+    logger.info("functions-retention: %s", result)
     return result
 
 

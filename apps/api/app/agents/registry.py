@@ -17,6 +17,9 @@ MEMBERS = (
     "time_attendance",
     "marketing",
     "executive_chef",
+    # Norm Functions' coordinator — works when asked in chat; no scheduled runs
+    # of its own (owner decision, Oct 2026), so it has no Tasks page.
+    "functions",
     "app_builder",
 )
 

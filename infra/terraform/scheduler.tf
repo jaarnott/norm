@@ -201,3 +201,112 @@ resource "google_cloud_scheduler_job" "prewarm_reviews" {
     module.cloud_run,
   ]
 }
+
+# ── Venue mailbox sync (Norm Functions) ─────────────────────────
+# Every minute: Gmail → the Functions mail mirror for every connected venue
+# mailbox (app/services/functions/mailbox/sync.py). Per-minute because the
+# mirror is what makes an enquiry "replied" and drives "reply overdue" — a
+# customer's email should show within a minute, and the Inbox's own "sync
+# now" only covers mailboxes someone is looking at.
+#
+# The endpoint works under a ~45s deadline (a mailbox with a backlog — its
+# first sync — carries on next minute) and per-mailbox leases make an
+# overlapping tick harmless. It answers 503 while any active mailbox has gone
+# ten minutes without a clean sync, which is what the 5xx alerting watches;
+# retry_count = 0 because the next tick is a minute away anyway.
+#
+# Kill switch needs no deploy: `gcloud scheduler jobs pause
+# norm-sync-mailboxes-<env>`.
+resource "google_cloud_scheduler_job" "sync_mailboxes" {
+  name      = "norm-sync-mailboxes-${var.environment}"
+  project   = var.project_id
+  region    = var.region
+  schedule  = "* * * * *"
+  time_zone = "Etc/UTC"
+
+  # Above the endpoint's own 45s deadline plus a slow last Gmail call.
+  attempt_deadline = "90s"
+
+  retry_config {
+    retry_count = 0
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${module.cloud_run.api_url}/internal/sync-mailboxes"
+
+    headers = {
+      "X-Scheduler-Secret" = data.google_secret_manager_secret_version.scheduler_secret.secret_data
+      "Content-Type"       = "application/json"
+    }
+  }
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
+  ]
+}
+
+
+# Daily housekeeping. mcp-gc deletes expired MCP OAuth codes/tokens and stale
+# rate-limit windows (the public Functions pages rate-limit through the same
+# table, so it must run); functions-retention clears portal OTP state, expired
+# portal sessions and old form-submission metadata. 03:30 / 03:40 UTC — quiet
+# in NZ mid-afternoon is fine, both are cheap.
+resource "google_cloud_scheduler_job" "mcp_gc" {
+  name      = "norm-mcp-gc-${var.environment}"
+  project   = var.project_id
+  region    = var.region
+  schedule  = "30 3 * * *"
+  time_zone = "Etc/UTC"
+
+  attempt_deadline = "120s"
+
+  retry_config {
+    retry_count = 1
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${module.cloud_run.api_url}/internal/mcp-gc"
+
+    headers = {
+      "X-Scheduler-Secret" = data.google_secret_manager_secret_version.scheduler_secret.secret_data
+      "Content-Type"       = "application/json"
+    }
+  }
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
+  ]
+}
+
+resource "google_cloud_scheduler_job" "functions_retention" {
+  name      = "norm-functions-retention-${var.environment}"
+  project   = var.project_id
+  region    = var.region
+  schedule  = "40 3 * * *"
+  time_zone = "Etc/UTC"
+
+  attempt_deadline = "120s"
+
+  retry_config {
+    retry_count = 1
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${module.cloud_run.api_url}/internal/functions-retention"
+
+    headers = {
+      "X-Scheduler-Secret" = data.google_secret_manager_secret_version.scheduler_secret.secret_data
+      "Content-Type"       = "application/json"
+    }
+  }
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
+  ]
+}

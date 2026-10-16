@@ -29,6 +29,7 @@ from app.db.models import (
 )
 from app.db.config_models import ConfigBase
 from app.db import mcp_models  # noqa: F401 — register MCP tables on Base.metadata
+from app.db import functions_models  # Norm Functions tables (fn_*) on Base.metadata
 from app.db.engine import get_db, get_config_db, get_config_db_rw
 from app.auth.security import hash_password, create_access_token
 from app.routers import (
@@ -108,6 +109,15 @@ _test_app.include_router(_mcp_oauth.router, prefix="/api")
 from app.routers import approval_preferences as _approval_preferences  # noqa: E402
 
 _test_app.include_router(_approval_preferences.router, prefix="/api")
+from app.routers import functions as _functions  # noqa: E402
+from app.routers import functions_forms as _functions_forms  # noqa: E402
+from app.routers import functions_inbox as _functions_inbox  # noqa: E402
+from app.routers import public as _public  # noqa: E402
+
+_test_app.include_router(_functions.router, prefix="/api")
+_test_app.include_router(_functions_inbox.router, prefix="/api")
+_test_app.include_router(_functions_forms.router, prefix="/api")
+_test_app.include_router(_public.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +144,21 @@ def _setup_tables():
     The work is idempotent and only needs doing once per run, so nothing is
     lost by hoisting it.
     """
-    Base.metadata.create_all(bind=_engine)
+    # Two phases: the Functions tables reference venues (organization_id, id)
+    # and need the company-settings columns, which a persistent local DB only
+    # gains from the guarded DDL below — so everything else first, then the
+    # DDL, then the fn_* tables.
+    Base.metadata.create_all(
+        bind=_engine,
+        tables=[
+            t
+            for t in Base.metadata.sorted_tables
+            if t.name not in functions_models.FUNCTIONS_TABLES
+        ],
+    )
     ConfigBase.metadata.create_all(bind=_engine)
+    _ensure_functions_prerequisites()
+    Base.metadata.create_all(bind=_engine)
     # create_all only ADDS TABLES — mirror main._ensure_config_tables' guarded
     # ALTERs so a persistent local test DB gains columns added to existing
     # config tables (fresh CI databases get them from create_all).
@@ -169,6 +192,64 @@ def _setup_tables():
         ):
             conn.execute(_sqltext(ddl))
     yield
+
+
+def _ensure_functions_prerequisites() -> None:
+    """Company-settings columns on organizations and UNIQUE (organization_id,
+    id) on venues, for a persistent local DB whose tables predate them (fresh
+    CI databases get both from the migration / create_all).
+
+    Only what is MISSING runs: ALTER TABLE takes ACCESS EXCLUSIVE before it
+    checks IF NOT EXISTS, and this DB is shared with other sessions' dev
+    servers and test runs (see _setup_tables)."""
+    from sqlalchemy import text as _sqltext
+
+    wanted = {
+        "currency": "VARCHAR(3) NOT NULL DEFAULT 'NZD'",
+        "default_timezone": "VARCHAR NOT NULL DEFAULT 'Pacific/Auckland'",
+        "tax_label": "VARCHAR NOT NULL DEFAULT 'incl. GST'",
+        "functions_mode": (
+            "VARCHAR NOT NULL DEFAULT 'off' CONSTRAINT "
+            "ck_organizations_functions_mode CHECK "
+            "(functions_mode IN ('off', 'shadow', 'live'))"
+        ),
+    }
+    with _engine.begin() as conn:
+        have = {
+            r[0]
+            for r in conn.execute(
+                _sqltext(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'organizations'"
+                )
+            )
+        }
+        has_venue_key = conn.execute(
+            _sqltext("SELECT 1 FROM pg_constraint WHERE conname = 'uq_venues_org_id'")
+        ).first()
+        missing = [c for c in wanted if c not in have]
+        if missing or not has_venue_key:
+            conn.execute(_sqltext("SET LOCAL lock_timeout = '10s'"))
+        for column in missing:
+            conn.execute(
+                _sqltext(
+                    f"ALTER TABLE organizations ADD COLUMN IF NOT EXISTS "
+                    f"{column} {wanted[column]}"
+                )
+            )
+        if not has_venue_key:
+            # Two runs starting together can both see it missing; the loser
+            # must not fail its whole session over the winner's constraint.
+            conn.execute(
+                _sqltext(
+                    "DO $$ BEGIN "
+                    "ALTER TABLE venues ADD CONSTRAINT uq_venues_org_id "
+                    "UNIQUE (organization_id, id); "
+                    "EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL; "
+                    "END $$"
+                )
+            )
 
 
 @pytest.fixture()

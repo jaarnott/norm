@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, LayoutGrid, Grid2x2, Gavel, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, LayoutGrid, Grid2x2, Gavel, ClipboardList, CalendarDays, Inbox, Contact, Settings, type LucideIcon } from 'lucide-react';
 import { resolveAppIcon } from '../ui/appIcons';
 import { tradingMonday, tradingWeekRange } from '../../lib/rosterTime';
 
@@ -193,6 +193,71 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     icon: Gavel,
     agent: 'procurement',
     component: 'supplier_tenders',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  // Norm Functions (native module — app 'functions', member 'functions'). Each page loads its own
+  // data from /api/functions/*, so no loadAction.
+  {
+    id: 'functions-dashboard',
+    app: 'functions',
+    label: 'Dashboard',
+    icon: LayoutDashboard,
+    agent: 'functions',
+    component: 'functions_dashboard',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'functions-enquiries',
+    app: 'functions',
+    label: 'Enquiries',
+    icon: ClipboardList,
+    agent: 'functions',
+    component: 'functions_enquiries',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'functions-events',
+    app: 'functions',
+    label: 'Events',
+    icon: CalendarDays,
+    agent: 'functions',
+    component: 'functions_events',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'functions-inbox',
+    app: 'functions',
+    label: 'Inbox',
+    icon: Inbox,
+    agent: 'functions',
+    component: 'functions_inbox',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'functions-contacts',
+    app: 'functions',
+    label: 'Contacts',
+    icon: Contact,
+    agent: 'functions',
+    component: 'functions_contacts',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'functions-reports',
+    app: 'functions',
+    label: 'Reports',
+    icon: BarChart3,
+    agent: 'functions',
+    component: 'functions_reports',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'functions-settings',
+    app: 'functions',
+    label: 'Settings',
+    icon: Settings,
+    agent: 'functions',
+    component: 'functions_settings',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {

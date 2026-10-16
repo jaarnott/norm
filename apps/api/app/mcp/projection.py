@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.prompt_builder import (
     _collect_tools,
+    blocked_playbook_slugs,
     build_input_schema,
     build_venue_property,
 )
@@ -381,13 +382,17 @@ def project_tools(
     tools: list[McpTool] = []
     seen: set[str] = set()
 
-    # Playbook workflow tools — one per enabled, curated playbook.
+    # Playbook workflow tools — one per enabled, curated playbook whose App is
+    # on for this organisation (the in-app rule, prompt_builder's
+    # blocked_playbook_slugs: a skill is never offered while its App is off —
+    # e.g. Norm Functions' workflows to an organisation without Functions).
     enabled_playbooks = {pb.slug: pb for pb in _enabled_playbooks(config_db)}
+    blocked = blocked_playbook_slugs(config_db, user_id=user_id, db=db) or set()
     for cap in caps:
         if cap.kind == "playbook":
             pb = enabled_playbooks.get(cap.target)
-            if pb is None:
-                continue  # playbook missing or disabled
+            if pb is None or cap.target in blocked:
+                continue  # playbook missing or disabled, or its App is off
             cap_scopes = frozenset(cap.scopes or ())
             if not cap_scopes <= granted:
                 continue

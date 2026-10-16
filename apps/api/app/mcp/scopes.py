@@ -198,6 +198,29 @@ MCP_SCOPES: dict[str, McpScope] = {
         access_level=ACCESS_WRITE,
         requires=frozenset({"orders:read", "orders:write"}),
     ),
+    # Norm Functions — function enquiries, bookings and the venue inboxes.
+    # Anyone in an organisation may work Functions at their venues, so these
+    # need only org:read; whether Functions is on for the organisation is the
+    # App's call (the projection hides its tools and workflows otherwise).
+    "mcp:functions:read": McpScope(
+        name="mcp:functions:read",
+        label="View function enquiries and bookings",
+        description="See function enquiries and their next actions, booked "
+        "events, the venue inboxes' threads and each venue's functions profile "
+        "(areas, menus, reply templates) — at the venues you choose.",
+        access_level=ACCESS_READ,
+        requires=frozenset({"org:read"}),
+    ),
+    "mcp:functions:draft": McpScope(
+        name="mcp:functions:draft",
+        label="Prepare function replies and proposals",
+        description="Run Norm's functions workflows (inbox sweep, proposals, "
+        "follow-ups): Norm drafts replies and proposals for you to review in "
+        "Norm. Anything that changes a record or reaches a customer waits for "
+        "your approval in Norm — Claude cannot send an email or a proposal.",
+        access_level=ACCESS_DRAFT,
+        requires=frozenset({"org:read"}),
+    ),
     # Recipes — a venue's recipes (ingredients, yields, versions). Reads are
     # direct loadedhub; the write is routed through the Cook Brothers App. Gated
     # on orders:read/write like menus (no stock/recipe org scope exists).

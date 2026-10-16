@@ -1,5 +1,7 @@
 """Organization, membership, and venue management endpoints."""
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -16,6 +18,8 @@ from app.db.models import (
 )
 from app.auth.dependencies import get_current_user, require_permission
 from app.services.oauth_service import needs_reconnect
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -283,6 +287,143 @@ async def update_organization(
     return _org_to_dict(org, db, include_details=True)
 
 
+# --- Company settings ---
+#
+# Currency, default timezone and tax wording live on the organisation because
+# Norm Functions stores money as bare cents (the currency is the company's,
+# not the row's), with the Functions mode beside them. The rules are in
+# services/functions/company.py; these endpoints add who may call it.
+
+
+class CompanySettingsBody(BaseModel):
+    currency: str | None = None
+    default_timezone: str | None = None
+    tax_label: str | None = None
+    functions_mode: str | None = None
+
+
+#: ISO 4217 codes in circulation (list one, as amended to Oct 2026) — the
+#: fund, precious-metal and testing codes left out: nobody trades in them.
+#: Stricter than company.py's three-letters check, so "NDZ" can't land on a
+#: quote by typo.
+ISO_4217_CURRENCIES = frozenset(
+    """
+    AED AFN ALL AMD AOA ARS AUD AWG AZN BAM BBD BDT BHD BIF BMD BND BOB BRL BSD
+    BTN BWP BYN BZD CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP
+    ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS
+    INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR
+    LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN
+    NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD
+    SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY
+    TTD TWD TZS UAH UGX USD UYU UZS VED VES VND VUV WST XAF XCD XCG XOF XPF YER
+    ZAR ZMW ZWG
+    """.split()
+)
+
+
+def _can_edit_company(db: Session, user: User, org_id: str) -> bool:
+    """Whether ``user`` may change this organisation's company settings: an
+    owner or admin of it, or a platform admin — company.py's own rule
+    (``FunctionsCtx.is_owner``), so "owner" means one thing everywhere."""
+    from app.services.functions import FunctionsError
+    from app.services.functions.ctx import build_ctx
+
+    try:
+        return build_ctx(db, user, org_id=org_id).is_owner
+    except FunctionsError:
+        return False
+
+
+def _company_payload(db: Session, org_id: str, *, can_edit: bool) -> dict:
+    from app.services.functions.company import get_company_settings
+
+    return {
+        **get_company_settings(db, org_id).as_dict(),
+        "can_edit": can_edit,
+        "currencies": sorted(ISO_4217_CURRENCIES),
+    }
+
+
+@router.get("/organizations/{org_id}/company-settings")
+async def get_org_company_settings(
+    org_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    """Currency, default timezone, tax wording and the Functions mode. Any
+    member may read them; ``can_edit`` says whether this user may change them,
+    so the page shows no control the API would refuse."""
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+    _require_org_permission(db, user, org_id)
+    return _company_payload(db, org_id, can_edit=_can_edit_company(db, user, org_id))
+
+
+@router.put("/organizations/{org_id}/company-settings")
+async def update_org_company_settings(
+    org_id: str,
+    body: CompanySettingsBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Change any of them — owners and admins of the organisation (and
+    platform admins) only.
+
+    The Functions mode most of all: ``shadow`` and ``live`` are what open
+    Functions to everyone in the organisation, and ``live`` lets it write and
+    send, so every change of mode is logged with who made it. All or nothing:
+    one invalid field leaves the others as they were."""
+    from app.services.functions import FunctionsError
+    from app.services.functions.company import (
+        get_company_settings,
+        update_company_settings,
+    )
+    from app.services.functions.ctx import build_ctx
+
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+    _require_org_permission(db, user, org_id)
+    ctx = build_ctx(db, user, org_id=org_id)  # a member or platform admin by now
+    if not ctx.is_owner:
+        raise HTTPException(
+            403,
+            "Only an owner or admin of the organisation can change company settings.",
+        )
+    if body.currency is not None:
+        code = body.currency.strip().upper()
+        if code not in ISO_4217_CURRENCIES:
+            raise HTTPException(
+                422,
+                f"'{body.currency.strip()}' is not an ISO 4217 currency code "
+                "(e.g. NZD, AUD, GBP).",
+            )
+    before = get_company_settings(db, org_id).functions_mode
+    try:
+        with db.begin_nested():
+            saved = update_company_settings(
+                db,
+                ctx,
+                currency=body.currency,
+                default_timezone=body.default_timezone,
+                tax_label=body.tax_label,
+                functions_mode=body.functions_mode,
+            )
+    except FunctionsError as e:
+        raise HTTPException(e.status_code, e.message) from e
+    db.commit()
+    if saved.functions_mode != before:
+        logger.info(
+            "functions_mode_changed",
+            extra={
+                "org_id": org_id,
+                "previous_mode": before,
+                "mode": saved.functions_mode,
+                "by": user.id,
+            },
+        )
+    return _company_payload(db, org_id, can_edit=True)
+
+
 # --- Member management ---
 
 
@@ -423,6 +564,38 @@ async def update_venue(
     }
 
 
+def _functions_records(db: Session, venue_id: str) -> list[str]:
+    """What Norm Functions holds at a venue that deleting it can't take along,
+    as ``"enquiries (3)"`` — empty when nothing.
+
+    That is every fn_* table whose reference to venues doesn't cascade:
+    enquiries, events, minimum spends, menus, mailboxes, web forms and their
+    submissions. (The venue's Functions CONFIG — areas, settings, brand,
+    templates — cascades.) Read from the schema rather than listed, so a table
+    added later is covered too; tests/test_venue_delete.py's guard only scans
+    app.db.models."""
+    from sqlalchemy import func, select
+
+    from app.db.functions_models import FUNCTIONS_MODELS
+
+    held = []
+    for model in FUNCTIONS_MODELS:
+        table = model.__table__
+        for fk in table.foreign_key_constraints:
+            if fk.referred_table.name != "venues":
+                continue
+            if (fk.ondelete or "").upper() == "CASCADE":
+                continue
+            column = next(c for c in fk.columns if c.name != "organization_id")
+            count = db.execute(
+                select(func.count()).select_from(table).where(column == venue_id)
+            ).scalar()
+            if count:
+                label = table.name.removeprefix("fn_").replace("_", " ")
+                held.append(f"{label} ({count})")
+    return held
+
+
 @router.delete("/venues/{venue_id}")
 async def delete_venue(
     venue_id: str,
@@ -446,6 +619,9 @@ async def delete_venue(
       calls, reports, email logs. Deleting a venue is not a reason to erase the
       record of what was ordered or what an agent did; those columns are all
       nullable precisely so the history can outlive the venue.
+    * **Norm Functions' records refuse it** (409, ``_functions_records``) —
+      enquiries and events can't drop their venue (it is part of the booking,
+      and the composite keys forbid it), so the venue stays while they exist.
     """
     from sqlalchemy import func
 
@@ -474,6 +650,17 @@ async def delete_venue(
     if not venue:
         raise HTTPException(404, "Venue not found")
     _require_org_permission(db, user, venue.organization_id, "org:venues")
+
+    # Norm Functions' records are booking history that must not vanish with
+    # the venue; their foreign keys refuse, so say why instead of a 500.
+    held = _functions_records(db, venue_id)
+    if held:
+        raise HTTPException(
+            409,
+            f"{venue.name} has Norm Functions records ({', '.join(held)}). "
+            "They are its booking history and keep the venue, so it can't be "
+            "deleted while they exist.",
+        )
 
     # Venue-scoped config — remove entirely.
     # (user_venue_access.venue_id is NOT NULL, so it must be deleted, not nulled.)

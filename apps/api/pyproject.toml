@@ -34,6 +34,8 @@ dependencies = [
     "python-pptx>=1.0.0",  # chat attachments: .pptx -> text
     "pillow>=10.0.0",  # chat attachments: resize/re-encode images to Anthropic limits
     "pypdf>=5.0.0",  # built-in apps: merge candidate documents into an interview pack (app_pdf.py)
+    "nh3>=0.3.7",  # Functions proposals: sanitise free HTML (services/functions/sanitize.py)
+    "tinycss2>=1.5.1",  # ...and its CSS, token by token (escapes and comments can't hide a url())
 ]
 
 [project.optional-dependencies]

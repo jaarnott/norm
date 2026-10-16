@@ -8,6 +8,7 @@ const MEMBER_NAMES: Record<string, string> = {
   marketing: 'Marketing',
   reports: 'Reports',
   executive_chef: 'Executive chef',
+  functions: 'Functions',
   app_builder: 'App builder',
 };
 
