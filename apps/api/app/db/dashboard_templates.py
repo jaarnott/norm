@@ -85,28 +85,6 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "layout": {"col": 13, "row": 1, "colSpan": 6, "rowSpan": 4},
             },
             {
-                "title": "Reconciliation gap",
-                "chart_type": "kpi",
-                "chart_spec": {
-                    "value_key": "reconciliation.difference",
-                    "format": "currency",
-                    "prefix": "$",
-                    "note": "Food + Beverage + Other + freight, less the invoice subtotals",
-                    "threshold": {"warning": 1, "danger": 10, "direction": "above"},
-                },
-                "script": {
-                    "connector": "loadedhub",
-                    "action": "get_purchase_cogs",
-                    "params": {
-                        "period": "this month",
-                        "interval": "month",
-                        "compare_previous": False,
-                    },
-                    "rows": "summary",
-                },
-                "layout": {"col": 19, "row": 1, "colSpan": 6, "rowSpan": 4},
-            },
-            {
                 "title": "Food cost of goods %",
                 "chart_type": "kpi",
                 "chart_spec": {
@@ -117,6 +95,9 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "format": "percent",
                     "comparison_label": "vs previous period",
                     "lower_is_better": True,
+                    "empty_note": (
+                        "No food sales: the POS items in Loaded have no category yet"
+                    ),
                 },
                 "script": {
                     "connector": "loadedhub",
@@ -124,7 +105,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "params": {"period": "this month", "interval": "month"},
                     "rows": "summary",
                 },
-                "layout": {"col": 1, "row": 5, "colSpan": 6, "rowSpan": 4},
+                "layout": {"col": 1, "row": 5, "colSpan": 8, "rowSpan": 4},
             },
             {
                 "title": "Beverage cost of goods %",
@@ -137,6 +118,10 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "format": "percent",
                     "comparison_label": "vs previous period",
                     "lower_is_better": True,
+                    "empty_note": (
+                        "No beverage sales: the POS items in Loaded have no "
+                        "category yet"
+                    ),
                 },
                 "script": {
                     "connector": "loadedhub",
@@ -144,7 +129,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "params": {"period": "this month", "interval": "month"},
                     "rows": "summary",
                 },
-                "layout": {"col": 7, "row": 5, "colSpan": 6, "rowSpan": 4},
+                "layout": {"col": 9, "row": 5, "colSpan": 8, "rowSpan": 4},
             },
             {
                 "title": "Sales with no POS category",
@@ -170,7 +155,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     },
                     "rows": "summary",
                 },
-                "layout": {"col": 13, "row": 5, "colSpan": 6, "rowSpan": 4},
+                "layout": {"col": 17, "row": 5, "colSpan": 8, "rowSpan": 4},
             },
             {
                 "title": "Freight",
@@ -191,7 +176,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     },
                     "rows": "summary",
                 },
-                "layout": {"col": 19, "row": 5, "colSpan": 6, "rowSpan": 4},
+                "layout": {"col": 19, "row": 1, "colSpan": 6, "rowSpan": 4},
             },
             {
                 "title": "Cost of goods % over time",

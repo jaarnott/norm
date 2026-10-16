@@ -365,3 +365,43 @@ class TestASummaryIsOneRow:
 
     def test_a_missing_summary_is_no_rows(self):
         assert _rows_from_payload({"rows": []}, {"rows": "summary"}) == []
+
+
+class TestAllVenuesCalendar:
+    """ "All venues" dated the charts on the configured default calendar; a
+    Sydney group got Auckland months. When every venue in the fan-out keeps
+    the same timezone and day start, that calendar is used."""
+
+    def _venues(self, db_session, calendars):
+        from app.db.models import Venue
+
+        rows = [
+            Venue(name=f"V{i}", timezone=tz, day_start_time=ds)
+            for i, (tz, ds) in enumerate(calendars)
+        ]
+        db_session.add_all(rows)
+        db_session.flush()
+        return [v.id for v in rows]
+
+    def test_one_shared_calendar_is_used(self, db_session):
+        from app.routers.reports_crud import _shared_calendar_venue
+
+        ids = self._venues(
+            db_session, [("Australia/Sydney", "06:00"), ("Australia/Sydney", "06:00")]
+        )
+        venue = _shared_calendar_venue(db_session, ids)
+        assert venue is not None and venue.timezone == "Australia/Sydney"
+
+    def test_mixed_calendars_fall_back_to_the_default(self, db_session):
+        from app.routers.reports_crud import _shared_calendar_venue
+
+        ids = self._venues(
+            db_session, [("Australia/Sydney", "06:00"), ("Pacific/Auckland", "07:00")]
+        )
+        assert _shared_calendar_venue(db_session, ids) is None
+
+    def test_no_venues_is_the_default(self, db_session):
+        from app.routers.reports_crud import _shared_calendar_venue
+
+        assert _shared_calendar_venue(db_session, [None]) is None
+        assert _shared_calendar_venue(db_session, []) is None

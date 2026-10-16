@@ -107,9 +107,12 @@ interface Props {
   fillContainer?: boolean;
   hideBorder?: boolean;
   className?: string;
+  // Why there is nothing to show (the tool's own error from the last
+  // refresh), in place of the generic "no rows" line.
+  emptyReason?: string;
 }
 
-function Chart({ data, props: chartProps, onAction, threadId, height: chartHeight = 280, hideAddToReport, onRemove, onExpand, onDrillDown, fillContainer, hideBorder, className }: Props) {
+function Chart({ data, props: chartProps, onAction, threadId, height: chartHeight = 280, hideAddToReport, onRemove, onExpand, onDrillDown, fillContainer, hideBorder, className, emptyReason }: Props) {
   const [chartType, setChartType] = useState<ChartType>(chartProps?.chart_type || 'bar');
   const [addingToReport, setAddingToReport] = useState(false);
   const fieldLabels = chartProps?.field_labels || {};
@@ -373,10 +376,12 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
             {/* A KPI tile has no header, so name the figure here. */}
             {chartType === 'kpi' && title && <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--muted)' }}>{title}</div>}
             <div>No data to show.</div>
-            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-              {fillContainer
-                ? 'The data source returned no rows — check the chart’s settings.'
-                : 'The data source returned no rows — check the tool call in this conversation.'}
+            <div style={{ fontSize: 'var(--fs-sm)', color: emptyReason ? 'var(--error)' : 'var(--muted)' }}>
+              {emptyReason
+                ? emptyReason
+                : fillContainer
+                  ? 'The data source returned no rows — check the chart’s settings.'
+                  : 'The data source returned no rows — check the tool call in this conversation.'}
             </div>
           </div>
         ) : (

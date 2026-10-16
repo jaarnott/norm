@@ -61,6 +61,8 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [debugInfo, setDebugInfo] = useState<Record<string, unknown>[] | null>(null);
   const [refreshErrors, setRefreshErrors] = useState<Record<string, unknown>[] | null>(null);
+  // Why a tile has nothing to show, per chart, from the last refresh.
+  const [chartErrors, setChartErrors] = useState<Record<string, string>>({});
   const [expandedChartId, setExpandedChartId] = useState<string | null>(null);
   const [inspectedChartId, setInspectedChartId] = useState<string | null>(null);
   const [drillDown, setDrillDown] = useState<{ title: string; rows: Record<string, unknown>[] } | null>(null);
@@ -136,6 +138,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     // Mark all charts as refreshing
     const chartIds = dashboard.charts.map(c => c.id);
     setRefreshingCharts(new Set(chartIds));
+    const errors: Record<string, string> = {};
 
     // Fire per-chart refreshes in parallel
     const promises = chartIds.map(async (chartId) => {
@@ -144,7 +147,8 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
           method: 'POST', body,
         });
         if (res.ok) {
-          const { chart: updatedChart } = await res.json();
+          const { chart: updatedChart, error } = await res.json();
+          if (error) errors[chartId] = String(error);
           if (updatedChart) {
             setDashboard(prev => {
               if (!prev) return prev;
@@ -164,6 +168,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     });
 
     await Promise.all(promises);
+    setChartErrors(errors);
     setLastRefreshed(new Date());
     setRefreshing(false);
   }, [dashboard?.id, dashboard?.charts, selectedVenue, selectedPeriod]);
@@ -421,6 +426,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
                   props={{ ...chart.chart_spec, ...(chart.title ? { title: chart.title } : {}), chart_type: chart.chart_type, fillContainer: true } as Record<string, unknown>}
                   hideAddToReport
                   fillContainer
+                  emptyReason={chartErrors[chart.id]}
                   // The tile is the card; the chart draws no second border inside it.
                   hideBorder
                   onDrillDown={(payload) => {

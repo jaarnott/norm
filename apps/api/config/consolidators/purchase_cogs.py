@@ -154,6 +154,19 @@ def _resolve_venues(params, call_api):
     return None, None
 
 
+def _venue_name_for(venue_id, call_api):
+    """The name behind a venue_id, from Norm's own venue list (no HTTP)."""
+    listed = call_api("norm", "list_venues", {"connector": "loadedhub"})
+    data = (
+        listed.get("data") if isinstance(listed, dict) and "data" in listed else listed
+    )
+    rows = data.get("venues") if isinstance(data, dict) else None
+    for r in rows or []:
+        if isinstance(r, dict) and str(r.get("id")) == str(venue_id) and r.get("name"):
+            return str(r["name"])
+    return None
+
+
 def _pct(numerator, denominator):
     if denominator is None or denominator == 0 or numerator is None:
         return None
@@ -227,6 +240,22 @@ def run(params, call_api, log, call_api_parallel=None):
         return venue_error
     multi = venues is not None and len(venues) > 1
 
+    # get_sales takes a venue by NAME (venues / venue) and has no "this call's
+    # venue" fallback, while a dashboard, an app or MCP hands this tool a
+    # venue_id. Without this every purchase-based tile on the Cost of Goods
+    # dashboard was empty (16 Oct 2026): purchases read fine, sales said
+    # "no venue". So one venue is named for the sales reads.
+    venue_name = str(params.get("venue") or "").strip() or None
+    if not venues and not venue_name and params.get("venue_id"):
+        venue_name = _venue_name_for(params["venue_id"], call_api)
+    if not venues and not venue_name:
+        return {
+            "error": (
+                "no venue: pass venues='all', a list of names, or one venue — "
+                "this tool reads sales, which needs the venue named"
+            )
+        }
+
     # The previous period rides in the same reads: the window is extended
     # backwards by its own length, and buckets before the asked start are the
     # comparison. One read each, no second round trip.
@@ -241,6 +270,8 @@ def run(params, call_api, log, call_api_parallel=None):
         common["venue_id"] = params["venue_id"]
     if venues:
         common["venues"] = venues
+    elif venue_name:
+        common["venue"] = venue_name
 
     purchases = call_api(
         "loadedhub",
@@ -285,6 +316,8 @@ def run(params, call_api, log, call_api_parallel=None):
             args.update({"start": w_start, "end": w_end, "confirmed_by_user": True})
         if v:
             args["venues"] = [v]
+        elif venue_name:
+            args["venue"] = venue_name
         if params.get("venue_id"):
             args["venue_id"] = params["venue_id"]
         share_calls.append(("loadedhub", "get_sales", args))

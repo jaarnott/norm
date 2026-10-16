@@ -82,7 +82,14 @@ class Api:
             return {"window": WINDOW}
         if action == "list_venues":
             return {
-                "venues": [{"name": v, "connected": True} for v in self.venues or []]
+                "venues": [
+                    {
+                        "id": "id-" + v.lower().replace(" ", "-"),
+                        "name": v,
+                        "connected": True,
+                    }
+                    for v in (self.venues or ["Applegum Cafe"])
+                ]
             }
         if action == "get_received_items_for_period":
             names = params.get("venues")
@@ -114,11 +121,13 @@ class Api:
 
 
 def run(api, **params):
+    """A dashboard-style call: the executor hands the tool this venue's id
+    (tool_executor sets venue_id); pass venue_id=None to leave it out."""
     ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
     exec(CODE, ns)
-    return ns["run"](
-        {"period": "September 2026", **params}, api.call_api, lambda m: None
-    )
+    merged = {"period": "September 2026", "venue_id": "id-applegum-cafe", **params}
+    merged = {k: v for k, v in merged.items() if v is not None}
+    return ns["run"](merged, api.call_api, lambda m: None)
 
 
 class TestTheJoin:
@@ -294,6 +303,32 @@ class TestEdges:
             if a == "get_sales" and p.get("breakdown") == "items"
         ]
         assert [p["venues"] for p in items] == [["Applegum Cafe"], ["Little West"]]
+
+    def test_a_dashboard_call_names_the_venue_for_the_sales_reads(self):
+        """A chart, an app or MCP hands the tool a venue_id; get_sales takes a
+        venue by name — the Cost of Goods tiles were empty until the id was
+        turned into the name (16 Oct 2026)."""
+        api = Api()
+        out = run(api, venue_id="id-applegum-cafe")
+        assert "error" not in out and out["rows"][0]["sales"] == 47371.13
+        sales_calls = [p for a, p in api.calls if a == "get_sales"]
+        assert sales_calls and all(
+            p.get("venue") == "Applegum Cafe" for p in sales_calls
+        )
+        assert all("venues" not in p for p in sales_calls)
+        assert not any(a == "list_venues" for a, _ in api.calls[:1])  # dates first
+
+    def test_no_venue_at_all_is_a_clear_error(self):
+        out = run(Api(), venue_id=None)
+        assert out["error"].startswith("no venue")
+
+    def test_a_named_venue_is_used_as_given(self):
+        api = Api()
+        out = run(api, venue_id=None, venue="Little West")
+        assert "error" not in out
+        assert all(
+            p.get("venue") == "Little West" for a, p in api.calls if a == "get_sales"
+        )
 
     def test_a_bad_interval_is_refused(self):
         assert "interval must be" in run(Api(), interval="day")["error"]

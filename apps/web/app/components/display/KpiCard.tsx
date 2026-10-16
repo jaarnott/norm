@@ -28,6 +28,9 @@ interface KpiCardProps {
     previous_denominator_key?: string;
     // Small print under the value ("included in purchases").
     note?: string;
+    // Shown instead of a ratio whose denominator is zero (no food sales:
+    // the POS items have no category yet).
+    empty_note?: string;
     // Cost of goods: a rise is the bad direction.
     lower_is_better?: boolean;
     threshold?: { warning: number; danger: number; direction: 'above' | 'below' };
@@ -132,7 +135,7 @@ export default function KpiCard({ rows, spec, title }: KpiCardProps) {
     return (
       <div style={{ ...centred, padding: '0.5rem', gap: 4, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
         {title && <div style={{ fontWeight: 500 }}>{title}</div>}
-        <div>No sales in this period</div>
+        <div style={{ textAlign: 'center' }}>{spec.empty_note || 'No sales in this period'}</div>
       </div>
     );
   }

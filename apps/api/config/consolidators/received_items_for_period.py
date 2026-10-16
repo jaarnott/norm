@@ -819,6 +819,10 @@ def run(params, call_api, log, call_api_parallel=None):
                     "_invoices": set(),
                     "_venues": {},
                 }
+                if group_by == "group":
+                    bucket["super_group"] = (
+                        row.get("super_group") or row.get("category") or None
+                    )
             bucket["spend"] += row["spend"]
             bucket["_venues"][row["venue"]] = (
                 bucket["_venues"].get(row["venue"], 0.0) + row["spend"]
@@ -848,6 +852,9 @@ def run(params, call_api, log, call_api_parallel=None):
             bucket["spend"] = round(bucket["spend"], 2)
             bucket["credit_amount"] = round(bucket["credit_amount"], 2)
             rows.append(bucket)
+        total_spend = sum(r["spend"] for r in flat)
+        for r in rows:
+            r["share"] = round(r["spend"] / total_spend, 4) if total_spend else None
         rows.sort(key=lambda r: r["spend"], reverse=True)
         result["summary"] = {
             "rows": len(rows),

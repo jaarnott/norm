@@ -113,6 +113,27 @@ def _venue_for_dates(db, venue_id: str | None):
     return db.query(Venue).filter(Venue.id == venue_id).first()
 
 
+def _shared_calendar_venue(db, venue_ids):
+    """The one venue whose calendar a fan-out can share, or None.
+
+    Every venue in the fan-out must keep the same timezone and day start;
+    otherwise there is no single right calendar and the default applies.
+    """
+    ids = [v for v in venue_ids or [] if v]
+    if not ids:
+        return None
+    from app.db.models import Venue
+
+    venues = db.query(Venue).filter(Venue.id.in_(ids)).all()
+    if not venues:
+        return None
+    calendars = {
+        (getattr(v, "timezone", None), getattr(v, "day_start_time", None))
+        for v in venues
+    }
+    return venues[0] if len(calendars) == 1 else None
+
+
 def _rows_from_payload(payload, script: dict) -> list:
     """The rows a chart plots, out of one tool result.
 
@@ -1083,11 +1104,6 @@ def refresh_single_chart(
     )
     date_venue = _venue_for_dates(db, venue_id_for_day)
 
-    raw_params = script.get("params", {})
-    resolved = _apply_global_dates(
-        _resolve_date_placeholders(raw_params, venue=date_venue), gf, venue=date_venue
-    )
-
     # Resolve venue
     if gf_venue == "__all__":
         venue_id = None
@@ -1097,11 +1113,26 @@ def refresh_single_chart(
         venue_id = script.get("venue_id") or (report.venue_id if report else None)
 
     venue_ids = _chart_venue_ids(db, user, script["connector"], venue_id)
+    if date_venue is None:
+        # "All venues" on one calendar: when every venue in the fan-out keeps
+        # the same timezone and day start, the period is theirs, not the
+        # configured default's (a Sydney group was getting Auckland months).
+        date_venue = _shared_calendar_venue(db, venue_ids)
+
+    raw_params = script.get("params", {})
+    resolved = _apply_global_dates(
+        _resolve_date_placeholders(raw_params, venue=date_venue), gf, venue=date_venue
+    )
 
     # Execute venues sequentially — charts are already parallel at the request level
     # so we don't need nested ThreadPoolExecutors that exhaust DB connections
     aggregated_rows: list[dict] = []
     any_success = False
+    # Why a tile is empty. A tool that failed, or answered with its own
+    # {"error": …} document, used to leave the chart on its old data and the
+    # page saying "no rows — check the chart's settings" (16 Oct 2026: every
+    # purchase-based tile, because the nested sales read had no venue).
+    errors: list[str] = []
 
     for vid in venue_ids:
         tool_result = execute_connector_tool(
@@ -1114,9 +1145,20 @@ def refresh_single_chart(
             strict_venue=True,
         )
 
-        if tool_result.success and tool_result.payload:
+        payload = tool_result.payload
+        if (
+            isinstance(payload, dict)
+            and payload.get("error")
+            and not payload.get("rows")
+        ):
+            errors.append(str(payload["error"]))
+            continue
+        if not tool_result.success:
+            errors.append(str(tool_result.error or "tool failed"))
+            continue
+        if payload:
             any_success = True
-            rows = _rows_from_payload(tool_result.payload, script)
+            rows = _rows_from_payload(payload, script)
             if not venue_id and len(venue_ids) > 1:
                 from app.db.models import Venue
 
@@ -1137,7 +1179,10 @@ def refresh_single_chart(
         db.commit()
         db.refresh(chart)
 
-    return {"chart": _chart_to_dict(chart)}
+    out = {"chart": _chart_to_dict(chart)}
+    if errors and not aggregated_rows:
+        out["error"] = "; ".join(dict.fromkeys(errors))
+    return out
 
 
 @router.post("/{report_id}/charts/{chart_id}/test")
