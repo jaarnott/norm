@@ -820,8 +820,10 @@ class TestAGuessIsCheckedAgain:
     venue set up itself (never guessed by Norm) is left exactly as it was."""
 
     FREIGHT = {
-        "code": "FGT001",  # Loaded's supplier product for it says Each
-        "description": "FREIGHT CHARGE",
+        # Loaded's supplier product for this code says Each. (A product, not
+        # a charge: charges are never asked about — see test_units_learned_once.)
+        "code": "FGT001",
+        "description": "CIDER MYSTERY BOX",
         "quantity": 1,
         "unit": None,
         "unit_of_measure": None,
@@ -844,7 +846,7 @@ class TestAGuessIsCheckedAgain:
             [
                 {
                     "code": "FGT001",
-                    "description": "FREIGHT CHARGE",
+                    "description": "CIDER MYSTERY BOX",
                     "unit_asked": True,
                     "unit_resolved": {
                         "unit_name": unit_name,
@@ -915,7 +917,7 @@ class TestAGuessIsCheckedAgain:
                 "lines": [
                     {
                         "id": "rep-0",
-                        "description": "FREIGHT CHARGE",
+                        "description": "CIDER MYSTERY BOX",
                         "unit": "Each",
                         "linked_unit_id": "u-each",
                         "unit_recheck": True,

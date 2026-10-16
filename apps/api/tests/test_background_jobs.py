@@ -249,7 +249,6 @@ class TestTheReceiveJob:
             rows=[{"id": i} for i in ids],
             mode="autopilot",
             require_valid_po=True,
-            max_sensei=2,
             from_date="2025-10-01",
             to_date="2026-10-15",
         )

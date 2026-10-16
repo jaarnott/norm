@@ -348,7 +348,17 @@ def find_or_create_spec_for_supplier(
     for a business that already has one: a duplicate row created HERE is the
     real source of near-duplicate specs, because the sensei only gets to
     propose ``alias_of`` after the row already exists.
+
+    A name printed over two lines is two names: "M H Luxe Holdings Pty Ltd"
+    above "Luxe Bakery Sydney" arrived as one string with a line break, and
+    the spec it made matched nothing but that exact text (15 Oct 2026). The
+    first line names the spec, the others are its aliases.
     """
+    lines = [ln.strip() for ln in str(supplier_name or "").splitlines() if ln.strip()]
+    other_lines = lines[1:]
+    if other_lines:
+        supplier_name = lines[0]
+        also_known_as = (*other_lines, *also_known_as)
     spec = find_spec_for_supplier(config_db, supplier_name, *also_known_as)
     if spec:
         # Self-heal: the invoice arrives under ``supplier_name``, but the spec may
@@ -374,7 +384,7 @@ def find_or_create_spec_for_supplier(
     name = (supplier_name or "").strip()
     if not name:
         raise RuntimeError("invoice has no supplier name — cannot file a spec")
-    spec = SupplierInvoiceSpec(name=name, aliases=[], instructions="")
+    spec = SupplierInvoiceSpec(name=name, aliases=other_lines, instructions="")
     config_db.add(spec)
     config_db.commit()
     config_db.refresh(spec)

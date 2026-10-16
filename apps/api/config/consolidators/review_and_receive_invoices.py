@@ -82,10 +82,6 @@ def run(params, call_api, log, call_api_parallel=None):
     request = {
         "venue": venue,
         "require_valid_po": require_valid_po,
-        # The sensei trains at most 2 brand-new suppliers per run, BEFORE
-        # their extraction (the fresh spec is part of the extraction's cache
-        # key) — the service owns the ordering; this is just the budget.
-        "max_sensei": 2,
     }
     if only_invoice_id:
         request["invoice_ids"] = [only_invoice_id]

@@ -2622,8 +2622,8 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
 
     Params: ``venue``/``venue_id``; optional ``invoice_ids`` (or a single
     ``invoice_id``), ``from_date``/``to_date``, ``mode``
-    (approve_all | approve_fixes | autopilot), ``max_sensei``,
-    ``require_valid_po``.
+    (approve_all | approve_fixes | autopilot), ``require_valid_po``. Every
+    supplier with no spec is studied first (no per-run limit).
     """
     import time as _time
 
@@ -2642,7 +2642,6 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
     if invoice_ids is None and params.get("invoice_id"):
         invoice_ids = [str(params["invoice_id"])]
     mode = str(params.get("mode") or "approve_all")
-    max_sensei = int(params.get("max_sensei") or 0)
     require_valid_po = params.get("require_valid_po") is not False
 
     # A scheduled task's run isn't held to a request's time limit; a chat (or
@@ -2682,7 +2681,6 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
                         rows=rows,
                         mode=mode,
                         require_valid_po=require_valid_po,
-                        max_sensei=max_sensei,
                         from_date=params.get("from_date"),
                         to_date=params.get("to_date"),
                     )
@@ -2718,7 +2716,6 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
                 from_date=params.get("from_date"),
                 to_date=params.get("to_date"),
                 mode=mode,
-                max_sensei=max_sensei,
                 require_valid_po=require_valid_po,
                 # Whose rung and switches: the conversation's owner — the
                 # person asking, or a scheduled task's creator.

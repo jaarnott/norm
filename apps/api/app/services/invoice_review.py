@@ -2568,7 +2568,6 @@ def review_invoices(
     from_date: str | None = None,
     to_date: str | None = None,
     mode: str = "approve_all",
-    max_sensei: int = 0,
     require_valid_po: bool = True,
     settings: dict | None = None,
     on_invoice=None,
@@ -2644,30 +2643,34 @@ def review_invoices(
     # different businesses, which every alias below is vetted against.
     suppliers = account_suppliers(lh)
 
-    # Sensei first, budgeted, one per supplier — a fresh spec must exist
-    # BEFORE its supplier's extraction runs (the instructions are cache-key
-    # material).
+    import time as _time
+
+    # Sensei first, for EVERY supplier with no spec — as the receive card does
+    # for the invoice it opens — and before any extraction (the spec's instructions are cache-key
+    # material). It used to train at most two per run; a new venue's backlog
+    # left the rest spec-less, and a supplier with no spec is not catalogued,
+    # so its products were asked about again on every invoice (Alsco, 15 Oct
+    # 2026: 36 questions before its spec arrived in the second run). Each
+    # study is once per supplier, ever. A cancel or the chat's time budget
+    # stops it; the next run carries on.
     sensei_runs: list[dict] = []
-    if max_sensei > 0:
-        seen: set[str] = set()
-        budget = max_sensei
-        for iid, det in details.items():
-            if budget <= 0:
-                break
-            name = str(det.get("supplierName") or "").strip()
-            key = _norm(name)
-            if not name or not det.get("fileId") or key in seen:
-                continue
-            seen.add(key)
-            # With the account's own spellings — the bare feed name matches no
-            # spec for a supplier filed under a different one, which spent the
-            # budget retraining suppliers that were already covered. The helper
-            # owns the "does it need one" decision; the budget only counts the
-            # suppliers it actually trained.
-            aliases = supplier_aliases(lh, det, suppliers)
-            if _maybe_sensei(db, config_db, venue_id, iid, name, *aliases):
-                budget -= 1
-                sensei_runs.append({"invoice_id": iid, "supplier_name": name})
+    seen: set[str] = set()
+    for iid, det in details.items():
+        if (should_stop is not None and should_stop()) or (
+            deadline is not None and _time.monotonic() > deadline
+        ):
+            break
+        name = str(det.get("supplierName") or "").strip()
+        key = _norm(name)
+        if not name or not det.get("fileId") or key in seen:
+            continue
+        seen.add(key)
+        # With the account's own spellings — the bare feed name matches no
+        # spec for a supplier filed under a different one. The helper owns
+        # the "does it need one" decision.
+        aliases = supplier_aliases(lh, det, suppliers)
+        if _maybe_sensei(db, config_db, venue_id, iid, name, *aliases):
+            sensei_runs.append({"invoice_id": iid, "supplier_name": name})
 
     # Parallel extraction warm-up (cache-first; misses fan out).
     order = [iid for iid in invoice_ids if iid in details]
@@ -2695,8 +2698,6 @@ def review_invoices(
         reference = prefetch_replica_reference(db, config_db, venue_id)
     except Exception as exc:  # noqa: BLE001 — per-invoice fetches still work
         logger.info("replica reference prefetch failed: %s", exc)
-
-    import time as _time
 
     def _report(iid: str, record: dict, data: dict | None) -> None:
         if on_invoice is None:

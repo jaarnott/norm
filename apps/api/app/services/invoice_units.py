@@ -8,6 +8,8 @@ to match a delivered unit to an existing Loaded unit.
 
 from __future__ import annotations
 
+import re
+
 _UOM_WORDS: dict[str, tuple[str, float]] = {
     "kg": ("weight", 1000),
     "kgs": ("weight", 1000),
@@ -63,6 +65,27 @@ _UOM_VAGUE = {
 # A counted pack ('12 pack', '6pk') is real information and never matches
 # here because matching is whole-name only.
 _PACKAGING_WORDS = _UOM_VAGUE | {"pack", "packs", "pk", "item", "each item"}
+
+
+# A charge, not a product: delivery fees, freight, levies, surcharges. Whole
+# words, so 'Charger', 'Coffee' and 'Pizza Delivery Box' are products; a line
+# that is only "Delivery" is a charge.
+_CHARGE = re.compile(
+    r"\b(freight|shipping|postage|courier|surcharges?|levy|levies|fees?|charges?)\b"
+    r"|^\s*delivery\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_charge_line(description: object) -> bool:
+    """True for a line that bills a charge rather than delivering stock.
+
+    Its unit is one charge — Each — so nothing needs working out: on 15 Oct
+    2026 the web-searching estimator was asked about Prime Fresh's 'DELIVERY
+    FEE' 26 times, Alsco's 'Environment & Energy Charge' on every invoice,
+    and answered 'each' every time.
+    """
+    return bool(_CHARGE.search(str(description or "")))
 
 
 def is_packaging_word(text: object) -> bool:

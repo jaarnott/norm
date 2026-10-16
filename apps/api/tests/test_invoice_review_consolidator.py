@@ -77,7 +77,7 @@ class TestRequestPlumbing:
         assert req["mode"] == "autopilot"
         assert req["from_date"] == "2026-06-11"  # today - 60d
         assert req["to_date"] == "2026-08-10"
-        assert req["max_sensei"] == 2
+        assert "max_sensei" not in req  # every new supplier is studied
         assert req["require_valid_po"] is True
 
     def test_explicit_window_wins(self):

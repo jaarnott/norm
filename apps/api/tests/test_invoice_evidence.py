@@ -733,33 +733,20 @@ class TestItComposesInstructionsExactlyLikeReceiving:
         )
         assert calls[0][2] == ["CATERING SUPPLIES LTD", "Kaan's Catering"]
 
-    def test_the_budget_is_spent_only_on_suppliers_it_trained(self, monkeypatch):
-        """Suppliers that already have a spec cost nothing: `_maybe_sensei`
-        returns False and the budget survives for one that needs it."""
+    def test_every_new_supplier_is_studied_once_with_no_limit(self, monkeypatch):
+        """No per-run limit (16 Oct 2026): a supplier left spec-less isn't
+        catalogued, so its products were asked about on every invoice. One
+        study per supplier, however many of its invoices the run holds."""
         calls = []
         self._run(
             monkeypatch,
             [
-                {"id": f"i{n}", "fileId": "f", "supplierName": f"S{n}", "supplierId": n}
-                for n in range(EV.MAX_SENSEI_PER_RUN + 3)
-            ],
-            sensei=self._sensei_spy(calls, trained=False),
-        )
-        assert len(calls) == EV.MAX_SENSEI_PER_RUN + 3
-
-    def test_a_run_meeting_many_new_suppliers_stops_at_the_budget(self, monkeypatch):
-        """Training reads a PDF and calls the LLM. The rest wait for the next
-        run rather than landing in one morning."""
-        calls = []
-        self._run(
-            monkeypatch,
-            [
-                {"id": f"i{n}", "fileId": "f", "supplierName": f"S{n}", "supplierId": n}
-                for n in range(EV.MAX_SENSEI_PER_RUN + 3)
+                {"id": f"i{n}", "fileId": "f", "supplierName": f"S{n % 5}", "supplierId": n % 5}
+                for n in range(10)
             ],
             sensei=self._sensei_spy(calls, trained=True),
         )
-        assert len(calls) == EV.MAX_SENSEI_PER_RUN
+        assert sorted(c[1] for c in calls) == ["S0", "S1", "S2", "S3", "S4"]
 
     def test_an_invoice_with_no_copy_is_never_sent_for_training(self, monkeypatch):
         """The sensei learns from the PDF; there is nothing to learn from."""

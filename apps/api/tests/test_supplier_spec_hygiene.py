@@ -253,6 +253,24 @@ class TestNoDuplicateSpecIsBorn:
         )
         assert created is True and spec.name == "Brand New Butchery"
 
+    def test_a_name_printed_over_two_lines_is_a_name_and_an_alias(
+        self, db_session, roster
+    ):
+        """M H Luxe, 15 Oct 2026: the letterhead's two lines became one spec
+        name, which no invoice's supplier ever matched."""
+        spec, created = spec_dojo.find_or_create_spec_for_supplier(
+            db_session, "M H Luxe Holdings Pty Ltd\nLuxe Bakery Sydney"
+        )
+        assert created is True
+        assert (spec.name, spec.aliases) == (
+            "M H Luxe Holdings Pty Ltd",
+            ["Luxe Bakery Sydney"],
+        )
+        found, created = spec_dojo.find_or_create_spec_for_supplier(
+            db_session, "Luxe Bakery Sydney"
+        )
+        assert (found.id, created) == (spec.id, False)
+
     def test_a_stolen_alias_no_longer_beats_the_real_spec(self, db_session, roster):
         """The incident, at the staging door. Even with 'Service Foods'
         wrongly listed on the wine spec, a spec whose own NAME is the supplier

@@ -38,13 +38,6 @@ logger = logging.getLogger(__name__)
 SOURCE_STORED = "stored"
 SOURCE_EXTRACTED = "extracted"
 
-# Brand-new suppliers the sensei may train in one reconciliation run. Matches
-# the receive consolidator's `max_sensei`, for the same reason: training reads
-# a PDF and calls the LLM, so a venue meeting a dozen new suppliers at once
-# should spread that over runs rather than pay for it in one morning. The
-# backlog is not lost — the next run picks up where this one stopped.
-MAX_SENSEI_PER_RUN = 2
-
 
 def _as_utc(value: object) -> datetime.datetime | None:
     """A timezone-aware UTC datetime from a stored value, or None.
@@ -263,9 +256,10 @@ def copy_headers(
         #
         # The sensei runs here too, on the same terms receiving uses: a
         # spec-less supplier is a spec-less supplier, whether the invoice came
-        # from Bidfood or from a sister venue. Both paths are unattended
-        # (receiving runs under the autopilot ladder), so the budget, not the
-        # audience, is what bounds it.
+        # from Bidfood or from a sister venue. Every one is studied, once (16 Oct
+        # 2026: the old limit of two per run left suppliers spec-less, and a
+        # supplier with no spec isn't catalogued — its products were asked
+        # about again on every invoice).
         from app.services.invoice_review import (
             _maybe_sensei,
             extraction_instructions,
@@ -277,7 +271,6 @@ def copy_headers(
         # were already resolved above for the staleness check — same cache.
         by_supplier: dict[tuple, str] = {}
         requests = []
-        budget = MAX_SENSEI_PER_RUN
         for inv in pending:
             ctx = aliases_for(inv)
             name = str(inv.get("supplierName") or "")
@@ -286,15 +279,10 @@ def copy_headers(
                 detail, aliases = ctx["detail"], ctx["aliases"]
                 # BEFORE the instructions are composed — a spec trained now has
                 # to be in this pass's cache key, not the next one's.
-                if (
-                    name
-                    and budget > 0
-                    and inv.get("fileId")
-                    and _maybe_sensei(
+                if name and inv.get("fileId"):
+                    _maybe_sensei(
                         db, config_db, venue_id, str(inv.get("id")), name, *aliases
                     )
-                ):
-                    budget -= 1
                 by_supplier[key] = extraction_instructions(
                     config_db, lh, detail, aliases
                 )

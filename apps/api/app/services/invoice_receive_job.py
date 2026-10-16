@@ -88,7 +88,6 @@ def start(
     rows: list[dict],
     mode: str,
     require_valid_po: bool,
-    max_sensei: int,
     from_date: str | None,
     to_date: str | None,
 ):
@@ -113,7 +112,6 @@ def start(
                 "invoice_ids": [r["id"] for r in rows],
                 "mode": mode,
                 "require_valid_po": require_valid_po,
-                "max_sensei": max_sensei,
                 "from_date": from_date,
                 "to_date": to_date,
             },
@@ -151,9 +149,6 @@ def run(ctx: background_jobs.JobContext) -> dict:
     thread_id = p.get("thread_id")
     done_ids = set(ctx.progress.get("done_ids") or [])
     todo = [i for i in p.get("invoice_ids") or [] if i not in done_ids]
-    sensei_left = max(
-        0, int(p.get("max_sensei") or 0) - int(ctx.progress.get("sensei_used") or 0)
-    )
 
     def on_invoice(db: Session):
         def _record(iid: str, record: dict, data: dict | None) -> None:
@@ -208,7 +203,6 @@ def run(ctx: background_jobs.JobContext) -> dict:
                     venue_id,
                     chunk,
                     mode=str(p.get("mode") or "approve_all"),
-                    max_sensei=sensei_left,
                     require_valid_po=p.get("require_valid_po") is not False,
                     settings=receiving_settings_for_thread(db, thread_id),
                     on_invoice=on_invoice(db),
@@ -218,10 +212,6 @@ def run(ctx: background_jobs.JobContext) -> dict:
         finally:
             db.close()
             cdb.close()
-        used = len(out.get("sensei") or [])
-        if used:
-            sensei_left = max(0, sensei_left - used)
-            ctx.update(sensei_used=int(ctx.progress.get("sensei_used") or 0) + used)
         ctx.update(applied_mode=out.get("mode"))
     return {
         k: ctx.progress.get(k)

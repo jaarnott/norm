@@ -3282,3 +3282,66 @@ class TestABatchSavesAsItGoes:
         )
         assert out["remaining"] == ["a", "b"] and out["stopped"] == "out of time"
         assert out["cards"] == []
+
+
+class TestEveryNewSupplierIsStudied:
+    """The batch studies every supplier with no spec before reading its
+    invoices, as the receive card does — it used to stop at two per run, and a
+    supplier with no spec isn't catalogued, so its products were asked about
+    on every invoice (Alsco, 15 Oct 2026). Once per supplier; a cancel or the
+    chat's time budget stops it."""
+
+    SUPPLIERS = {"a1": "Alsco", "a2": "Alsco", "p1": "PNM", "m1": "M H Luxe", "f1": "Prime Fresh"}
+
+    def _stub(self, monkeypatch, studied):
+        suppliers = self.SUPPLIERS
+
+        class _Lh:
+            def invoice(self, iid):
+                return {"id": iid, "supplierName": suppliers[iid], "fileId": f"f-{iid}"}
+
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda *a, **k: _Lh())
+        monkeypatch.setattr(IR, "account_suppliers", lambda lh: [])
+        monkeypatch.setattr(IR, "supplier_aliases", lambda lh, det, sup: ())
+        monkeypatch.setattr(IR, "extraction_instructions", lambda *a, **k: "")
+        monkeypatch.setattr(
+            IR, "extract_invoice_copies_parallel", lambda db, lh, reqs: [None] * len(reqs)
+        )
+        monkeypatch.setattr(
+            "app.services.spec_dojo.prefetch_replica_reference", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            IR,
+            "review_invoice",
+            lambda db, cdb, vid, iid, **kw: {
+                "invoice_id": iid,
+                "confidence": "needs_review",
+                "issues": [],
+                "suggestions": [],
+            },
+        )
+
+        def maybe(db, cdb, vid, iid, name, *aliases):
+            studied.append(name)
+            return True
+
+        monkeypatch.setattr(IR, "_maybe_sensei", maybe)
+
+    def test_every_new_supplier_once_with_no_limit(self, monkeypatch):
+        studied: list[str] = []
+        self._stub(monkeypatch, studied)
+        out = IR.review_invoices(None, None, "v-1", list(self.SUPPLIERS))
+        assert studied == ["Alsco", "PNM", "M H Luxe", "Prime Fresh"]
+        assert [s["supplier_name"] for s in out["sensei"]] == studied
+
+    def test_out_of_time_or_cancelled_studies_nothing_more(self, monkeypatch):
+        import time
+
+        studied: list[str] = []
+        self._stub(monkeypatch, studied)
+        out = IR.review_invoices(
+            None, None, "v-1", list(self.SUPPLIERS), deadline=time.monotonic() - 1
+        )
+        assert studied == [] and out["stopped"] == "out of time"
+        IR.review_invoices(None, None, "v-1", list(self.SUPPLIERS), should_stop=lambda: True)
+        assert studied == []

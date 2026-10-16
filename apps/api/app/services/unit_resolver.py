@@ -37,6 +37,7 @@ import logging
 import re
 
 from app.services.invoice_units import (
+    is_charge_line,
     is_multipack,
     is_packaging_word,
     parse_unit,
@@ -318,14 +319,42 @@ def resolve_units(
     if not ids:
         return {}
     by_id = {str(ln.get("id")): ln for ln in all_lines or [] if isinstance(ln, dict)}
-    prompts = {
-        lid: line_prompt(
-            by_id[lid], all_lines, supplier_name, (evidence_by_line or {}).get(lid)
-        )
-        for lid in ids
-        if lid in by_id
-    }
-    answers = _estimate_all(prompts, ask_llm or _default_ask(db), db)
+    from app.services.supplier_catalog import product_key
+
+    # One question per product: a monthly rental invoice lists each item once
+    # a week, and Alsco's four lines of one mat were four web searches (15 Oct
+    # 2026). Lines with the same code AND the same description (ignoring case
+    # and punctuation) share the first line's answer — a code alone is not
+    # enough: Angus Meats bills four different cuts as "BONES". A charge
+    # (delivery fee, freight, a levy) is one charge — Each — and is never
+    # asked about.
+    prompts: dict[str, str] = {}
+    asked_as: dict[str, str] = {}
+    charges: list[str] = []
+    first_for: dict[tuple, str] = {}
+    for lid in ids:
+        ln = by_id.get(lid)
+        if ln is None:
+            continue
+        if is_charge_line(ln.get("description")):
+            charges.append(lid)
+            continue
+        code = str(ln.get("code") or "").strip().lower()
+        words = product_key(None, ln.get("description"))
+        key = (code, words) if (code or words) else ("line", lid)
+        asked_as[lid] = first_for.setdefault(key, lid)
+        if asked_as[lid] == lid:
+            prompts[lid] = line_prompt(
+                ln, all_lines, supplier_name, (evidence_by_line or {}).get(lid)
+            )
+    asked = _estimate_all(prompts, ask_llm or _default_ask(db), db) if prompts else {}
+    answers = {lid: asked.get(first, {}) for lid, first in asked_as.items()}
+    for lid in charges:
+        answers[lid] = {
+            "size": "each",
+            "confidence": "high",
+            "why": "a delivery, freight or service charge is billed as one charge",
+        }
 
     out: dict[str, dict] = {}
     for lid, ans in answers.items():
