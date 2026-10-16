@@ -192,11 +192,31 @@ class LoadedInvoiceClient:
         return base64.b64encode(resp.content).decode(), ctype
 
     def invoice(self, invoice_id: str) -> dict:
-        return self.request(
-            "GET",
-            f"/1.0/stock/invoices/{invoice_id}"
-            "?isAdjustingInvoice=false&includeDeleted=false",
-        )
+        try:
+            return self.request(
+                "GET",
+                f"/1.0/stock/invoices/{invoice_id}"
+                "?isAdjustingInvoice=false&includeDeleted=false",
+            )
+        except RuntimeError as exc:
+            # Loaded lists some drafts it then won't open ("not found"): mail
+            # that landed in its invoice inbox, such as Allie's Foods' price
+            # letter and a flyer at Applegum (16 Oct 2026). The list entry
+            # still carries the attached file, so the review reads that and
+            # decides (here: not an invoice, delete the draft).
+            if "→ 404" not in str(exc):
+                raise
+            row = next(
+                (
+                    r
+                    for r in outstanding_invoice_rows(self)
+                    if str(r.get("id")) == str(invoice_id)
+                ),
+                None,
+            )
+            if row is None:
+                raise
+            return row
 
 
 def resolve_po_id(
@@ -968,6 +988,11 @@ def _inv_includes_tax(detail: dict) -> bool:
     return bool(v)
 
 
+_LIST_PAGE_SIZE = 200
+#: 5,000 drafts — far past any real backlog; it only stops a runaway loop.
+_LIST_MAX_PAGES = 25
+
+
 def outstanding_invoice_rows(lh) -> list[dict]:
     """This venue's unreceived supplier invoices, as Loaded returns them.
 
@@ -975,11 +1000,18 @@ def outstanding_invoice_rows(lh) -> list[dict]:
     extraction pre-warm). It lived in two places already; a third copy is how
     a filter gets fixed in one of them and not the others.
     """
-    rows = lh.get(
-        "/1.0/stock/internal/invoices"
-        "?from=1901-01-01&to=9999-12-31&status=NotReceived&page=0&pageSize=200"
-    )
-    rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
+    # Every page: Loaded serves 200 at a time, and reading only the first left
+    # 390 of Applegum's 590 drafts unseen (16 Oct 2026).
+    rows: list = []
+    for page in range(_LIST_MAX_PAGES):
+        batch = lh.get(
+            "/1.0/stock/internal/invoices?from=1901-01-01&to=9999-12-31"
+            f"&status=NotReceived&page={page}&pageSize={_LIST_PAGE_SIZE}"
+        )
+        batch = batch if isinstance(batch, list) else (batch or {}).get("data") or []
+        rows.extend(batch)
+        if len(batch) < _LIST_PAGE_SIZE:
+            break
     return [
         i
         for i in rows

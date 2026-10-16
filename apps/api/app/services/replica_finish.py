@@ -612,72 +612,6 @@ def _totals_view(data: dict) -> tuple[float, float, float, float | None]:
     return line_sum, tax, derived, _f(data.get("total"))
 
 
-def _exact_total(data: dict) -> float:
-    """The invoice total before Loaded rounds the subtotal and tax to cents —
-    what a spread solves against, so a rounded-away fraction of a cent of tax
-    doesn't move the costs."""
-    line_sum, tax, _, _ = _totals_view(data)
-    incl = bool(data.get("unit_cost_includes_tax"))
-    return line_sum + (0.0 if incl else tax) - (_f(data.get("discount_amount")) or 0.0)
-
-
-def _gross(ln: dict, incl: bool) -> float:
-    """What a dollar of this line's cost adds to the invoice total: the dollar
-    and its tax. Just the dollar when costs include tax, or when the line has
-    no rate (its stored tax doesn't move with the cost)."""
-    rate = _f(ln.get("sale_tax_rate"))
-    return 1.0 if incl or rate is None else 1.0 + rate
-
-
-def spread_costs(
-    data: dict, fixed: set[str] | frozenset = frozenset()
-) -> dict[str, float]:
-    """The last answer to totals that don't add up: each line's cost moved by
-    its share of the difference, so the invoice comes to its total — the
-    remainder cent on the biggest line. A line's tax moves with its cost, so
-    each moves by its share ÷ (1 + its rate). ``{line_id: new unit cost}`` for
-    the lines that move; empty when the lines already add up. ``fixed``: ids
-    of lines that count toward the total but must not move."""
-    _, _, derived, declared = _totals_view(data)
-    if declared is None or _agree(derived, declared):
-        return {}
-    incl = bool(data.get("unit_cost_includes_tax"))
-    live = []
-    for ln in _lines(data):
-        if ln.get("struck") or str(ln.get("id")) in fixed:
-            continue
-        q, c = _f(ln.get("quantity_received")), _f(ln.get("unit_cost"))
-        if q and c is not None:
-            live.append((ln, q, c, _gross(ln, incl)))
-    weight = sum(abs(q * c * g) for _, q, c, g in live)
-    if not live or not weight:
-        return {}
-    # Measured over EVERY line (one without a quantity or cost still counts
-    # toward the total), spread over those that can move.
-    gap = declared - _exact_total(data)
-    new_cost = {
-        str(ln["id"]): round(c + gap * abs(q * c * g) / weight / (q * g), 4)
-        for ln, q, c, g in live
-    }
-    trial = {
-        **data,
-        "lines": [
-            {**ln, "unit_cost": new_cost.get(str(ln.get("id")), ln.get("unit_cost"))}
-            for ln in _lines(data)
-        ],
-    }
-    _, _, now, _ = _totals_view(trial)
-    big, bq, _, bg = max(live, key=lambda t: abs(t[1] * t[2] * t[3]))
-    new_cost[str(big["id"])] = round(
-        new_cost[str(big["id"])] + (declared - now) / (bq * bg), 4
-    )
-    return {
-        lid: cost
-        for (ln, _q, c, _g), (lid, cost) in zip(live, new_cost.items())
-        if abs(cost - c) >= 0.00005
-    }
-
-
 def read_printed_prices(view: dict, replica: dict) -> dict | None:
     """Ways an invoice's figures are all right but were read wrong, worked out
     from the figures themselves instead of spread as a guess:
@@ -956,8 +890,9 @@ def settle_totals(
 
     Whether the invoice then balances is decided AFTER the suggestions exist,
     on everything they apply (``invoice_review.balance_after_suggestions``):
-    that is the check, and spreading the costs is its last resort. The
-    copy's own figures failing to reconcile only tells this rule to look.
+    that is the check, and working out which lines are wrong is its last
+    resort. The copy's own figures failing to reconcile only tells this rule
+    to look.
 
     Before any of that, and whether or not the copy's totals were flagged:
     prices printed including GST, or a discount off the bottom, are read

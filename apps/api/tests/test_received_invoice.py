@@ -609,3 +609,45 @@ class TestTheReceivedDateDefaultsToTheInvoiceDate:
         assert out["receivedAt"].startswith(
             datetime.datetime.now(datetime.timezone.utc).date().isoformat()
         )
+
+
+class TestADraftLoadedWontOpen:
+    """Loaded lists some drafts it then won't open: mail in its invoice inbox,
+    such as Allie's Foods' price letter and a smoothie flyer at Applegum
+    (16 Oct 2026). Every run reported them "could not fetch from Loaded" and
+    they sat there for ever. The list entry still carries the attached file,
+    so the review opens the draft from it and decides."""
+
+    def _client(self, error: str, listed: list[dict]):
+        from app.services.received_invoice import LoadedInvoiceClient
+
+        lh = LoadedInvoiceClient.__new__(LoadedInvoiceClient)
+
+        def request(method, path, body=None):
+            if "/stock/invoices/" in path:
+                raise RuntimeError(error)
+            return listed if "page=0" in path else []
+
+        lh.request = request
+        lh.get = lambda path: request("GET", path)
+        return lh
+
+    ROW = {"id": "7fa0e178", "fileId": "f-1", "supplierName": None, "lines": []}
+
+    def test_not_found_opens_it_from_the_list(self):
+        lh = self._client("Loaded GET /1.0/stock/invoices/7fa0e178 → 404: not found", [self.ROW])
+        assert lh.invoice("7fa0e178") == self.ROW
+
+    def test_any_other_failure_still_fails(self):
+        import pytest
+
+        lh = self._client("Loaded GET /1.0/stock/invoices/7fa0e178 → 502: bad gateway", [self.ROW])
+        with pytest.raises(RuntimeError, match="502"):
+            lh.invoice("7fa0e178")
+
+    def test_not_in_the_list_either_still_fails(self):
+        import pytest
+
+        lh = self._client("Loaded GET /1.0/stock/invoices/x → 404: not found", [self.ROW])
+        with pytest.raises(RuntimeError, match="404"):
+            lh.invoice("x")

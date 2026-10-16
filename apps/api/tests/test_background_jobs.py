@@ -509,3 +509,32 @@ class TestTheSummaryWording:
     def test_none_shown_as_in_the_email(self):
         text = irj.summary_text(self._job(2))
         assert "below" not in text and "on the Invoices page" in text
+
+
+class TestEverythingNotReceivedIsNamed:
+    """The summary names each invoice that couldn't be reviewed and why —
+    it used to give only a count (16 Oct 2026: two Allie's Foods documents
+    hid behind "couldn't be reviewed" for four runs)."""
+
+    def test_failed_invoices_are_listed_with_their_reason(self):
+        job = BackgroundJob(
+            title="Receiving X invoices",
+            status="done",
+            progress={
+                "total": 2,
+                "done": 2,
+                "received": 1,
+                "failed": 1,
+                "needs_you_list": [
+                    {
+                        "invoice_id": "i1",
+                        "supplier": "Allie's Foods",
+                        "reference": None,
+                        "outcome": "could not fetch from Loaded",
+                        "reasons": ["could not fetch this invoice from Loaded: 404"],
+                    }
+                ],
+            },
+        )
+        text = irj.summary_text(job)
+        assert "Couldn't be reviewed:\n- Allie's Foods: could not fetch this invoice" in text

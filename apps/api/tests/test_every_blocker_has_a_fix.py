@@ -18,7 +18,7 @@ import pytest
 from app.services import invoice_review as IR
 from app.services import replica_finish as RF
 from app.services import venue_autopilot as VA
-from tests.test_invoice_review import DETAIL, EXTRACTION, _review
+from tests.test_invoice_review import DETAIL, EXTRACTION, _issue_codes, _review
 
 
 def _unit_issue(code="unit_missing", line_id="ld-1", **over):
@@ -422,55 +422,12 @@ class TestLikelyOrder:
         assert data.get("linked_purchase_order_id") is None
 
 
-class TestSpreadToTotal:
-    def _data(self):
-        return {
-            "total": 115.0,
-            "tax_amount": 15.0,
-            "lines": [
-                {
-                    "id": "a",
-                    "description": "A",
-                    "quantity_received": 2,
-                    "unit_cost": 30.0,
-                },
-                {
-                    "id": "b",
-                    "description": "B",
-                    "quantity_received": 3,
-                    "unit_cost": 10.0,
-                },
-                {
-                    "id": "c",
-                    "description": "C",
-                    "quantity_received": 1,
-                    "unit_cost": 9.0,
-                },
-            ],
-        }
-
-    def test_the_lines_then_balance_to_the_total(self):
-        data = self._data()  # 60 + 30 + 9 = 99, the total says 100 ex tax
-        moved = RF.spread_costs(data)
-        assert moved
-        for ln in data["lines"]:
-            if ln["id"] in moved:
-                ln["unit_cost"] = moved[ln["id"]]
-        _, _, derived, declared = IR._totals_view(data)
-        assert abs(derived - declared) < 0.005
-
-    def test_balanced_lines_move_nothing(self):
-        data = self._data()
-        data["total"] = 114.0
-        assert RF.spread_costs(data) == {}
-
-
 class TestTotalsDoTheCardsArithmetic:
     """The totals rule works the invoice out the way the card and Loaded do
     (Loaded's calculateFooterTotals): lines, tax at each line's rate, less the
     discount. It used to keep the line's stored tax — Loaded's, for Loaded's
-    cost — so every spread balanced to the wrong total. Fresh Connection
-    30049130 (14 Oct 2026): 5 × 42.99 spread to 29.4315 against tax still
+    cost — so every balancing balanced to the wrong total. Fresh Connection
+    30049130 (14 Oct 2026): 5 × 42.99 moved to 29.4315 against tax still
     15% of 42.99, and the card came to $138.32 on a $179.40 invoice."""
 
     def _line(self, q, c, rate=0.15, **over):
@@ -495,14 +452,6 @@ class TestTotalsDoTheCardsArithmetic:
         data = {"unit_cost_includes_tax": True, "lines": [self._line(1, 11.5)]}
         _, tax, derived, _ = RF._totals_view(data)
         assert (round(tax, 2), derived) == (1.5, 11.5)
-
-    def test_a_spread_moves_the_tax_with_the_cost(self):
-        data = {"total": 179.4, "lines": [self._line(5, 42.99, tax_amount=32.2425)]}
-        moved = RF.spread_costs(data)
-        assert moved == {"a": 31.2}  # was 29.4315: 179.40 − 32.24 stale tax
-        data["lines"][0]["unit_cost"] = moved["a"]
-        _, _, derived, declared = RF._totals_view(data)
-        assert derived == declared
 
 
 class TestPricesAndDiscountsAreReadExactly:
@@ -737,21 +686,22 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
         IR.balance_after_suggestions(data, suggestions, issues)
         return suggestions, issues
 
-    def test_suggestions_that_leave_it_off_get_a_balancing_fix(self):
+    def _off(self):
+        # The invoice says 30.00 ex GST, but its price reads 11.50: accepting
+        # it would still be $8.05 short.
         data = {
             "invoice_id": "inv-1",
             "total": 34.5,
             "lines": [
                 {
                     "id": "ld-1",
+                    "description": "Salmon",
                     "quantity_received": 2,
                     "unit_cost": 10.0,
                     "sale_tax_rate": 0.15,
                 }
             ],
         }
-        # The invoice says 30.00 ex GST, but its price reads 11.50: accepting
-        # it would still be $8.05 short.
         price = {
             "id": "line_value:unit_cost:ld-1",
             "kind": "line_value",
@@ -761,19 +711,54 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
             "apply": {"unit_cost": 11.5},
             "sure": True,
         }
+        return data, price
+
+    @staticmethod
+    def _answer(cost):
+        return lambda payload: {
+            "corrections": [
+                {"scope": "line", "line_id": "ld-1", "field": f, "proposed": v}
+                for f, v in (("unit_price", cost), ("line_total", 2 * cost))
+            ],
+            "confidence": "high",
+            "why": "the price was misread",
+        }
+
+    def test_no_line_explains_it_and_the_blocker_stands(self):
+        # Never an adjustment line, never the difference spread over the
+        # prices (the owner, 16 Oct 2026: "it should work out the lines").
+        data, price = self._off()
         suggestions, issues = self._balance(data, [price], [])
         [issue] = issues
         assert issue["clears_when"] == {"scope": "header", "op": "balances"}
         assert issue["gate"] == VA.RECEIVE_UNRECONCILED_TOTALS
-        [s] = suggestions  # the price suggestion now carries the balancing cost
-        assert s["proposed"] == 15.0 and s["sure"] is False
-        assert s["gate"] == VA.RECEIVE_UNRECONCILED_TOTALS
+        [s] = suggestions
+        assert s["proposed"] == 11.5 and s["sure"] is True
+        assert s["fixes"] == issue["id"]
+        assert not IR.totals_balance(IR._all_applied(data, suggestions))
+
+    def test_the_model_works_out_the_wrong_line(self):
+        data, price = self._off()
+        suggestions, issues = [price], []
+        IR.balance_after_suggestions(data, suggestions, issues, ask=self._answer(15.0))
+        [s] = suggestions  # the price suggestion now carries the right price
+        assert s["proposed"] == 15.0 and s["sure"] is True
+        assert s["confidence"] == "high"
+        assert "the price was misread" in s["explanation"]
+        [issue] = issues  # the draft as it stands still doesn't add up
         assert s["fixes"] == issue["id"]
         assert IR.totals_balance(IR._all_applied(data, suggestions))
 
+    def test_an_answer_that_doesnt_add_up_changes_nothing(self):
+        data, price = self._off()
+        suggestions, issues = [price], []
+        IR.balance_after_suggestions(data, suggestions, issues, ask=self._answer(14.0))
+        [s] = suggestions
+        assert s["proposed"] == 11.5
+
     def test_a_suggestion_that_would_unbalance_a_matching_invoice_goes(self):
-        # Loaded's 2 x 10.00 already comes to 23.00; a list price that would
-        # break it is spread straight back to Loaded's cost — and dropped.
+        # Loaded's 2 x 10.00 already comes to 23.00: a list price that would
+        # break it is dropped, and Loaded's figures stay.
         data = {
             "invoice_id": "inv-1",
             "total": 23.0,
@@ -848,7 +833,22 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
             },
             "sure": True,
         }
-        suggestions, _ = self._balance(data, [add], [])
+        seen: list = []
+
+        def ask(payload):
+            seen.extend(ln["id"] for ln in payload["lines"])
+            return {
+                "corrections": [
+                    {"scope": "line", "line_id": "ld-1", "field": f, "proposed": 15.0}
+                    for f in ("unit_price", "line_total")
+                ],
+                "confidence": "high",
+                "why": "the cleaning line is 15.00",
+            }
+
+        suggestions: list = [add]
+        IR.balance_after_suggestions(data, suggestions, [], ask=ask)
+        assert seen == ["ld-1", "new-1"]  # the added line is on the invoice too
         moved = {
             s["line_id"]: s["proposed"]
             for s in suggestions
@@ -1116,7 +1116,7 @@ class TestLinesWithoutGst:
         )
         assert self._rates(replica) == [0.1, 0.1]
 
-    def test_the_review_then_suggests_the_rate_and_needs_no_spread(self):
+    def test_the_review_then_suggests_the_rate_and_moves_no_cost(self):
         data, replica, pairs = self._settle(
             [("BBQ Sauce 3Ltr", 1, 13.26), ("Invoice Rounding", 1, -0.01)],
             tax=0.0,
@@ -1130,7 +1130,7 @@ class TestLinesWithoutGst:
         assert [s["proposed"] for s in rate] == [0.0, 0.0]
         issues: list = []
         IR.balance_after_suggestions(data, suggestions, issues)
-        assert not [s for s in suggestions if s["field"] == "unit_cost"]  # no spread
+        assert not [s for s in suggestions if s["field"] == "unit_cost"]
         assert IR.totals_balance(IR._all_applied(data, suggestions))
 
 
@@ -1139,18 +1139,56 @@ class TestTheReviewLeavesNoBlockerWithoutAFix:
     contract is blockers_without_a_fix(data) == [] — also logged as a warning
     on every production review."""
 
-    def test_totals_with_no_misread_figure_are_balanced(self):
-        # The invoice's total disagrees with its own lines and the arbiter
-        # finds no misread figure: the Replica spreads the costs (a guess).
+    def test_totals_no_line_explains_keep_their_blocker(self):
+        # The invoice's printed total disagrees with its own lines and
+        # nothing explains it. Norm never bends the costs to fit (the spread
+        # cut 64 Applegum invoices' prices, 16 Oct 2026): the blocker stands,
+        # and the run names the invoice among those not received.
         data = _review(
             detail=DETAIL(total=300.0),
             extraction=EXTRACTION(total_incl_tax=300.0),
             totals_ask=lambda p: {},
         )
-        issue = next(i for i in data["issues"] if i["code"] == "totals_inconsistent")
-        fix = [s for s in data["suggestions"] if s["id"] in issue["fix"]]
-        assert fix and all(s["sure"] is False for s in fix)
-        assert all(s.get("fixes") == issue["id"] for s in fix)
+        assert "totals_inconsistent" in _issue_codes(data)
+        assert not [s for s in data["suggestions"] if s.get("field") == "unit_cost"]
+
+    def test_totals_the_model_works_out_are_fixed(self):
+        # Loaded and the copy both read 4.95; the invoice's subtotal, GST and
+        # total say 5. The copy's own check finds nothing; on the values Norm
+        # would receive, the model works out the quantity.
+        def ask(payload):
+            if "values Norm will receive" not in " ".join(payload["failing"]):
+                return {}
+            return {
+                "corrections": [
+                    {
+                        "scope": "line",
+                        "line_id": "ld-1",
+                        "field": "quantity",
+                        "proposed": 5.0,
+                    },
+                    {
+                        "scope": "line",
+                        "line_id": "ld-1",
+                        "field": "line_total",
+                        "proposed": 222.0,
+                    },
+                ],
+                "confidence": "high",
+                "why": "5 at 44.40 is the 222.00 subtotal",
+            }
+
+        data = _review(
+            detail=DETAIL(total=255.30, subtotal=222.0, taxAmount=33.30),
+            extraction=EXTRACTION(
+                subtotal_ex_tax=222.0, tax_amount=33.30, total_incl_tax=255.30
+            ),
+            totals_ask=ask,
+        )
+        [s] = [s for s in data["suggestions"] if s.get("field") == "quantity_received"]
+        assert s["proposed"] == 5.0 and s["sure"] is True
+        assert not [s for s in data["suggestions"] if s.get("field") == "unit_cost"]
+        assert IR.totals_balance(IR._all_applied(data, data["suggestions"]))
         assert IR.blockers_without_a_fix(data) == []
 
     def test_totals_where_the_lines_already_balance_need_nothing(self):
@@ -1284,3 +1322,74 @@ class TestWhichItemACodeIs:
             replica_po="po-7",
         )
         assert rl["linked_item_id"] == "i-blk" and rl["matched_by"] == "order"
+
+
+class TestEveryBlockerHasAnAutopilotDecision:
+    """The tripwire (docs/plans/autopilot-fallbacks.md). On Autopilot every
+    invoice is received: Norm decides, and never hands an invoice to a person
+    (the owner, 16 Oct 2026). Every blocker code the review can raise says
+    here what settles it with no one there. A new code fails this test until
+    it does; the ones that still stop Autopilot are KNOWN_GAPS, by name."""
+
+    _SOURCES = ("invoice_replica.py", "invoice_review.py", "replica_finish.py")
+
+    #: blocker → the suggestion that settles it, applied by Autopilot when
+    #: Norm is sure of it or its switch is on.
+    SETTLED_BY = {
+        "item_unmatched": {"kind": "create_item", "field": "linked_item_id"},
+        "unit_missing": {"kind": "create_unit", "field": "unit"},
+        "unit_would_be_created": {"kind": "create_unit", "field": "unit"},
+        "unit_unconfirmed": {"kind": "line_value", "field": "unit"},
+        "brand_unknown": {"kind": "create_brand"},
+        "supplier_unresolved": {"kind": "create_supplier"},
+        "loaded_line_not_on_copy": {"kind": "strike"},
+        "po_missing": {"kind": "link_po"},
+        "po_unresolved": {"kind": "link_po"},
+        "po_split_order": {"kind": "split_reference"},
+        "po_doubled_up": {"kind": "unlink_po"},
+        "duplicate_invoice": {"kind": "delete_invoice"},
+        "not_an_invoice": {"kind": "delete_invoice"},
+        "no_copy_attached": {"kind": "delete_invoice"},
+        "copy_unreadable": {"kind": "delete_invoice"},
+        # Norm works out which lines are wrong (balance_after_suggestions).
+        # When no line explains the gap it still stops: see
+        # test_totals_no_line_explains_keep_their_blocker.
+        "totals_inconsistent": {
+            "kind": "line_value",
+            "field": "unit_cost",
+            "fixes": "totals_inconsistent",
+        },
+    }
+    #: Blockers that still stop Autopilot — each one a decision still owed.
+    KNOWN_GAPS = {
+        "credit_zero_quantity": (
+            "Lion Nathan rebate credits (14 Oct 2026): how a rebate goes into "
+            "Loaded is the owner's call"
+        ),
+        "copy_not_checked": "a service was down: this run stops, the next retries",
+    }
+    NOT_BLOCKING = {"credit_note", "po_supplier_mismatch", "pairing_arbitrated"}
+
+    def _raised(self) -> set[str]:
+        import pathlib
+        import re
+
+        here = pathlib.Path(IR.__file__).parent
+        src = "".join((here / f).read_text() for f in self._SOURCES)
+        return set(re.findall(r'_issue\(\s*"([a-z_]+)"', src)) | set(
+            re.findall(r'"code":\s*"([a-z_]+)"', src)
+        )
+
+    def test_every_blocker_the_review_raises_has_a_decision(self):
+        known = set(self.SETTLED_BY) | set(self.KNOWN_GAPS) | self.NOT_BLOCKING
+        assert self._raised() - known == set()
+
+    def test_no_decision_is_left_for_a_blocker_that_is_gone(self):
+        known = set(self.SETTLED_BY) | set(self.KNOWN_GAPS) | self.NOT_BLOCKING
+        assert known - self._raised() == set()
+
+    @pytest.mark.parametrize("code", sorted(SETTLED_BY))
+    def test_its_suggestion_really_settles_it(self, code):
+        issue = {"id": code, "code": code, "line_id": "ln-1", "blocking": True}
+        s = {"id": "s-1", "line_id": "ln-1", **self.SETTLED_BY[code]}
+        assert IR._answers(s, issue)

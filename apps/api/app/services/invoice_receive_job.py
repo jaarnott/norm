@@ -163,8 +163,11 @@ def run(ctx: background_jobs.JobContext) -> dict:
             if data is not None and bucket == "needs_you":
                 doc_id = save_draft(db, thread_id, venue_id, data)
             prog = ctx.progress
+            # Everything not received, with its reason — "couldn't be
+            # reviewed" was only counted, and finding the two Allie's Foods
+            # documents behind it took digging (16 Oct 2026).
             needs = list(prog.get("needs_you_list") or [])
-            if bucket == "needs_you" and len(needs) < 200:
+            if bucket in ("needs_you", "failed") and len(needs) < 200:
                 needs.append(
                     {
                         "invoice_id": iid,
@@ -260,6 +263,16 @@ def summary_text(job, cards: int = 0) -> str:
         )
     elif needs:
         head += " The ones that need you are on the Invoices page."
+    failed = [n for n in p.get("needs_you_list") or [] if n.get("outcome") in _FAILED][
+        :10
+    ]
+    if failed:
+        head += "\n\nCouldn't be reviewed:" + "".join(
+            "\n- "
+            + " ".join(str(x) for x in (n.get("supplier"), n.get("reference")) if x)
+            + (f": {n['reasons'][0]}" if n.get("reasons") else "")
+            for n in failed
+        )
     return head
 
 

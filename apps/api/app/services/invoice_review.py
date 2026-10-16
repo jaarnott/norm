@@ -70,7 +70,6 @@ from app.services.replica_finish import (
     TOTALS_ISSUE,
     _totals_view,
     finish_replica,
-    spread_costs,
 )
 from app.services.received_invoice import (
     LoadedInvoiceClient,
@@ -169,11 +168,14 @@ def pair_lines(
 ) -> tuple[dict[str, str], list[dict], list[dict], list[dict]]:
     """Pair each replica line to a working (Loaded) line.
 
-    Tiers per replica line, unique-hit-only among still-unclaimed lines:
-    linked_item_id → normalized code → plain description match (the
-    parity-tested ``invoice_line_match`` rules). A replica line whose only
-    hits are already claimed (or never unique) is AMBIGUOUS — flagged, never
-    guessed, and never double-added.
+    Tiers per replica line, among still-unclaimed lines: linked_item_id →
+    normalized code → plain description match (the parity-tested
+    ``invoice_line_match`` rules). Several unclaimed lines of the same item or
+    code are the same product — Alsco lists each rental item once a week
+    (16 Oct 2026) — so the one whose quantity and cost also agree is taken,
+    else the first: the copy's values are written over it either way. A
+    replica line whose only hits are already claimed is CONTESTED (returned
+    as ambiguous for the arbiter).
 
     Returns ``(pairs {replica_id: loaded_id}, ambiguous replica lines,
     unpaired replica lines, unpaired loaded lines)``.
@@ -190,6 +192,15 @@ def pair_lines(
         pairs[rl_id] = lid
         unclaimed.pop(lid, None)
 
+    def _best(rl: dict, hits: list[dict]) -> dict:
+        qty, cost = _f(rl.get("quantity_received")), _f(rl.get("unit_cost"))
+        for ln in hits:
+            if not _differ(ln.get("quantity_received"), qty, _QTY_TOL) and not _differ(
+                ln.get("unit_cost"), cost, _MONEY_TOL
+            ):
+                return ln
+        return hits[0]
+
     for rl in replica_lines:
         rl_id = str(rl.get("id"))
         contested = False  # a tier matched only lines another rep line claimed
@@ -197,8 +208,8 @@ def pair_lines(
         item = rl.get("linked_item_id")
         if item:
             hits = [ln for ln in unclaimed.values() if ln.get("linked_item_id") == item]
-            if len(hits) == 1:
-                _claim(rl_id, hits[0])
+            if hits:
+                _claim(rl_id, _best(rl, hits))
                 continue
             if not hits and any(ln.get("linked_item_id") == item for ln in doc_lines):
                 contested = True
@@ -206,8 +217,8 @@ def pair_lines(
         code = _norm(rl.get("code")) if rl.get("code") else ""
         if code:
             hits = [ln for ln in unclaimed.values() if _norm(ln.get("code")) == code]
-            if len(hits) == 1:
-                _claim(rl_id, hits[0])
+            if hits:
+                _claim(rl_id, _best(rl, hits))
                 continue
             if not hits and any(_norm(ln.get("code")) == code for ln in doc_lines):
                 contested = True
@@ -392,7 +403,7 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
             else None,
         )
     if rl.get("unit_cost_set"):
-        # A rule set the cost outright (a misread figure, a spread).
+        # A rule set the cost outright (a misread figure).
         copy_cost, billed = rl.get("unit_cost"), None
     else:
         copy_cost, billed = _reconciled_unit_cost(rl)
@@ -646,9 +657,9 @@ def pair_invoice_lines(
     unpaired_loaded, issues)``.
 
     The arbitration writes nothing — a decisive pairing only lets the normal
-    comparison run on those lines; anything less than high confidence leaves
-    them ambiguous. ``invoice_arbiter`` enforces a proper matching: a
-    half-right pairing is worse than none."""
+    comparison run on those lines; a line it can't pair is added from the
+    copy (never a blocker: Autopilot decides). ``invoice_arbiter`` enforces a
+    proper matching: a half-right pairing is worse than none."""
     issues: list[dict] = []
     doc_lines = data.get("lines") or []
     rep_lines = replica.get("lines") or []
@@ -704,21 +715,13 @@ def pair_invoice_lines(
                 }
             )
 
-    for rl in ambiguous:
-        issues.append(
-            {
-                "id": f"ambiguous_pairing:{rl.get('id')}",
-                "code": "ambiguous_pairing",
-                "blocking": True,
-                "line_id": rl.get("id"),
-                "message": (
-                    f"invoice line '{rl.get('description')}' matches a Loaded line "
-                    "another invoice line already claimed — reconcile these lines "
-                    "by hand"
-                ),
-            }
-        )
-    return pairs, ambiguous, unpaired_rep, unpaired_loaded, issues
+    # Still contested: the copy has more of this product than Loaded's draft
+    # does, so the line is added from the copy. It used to block ("reconcile
+    # these lines by hand") and Autopilot could never get past it — five Alsco
+    # invoices (16 Oct 2026) whose drafts Loaded had garbled. Loaded's own
+    # leftover lines are struck as usual.
+    unpaired_rep = unpaired_rep + ambiguous
+    return pairs, [], unpaired_rep, unpaired_loaded, issues
 
 
 #: Replica-only bookkeeping that must not ride into the working line when a
@@ -1135,8 +1138,8 @@ _LINE_ISSUE_CLEARS = {
 #: ONE mapping, stamped onto the issue as `gate`, so the card can say "this
 #: needs a brand created, and auto-create brands is off" without keeping its
 #: own copy of the rules to drift out of step with these.
-#: An issue with no entry here is a judgement no toggle can authorise
-#: (a duplicate invoice, inconsistent totals) — a person has to look.
+#: An issue with no entry here needs no toggle: Norm's own answer settles it
+#: (tests/test_every_blocker_has_a_fix.py lists each blocker's decision).
 _ISSUE_GATES = {
     "item_unmatched": _VA.AUTO_CREATE_ITEMS,
     "unit_missing": _VA.AUTO_CREATE_UNITS,
@@ -1181,17 +1184,156 @@ def _all_applied(data: dict, suggestions: list[dict]) -> dict:
     return post
 
 
+def _moves_money(data: dict, s: dict) -> bool:
+    """Does accepting this suggestion alone change how far the invoice is off
+    its total? A cost, a quantity, a line, a rate or the total itself."""
+    _, _, came_to, declared = _totals_view(data)
+    _, _, after, after_total = _totals_view(_all_applied(data, [s]))
+    return abs((after - (after_total or 0.0)) - (came_to - (declared or 0.0))) >= 0.005
+
+
+def _work_out_the_lines(
+    data: dict,
+    suggestions: list[dict],
+    issue_id: str,
+    replica: dict,
+    pairs: dict[str, str],
+    ask,
+    db,
+) -> None:
+    """With every suggestion applied the invoice still doesn't come to its
+    total: the model is shown each line as it would be received, beside the
+    invoice's printed reading of it, and names the lines that are wrong
+    (``invoice_arbiter.diagnose_totals``). Its answer counts only when the
+    invoice then adds up, Loaded's way (``totals_balance``) — then it is a
+    sure fix. Otherwise nothing changes and the totals blocker stands, with
+    its reason, in the run's list of invoices not received."""
+    if ask is None and db is None:
+        return
+    from app.services import invoice_arbiter
+
+    post = _all_applied(data, suggestions)
+    _, _, came_to, declared = _totals_view(post)
+    printed = {wid: _line(replica, rid) or {} for rid, wid in pairs.items()}
+    lines = []
+    for ln in post.get("lines") or []:
+        if not isinstance(ln, dict) or ln.get("struck"):
+            continue
+        lid = str(ln.get("id"))
+        q, c = _f(ln.get("quantity_received")), _f(ln.get("unit_cost"))
+        rl = printed.get(lid) or {}
+        lines.append(
+            {
+                "id": lid,
+                "description": ln.get("description"),
+                "quantity": q,
+                "unit_price": c,
+                "line_total": round(q * c, 4)
+                if q is not None and c is not None
+                else None,
+                "gst_rate": ln.get("sale_tax_rate"),
+                "printed": {
+                    "quantity": rl.get("quantity_received"),
+                    "unit_price": rl.get("unit_cost"),
+                    "line_total": rl.get("total_cost"),
+                }
+                if rl
+                else None,
+            }
+        )
+    verdict = invoice_arbiter.diagnose_totals(
+        lines,
+        {
+            "subtotal": replica.get("subtotal"),
+            "tax": replica.get("tax_amount"),
+            "discount": replica.get("discount_amount"),
+            "total": declared,
+        },
+        [
+            f"these are the values Norm will receive: they come to "
+            f"{came_to:.2f}, not the invoice's total {declared:.2f}. Each line "
+            f"shows the invoice's printed reading of it under 'printed' — "
+            f"name the lines whose values are wrong"
+        ],
+        ask_llm=ask,
+        db=db,
+    )
+    # A line's corrected figures: a new line total is a new cost (at the
+    # corrected quantity, when that moved too).
+    corrected: dict[str, dict] = {}
+    for c in verdict.get("corrections") or []:
+        if c.get("scope") == "line" and _line(post, c.get("line_id")) is not None:
+            corrected.setdefault(str(c["line_id"]), {})[str(c["field"])] = c["proposed"]
+    trial = copy.deepcopy(suggestions)
+    by_id = {str(s.get("id")): s for s in trial}
+    why = (
+        f"with every other suggestion applied the invoice comes to "
+        f"{came_to:.2f}, not its total {declared:.2f} — {verdict.get('why')}"
+    )
+    for lid, got in corrected.items():
+        ln = _line(post, lid) or {}
+        q = got.get("quantity", _f(ln.get("quantity_received")))
+        cost = got.get("unit_price")
+        if cost is None and got.get("line_total") is not None and q:
+            cost = round(got["line_total"] / q, 4)
+        for field, value, tol in (
+            ("quantity_received", q, _QTY_TOL),
+            ("unit_cost", cost, _MONEY_TOL),
+        ):
+            if value is None or not _differ(ln.get(field), value, tol):
+                continue
+            s = by_id.get(f"line_value:{field}:{lid}")
+            if s is None:
+                _sugg(
+                    trial,
+                    "line_value",
+                    field=field,
+                    line_id=lid,
+                    current=(_line(data, lid) or {}).get(field),
+                    proposed=value,
+                    explanation=why,
+                    apply={field: value},
+                    fixes=issue_id,
+                    confidence=verdict.get("confidence"),
+                )
+            else:
+                s.update(
+                    proposed=value,
+                    apply={field: value},
+                    explanation=why,
+                    sure=True,
+                    fixes=issue_id,
+                    confidence=verdict.get("confidence"),
+                )
+    if verdict and totals_balance(_all_applied(data, trial)):
+        suggestions[:] = trial
+    else:
+        logger.warning(
+            "totals don't balance and no line explains it on %s",
+            data.get("invoice_id"),
+        )
+
+
 def balance_after_suggestions(
-    data: dict, suggestions: list[dict], issues: list[dict]
+    data: dict,
+    suggestions: list[dict],
+    issues: list[dict],
+    *,
+    replica: dict | None = None,
+    pairs: dict[str, str] | None = None,
+    ask=None,
+    db=None,
 ) -> None:
     """The totals check, on the values the suggestions leave — not the copy's
     own printed figures (the user, 14 Oct 2026: "the goal is autoreceive so we
     need to make sure that after all suggestions are applied the totals
     always match, that should be our check"). In place.
 
-    - Accepting every suggestion must come to the total. If it wouldn't, the
-      costs are spread so it does: the last resort, a guess applied unattended
-      only with the receive-unreconciled-totals switch.
+    - Accepting every suggestion must come to the total. If it wouldn't,
+      Norm works out which lines are wrong (``_work_out_the_lines``) — never
+      an adjustment line, never the difference spread over every price (the
+      owner, 16 Oct 2026: "it should work out the lines"; the spread cut 64
+      Applegum invoices' costs to force a GST mismatch).
     - The totals blocker stands whenever the WORKING values don't come to the
       total, and clears only when they do (``clears_when`` ``balances``) —
       however they got there. Its fix is every suggestion that moves the
@@ -1205,65 +1347,14 @@ def balance_after_suggestions(
     existing = next((i for i in issues if i.get("code") == TOTALS_ISSUE), None)
     issue_id = (existing or {}).get("id") or TOTALS_ISSUE
 
-    post = _all_applied(data, suggestions)
-    if not totals_balance(post):
-        _, _, came_to, declared = _totals_view(post)
-        gap = round((declared or 0.0) - came_to, 2)
-        # An added line keeps the cost the invoice prints; the lines already
-        # there carry the difference.
-        added = {
-            str((s.get("payload") or {}).get("id"))
-            for s in suggestions
-            if s.get("kind") == "add_line"
-        }
-        by_id = {str(s.get("id")): s for s in suggestions}
-        for lid, cost in spread_costs(post, fixed=added).items():
-            ln = _line(data, lid) or {}
-            explanation = (
-                f"with every other suggestion applied the invoice is {gap:+.2f} "
-                f"off its total and no single misread figure explains it — "
-                f"{cost:.4f} makes it balance"
-            )
-            s = by_id.get(f"line_value:unit_cost:{lid}")
-            if s is None:
-                _sugg(
-                    suggestions,
-                    "line_value",
-                    field="unit_cost",
-                    line_id=lid,
-                    current=ln.get("unit_cost"),
-                    proposed=cost,
-                    explanation=explanation,
-                    apply={"unit_cost": cost},
-                    sure=False,
-                    fixes=issue_id,
-                )
-            else:
-                s.update(
-                    proposed=cost,
-                    apply={"unit_cost": cost},
-                    explanation=explanation,
-                    sure=False,
-                    fixes=issue_id,
-                )
-        # A spread that lands back on Loaded's own cost proposes nothing.
-        suggestions[:] = [
-            s
-            for s in suggestions
-            if not (
-                s.get("kind") == "line_value"
-                and s.get("field") == "unit_cost"
-                and not _differ(
-                    (_line(data, s.get("line_id")) or {}).get("unit_cost"),
-                    s.get("proposed"),
-                    _MONEY_TOL,
-                )
-            )
-        ]
-        if not totals_balance(_all_applied(data, suggestions)):
-            logger.warning(
-                "totals still don't balance after the spread on %s",
-                data.get("invoice_id"),
+    if not totals_balance(_all_applied(data, suggestions)):
+        if totals_balance(data):
+            # Loaded's figures add up as they stand: the suggestions that
+            # would break them go, and Loaded's figures stay.
+            suggestions[:] = [s for s in suggestions if not _moves_money(data, s)]
+        else:
+            _work_out_the_lines(
+                data, suggestions, issue_id, replica or {}, pairs or {}, ask, db
             )
 
     if totals_balance(data):
@@ -1287,14 +1378,10 @@ def balance_after_suggestions(
         issues.append(issue)
     # Its fix: every suggestion that moves the money. A guess among them is
     # Norm's to apply alone only with the totals switch.
-    gap = came_to - (declared or 0.0)
     for s in suggestions:
         if s.get("fixes") not in (None, issue_id):
             continue
-        _, _, after, after_total = _totals_view(_all_applied(data, [s]))
-        # A cost, quantity, line or the invoice total itself.
-        moves = abs((after - (after_total or 0.0)) - gap) >= 0.005
-        if not moves and s.get("fixes") is None:
+        if s.get("fixes") is None and not _moves_money(data, s):
             continue
         s["fixes"] = issue_id
         if s.get("sure") is False and not s.get("gate"):
@@ -1381,8 +1468,8 @@ LOADED_WRITE_ORDER = ("create_supplier", "create_unit", "create_item", "create_b
 #: ("receive without an order", "receive on totals that don't add up"), so
 #: nothing has to be applied for it to stand down.
 _SWITCH_SETTLES = ("po_missing", "po_unresolved", "unit_unconfirmed")
-# Not the totals: their switch lets autopilot apply the spread (a guess), and
-# the blocker then clears because the invoice balances — never by decree.
+# Not the totals: the blocker clears only because the invoice balances — never
+# by decree.
 
 _DELETE_CODES = (
     "duplicate_invoice",
@@ -1754,7 +1841,7 @@ def autopilot_accept(
     - a suggestion with a ``gate`` (a create, a delete, a phantom strike, a
       unit pick) only when that switch is on;
     - any other suggestion only when the Replica is sure of it — a guess (a
-      likely order, the closest supplier, costs spread to balance the totals)
+      likely order, the closest supplier)
       always waits for a person;
     - then any blocker a switch waves through on its own (``_SWITCH_SETTLES``).
 
@@ -2364,7 +2451,15 @@ def review_invoice(
                 )
             # The totals check runs on what the suggestions leave, last, so it
             # sees every other answer.
-            balance_after_suggestions(data, suggestions, issues)
+            balance_after_suggestions(
+                data,
+                suggestions,
+                issues,
+                replica=replica,
+                pairs=pairs,
+                ask=totals_ask,
+                db=db,
+            )
             link_fixes(data, replica, issues, suggestions)
             data["suggestions"] = suggestions
             data["issues"] = issues
@@ -2806,30 +2901,15 @@ def review_invoices(
     }
 
 
-_LIST_PAGE_SIZE = 200
-#: 5,000 drafts — far past any real backlog; it only stops a runaway loop.
-_LIST_MAX_PAGES = 25
-
-
 def list_window_invoices(
     lh, *, from_date: str | None = None, to_date: str | None = None
 ) -> list[dict]:
     """The venue's unreceived invoices in a date window, newest first, as
     ``{id, supplier_name, reference_number, date, total}`` — what a batch
     reviews, and what a background job counts and works through."""
-    # Every page: Loaded serves 200 at a time, and reading only the first
-    # left Applegum's other 390 drafts unseen (16 Oct 2026) — each run
-    # "received all outstanding" and the backlog was still there.
-    rows: list = []
-    for page in range(_LIST_MAX_PAGES):
-        batch = lh.get(
-            "/1.0/stock/internal/invoices?from=1901-01-01&to=9999-12-31"
-            f"&status=NotReceived&page={page}&pageSize={_LIST_PAGE_SIZE}"
-        )
-        batch = batch if isinstance(batch, list) else (batch or {}).get("data") or []
-        rows.extend(batch)
-        if len(batch) < _LIST_PAGE_SIZE:
-            break
+    from app.services.received_invoice import outstanding_invoice_rows
+
+    rows = outstanding_invoice_rows(lh)
     out = [
         {
             "id": str(r["id"]),

@@ -578,14 +578,24 @@ class TestCoverage:
             ln["id"] == added["id"] and ln["code"] == "FGT001" for ln in req.lines
         )
 
-    def test_ambiguous_pairing_blocks_instead_of_double_adding(self):
-        # Two copy lines both claim the single Loaded salmon line.
-        ext = EXTRACTION()
-        ext["lines"].append(dict(ext["lines"][0], line_total_ex_tax=100.0))
+    def test_a_second_line_of_the_same_product_is_added_not_blocked(self):
+        """Two copy lines of one product, one in Loaded's draft: the copy is
+        the truth, so the second is added. It used to block "reconcile by
+        hand" and Autopilot could never pass it (Alsco, 16 Oct 2026)."""
+        ext = EXTRACTION(
+            subtotal_ex_tax=319.78, tax_amount=47.97, total_incl_tax=367.75
+        )
+        ext["lines"].append(
+            dict(
+                ext["lines"][0],
+                quantity=1,
+                unit_price_ex_tax=100.0,
+                line_total_ex_tax=100.0,
+            )
+        )
         data = _review(extraction=ext)
-        assert "ambiguous_pairing" in _issue_codes(data)
-        assert not [s for s in data["suggestions"] if s["kind"] == "add_line"]
-        assert data["confidence"] == "needs_review"
+        assert "ambiguous_pairing" not in _issue_codes(data)
+        assert [s for s in data["suggestions"] if s["kind"] == "add_line"]
 
 
 class TestHeaderSuggestions:
@@ -1061,6 +1071,69 @@ class TestPairLines:
         pairs, ambiguous, unpaired_rep, unpaired_loaded = pair_lines(reps, docs)
         assert pairs == {"rep-0": "ld-a", "rep-1": "ld-b", "rep-2": "ld-c"}
         assert not ambiguous and not unpaired_rep and not unpaired_loaded
+
+    def test_repeated_lines_of_one_product_pair_in_order(self):
+        """Alsco's monthly invoice lists each rental item once a week: four
+        identical lines, four in Loaded. Same product, so pair them in order
+        (they used to be refused as "not unique")."""
+        reps = [
+            {
+                "id": f"rep-{n}",
+                "linked_item_id": None,
+                "code": "81AJ",
+                "description": "Laundry Bag",
+                "quantity_received": 1,
+                "unit_cost": 0.94,
+            }
+            for n in range(4)
+        ]
+        docs = [
+            {
+                "id": f"ld-{n}",
+                "linked_item_id": None,
+                "code": "81AJ",
+                "description": "Laundry Bag",
+                "quantity_received": 1,
+                "unit_cost": 0.94,
+            }
+            for n in range(4)
+        ]
+        pairs, ambiguous, unpaired_rep, unpaired_loaded = pair_lines(reps, docs)
+        assert pairs == {f"rep-{n}": f"ld-{n}" for n in range(4)}
+        assert not ambiguous and not unpaired_rep and not unpaired_loaded
+
+    def test_of_several_same_product_lines_the_matching_quantity_wins(self):
+        reps = [
+            {
+                "id": "rep-0",
+                "linked_item_id": None,
+                "code": "TK",
+                "description": "Towel",
+                "quantity_received": 15,
+                "unit_cost": 0.87,
+            }
+        ]
+        docs = [
+            {
+                "id": "ld-a",
+                "linked_item_id": None,
+                "code": "TK",
+                "description": "Towel",
+                "quantity_received": 0,
+                "unit_cost": 0.0,
+            },
+            {
+                "id": "ld-b",
+                "linked_item_id": None,
+                "code": "TK",
+                "description": "Towel",
+                "quantity_received": 15,
+                "unit_cost": 0.87,
+            },
+        ]
+        pairs, _, _, unpaired_loaded = pair_lines(reps, docs)
+        assert pairs == {"rep-0": "ld-b"}
+        assert [ln["id"] for ln in unpaired_loaded] == ["ld-a"]
 
     def test_second_claim_is_ambiguous_not_added(self):
         reps = [
@@ -2434,9 +2507,13 @@ class TestDefectRecommendations:
         assert note["blocking"] is False
         assert "quantities disambiguate" in note["message"]
 
-    def test_indecisive_pairing_keeps_the_blockers(self):
+    def test_an_unpaired_line_is_added_not_blocked(self):
+        """The arbiter couldn't pair it: Norm still decides — the copy's line
+        is added and Loaded's leftover line struck."""
         data = self._ambiguous_case(lambda p: {})
-        assert "ambiguous_pairing" in _issue_codes(data)
+        assert "ambiguous_pairing" not in _issue_codes(data)
+        kinds = {s["kind"] for s in data["suggestions"]}
+        assert "add_line" in kinds
 
 
 class TestDestructiveGates:
@@ -3303,9 +3380,14 @@ class TestEachInvoiceLikeTheCard:
         monkeypatch.setattr(IR, "review_invoice", review)
         IR.review_invoices(None, None, "v-1", ["a", "b"])
         assert calls == [
-            ("fetch", "a"), ("reference",), ("review", "a", True),
-            ("fetch", "b"), ("reference",), ("review", "b", True),
+            ("fetch", "a"),
+            ("reference",),
+            ("review", "a", True),
+            ("fetch", "b"),
+            ("reference",),
+            ("review", "b", True),
         ]
+
 
 class TestTheWholeBacklogIsListed:
     """Loaded lists 200 drafts a page. Reading only the first page left 390
