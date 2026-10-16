@@ -318,12 +318,35 @@ _TRADE_WORDS = {
     "east",
     "west",
     "central",
+    # Australia too (Applegum Cafe, 15 Oct 2026: 'PNM SYDNEY PTY LTD' was
+    # proposed as 'Sydney Direct Fresh Produce', so PNM was never created).
+    "australia",
+    "australian",
+    "sydney",
+    "melbourne",
+    "brisbane",
+    "perth",
+    "adelaide",
+    "hobart",
+    "darwin",
+    "canberra",
+    "nsw",
+    "vic",
+    "qld",
+    "tas",
 }
 
 
 def _stem(word: str) -> str:
     """'Seas' and 'Sea', 'Bidfoods' and 'Bidfood' are one word."""
     return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
+
+def _phrase(text: object) -> str:
+    """The name as one run of letters and digits, legal suffixes dropped:
+    'SERVICE FOODS LTD' -> 'servicefoods'."""
+    tokens = "".join(c if c.isalnum() else " " for c in str(text or "").lower()).split()
+    return "".join(w for w in tokens if w not in _NOISE)
 
 
 def plausible_matches(name: object, suppliers, *, limit: int = 3) -> list[dict]:
@@ -344,17 +367,19 @@ def plausible_matches(name: object, suppliers, *, limit: int = 3) -> list[dict]:
     core = mine - trade
     if not mine:
         return []
-    # The name as one phrase, legal suffixes dropped: 'servicefoods'.
-    phrase = "".join(
-        w
-        for w in "".join(c if c.isalnum() else " " for c in str(name).lower()).split()
-        if w not in _NOISE
-    )
+    phrase = _phrase(name)
     scored = []
     for s in live_suppliers(suppliers):
         theirs = {_stem(w) for w in words(s.get("name"))}
+        their_phrase = _phrase(s.get("name"))
+        short = min(phrase, their_phrase, key=len)
+        # One name inside the other: 'KIWIFISH' is 'Kiwi Fish International
+        # Limited', though they share no word.
+        contained = len(short) >= 5 and (
+            their_phrase in phrase or phrase in their_phrase
+        )
         if core:
-            score = len(core & theirs)
+            score = len(core & theirs) or (1 if contained else 0)
         else:
             score = len(mine) if phrase in norm(s.get("name")) else 0
         if score:

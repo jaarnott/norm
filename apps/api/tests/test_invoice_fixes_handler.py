@@ -496,6 +496,46 @@ class TestReceive:
         assert ln["totalCost"] == -219.78 and ln["totalCostExclTax"] == -219.78
         assert put["total"] == -252.75 and put["subtotal"] == -219.78
 
+    def test_a_rounding_line_on_an_invoice_that_adds_up_receives(self):
+        # Blue Seas SI655075: a $13.26 sauce, an "Invoice Rounding" -0.01, no
+        # GST, $13.25 — the rounding line runs the other way, and that's fine.
+        lh = self._lh()
+        lh._invoices["inv-1"]["lines"].append(
+            {
+                "id": "ln-2",
+                "code": None,
+                "description": "Invoice Rounding",
+                "unit": "Each",
+                "linkedUnitId": "u-each",
+                "linkedItemId": "item-2",
+                "quantityReceived": 1,
+                "unitCost": -0.01,
+            }
+        )
+        out = RI.do_receive(
+            lh,
+            self._req(
+                total=13.25,
+                lines=[
+                    {
+                        "id": "ln-1",
+                        "quantity_received": 1,
+                        "unit_cost": 13.26,
+                        "total_cost": 13.26,
+                        "sale_tax_rate": 0.0,
+                    },
+                    {
+                        "id": "ln-2",
+                        "quantity_received": 1,
+                        "unit_cost": -0.01,
+                        "total_cost": -0.01,
+                        "sale_tax_rate": 0.0,
+                    },
+                ],
+            ),
+        )
+        assert out["received"] is True
+
     def test_mixed_sign_lines_are_refused(self):
         # Accepting the sign flip on only SOME lines of a credit produces a
         # document Loaded rejects opaquely — refuse it in our own words.
@@ -536,6 +576,7 @@ class TestReceive:
             )
         assert exc.value.status_code == 400
         assert "run the other way" in exc.value.detail
+        assert "don't make the total" in exc.value.detail
 
     def test_reference_number_written_through(self):
         # Accepted "Invoice number X → Y (per the invoice copy)" lands on the

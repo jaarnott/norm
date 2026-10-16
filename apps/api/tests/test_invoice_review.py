@@ -649,6 +649,37 @@ class TestBlockingIssues:
         assert data["confidence"] == "needs_review"
         assert "replica" not in data
 
+    def test_a_feed_invoice_is_reviewed_from_loadeds_own_data(self, monkeypatch):
+        # Ordermentum sends Loaded the supplier's own data and no PDF (Sonoma
+        # Baking at Applegum Cafe, 15 Oct 2026). Nothing to read, nothing to
+        # delete: Loaded's figures stand in for the read.
+        monkeypatch.setattr(
+            IR,
+            "extract_invoice_copy",
+            lambda *a, **k: pytest.fail("a feed invoice has no copy to read"),
+        )
+        data = review_invoice(
+            None,
+            None,
+            "v-1",
+            "inv-1",
+            lh=object(),
+            # Ordermentum invoices carry no order number (OMI1107031).
+            detail=DETAIL(fileId=None, source="Ordermentum", purchaseOrderNumber=None),
+            extraction=None,
+            reference=REFERENCE(),
+        )
+        assert "no_copy_attached" not in _issue_codes(data)
+        assert not [s for s in data["suggestions"] if s["kind"] == "delete_invoice"]
+        assert data["replica"]["replica"] is True
+        assert data["extracted_snapshot"]["header"]["invoice_number"] == "F100"
+        assert data["confidence"] == "ready"
+
+    def test_no_copy_from_an_order_or_typed_in_is_still_offered_for_deletion(self):
+        for source in ("Po", "Manual", None):
+            data = _review(detail=DETAIL(fileId=None, source=source))
+            assert "no_copy_attached" in _issue_codes(data), source
+
     def test_unreadable_copy_blocks(self):
         data = _review(extraction={"error": "LLM down"})
         issue = next(i for i in data["issues"] if i["code"] == "copy_unreadable")
@@ -3182,7 +3213,11 @@ class TestABatchSavesAsItGoes:
     def _stub(self, monkeypatch):
         class _Lh:
             def invoice(self, iid):
-                return {"id": iid, "referenceNumber": f"R{iid}", "supplierName": "Alsco"}
+                return {
+                    "id": iid,
+                    "referenceNumber": f"R{iid}",
+                    "supplierName": "Alsco",
+                }
 
             def get(self, path):
                 return []

@@ -751,8 +751,12 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
             )
         # Guard: sign coherence. A credit note receives with NEGATIVE line
         # totals; an invoice with positive ones. Accepting the sign flip on
-        # only some lines of a credit produces a mixed document that Loaded
-        # rejects with an opaque error — say so here, in our own words.
+        # only some lines of a credit produces a mixed document Loaded rejects
+        # (its lines no longer make the total) — say so here, in our own words.
+        # A line running the other way on a document that DOES add up is the
+        # invoice itself: a rounding cent, a discount, a returned item. Blue
+        # Seas SI655075 (15 Oct 2026) couldn't be received at all for its
+        # "Invoice Rounding -0.01".
         header_total = inv.get("total")
         if isinstance(header_total, (int, float)) and header_total:
             wrong_way = [
@@ -763,14 +767,14 @@ def do_receive(lh: LoadedInvoiceClient, body: ReceiveRequest) -> dict:
                 and _ln_total_cost(ln)
                 and (_ln_total_cost(ln) < 0) != (header_total < 0)
             ]
-            if wrong_way:
+            if wrong_way and not _adds_up(inv, header_total):
                 kind = "credit note" if header_total < 0 else "invoice"
                 raise HTTPException(
                     400,
                     f"this is a {kind} (total {header_total:.2f}) but "
                     f"{len(wrong_way)} line(s) run the other way: "
                     + "; ".join(wrong_way[:5])
-                    + " — every line must share the document's sign",
+                    + " — and the lines don't make the total, so check their signs",
                 )
         inv["isReceived"] = True
         # Honour a Received Date set in the header; otherwise take the INVOICE
@@ -931,6 +935,25 @@ def _ln_unit_cost(ln: dict):
     PO lines still use unitCost — these helpers are for INVOICE lines only."""
     v = ln.get("unitCostExclTax")
     return v if v is not None else ln.get("unitCost")
+
+
+def _adds_up(inv: dict, declared: float) -> bool:
+    """Do Loaded's lines come to ``declared`` as Loaded adds them (lines, tax
+    at each line's rate, less the discount; within its 10c rounding)?"""
+    incl = _inv_includes_tax(inv)
+    excl = tax = 0.0
+    for ln in inv.get("lines") or []:
+        if ln.get("deletedAt"):
+            continue
+        t = _ln_total_cost(ln)
+        if not isinstance(t, (int, float)):
+            continue
+        r = ln.get("saleTaxRate") or 0
+        line_tax = t - t / (1 + r) if incl else t * r
+        tax += line_tax
+        excl += t - line_tax if incl else t
+    came_to = round(excl, 2) + round(tax, 2) - (inv.get("discountAmount") or 0)
+    return abs(came_to - declared) <= 0.10 + 1e-9
 
 
 def _ln_total_cost(ln: dict):

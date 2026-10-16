@@ -51,7 +51,9 @@ from app.services.invoice_extraction import (
     compose_pdf_instructions,
     extract_invoice_copy,
     extract_invoice_copies_parallel,
+    extraction_from_loaded,
     find_spec_for_supplier,
+    is_feed_invoice,
     pdf_instructions_for,
 )
 from app.services.autopilot_metrics import record_receive_outcome
@@ -470,7 +472,25 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
                 ),
             },
         )
-    if rl.get("sale_tax_rate") is not None and ln.get("sale_tax_rate") is None:
+    if rl.get("sale_tax_rate_set") and _differ(
+        ln.get("sale_tax_rate"), rl.get("sale_tax_rate"), 0.0001
+    ):
+        # The invoice says this line carries no GST (replica_finish.settle_tax_rates).
+        _sugg(
+            suggestions,
+            "line_value",
+            field="sale_tax_rate",
+            line_id=lid,
+            current=ln.get("sale_tax_rate"),
+            proposed=rl.get("sale_tax_rate"),
+            explanation=rl.get("sale_tax_rate_why")
+            or f"the invoice taxes '{desc}' at {rl.get('sale_tax_rate')}",
+            apply={
+                "sale_tax_rate": rl.get("sale_tax_rate"),
+                "tax_amount": rl.get("tax_amount"),
+            },
+        )
+    elif rl.get("sale_tax_rate") is not None and ln.get("sale_tax_rate") is None:
         _sugg(
             suggestions,
             "line_value",
@@ -2008,7 +2028,13 @@ def review_invoice(
     data["suggestion_actions"] = []
 
     file_id = data.get("file_id")
-    if not file_id:
+    # An invoice the supplier's system sent as data (Ordermentum) has no copy
+    # because there is nothing to scan: Loaded's own figures stand in for the
+    # read, and everything after it runs as usual.
+    feed = is_feed_invoice(detail)
+    if feed and extraction is None:
+        extraction = extraction_from_loaded(detail)
+    if not file_id and not feed:
         # A draft with no document behind it can't be reviewed: the Replica's
         # answer is "delete it" (a Loaded write, the verified delete endpoint;
         # the venue's switch decides whether Norm may do it alone). The
@@ -2040,7 +2066,7 @@ def review_invoice(
         # supplier list vets those aliases and is reused by the replica below.
         suppliers = account_suppliers(lh)
         aliases = supplier_aliases(lh, detail, suppliers)
-        if allow_sensei and detail.get("supplierName"):
+        if allow_sensei and file_id and detail.get("supplierName"):
             _maybe_sensei(
                 db, config_db, venue_id, invoice_id, detail["supplierName"], *aliases
             )
@@ -2102,16 +2128,19 @@ def review_invoice(
             )
             link_fixes(data, None, data["issues"], data["suggestions"])
         else:
-            # PASS 2 — the copy decides which layout reads it.
-            extraction, spec_used = reread_under_printed_spec(
-                db, config_db, lh, venue_id, file_id, detail, aliases, extraction
-            )
+            # PASS 2 — the copy decides which layout reads it. A feed invoice
+            # has no copy to read again.
+            spec_used = None
+            if file_id:
+                extraction, spec_used = reread_under_printed_spec(
+                    db, config_db, lh, venue_id, file_id, detail, aliases, extraction
+                )
             # The supplier the COPY names may be one Norm has never seen, even
             # when Loaded's name matched something. Ask the roster about the
             # printed name too, or a business filed under someone else's Loaded
             # record is never trained.
             printed = extraction.get("supplier_name")
-            if allow_sensei and printed and spec_used is None:
+            if allow_sensei and file_id and printed and spec_used is None:
                 _maybe_sensei(db, config_db, venue_id, invoice_id, str(printed))
             data["extracted_snapshot"] = _extracted_snapshot(extraction)
             # Feed the Norm supplier-product catalogue: every successful

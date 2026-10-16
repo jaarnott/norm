@@ -378,9 +378,7 @@ class TestSupplierDetails:
         assert count("download_invoice_file") == main
         assert count("read_supplier_details") == own + 1
 
-    def test_a_failure_is_an_empty_answer_and_not_cached(
-        self, db_session, monkeypatch
-    ):
+    def test_a_failure_is_an_empty_answer_and_not_cached(self, db_session, monkeypatch):
         self._patch_llm(monkeypatch, fail=True)
         out = ie.read_supplier_details(
             db_session, _FakeLoaded(), "file-1", supplier_name="Tickety-Boo Ltd"
@@ -403,8 +401,7 @@ class TestSupplierDetails:
         calls = self._patch_llm(monkeypatch, {"city": "Auckland"})
         assert ie.read_supplier_details(db_session, None, "", supplier_name="X") == {}
         assert (
-            ie.read_supplier_details(db_session, None, "file-1", supplier_name="")
-            == {}
+            ie.read_supplier_details(db_session, None, "file-1", supplier_name="") == {}
         )
         assert calls == []
 
@@ -428,3 +425,64 @@ class TestSupplierDetails:
             {"address_lines": ["a", "", "b", "c", "d"]}
         ) == {"address_lines": ["a", "b", "c"]}
         assert ie.clean_supplier_details(None) == {}
+
+
+class TestFeedInvoices:
+    """Ordermentum invoices arrive as the supplier's own data with no PDF."""
+
+    DETAIL = {
+        "referenceNumber": "OMI1107031",
+        "issuedAt": "2026-10-14",
+        "subtotal": 120.95,
+        "discountAmount": 0.0,
+        "taxAmount": 12.09,
+        "total": 133.04,
+        "supplierName": "Sonoma Baking Company",
+        "purchaseOrderNumber": None,
+        "fileId": None,
+        "source": "Ordermentum",
+        "lines": [
+            {
+                "code": "30132",
+                "description": "Croissant Plain 6 PCK",
+                "unit": "unit",
+                "quantityReceived": 1.0,
+                "unitCostExclTax": 14.96,
+                "totalCostExclTax": 14.96,
+                "saleTaxRate": 0.1,
+            },
+            {"code": "X", "description": "gone", "deletedAt": "2026-10-14"},
+        ],
+    }
+
+    def test_recognised_only_with_no_copy_and_the_feed_source(self):
+        assert ie.is_feed_invoice(self.DETAIL)
+        assert not ie.is_feed_invoice({**self.DETAIL, "fileId": "f-1"})
+        for source in ("Email", "Upload", "Po", "Manual", None):
+            assert not ie.is_feed_invoice({**self.DETAIL, "source": source})
+
+    def test_loadeds_data_fills_the_same_slots_as_a_read(self):
+        out = ie.extraction_from_loaded(self.DETAIL)
+        assert set(out) == set(ie.PDF_SCHEMA)
+        assert set(out["lines"][0]) == set(ie.PDF_SCHEMA["lines"][0])
+        assert out["supplier_name"] == "Sonoma Baking Company"
+        assert out["invoice_number"] == "OMI1107031"
+        assert (out["subtotal_ex_tax"], out["tax_amount"], out["total_incl_tax"]) == (
+            120.95,
+            12.09,
+            133.04,
+        )
+        assert out["discount_amount"] is None
+        assert out["document_type"] == "invoice"
+        [line] = out["lines"]  # the deleted line is left out
+        assert line["code"] == "30132"
+        assert line["description"] == "Croissant Plain 6 PCK"
+        assert (
+            line["quantity"],
+            line["unit_price_ex_tax"],
+            line["line_total_ex_tax"],
+        ) == (
+            1.0,
+            14.96,
+            14.96,
+        )

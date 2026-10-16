@@ -840,6 +840,101 @@ def read_printed_prices(view: dict, replica: dict) -> dict | None:
     return None
 
 
+def _unique_subset(
+    items: list[tuple[str, int]], target: int, tol: int
+) -> frozenset | None:
+    """The one subset of ``items`` ((id, value)) whose values sum to within
+    ``tol`` of ``target`` — None when no subset does, or more than one."""
+    states: dict[int, tuple[int, frozenset]] = {0: (1, frozenset())}
+    for iid, v in items:
+        grown = dict(states)
+        for total, (count, chosen) in states.items():
+            nxt = total + v
+            if nxt in grown:
+                c0, s0 = grown[nxt]
+                grown[nxt] = (min(2, c0 + count), s0)
+            else:
+                grown[nxt] = (count, chosen | {iid})
+        states = grown
+        if len(states) > 200_000:
+            return None  # too many lines to say "only one" with confidence
+    hits = [
+        (c, chosen)
+        for total, (c, chosen) in states.items()
+        if abs(total - target) <= tol
+    ]
+    return hits[0][1] if sum(c for c, _ in hits) == 1 else None
+
+
+def settle_tax_rates(
+    data: dict, replica: dict, pairs: dict[str, str], log: list
+) -> None:
+    """Lines the invoice charges no GST on.
+
+    Loaded gives every line the venue's default rate, but plenty of lines carry
+    none — basic food in Australia, fees, deposits. Applegum Cafe's Blue Seas
+    SI655075 (15 Oct 2026) printed GST $0.00 on a $13.26 sauce less a 1c
+    rounding; at Loaded's 10% the review thought it $1.33 over and cut the
+    sauce to $12.06. SI655016 printed GST $0.30 — the 10% on its $3 fuel levy
+    alone — and every food price was cut ~9%.
+
+    The printed GST decides it: the one set of lines whose tax at their rate
+    makes the printed GST is taxed, the rest are tax free. Only when exactly
+    one set fits, and the lines plus that GST come to the printed total."""
+    printed_tax, total = _f(replica.get("tax_amount")), _f(replica.get("total"))
+    if printed_tax is None or total is None or replica.get("is_credit_note"):
+        return
+    view = _answer_view(data, replica, pairs)
+    if view.get("unit_cost_includes_tax"):
+        return
+    rows = []
+    for ln in _lines(view):
+        if ln.get("struck"):
+            continue
+        q, c, r = (
+            _f(ln.get("quantity_received")),
+            _f(ln.get("unit_cost")),
+            _f(ln.get("sale_tax_rate")),
+        )
+        if q is None or c is None or r is None:
+            return
+        rows.append((str(ln.get("id")), q * c, r))
+    if not rows or _agree(sum(t * r for _, t, r in rows), printed_tax, 0.01):
+        return
+    discount = _f(view.get("discount_amount")) or 0.0
+    lines_sum = sum(t for _, t, _ in rows)
+    if not _agree(round(lines_sum, 2) + printed_tax - discount, total):
+        return  # the lines themselves don't make the total — not a tax question
+    taxable = [(i, round(t * r * 1000)) for i, t, r in rows if r > 0]
+    if abs(printed_tax) <= 0.005:
+        keep: frozenset | None = frozenset()
+    else:
+        keep = _unique_subset(
+            [(i, v) for i, v in taxable if abs(v) >= 5], round(printed_tax * 1000), 6
+        )
+    if keep is None:
+        return
+    free = {i for i, _ in taxable if i not in keep}
+    if not free:
+        return
+    rep_for = {str(w): str(r) for r, w in pairs.items()}
+    rep_lines = {str(rl.get("id")): rl for rl in _lines(replica)}
+    targets = {i: rep_lines.get(rep_for.get(i, "")) or rep_lines.get(i) for i in free}
+    if any(rl is None for rl in targets.values()):
+        return
+    why = f"the invoice charges no GST on this line — its GST ({printed_tax:.2f}) " + (
+        "is nil" if not keep else "is the tax on the other line(s) alone"
+    )
+    for rl in targets.values():
+        rl["sale_tax_rate"] = 0.0
+        rl["tax_amount"] = 0.0
+        rl["sale_tax_rate_set"] = True
+        rl["sale_tax_rate_why"] = why
+    log.append(
+        f"tax: {len(free)} line(s) carry no GST — the printed GST is {printed_tax:.2f}"
+    )
+
+
 def settle_totals(
     data: dict,
     replica: dict,
@@ -1048,6 +1143,8 @@ def _answer_view(data: dict, replica: dict, pairs: dict[str, str]) -> dict:
             # What the invoice charged for the line — read_printed_prices
             # weighs it against quantity × price.
             v["printed_total"] = rl.get("total_cost")
+            if rl.get("sale_tax_rate_set"):
+                v["sale_tax_rate"] = rl.get("sale_tax_rate")
         lines.append(v)
     # A line the invoice bills that Loaded's draft lacks: accepting the review
     # adds it (Aitkens 178549's freight).
@@ -1135,6 +1232,7 @@ def finish_replica(
         ("items", lambda: settle_items(data, replica, pairs, catalogue, log)),
         ("units", lambda: settle_units(data, replica, pairs, units, choose_unit, log)),
         ("order", lambda: settle_order(data, replica, lh, log)),
+        ("tax", lambda: settle_tax_rates(data, replica, pairs, log)),
         (
             "totals",
             lambda: settle_totals(

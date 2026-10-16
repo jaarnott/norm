@@ -179,6 +179,7 @@ class TestPlausibleMatches:
             )
             == []
         )
+        assert self._names("PNM SYDNEY PTY LTD", ["Sydney Direct Fresh Produce"]) == []
 
     def test_a_shared_distinctive_word_is(self):
         assert self._names("Neat Meat Limited", ["CARVE MEAT", "NEAT MEATS"]) == [
@@ -187,6 +188,12 @@ class TestPlausibleMatches:
         assert self._names("Aitken & Co Limited", ["Aitkens"]) == ["Aitkens"]
         assert self._names("Bidfood Limited", ["Bidfoods fresh produce"]) == [
             "Bidfoods fresh produce"
+        ]
+
+    def test_one_name_inside_the_other_is(self):
+        # They share no word, but 'KIWIFISH' is the business.
+        assert self._names("Kiwi Fish International Limited", ["KIWIFISH"]) == [
+            "KIWIFISH"
         ]
 
     def test_a_name_of_trade_words_must_match_as_a_phrase(self):

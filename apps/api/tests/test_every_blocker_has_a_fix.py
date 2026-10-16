@@ -1037,6 +1037,103 @@ class TestBidfoodLineDiscounts:
         )
 
 
+class TestLinesWithoutGst:
+    """Loaded gives every line the venue's default rate; the printed GST says
+    which lines actually carry it. Applegum Cafe's Blue Seas invoices (15 Oct
+    2026): SI655075 printed GST $0.00, SI655016 only the 10% on its fuel levy,
+    and the review cut every food price ~9% to make 10% fit."""
+
+    def _settle(self, lines, *, tax, total):
+        data = {
+            "total": total,
+            "lines": [
+                {
+                    "id": f"ld-{i}",
+                    "quantity_received": q,
+                    "unit_cost": c,
+                    "sale_tax_rate": 0.1,
+                }
+                for i, (_d, q, c) in enumerate(lines)
+            ],
+        }
+        replica = {
+            "tax_amount": tax,
+            "total": total,
+            "lines": [
+                {
+                    "id": f"rep-{i}",
+                    "description": d,
+                    "quantity_received": q,
+                    "unit_cost": c,
+                    "total_cost": round(q * c, 2),
+                    "sale_tax_rate": 0.1,
+                }
+                for i, (d, q, c) in enumerate(lines)
+            ],
+        }
+        pairs = {f"rep-{i}": f"ld-{i}" for i in range(len(lines))}
+        log: list = []
+        RF.settle_tax_rates(data, replica, pairs, log)
+        return data, replica, pairs
+
+    def _rates(self, replica):
+        return [rl["sale_tax_rate"] for rl in replica["lines"]]
+
+    def test_nil_gst_means_every_line_is_tax_free(self):
+        _, replica, _ = self._settle(
+            [("BBQ Sauce 3Ltr", 1, 13.26), ("Invoice Rounding", 1, -0.01)],
+            tax=0.0,
+            total=13.25,
+        )
+        assert self._rates(replica) == [0.0, 0.0]
+        assert "charges no GST" in replica["lines"][0]["sale_tax_rate_why"]
+
+    def test_only_the_line_whose_tax_makes_the_gst_keeps_it(self):
+        _, replica, _ = self._settle(
+            [
+                ("Mozzarella 2kg", 1, 25.95),
+                ("Yoghurt 500g", 1, 2.86),
+                ("Fuel Levy", 1, 3.0),
+            ],
+            tax=0.30,
+            total=32.11,
+        )
+        assert self._rates(replica) == [0.0, 0.0, 0.1]
+
+    def test_two_ways_to_make_the_gst_changes_nothing(self):
+        _, replica, _ = self._settle(
+            [("A", 1, 3.0), ("B", 1, 3.0), ("C", 1, 10.0)], tax=0.30, total=16.30
+        )
+        assert self._rates(replica) == [0.1, 0.1, 0.1]
+
+    def test_lines_that_dont_make_the_total_are_left_alone(self):
+        _, replica, _ = self._settle([("A", 1, 10.0)], tax=0.0, total=99.0)
+        assert self._rates(replica) == [0.1]
+
+    def test_gst_on_everything_changes_nothing(self):
+        _, replica, _ = self._settle(
+            [("A", 1, 10.0), ("B", 2, 5.0)], tax=2.0, total=22.0
+        )
+        assert self._rates(replica) == [0.1, 0.1]
+
+    def test_the_review_then_suggests_the_rate_and_needs_no_spread(self):
+        data, replica, pairs = self._settle(
+            [("BBQ Sauce 3Ltr", 1, 13.26), ("Invoice Rounding", 1, -0.01)],
+            tax=0.0,
+            total=13.25,
+        )
+        suggestions: list = []
+        for rl in replica["lines"]:
+            ln = next(x for x in data["lines"] if x["id"] == pairs[rl["id"]])
+            IR._line_suggestions(suggestions, rl, ln, ln["id"])
+        rate = [s for s in suggestions if s["field"] == "sale_tax_rate"]
+        assert [s["proposed"] for s in rate] == [0.0, 0.0]
+        issues: list = []
+        IR.balance_after_suggestions(data, suggestions, issues)
+        assert not [s for s in suggestions if s["field"] == "unit_cost"]  # no spread
+        assert IR.totals_balance(IR._all_applied(data, suggestions))
+
+
 class TestTheReviewLeavesNoBlockerWithoutAFix:
     """Real reviews over the shapes that used to reach the card bare. The
     contract is blockers_without_a_fix(data) == [] — also logged as a warning

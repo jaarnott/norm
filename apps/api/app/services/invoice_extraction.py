@@ -317,6 +317,64 @@ def pdf_instructions_for(
     )
 
 
+#: Where Loaded says an invoice came from when it arrived as the supplier's own
+#: data rather than a document (Loaded's InvoiceSource: Po, Manual, Email,
+#: Upload, Ordermentum). Only Ordermentum is a supplier's system.
+FEED_SOURCES = frozenset({"Ordermentum"})
+
+
+def is_feed_invoice(detail: dict) -> bool:
+    """No copy to read, because the supplier's system sent Loaded the data
+    itself (Sonoma Baking at Applegum Cafe, via Ordermentum)."""
+    return not detail.get("fileId") and str(detail.get("source") or "") in FEED_SOURCES
+
+
+def extraction_from_loaded(detail: dict) -> dict:
+    """Loaded's own copy of a feed invoice, laid out as reading the PDF would
+    have produced it (``PDF_SCHEMA``). There's nothing to read and nothing can
+    be misread — the supplier's system sent these figures — so every step
+    after the read runs on them unchanged."""
+    total = detail.get("total")
+    lines = []
+    for ln in detail.get("lines") or []:
+        if not isinstance(ln, dict) or ln.get("deletedAt"):
+            continue
+        cost = ln.get("unitCostExclTax")
+        line_total = ln.get("totalCostExclTax")
+        lines.append(
+            {
+                "code": ln.get("code"),
+                "description": ln.get("description"),
+                "quantity": ln.get("quantityReceived"),
+                "unit": ln.get("unit"),
+                "unit_of_measure": None,
+                "unit_unrecognisable": False,
+                "unit_price_ex_tax": cost if cost is not None else ln.get("unitCost"),
+                "line_total_ex_tax": (
+                    line_total if line_total is not None else ln.get("totalCost")
+                ),
+            }
+        )
+    return {
+        "document_type": (
+            "credit_note"
+            if isinstance(total, (int, float)) and total < 0
+            else "invoice"
+        ),
+        "supplier_name": detail.get("supplierName"),
+        "supplier_differs": False,
+        "invoice_number": detail.get("referenceNumber"),
+        "invoice_date": detail.get("issuedAt"),
+        "customer_purchase_order_number": detail.get("purchaseOrderNumber"),
+        "supplier_order_number": None,
+        "lines": lines,
+        "subtotal_ex_tax": detail.get("subtotal"),
+        "discount_amount": detail.get("discountAmount") or None,
+        "tax_amount": detail.get("taxAmount"),
+        "total_incl_tax": total,
+    }
+
+
 def extraction_system_prompt(schema: dict | None = None) -> str:
     """The extraction envelope — same shape as the consolidator executor's,
     so extractions behave identically on every path."""
