@@ -1076,6 +1076,7 @@ def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> N
             data,
             dup.get("message") or "duplicate — delete this draft",
             _VA.AUTO_DELETE_DUPLICATES,
+            reason="duplicate",
             extra=dup.get("data") or {},
         )
     not_invoice = rep_issues.get("not_an_invoice")
@@ -1086,8 +1087,13 @@ def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> N
             data,
             f"{not_invoice.get('message')} — delete the draft",
             _VA.AUTO_DELETE_NON_INVOICES,
+            reason="statement" if doc_type == "statement" else "not_an_invoice",
             summary=f"a {doc_type}, not an invoice — draft deleted",
         )
+
+
+#: Why a draft was deleted, as the run's summary counts it.
+DELETE_REASONS = ("duplicate", "statement", "not_an_invoice", "no_copy", "unreadable")
 
 
 def _delete_suggestion(
@@ -1096,12 +1102,14 @@ def _delete_suggestion(
     explanation: str,
     gate: str,
     *,
+    reason: str,
     extra: dict | None = None,
     summary: str | None = None,
 ) -> None:
     """The Replica's answer for a draft that shouldn't be received at all:
     delete it from Loaded (a duplicate, a statement or letter, no invoice
-    attached, an unreadable one). Each answers to its own venue switch."""
+    attached, an unreadable one). Each answers to its own venue switch.
+    ``reason`` is one of ``DELETE_REASONS`` — what the run's summary counts."""
     _sugg(
         suggestions,
         "delete_invoice",
@@ -1111,6 +1119,7 @@ def _delete_suggestion(
             "invoice_id": data.get("invoice_id"),
             "reference": data.get("reference_number"),
             **(extra or {}),
+            "reason": reason,
             "summary": summary or explanation,
         },
         gate=gate,
@@ -1905,10 +1914,12 @@ def autopilot_accept(
             continue
         data["is_deleted"] = True
         data["status"] = "deleted"
+        # Why, kept on the draft (the card's Delete does the same) so the run
+        # can say what its deletes were — not just how many.
+        data["deleted_reason"] = payload.get("summary") or s.get("explanation")
+        data["deleted_kind"] = payload.get("reason") or "other"
         _record(s.get("id"), {}, {"deleted": True})
-        done.append(
-            f"deleted the draft ({payload.get('summary') or s.get('explanation')})"
-        )
+        done.append(f"deleted the draft ({data['deleted_reason']})")
         return done
 
     # add_line first: a later edit or create may be on the line it adds.
@@ -1942,6 +1953,10 @@ def autopilot_accept(
             elif s.get("field") == "unit":
                 done.append(f"set unit '{s.get('proposed')}' ({s.get('gate')})")
 
+    # What this Accept made NEW in Loaded (a get-or-create that found an
+    # existing record made nothing) — the run's summary counts these.
+    created: dict[str, list[str]] = {"stock_items": [], "suppliers": [], "units": []}
+    data["autopilot_created"] = created
     for kind in LOADED_WRITE_ORDER:
         for s in pending:
             if s.get("kind") != kind:
@@ -1973,15 +1988,18 @@ def autopilot_accept(
                             invoice_id,
                         )
                         continue
-                    supplier, _ = catalog.get_or_create_supplier(
+                    supplier, new = catalog.get_or_create_supplier(
                         _client(), name, details=payload.get("details")
                     )
                     data["linked_supplier_id"] = supplier["id"]
                     data["supplier_name"] = supplier.get("name") or name
                     _record(s.get("id"), {}, {"linked_supplier_id": supplier["id"]})
-                    done.append(f"created supplier '{supplier.get('name')}'")
+                    if new:
+                        created["suppliers"].append(supplier.get("name") or name)
+                    verb = "created" if new else "linked existing"
+                    done.append(f"{verb} supplier '{supplier.get('name')}'")
                 elif kind == "create_unit" and ln is not None:
-                    unit, _ = catalog.get_or_create_unit(
+                    unit, new = catalog.get_or_create_unit(
                         _client(), payload.get("unit_name") or "", db
                     )
                     ln["linked_unit_id"] = unit.get("id")
@@ -1989,7 +2007,10 @@ def autopilot_accept(
                     if unit.get("ratio") is not None:
                         ln["unit_ratio"] = unit.get("ratio")
                     _record(s.get("id"), {}, {"linked_unit_id": unit.get("id")})
-                    done.append(f"created unit '{unit.get('name')}'")
+                    if new:
+                        created["units"].append(unit.get("name"))
+                    verb = "created" if new else "used existing"
+                    done.append(f"{verb} unit '{unit.get('name')}'")
                 elif kind == "create_item" and ln is not None:
                     out = catalog.create_item(
                         _client(),
@@ -2008,6 +2029,8 @@ def autopilot_accept(
                     ln["linked_item_id"] = out["item_id"]
                     ln["item_name"] = out["item_name"]
                     _record(s.get("id"), {}, {"linked_item_id": out["item_id"]})
+                    if out["created"]:
+                        created["stock_items"].append(out["item_name"])
                     verb = "created" if out["created"] else "linked existing"
                     done.append(f"{verb} stock item '{out['item_name']}'")
                 elif kind == "create_brand" and ln is not None:
@@ -2144,6 +2167,7 @@ def review_invoice(
             data,
             message,
             _VA.AUTO_DELETE_UNREADABLE,
+            reason="no_copy",
             summary="no invoice attached — draft deleted",
         )
         link_fixes(data, None, data["issues"], data["suggestions"])
@@ -2210,6 +2234,7 @@ def review_invoice(
                 data,
                 message,
                 _VA.AUTO_DELETE_UNREADABLE,
+                reason="unreadable",
                 summary=f"unreadable invoice ({err}) — draft deleted",
             )
             link_fixes(data, None, data["issues"], data["suggestions"])
@@ -2802,8 +2827,29 @@ def review_invoices(
                     "supplier_name": data.get("supplier_name"),
                     "outcome": "deleted",
                     "reasons": gated,
+                    "deleted_kind": data.get("deleted_kind"),
                 }
                 received.append(deleted)
+                # Recorded like a receive, with its reason: a delete used to
+                # leave no trace but the count, so "were these right to go?"
+                # (Little West, 84 of 222, 16 Oct 2026) meant re-reading every
+                # document. The report leaves these rows out of its rates.
+                record_receive_outcome(
+                    db,
+                    venue_id=venue_id,
+                    invoice_id=iid,
+                    data=data,
+                    mode=mode,
+                    actor="norm",
+                    received=False,
+                    outcome_override="deleted",
+                    extra_detail={
+                        "deleted": {
+                            "kind": data.get("deleted_kind"),
+                            "reason": data.get("deleted_reason"),
+                        }
+                    },
+                )
                 _report(iid, deleted, data)
                 continue
 

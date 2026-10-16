@@ -81,7 +81,8 @@ class TestTheQueue:
             status="running",
             claimed_by="dead-worker",
             attempts=1,
-            heartbeat_at=datetime.now(timezone.utc) - timedelta(seconds=bj.HEARTBEAT_STALE_SECONDS + 60),
+            heartbeat_at=datetime.now(timezone.utc)
+            - timedelta(seconds=bj.HEARTBEAT_STALE_SECONDS + 60),
             progress={"done": 37, "done_ids": ["a"]},
         )
         ctx = bj.claim("worker-b")
@@ -106,7 +107,8 @@ class TestTheQueue:
             status="running",
             claimed_by="dead",
             attempts=bj.MAX_ATTEMPTS,
-            heartbeat_at=datetime.now(timezone.utc) - timedelta(seconds=bj.HEARTBEAT_STALE_SECONDS + 60),
+            heartbeat_at=datetime.now(timezone.utc)
+            - timedelta(seconds=bj.HEARTBEAT_STALE_SECONDS + 60),
         )
         assert bj.claim("worker-b") is None
         db_session.refresh(job)
@@ -118,7 +120,9 @@ class TestTheQueue:
         """Every deploy restarts the instance. A job that gets further each
         time is not failing — only claims without progress count."""
         job = _job(db_session, progress={"done": 0})
-        stale = datetime.now(timezone.utc) - timedelta(seconds=bj.HEARTBEAT_STALE_SECONDS + 60)
+        stale = datetime.now(timezone.utc) - timedelta(
+            seconds=bj.HEARTBEAT_STALE_SECONDS + 60
+        )
         for n in range(1, bj.MAX_ATTEMPTS + 3):
             ctx = bj.claim(f"worker-{n}")
             assert ctx is not None, f"given up on restart {n}"
@@ -208,7 +212,9 @@ class TestRunningAJob:
         assert job.status == "cancelled"
         assert bj.claim("w") is None
 
-    def test_a_running_job_stops_when_cancelled(self, db_session, sessions, monkeypatch):
+    def test_a_running_job_stops_when_cancelled(
+        self, db_session, sessions, monkeypatch
+    ):
         def handler(ctx):
             bj.request_cancel(db_session, ctx.job_id)
             db_session.flush()
@@ -239,7 +245,9 @@ class TestWhatTheModelSees:
         assert "never start the same work again" in text
 
     def test_no_jobs_no_manifest(self, db_session, admin_user):
-        assert bj.thread_manifest(_make_thread(db_session, admin_user), db_session) == ""
+        assert (
+            bj.thread_manifest(_make_thread(db_session, admin_user), db_session) == ""
+        )
 
     def test_the_card_never_sees_the_bookkeeping(self, db_session):
         job = _job(db_session, progress={"done": 2, "done_ids": ["a", "b"]})
@@ -267,14 +275,17 @@ class TestTheReceiveJob:
         assert created
         return db_session.query(BackgroundJob).get(job.id)
 
-    def _fake_review(self, monkeypatch, outcomes, seen):
+    def _fake_review(self, monkeypatch, outcomes, seen, extra=None):
+        """``extra``: per invoice, ``(record fields, data fields)`` to add."""
+
         def review(db, cdb, venue_id, ids, **kw):
             seen.append(list(ids))
             for iid in ids:
                 if kw["should_stop"]():
                     break
                 outcome = outcomes.get(iid, "received")
-                data = {"invoice_id": iid, "reference_number": f"R-{iid}"}
+                more_record, more_data = (extra or {}).get(iid, ({}, {}))
+                data = {"invoice_id": iid, "reference_number": f"R-{iid}", **more_data}
                 kw["on_invoice"](
                     iid,
                     {
@@ -282,6 +293,7 @@ class TestTheReceiveJob:
                         "outcome": outcome,
                         "reference_number": f"R-{iid}",
                         "supplier_name": "Alsco",
+                        **more_record,
                     },
                     None if outcome == "review failed" else data,
                 )
@@ -307,6 +319,47 @@ class TestTheReceiveJob:
         db_session.refresh(job)
         assert (job.progress["received"], job.progress["deleted"]) == (2, 1)
         assert "3 of 3 reviewed — 2 received, 1 deleted" in irj.summary_text(job)
+
+    def test_the_summary_says_why_drafts_went_and_what_was_created(
+        self, db_session, admin_user, venue, sessions, monkeypatch
+    ):
+        """'84 deleted' alone sent the person back through every document to
+        check they were right to go (Little West, 16 Oct 2026)."""
+        thread = _make_thread(db_session, admin_user)
+        job = self._start(db_session, venue, thread, [f"i{n}" for n in range(6)])
+        made = {
+            "stock_items": ["Oat Milk", "Soy Milk"],
+            "suppliers": ["Acme"],
+            "units": [],
+        }
+        self._fake_review(
+            monkeypatch,
+            {"i1": "deleted", "i2": "deleted", "i3": "deleted", "i4": "needs review"},
+            [],
+            extra={
+                "i1": ({"deleted_kind": "statement"}, {}),
+                "i2": ({"deleted_kind": "statement"}, {}),
+                "i3": ({"deleted_kind": "duplicate"}, {}),
+                "i0": ({}, {"autopilot_created": made}),
+                # a parked invoice's creates happened in Loaded too
+                "i4": ({}, {"autopilot_created": {"units": ["Box 6"]}}),
+            },
+        )
+        monkeypatch.setattr(
+            "app.services.email_service.send_system_email", lambda *a, **k: None
+        )
+        bj.run(bj.claim("w"))
+        db_session.refresh(job)
+        p = job.progress
+        assert p["deleted_reasons"] == {"statement": 2, "duplicate": 1}
+        assert p["created"] == {"stock_items": 2, "suppliers": 1, "units": 1}
+        text = irj.summary_text(job)
+        assert (
+            "Deleted: 1 duplicate of an invoice already received and 2 statements."
+            in text
+        )
+        assert "Created in Loaded: 2 stock items, 1 supplier and 1 unit." in text
+        assert job.result["created"] == p["created"]
 
     def test_every_invoice_is_saved_and_counted_as_it_goes(
         self, db_session, admin_user, venue, sessions, monkeypatch
@@ -344,8 +397,9 @@ class TestTheReceiveJob:
             .one()
         )
         assert msg.content.startswith("Finished: Receiving Applegum Cafe invoices.")
-        assert "12 of 12 reviewed — 10 received, 1 need you, 1 couldn't be reviewed" in (
-            msg.content
+        assert (
+            "12 of 12 reviewed — 10 received, 1 need you, 1 couldn't be reviewed"
+            in (msg.content)
         )
         assert msg.display_blocks == [
             {
@@ -432,7 +486,9 @@ class TestTheReviewToolStartsAJob:
         )
         return out, calls
 
-    def test_a_big_window_becomes_a_job(self, db_session, admin_user, venue, monkeypatch):
+    def test_a_big_window_becomes_a_job(
+        self, db_session, admin_user, venue, monkeypatch
+    ):
         thread = _make_thread(db_session, admin_user)
         out, calls = self._call(
             monkeypatch, db_session, thread.id, venue, irj.JOB_THRESHOLD + 1
@@ -449,7 +505,7 @@ class TestTheReviewToolStartsAJob:
     ):
         thread = _make_thread(db_session, admin_user)
         out, calls = self._call(monkeypatch, db_session, thread.id, venue, 3)
-        (ids, kw), = calls
+        ((ids, kw),) = calls
         assert ids == ["i0", "i1", "i2"]
         assert kw["on_invoice"] is not None and kw["deadline"] is not None
         assert "job" not in out["data"]
@@ -486,7 +542,9 @@ class TestTheReviewToolStartsAJob:
         assert ids is None  # the batch lists the window itself, as before
         assert kw["deadline"] is None
         assert "job" not in out["data"]
-        assert not db_session.query(BackgroundJob).filter_by(thread_id=thread.id).count()
+        assert (
+            not db_session.query(BackgroundJob).filter_by(thread_id=thread.id).count()
+        )
 
 
 class TestTheSummaryWording:
@@ -505,6 +563,54 @@ class TestTheSummaryWording:
     def test_some_shown(self):
         text = irj.summary_text(self._job(25), cards=20)
         assert "The first 20 that need you are below; all 25" in text
+
+    def _ran(self, **progress):
+        return BackgroundJob(
+            title="Receiving Little West invoices",
+            status="done",
+            progress={"total": 222, "done": 222, **progress},
+        )
+
+    def test_every_delete_reason_reads_as_words(self):
+        job = self._ran(
+            received=138,
+            deleted=84,
+            deleted_reasons={
+                "not_an_invoice": 36,
+                "statement": 22,
+                "duplicate": 24,
+                "no_copy": 1,
+                "unreadable": 1,
+            },
+        )
+        assert irj.summary_text(job) == (
+            "Finished: Receiving Little West invoices. 222 of 222 reviewed — "
+            "138 received, 84 deleted. Deleted: 24 duplicates of invoices "
+            "already received, 22 statements, 36 other documents that weren't "
+            "invoices, 1 draft with no invoice attached and 1 copy Norm "
+            "couldn't read."
+        )
+
+    def test_a_reason_it_doesnt_know_still_counts(self):
+        job = self._ran(deleted=2, deleted_reasons={"other": 1, "statement": 1})
+        assert "Deleted: 1 statement and 1 for another reason." in irj.summary_text(job)
+
+    def test_nothing_created_on_autopilot_is_said(self):
+        job = self._ran(
+            received=3,
+            created={"stock_items": 0, "suppliers": 0, "units": 0},
+            applied_mode="autopilot",
+        )
+        assert "No new stock items, suppliers or units were needed." in (
+            irj.summary_text(job)
+        )
+
+    def test_a_job_from_before_the_breakdown_reads_as_it_did(self):
+        job = self._ran(received=138, deleted=84)
+        assert irj.summary_text(job) == (
+            "Finished: Receiving Little West invoices. 222 of 222 reviewed — "
+            "138 received, 84 deleted."
+        )
 
     def test_none_shown_as_in_the_email(self):
         text = irj.summary_text(self._job(2))

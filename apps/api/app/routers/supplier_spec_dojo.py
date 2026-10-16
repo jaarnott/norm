@@ -830,6 +830,9 @@ def autopilot_confidence(
     if supplier_name:
         q = q.filter(InvoiceAutopilotOutcome.supplier_name == supplier_name)
     rows = q.order_by(InvoiceAutopilotOutcome.created_at.desc()).all()
+    # A deleted draft (a statement, a duplicate) was never a receive, so it is
+    # in no rate here — it would count as an attempt that wasn't clean.
+    rows = [r for r in rows if r.outcome != "deleted"]
 
     human = [r for r in rows if r.actor == "user"]
     norm_rows = [r for r in rows if r.actor == "norm"]

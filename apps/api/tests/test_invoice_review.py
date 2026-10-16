@@ -992,6 +992,32 @@ class TestBatchModes:
         assert out["skipped"][0]["outcome"] == "needs review"
         assert out["cards"]  # surfaced for the human
 
+    def test_a_deleted_draft_is_recorded_with_its_reason(self, monkeypatch):
+        """A delete left no trace but the run's count, so checking 84 of them
+        meant re-reading every document (Little West, 16 Oct 2026)."""
+        from app.routers import invoice_fixes as IF
+
+        monkeypatch.setattr(IF, "_apply_delete_invoice", lambda lh, fix, db: None)
+        rows: list = []
+        monkeypatch.setattr(
+            IR, "record_receive_outcome", lambda db, **kw: rows.append(kw)
+        )
+        out = self._run(
+            monkeypatch,
+            {"inv-1": DETAIL(fileId=None)},
+            [],
+            "autopilot",
+            [],
+            gates={VA.AUTO_DELETE_UNREADABLE: True},
+        )
+        (gone,) = out["received"]
+        assert gone["outcome"] == "deleted" and gone["deleted_kind"] == "no_copy"
+        (row,) = rows
+        assert row["outcome_override"] == "deleted" and row["received"] is False
+        assert row["actor"] == "norm"
+        assert row["extra_detail"]["deleted"]["kind"] == "no_copy"
+        assert "no invoice attached" in row["extra_detail"]["deleted"]["reason"]
+
     def test_approve_fixes_receives_only_untouched_ready(self, monkeypatch):
         # agreement → receive; any suggestion → card
         received = []
@@ -2066,6 +2092,80 @@ class TestAutopilotHonoursTheVenuesToggles:
         assert IR.compute_confidence(data) == "needs_review"
 
 
+class TestAutopilotCountsWhatItCreated:
+    """The run's summary says how many stock items, suppliers and units were
+    made new in Loaded — so only a create that really made one counts, not a
+    get-or-create that found the record already there."""
+
+    def test_only_new_records_count(self, monkeypatch):
+        from app.services import invoice_catalog as catalog
+        from app.services import supplier_identity
+
+        class _Lh:
+            def get(self, path):
+                return []
+
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda *a, **k: _Lh())
+        monkeypatch.setattr(supplier_identity, "plausible_matches", lambda n, r: [])
+        monkeypatch.setattr(
+            catalog,
+            "get_or_create_supplier",
+            lambda lh, name, details=None: ({"id": "s-1", "name": name}, True),
+        )
+        monkeypatch.setattr(
+            catalog,
+            "get_or_create_unit",
+            lambda lh, name, db: ({"id": f"u-{name}", "name": name}, name == "Box 6"),
+        )
+        monkeypatch.setattr(
+            catalog,
+            "create_item",
+            lambda *a, **k: {
+                "item_id": f"i-{k['line_id']}",
+                "item_name": k["name"],
+                "created": k["line_id"] == "l1",
+            },
+        )
+
+        def _s(sid, kind, gate, line=None, **payload):
+            return {
+                "id": sid,
+                "kind": kind,
+                "line_id": line,
+                "payload": payload,
+                "gate": gate,
+            }
+
+        data = {
+            "invoice_id": "inv-1",
+            "lines": [{"id": "l1"}, {"id": "l2"}],
+            "suggestions": [
+                _s(
+                    "cs",
+                    "create_supplier",
+                    VA.AUTO_CREATE_SUPPLIERS,
+                    supplier_name="Acme",
+                ),
+                _s("cu1", "create_unit", VA.AUTO_CREATE_UNITS, "l1", unit_name="Box 6"),
+                _s("cu2", "create_unit", VA.AUTO_CREATE_UNITS, "l2", unit_name="Each"),
+                _s("ci1", "create_item", VA.AUTO_CREATE_ITEMS, "l1", name="Oat Milk"),
+                _s("ci2", "create_item", VA.AUTO_CREATE_ITEMS, "l2", name="Soy Milk"),
+            ],
+            "suggestion_actions": [],
+            "issues": [],
+        }
+        settings = {"mode": "autopilot", **{g: True for g in VA.GATES}}
+        done = IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
+
+        assert data["autopilot_created"] == {
+            "stock_items": ["Oat Milk"],
+            "suppliers": ["Acme"],
+            "units": ["Box 6"],
+        }
+        assert "used existing unit 'Each'" in done
+        assert "linked existing stock item 'Soy Milk'" in done
+
+
 class TestAutopilotWillNotInventADuplicateSupplier:
     """Supplier identity picks the extraction spec, so a duplicate supplier row
     is not clutter — it is every future invoice from that business being read
@@ -2373,6 +2473,40 @@ class TestDefectRecommendations:
         assert issue["fix"] == [delete["id"]]
         assert "delete the draft" in delete["explanation"]
 
+    def test_each_delete_says_why(self):
+        """The run's summary counts deletes by this reason."""
+
+        def reason(**kw):
+            data = _review(**kw)
+            (s,) = [s for s in data["suggestions"] if s["kind"] == "delete_invoice"]
+            return s["payload"]["reason"]
+
+        feed = [
+            {
+                "id": "inv-old",
+                "type": "Invoice",
+                "invoiceNumber": "F100",
+                "supplierName": "Akaroa Salmon",
+                "receivedAt": "2026-07-30T00:00:00",
+                "fileId": "file-9",
+            }
+        ]
+        assert reason(reference=REFERENCE(received_feed=feed)) == "duplicate"
+        assert reason(extraction=EXTRACTION(document_type="statement")) == "statement"
+        assert (
+            reason(extraction=EXTRACTION(document_type="other", lines=[]))
+            == "not_an_invoice"
+        )
+        assert reason(detail=DETAIL(fileId=None)) == "no_copy"
+        assert reason(extraction={"error": "LLM down"}) == "unreadable"
+        assert set(IR.DELETE_REASONS) == {
+            "duplicate",
+            "statement",
+            "not_an_invoice",
+            "no_copy",
+            "unreadable",
+        }
+
     def _misread_totals_case(self, totals_ask):
         det = DETAIL(total=23.0, subtotal=20.0, taxAmount=3.0)
         det["lines"] = [
@@ -2627,6 +2761,34 @@ class TestDestructiveGates:
         # recorded against the delete, actor norm — which settles its blocker
         rec = data["suggestion_actions"][-1]
         assert rec["suggestion_id"] == "delete_invoice" and rec["by"] == "norm"
+
+    def test_a_delete_keeps_its_reason_on_the_draft(self, monkeypatch):
+        from app.routers import invoice_fixes as IF
+
+        monkeypatch.setattr(IF, "_apply_delete_invoice", lambda lh, fix, db: None)
+        monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda *a, **k: object())
+        data = self._data(
+            "not_an_invoice", "delete_invoice", VA.AUTO_DELETE_NON_INVOICES
+        )
+        data["suggestions"][0]["payload"]["reason"] = "statement"
+        IR.autopilot_accept(
+            None,
+            None,
+            "v-1",
+            "inv-1",
+            data,
+            self._settings(VA.AUTO_DELETE_NON_INVOICES),
+        )
+        assert data["deleted_kind"] == "statement"
+        assert data["deleted_reason"] == "junk draft"
+        # a suggestion from before reasons were recorded still says something
+        data = self._data(
+            "duplicate_invoice", "delete_invoice", VA.AUTO_DELETE_DUPLICATES
+        )
+        IR.autopilot_accept(
+            None, None, "v-1", "inv-1", data, self._settings(VA.AUTO_DELETE_DUPLICATES)
+        )
+        assert data["deleted_kind"] == "other"
 
     def test_strike_and_record_only_gates(self):
         data = {

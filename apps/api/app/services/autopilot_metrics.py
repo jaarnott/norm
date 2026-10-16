@@ -718,12 +718,14 @@ def record_receive_outcome(
     outcome_override: str | None = None,
     dojo: dict | None = None,
     supplier_name: str | None = None,
+    extra_detail: dict | None = None,
 ) -> None:
     """Write one outcome row. Never raises, never touches the caller's session.
 
     Its own session on purpose: a failed flush poisons a SQLAlchemy session
     until it is rolled back, and on this path Loaded has ALREADY accepted the
     receive — a metric bug must not turn that into an error the user sees.
+    ``extra_detail`` is merged into the row's ``detail`` (a delete's reason).
     """
     try:
         from sqlalchemy.exc import IntegrityError
@@ -745,6 +747,8 @@ def record_receive_outcome(
         outcome = outcome_override or counts["outcome"]
         if dojo:
             counts["detail"]["dojo"] = dojo
+        if extra_detail:
+            counts["detail"].update(extra_detail)
         if received and data:
             # The end-state verdict: would autopilot, all flags on, have sent
             # THIS receive? Powers the per-flag report ("with X on, N of your

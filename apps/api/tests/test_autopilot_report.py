@@ -123,6 +123,24 @@ class TestReport:
         assert body["totals"]["not_reviewed"] == 1
         assert body["rates"]["autopilot_ready"] == 1.0
 
+    def test_a_deleted_draft_is_in_no_rate(self, client, admin_headers, db_session):
+        """Norm's deletes are recorded with their reason, but a statement or a
+        duplicate was never a receive — it would read as an unclean attempt."""
+        v = _venue(db_session)
+        _row(db_session, v, "clean", invoice_id="a", suggestion_count=1)
+        for actor in ("user", "norm"):
+            _row(
+                db_session,
+                v,
+                "deleted",
+                invoice_id=f"gone-{actor}",
+                actor=actor,
+                suggestion_count=1,
+            )
+        body = self._get(client, admin_headers, venue_id=v.id, actor="all").json()
+        assert body["totals"]["attempts"] == 1
+        assert body["rates"]["suggestion_quality"] == 1.0
+
     def test_per_supplier_and_missed_fields(self, client, admin_headers, db_session):
         v = _venue(db_session)
         _row(db_session, v, "clean", invoice_id="a", suggestion_count=1)

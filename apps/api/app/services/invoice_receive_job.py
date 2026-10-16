@@ -183,6 +183,18 @@ def run(ctx: background_jobs.JobContext) -> dict:
                 for x in (record.get("supplier_name"), record.get("reference_number"))
                 if x
             )
+            # Why each draft went, and what was made new in Loaded on the way:
+            # "84 deleted" alone sent a person back through every document to
+            # check they were right to go (Little West, 16 Oct 2026).
+            why = dict(prog.get("deleted_reasons") or {})
+            if bucket == "deleted":
+                kind = str(record.get("deleted_kind") or "other")
+                why[kind] = why.get(kind, 0) + 1
+            made = {k: int((prog.get("created") or {}).get(k) or 0) for k in _CREATED}
+            for k in _CREATED:
+                made[k] += len(
+                    ((data or {}).get("autopilot_created") or {}).get(k) or []
+                )
             ctx.update(
                 done=int(prog.get("done") or 0) + 1,
                 done_ids=list(prog.get("done_ids") or []) + [iid],
@@ -190,6 +202,8 @@ def run(ctx: background_jobs.JobContext) -> dict:
                 needs_you_list=needs,
                 current=label or iid,
                 last_outcome=outcome,
+                deleted_reasons=why,
+                created=made,
             )
 
         return _record
@@ -223,8 +237,79 @@ def run(ctx: background_jobs.JobContext) -> dict:
         ctx.update(applied_mode=out.get("mode"))
     return {
         k: ctx.progress.get(k)
-        for k in ("total", "done", "received", "deleted", "needs_you", "failed")
+        for k in (
+            "total",
+            "done",
+            "received",
+            "deleted",
+            "needs_you",
+            "failed",
+            "deleted_reasons",
+            "created",
+        )
     }
+
+
+#: Why a draft was deleted, worded for the summary: (one, many).
+_DELETE_WORDS = {
+    "duplicate": (
+        "duplicate of an invoice already received",
+        "duplicates of invoices already received",
+    ),
+    "statement": ("statement", "statements"),
+    "not_an_invoice": (
+        "other document that wasn't an invoice",
+        "other documents that weren't invoices",
+    ),
+    "no_copy": ("draft with no invoice attached", "drafts with no invoice attached"),
+    "unreadable": ("copy Norm couldn't read", "copies Norm couldn't read"),
+    "other": ("for another reason", "for other reasons"),
+}
+#: What Norm can make new in Loaded on the way, worded: (key, one, many).
+_CREATED_WORDS = (
+    ("stock_items", "stock item", "stock items"),
+    ("suppliers", "supplier", "suppliers"),
+    ("units", "unit", "units"),
+)
+_CREATED = tuple(k for k, _, _ in _CREATED_WORDS)
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _and(parts: list[str]) -> str:
+    return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _breakdown(p: dict) -> str:
+    """'Deleted: …' and 'Created in Loaded: …' — empty for a job that ran
+    before these were counted."""
+    out = []
+    why = p.get("deleted_reasons") or {}
+    if why:
+        order = list(_DELETE_WORDS)
+        kinds = sorted(why, key=lambda k: order.index(k) if k in order else len(order))
+        out.append(
+            "Deleted: "
+            + _and(
+                [
+                    _count(why[k], *_DELETE_WORDS.get(k, _DELETE_WORDS["other"]))
+                    for k in kinds
+                ]
+            )
+            + "."
+        )
+    made = p.get("created")
+    if isinstance(made, dict):
+        parts = [
+            _count(made[k], one, many) for k, one, many in _CREATED_WORDS if made.get(k)
+        ]
+        if parts:
+            out.append(f"Created in Loaded: {_and(parts)}.")
+        elif p.get("applied_mode") == "autopilot":
+            out.append("No new stock items, suppliers or units were needed.")
+    return " ".join(out)
 
 
 def summary_text(job, cards: int = 0) -> str:
@@ -253,6 +338,9 @@ def summary_text(job, cards: int = 0) -> str:
             f"{tally}; everything done so far is saved, so asking again carries on "
             "from where it stopped."
         )
+    breakdown = _breakdown(p)
+    if breakdown:
+        head += f" {breakdown}"
     needs = int(p.get("needs_you") or 0)
     if needs and cards >= needs:
         head += " The ones that need you are below, and on the Invoices page."
