@@ -2232,6 +2232,35 @@ class TestAutopilotWillNotInventADuplicateSupplier:
         assert writes == [], "autopilot created a supplier that already exists"
         assert data.get("linked_supplier_id") is None
 
+    def test_a_near_match_norm_ruled_out_does_not_stop_the_create(self, monkeypatch):
+        # Norm compared the invoice's details with SERVICE FOODS AUCKLAND and
+        # found another business (replica_finish.settle_supplier).
+        writes = self._lh(
+            monkeypatch, [{"id": "sup-1", "name": "SERVICE FOODS AUCKLAND"}]
+        )
+        data, settings = self._data()
+        data["suggestions"][0]["payload"]["not_these"] = ["sup-1"]
+
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
+
+        assert [w[2]["name"] for w in writes] == ["SERVICE FOODS LTD"]
+
+    def test_a_near_match_norm_never_checked_still_stops_it(self, monkeypatch):
+        # A record added since the review was not part of Norm's check.
+        writes = self._lh(
+            monkeypatch,
+            [
+                {"id": "sup-1", "name": "SERVICE FOODS AUCKLAND"},
+                {"id": "sup-2", "name": "Service Foods Christchurch"},
+            ],
+        )
+        data, settings = self._data()
+        data["suggestions"][0]["payload"]["not_these"] = ["sup-1"]
+
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
+
+        assert writes == []
+
     def test_trade_words_in_common_dont_stop_the_create(self, monkeypatch):
         # 'PFD Food Services' is not SERVICE FOODS — sharing 'food' and
         # 'service' is not being the same business.
@@ -2825,7 +2854,6 @@ class TestDestructiveGates:
                     "code": "totals_inconsistent",
                     "blocking": True,
                     "line_id": None,
-                    "gate": VA.RECEIVE_UNRECONCILED_TOTALS,
                     "message": "x",
                     "clears_when": {"scope": "header", "op": "balances"},
                 },
@@ -2837,18 +2865,17 @@ class TestDestructiveGates:
             "v-1",
             "inv-1",
             data,
-            self._settings(
-                VA.AUTO_STRIKE_PHANTOM_LINES, VA.RECEIVE_UNRECONCILED_TOTALS
-            ),
+            self._settings(VA.AUTO_STRIKE_PHANTOM_LINES),
         )
         assert data["lines"][0]["struck"] is True
         assert any("struck" in d for d in done)
-        # The totals switch no longer waves the blocker through: it stands
-        # down because, with the phantom struck, the invoice adds up.
-        assert not any("receive unreconciled totals" in d for d in done)
+        # The totals blocker stands down because, with the phantom struck,
+        # the invoice adds up.
         assert IR.compute_confidence(data) == "ready"
 
-    def test_the_totals_switch_alone_never_clears_totals_that_dont_match(self):
+    def test_every_switch_on_never_clears_totals_that_dont_match(self):
+        # Loaded won't receive an invoice that doesn't add up, so no switch
+        # lets Norm try (the owner, 16 Oct 2026).
         data = {
             "invoice_id": "inv-1",
             "total": 50.0,
@@ -2867,7 +2894,6 @@ class TestDestructiveGates:
                     "id": "totals_inconsistent",
                     "code": "totals_inconsistent",
                     "blocking": True,
-                    "gate": VA.RECEIVE_UNRECONCILED_TOTALS,
                     "message": "x",
                     "clears_when": {"scope": "header", "op": "balances"},
                 }
@@ -2879,7 +2905,7 @@ class TestDestructiveGates:
             "v-1",
             "inv-1",
             data,
-            self._settings(VA.RECEIVE_UNRECONCILED_TOTALS),
+            VA.settings_from({"mode": "autopilot", **{g: True for g in VA.GATES}}),
         )
         assert IR.compute_confidence(data) == "needs_review"
 

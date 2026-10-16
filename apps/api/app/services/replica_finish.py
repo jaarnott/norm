@@ -14,7 +14,7 @@ IN11656852's replica said SHALLOTS while the card proposed BANANA SHALLOTS
 from the order.
 
 A value a rule only GUESSED is marked (``unit_guess``, ``supplier_guess``,
-``po_guess``, ``unit_cost_guess``) with its reason beside it (``*_why``).
+``po_guess``) with its reason beside it (``*_why``).
 Norm never applies a guess unattended unless a venue switch says it may.
 
 Every rule is best-effort: one that fails logs and leaves the replica as the
@@ -434,15 +434,23 @@ def settle_supplier(
     suppliers: list[dict] | None,
     log: list,
     read_details=None,
+    same_business=None,
 ) -> None:
     """The supplier, when the printed name matches no Loaded record and
-    Loaded's draft has none either: a record that may be the same business
-    (a guess — ``supplier_identity.plausible_matches``: a shared distinctive
-    word, not just 'Food Services'), else a new supplier under the printed
-    name. Autopilot may create one only when
-    nothing is close (see invoice_review.autopilot_accept) — a duplicate
-    supplier sends every later invoice from that business to the wrong
-    extraction layout.
+    Loaded's draft has none either: an existing one, or a new supplier under
+    the printed name — either way the invoice can go on.
+
+    Records that might be the same business (``plausible_matches``: a shared
+    distinctive word) are only candidates. A shared word proved nothing: all
+    three such guesses in the 30 days to 16 Oct 2026 were other businesses
+    (City Meats → Allie's Cold Pressed, Just Fresh Online → Fresh Connection,
+    PNM Sydney → Sydney Direct Fresh Produce). So Norm decides
+    (``same_business(name, details, candidates)`` →
+    invoice_arbiter.same_business) from the details the invoice prints: the
+    candidate that is the business is linked, sure; when none is, a new
+    supplier is proposed, and the candidates it was checked against ride on
+    it so autopilot's duplicate guard knows they were ruled out. Undecided —
+    no decider, or the check failed — the closest stays a guess.
 
     A new supplier also carries the address and contacts its invoice prints
     (``read_details(name)`` → invoice_extraction.read_supplier_details), so
@@ -470,9 +478,24 @@ def settle_supplier(
         and not s.get("removedAt")
         and not s.get("datestampDeleted")
     ]
-    close = supplier_identity.plausible_matches(name, live) if live else []
-    best = close[0] if close else None
-    if isinstance(best, dict) and best.get("id"):
+    close = [s for s in supplier_identity.plausible_matches(name, live) if s.get("id")]
+    # Read for the decision, or for the record a new supplier gets — not
+    # for a guess, which writes nothing.
+    details = (
+        read_details(name) if read_details and (same_business or not close) else None
+    )
+    verdict = same_business(name, details, close) if close and same_business else {}
+    by_id = {str(s["id"]): s for s in close}
+    if verdict.get("id") in by_id:
+        best = by_id[verdict["id"]]
+        replica["linked_supplier_id"] = best["id"]
+        replica["supplier_name"] = best.get("name")
+        replica["supplier_why"] = (
+            f"no Loaded supplier is called '{name}' — it is '{best.get('name')}': "
+            f"{verdict.get('why')}"
+        )
+    elif close and not verdict:
+        best = close[0]
         replica["linked_supplier_id"] = best["id"]
         replica["supplier_name"] = best.get("name")
         replica["supplier_guess"] = True
@@ -482,7 +505,14 @@ def settle_supplier(
     else:
         replica["supplier_create_name"] = name
         replica["supplier_why"] = f"no Loaded supplier is called '{name}' — create it"
-        details = read_details(name) if read_details else None
+        if close:
+            replica["supplier_not_these"] = sorted(by_id)
+            replica["supplier_why"] = (
+                f"no Loaded supplier is called '{name}', and "
+                + ", ".join(f"'{s.get('name')}'" for s in close)
+                + f" {'is' if len(close) == 1 else 'are'} another business: "
+                + f"{verdict.get('why')} — create it"
+            )
         if details:
             replica["supplier_details"] = details
     log.append(f"supplier: {replica['supplier_why']}")
@@ -614,15 +644,15 @@ def _totals_view(data: dict) -> tuple[float, float, float, float | None]:
 
 def read_printed_prices(view: dict, replica: dict) -> dict | None:
     """Ways an invoice's figures are all right but were read wrong, worked out
-    from the figures themselves instead of spread as a guess:
+    from the figures themselves:
 
     - a line whose printed total isn't quantity × price: the line total is
       what was charged. Bidfood prints its list price and charges about 5%
       less (La Zeppa 110185654: 1 × 66.25, line 62.94) — the cost is line
       total ÷ quantity. When the line total is a whole multiple of the price
       (Bidfood 110167263: "2 × 41.11", line 164.44) the quantity was likely
-      misread instead — 4 at 41.11, or 2 at 82.22; the figures can't say
-      which, so that one is a guess;
+      misread instead: 4 at 41.11, the reading that keeps the printed price
+      (2 at 82.22 fits the figures too, but needs two misreads);
     - prices printed INCLUDING GST, filed as ex-tax: each cost ÷ (1 + rate);
     - a discount printed off the bottom: the receive can't send Loaded a
       discount, so it comes off every line's cost by the same share — what
@@ -637,8 +667,8 @@ def read_printed_prices(view: dict, replica: dict) -> dict | None:
 
     Lines the invoice doesn't bill (struck in the view) and $0 leftovers are
     ignored. Returns ``{"lines": {view line id: {"unit_cost", maybe
-    "quantity_received"}}, "whys": {id: str}, "discount": bool, "guess":
-    {ids}}``, or None when the lines already reach the total or nothing fits.
+    "quantity_received"}}, "whys": {id: str}, "discount": bool}``, or None
+    when the lines already reach the total or nothing fits.
     """
     if replica.get("is_credit_note") or view.get("unit_cost_includes_tax"):
         return None
@@ -658,7 +688,7 @@ def read_printed_prices(view: dict, replica: dict) -> dict | None:
         if not q:
             continue  # a $0 leftover adds nothing
         if c is None or r is None:
-            return None  # a line we can't reason about — leave it to the guess
+            return None  # a line we can't reason about — leave it
         rows.append((str(ln.get("id")), q, c, r, _f(ln.get("printed_total"))))
     if not rows:
         return None
@@ -688,7 +718,7 @@ def read_printed_prices(view: dict, replica: dict) -> dict | None:
     if _agree(figures(qty0, cost0)[2], total):
         return None
 
-    def result(qty, cost, whys, *, discount_off=False, guess=()) -> dict:
+    def result(qty, cost, whys, *, discount_off=False) -> dict:
         lines = {}
         for i in qty:
             change = {}
@@ -703,22 +733,19 @@ def read_printed_prices(view: dict, replica: dict) -> dict | None:
             "lines": lines,
             "whys": {i: whys[i] for i in lines},
             "discount": discount_off,
-            "guess": set(guess) & set(lines),
         }
 
     # 1. The line totals are what was charged.
-    qty1, cost1, whys1, guessed = dict(qty0), dict(cost0), {}, set()
+    qty1, cost1, whys1 = dict(qty0), dict(cost0), {}
     for i, q, c, _r, charged in rows:
         if charged is None or abs(q * c - charged) <= 0.01:
             continue
         k = charged / c if c else 0.0
         if round(k) >= 1 and abs(k - round(k)) < 1e-3 and abs(round(k) - q) >= 1:
             qty1[i] = float(round(k))
-            guessed.add(i)
             whys1[i] = (
                 f"the invoice charges {charged:.2f} for the line: {round(k)} at "
-                f"{c:.2f}, not the {q:g} it prints (or {q:g} at {charged / q:.2f}) — "
-                "check the quantity"
+                f"the printed {c:.2f}, not the {q:g} it prints"
             )
         else:
             cost1[i] = round(charged / q, 4)
@@ -727,7 +754,7 @@ def read_printed_prices(view: dict, replica: dict) -> dict | None:
                 f"{c:.2f} = {q * c:.2f} — the line total is what was charged"
             )
     if whys1 and evidence(qty1, cost1):
-        return result(qty1, cost1, whys1, guess=guessed)
+        return result(qty1, cost1, whys1)
 
     # 2. Prices including GST, and/or a discount off the bottom.
     readings = [
@@ -994,8 +1021,7 @@ def _settle_printed_reading(
     issue_id: str,
     log: list,
 ) -> bool:
-    """Apply ``read_printed_prices`` to the Replica's lines. Sure where the
-    figures decide it; a guess where they can't (a whole-multiple line)."""
+    """Apply ``read_printed_prices`` to the Replica's lines."""
     view = _answer_view(data, replica, pairs)
     reading = read_printed_prices(view, replica)
     if not reading or not reading["lines"]:
@@ -1010,12 +1036,11 @@ def _settle_printed_reading(
     if any(rl is None for rl in targets.values()):
         return False
     for vid, change in reading["lines"].items():
-        rl, guess = targets[vid], vid in reading["guess"]
+        rl = targets[vid]
         why = reading["whys"][vid]
         if "quantity_received" in change:
             rl["quantity_received"] = change["quantity_received"]
             rl["quantity_received_why"] = why
-            rl["quantity_received_guess"] = guess
             if issue is not None:
                 mark_fix(rl, "quantity_received", issue_id)
         cost = change["unit_cost"]
@@ -1024,16 +1049,13 @@ def _settle_printed_reading(
         if q is not None:
             rl["total_cost"] = round(q * cost, 4)
         rl["unit_cost_set"] = True
-        rl["unit_cost_guess"] = guess
         shown = (
             f"{cost:.2f}"
             if abs(cost * 100 - round(cost * 100)) < 1e-6
             else f"{cost:.4f}"
         )
         rl["unit_cost_why"] = (
-            why
-            if guess
-            else f"{why} — {shown} a unit ex GST makes every printed figure agree"
+            f"{why} — {shown} a unit ex GST makes every printed figure agree"
         )
         if issue is not None:
             mark_fix(rl, "unit_cost", issue_id)
@@ -1153,6 +1175,7 @@ def finish_replica(
     db=None,
     extraction: dict | None = None,
     read_supplier_details=None,
+    same_business=None,
 ) -> None:
     """Apply every rule to ``replica`` in place. ``pairs`` maps replica line
     ids to the Loaded lines they describe (``invoice_review.pair_lines``)."""
@@ -1161,7 +1184,7 @@ def finish_replica(
         (
             "supplier",
             lambda: settle_supplier(
-                data, replica, suppliers, log, read_supplier_details
+                data, replica, suppliers, log, read_supplier_details, same_business
             ),
         ),
         ("items", lambda: settle_items(data, replica, pairs, catalogue, log)),

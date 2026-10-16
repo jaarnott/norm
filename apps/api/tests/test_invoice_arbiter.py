@@ -5,7 +5,12 @@ isn't a proper matching (pairing) is rejected WHOLESALE, so the model can
 never make anything worse than the standing blocker.
 """
 
-from app.services.invoice_arbiter import arbitrate_pairing, diagnose_totals
+from app.services.invoice_arbiter import (
+    arbitrate_pairing,
+    diagnose_totals,
+    same_business,
+    work_out_totals,
+)
 
 LINES = [
     {
@@ -226,3 +231,85 @@ class TestArbitratePairing:
             )
             == {}
         )  # partial — half-right pairs the wrong cost to the wrong line
+
+
+class TestWorkOutTotals:
+    LINES = [{"id": "ld-1", "quantity": 2.0, "unit_price": 11.5}]
+
+    def test_lines_that_dont_exist_are_no_answer(self):
+        asked = []
+
+        def ask(payload):
+            asked.append(payload)
+            return {"lines": [{"line_id": "ld-99", "unit_price": 15.0}]}
+
+        assert work_out_totals(self.LINES, {}, lambda a: None, ask_llm=ask) == {}
+        assert len(asked) == 3
+        assert asked[1]["earlier_answers"][0]["problem"] == (
+            "it names no line that exists and no total"
+        )
+
+    def test_the_first_answer_that_adds_up_is_kept(self):
+        answer = work_out_totals(
+            self.LINES,
+            {},
+            lambda a: None,
+            ask_llm=lambda p: {
+                "lines": [{"line_id": "ld-1", "unit_price": "15", "gst": "maybe"}],
+                "why": "misread",
+            },
+        )
+        assert answer == {
+            "lines": [{"line_id": "ld-1", "unit_price": 15.0}],
+            "total": None,
+            "why": "misread",
+        }
+
+    def test_a_failing_call_stops_at_once(self):
+        def ask(payload):
+            raise RuntimeError("model down")
+
+        assert work_out_totals(self.LINES, {}, lambda a: None, ask_llm=ask) == {}
+
+
+class TestSameBusiness:
+    CANDIDATES = [{"id": "sup-1", "name": "Fresh Connection", "city": "Auckland"}]
+
+    def test_the_business_is_one_of_the_candidates(self):
+        seen = []
+
+        def ask(payload):
+            seen.append(payload)
+            return {"same": "sup-1", "why": "same account number"}
+
+        got = same_business(
+            "Fresh Connection Ltd", {"city": "Auckland"}, self.CANDIDATES, ask_llm=ask
+        )
+        assert got == {"id": "sup-1", "why": "same account number"}
+        [payload] = seen
+        assert payload["invoice_supplier"] == {
+            "name": "Fresh Connection Ltd",
+            "city": "Auckland",
+        }
+        assert payload["candidates"][0]["address"] == "Auckland"
+
+    def test_none_of_them_is_an_answer(self):
+        got = same_business(
+            "Just Fresh Online Limited",
+            {},
+            self.CANDIDATES,
+            ask_llm=lambda p: {"same": None, "why": "a different company"},
+        )
+        assert got == {"id": None, "why": "a different company"}
+
+    def test_an_id_that_isnt_a_candidate_is_no_answer(self):
+        got = same_business(
+            "X", {}, self.CANDIDATES, ask_llm=lambda p: {"same": "sup-9", "why": ""}
+        )
+        assert got == {}
+
+    def test_a_failing_call_is_no_answer(self):
+        def ask(payload):
+            raise RuntimeError("model down")
+
+        assert same_business("X", {}, self.CANDIDATES, ask_llm=ask) == {}

@@ -476,6 +476,29 @@ class TestTheSettingsPage:
         ]
         assert mine[0]["level"] == "approve_all"
 
+    def test_a_switch_that_no_longer_exists_is_left_out(
+        self, client, db_session, catalog
+    ):
+        # receive_unreconciled_totals was removed on 16 Oct 2026; people who
+        # had it on still have it saved. Shown, then sent back with the next
+        # change, it would be refused as unknown and nothing could be saved.
+        key = f"{catalog}.review_and_receive_invoices"
+        on = {"auto_create_units": True, "receive_unreconciled_totals": True}
+        user = _person(db_session, {key: {"level": "autopilot", "options": on}})
+        r = client.get("/api/approval-preferences", headers=_headers(user))
+        [tool] = [t for t in r.json()["tools"] if t["key"] == key]
+        assert tool["options"] == {"auto_create_units": True}
+        assert "reconcile" not in tool["summary"]
+        r = client.put(
+            "/api/approval-preferences",
+            json={
+                "key": key,
+                "value": {"level": "autopilot", "options": tool["options"]},
+            },
+            headers=_headers(user),
+        )
+        assert r.status_code == 200, r.text
+
     def test_it_saves_only_for_the_caller(self, client, db_session, catalog):
         user, other = _person(db_session), _person(db_session)
         r = client.put(

@@ -604,10 +604,14 @@ def describe_entry(row: dict | None, entry: dict | None) -> str:
         chosen = entry.get("level") if entry.get("level") in LEVELS else LEVELS[0]
         named = {lv.get("id"): lv.get("label") for lv in policy["levels"]}
         text = named.get(chosen) or chosen
-        on = sorted(k for k, v in (entry.get("options") or {}).items() if v is True)
         labels = {o.get("id"): o.get("label") for o in policy.get("options") or []}
+        on = sorted(
+            k
+            for k, v in (entry.get("options") or {}).items()
+            if v is True and k in labels
+        )
         if on and chosen == LEVELS[-1]:
-            text += " — may also " + "; ".join(labels.get(o, o) for o in on)
+            text += " — may also " + "; ".join(labels[o] for o in on)
         return text
     if policy.get("default") == "auto":
         return "does it without asking"

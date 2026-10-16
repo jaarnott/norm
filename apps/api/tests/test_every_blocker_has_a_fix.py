@@ -188,9 +188,9 @@ class TestSupplierAndPhantomLines:
             ]
         }
 
-    def _decide(self, replica, suppliers, read_details=None):
+    def _decide(self, replica, suppliers, read_details=None, same_business=None):
         data = {"lines": []}
-        RF.settle_supplier(data, replica, suppliers, [], read_details)
+        RF.settle_supplier(data, replica, suppliers, [], read_details, same_business)
         suggestions: list = []
         IR._header_suggestions(data, replica, suggestions)
         issue = {
@@ -233,7 +233,52 @@ class TestSupplierAndPhantomLines:
         assert issue["fix"] == [s["id"]]
         assert issue["gate"] == VA.AUTO_CREATE_SUPPLIERS  # the switch that acts
 
-    def test_a_near_match_is_a_persons_call_not_a_switch(self):
+    SF = [{"id": "sup-sf", "name": "SERVICE FOODS AUCKLAND"}]
+
+    def test_norm_decides_a_near_supplier_is_the_business(self):
+        seen = []
+
+        def same(name, details, candidates):
+            seen.append((name, details, [c["id"] for c in candidates]))
+            return {"id": "sup-sf", "why": "same address and account number"}
+
+        issue, [s] = self._decide(
+            self._replica("SERVICE FOODS LTD"),
+            self.SF,
+            read_details=lambda name: {"city": "Auckland"},
+            same_business=same,
+        )
+        assert seen == [("SERVICE FOODS LTD", {"city": "Auckland"}, ["sup-sf"])]
+        assert s["kind"] == "supplier" and s["sure"] is True
+        assert s["apply"]["linked_supplier_id"] == "sup-sf"
+        assert "same address and account number" in s["explanation"]
+        assert issue["fix"] == [s["id"]]
+
+    def test_norm_decides_a_near_supplier_is_another_business(self):
+        # City Meats (N.S.W.) at Applegum was guessed as Allie's Cold Pressed.
+        issue, [s] = self._decide(
+            self._replica("SERVICE FOODS LTD"),
+            self.SF,
+            read_details=lambda name: {"city": "Sydney"},
+            same_business=lambda n, d, c: {"id": None, "why": "a Sydney business"},
+        )
+        assert s["kind"] == "create_supplier"
+        assert s["payload"]["not_these"] == ["sup-sf"]  # for autopilot's guard
+        assert s["payload"]["details"] == {"city": "Sydney"}
+        assert s["gate"] == VA.AUTO_CREATE_SUPPLIERS  # creating still needs it
+        assert "'SERVICE FOODS AUCKLAND' is another business" in s["explanation"]
+        assert issue["fix"] == [s["id"]]
+
+    def test_undecided_the_closest_stays_a_guess(self):
+        # The check failed (the model was down): nothing is linked unattended.
+        _, [s] = self._decide(
+            self._replica("SERVICE FOODS LTD"),
+            self.SF,
+            same_business=lambda n, d, c: {},
+        )
+        assert s["kind"] == "supplier" and s["sure"] is False
+
+    def test_an_undecided_near_match_needs_no_switch(self):
         issue, _ = self._decide(
             self._replica("SERVICE FOODS LTD"),
             [{"id": "sup-sf", "name": "SERVICE FOODS AUCKLAND"}],
@@ -489,7 +534,7 @@ class TestPricesAndDiscountsAreReadExactly:
         )
         assert r["lines"] == {"a": {"unit_cost": 31.2}} and r["discount"]
         assert "prices include GST" in r["whys"]["a"]
-        assert "30.91 discount (ex GST)" in r["whys"]["a"] and not r["guess"]
+        assert "30.91 discount (ex GST)" in r["whys"]["a"]
 
     def test_a_discount_off_the_bottom(self):
         r = RF.read_printed_prices(
@@ -622,7 +667,7 @@ class TestPricesAndDiscountsAreReadExactly:
     def test_the_answer_is_sure_and_fixes_the_blocker(self):
         replica, log = self._settle(issue=True)
         rl = replica["lines"][0]
-        assert rl["unit_cost"] == 31.2 and rl["unit_cost_guess"] is False
+        assert rl["unit_cost"] == 31.2
         assert rl["fixes"] == {"unit_cost": "totals_inconsistent"}
         assert rl["unit_cost_why"].endswith(
             "31.20 a unit ex GST makes every printed figure agree"
@@ -714,15 +759,19 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
         return data, price
 
     @staticmethod
-    def _answer(cost):
-        return lambda payload: {
-            "corrections": [
-                {"scope": "line", "line_id": "ld-1", "field": f, "proposed": v}
-                for f, v in (("unit_price", cost), ("line_total", 2 * cost))
-            ],
-            "confidence": "high",
-            "why": "the price was misread",
-        }
+    def _answer(*costs):
+        asked: list = []
+
+        def ask(payload):
+            asked.append(payload)
+            cost = costs[min(len(asked), len(costs)) - 1]
+            return {
+                "lines": [{"line_id": "ld-1", "unit_price": cost}],
+                "why": "the price was misread",
+            }
+
+        ask.asked = asked
+        return ask
 
     def test_no_line_explains_it_and_the_blocker_stands(self):
         # Never an adjustment line, never the difference spread over the
@@ -731,7 +780,7 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
         suggestions, issues = self._balance(data, [price], [])
         [issue] = issues
         assert issue["clears_when"] == {"scope": "header", "op": "balances"}
-        assert issue["gate"] == VA.RECEIVE_UNRECONCILED_TOTALS
+        assert "gate" not in issue  # Loaded won't receive it: no switch can
         [s] = suggestions
         assert s["proposed"] == 11.5 and s["sure"] is True
         assert s["fixes"] == issue["id"]
@@ -743,7 +792,6 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
         IR.balance_after_suggestions(data, suggestions, issues, ask=self._answer(15.0))
         [s] = suggestions  # the price suggestion now carries the right price
         assert s["proposed"] == 15.0 and s["sure"] is True
-        assert s["confidence"] == "high"
         assert "the price was misread" in s["explanation"]
         [issue] = issues  # the draft as it stands still doesn't add up
         assert s["fixes"] == issue["id"]
@@ -752,9 +800,76 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
     def test_an_answer_that_doesnt_add_up_changes_nothing(self):
         data, price = self._off()
         suggestions, issues = [price], []
-        IR.balance_after_suggestions(data, suggestions, issues, ask=self._answer(14.0))
+        ask = self._answer(14.0)
+        IR.balance_after_suggestions(data, suggestions, issues, ask=ask)
         [s] = suggestions
         assert s["proposed"] == 11.5
+        assert len(ask.asked) == 3  # the first answer, then two more tries
+
+    def test_a_wrong_answer_goes_back_for_another_try(self):
+        data, price = self._off()
+        suggestions, issues = [price], []
+        ask = self._answer(14.0, 15.0)
+        IR.balance_after_suggestions(data, suggestions, issues, ask=ask)
+        [s] = suggestions
+        assert s["proposed"] == 15.0
+        [first, second] = ask.asked
+        assert first["earlier_answers"] == []
+        [earlier] = second["earlier_answers"]
+        assert earlier["problem"] == "with it the invoice comes to 32.20"
+
+    def test_a_line_charged_gst_the_wrong_way_is_put_right(self):
+        # 20.00 GST-free + 10.00 charged at 15% = 31.50; Loaded charged both.
+        data = {
+            "invoice_id": "inv-1",
+            "total": 31.5,
+            "lines": [
+                {
+                    "id": f"ld-{i}",
+                    "quantity_received": 1,
+                    "unit_cost": cost,
+                    "sale_tax_rate": 0.15,
+                }
+                for i, cost in ((1, 20.0), (2, 10.0))
+            ],
+        }
+        suggestions: list = []
+        IR.balance_after_suggestions(
+            data,
+            suggestions,
+            [],
+            ask=lambda p: {
+                "lines": [{"line_id": "ld-1", "gst": "free"}],
+                "why": "the cheese is GST-free",
+            },
+        )
+        [s] = suggestions
+        assert (s["field"], s["proposed"], s["sure"]) == ("sale_tax_rate", 0.0, True)
+        assert IR.totals_balance(IR._all_applied(data, suggestions))
+
+    def test_an_invoice_that_adds_up_never_asks(self):
+        data, _ = self._off()
+        data["total"] = 23.0
+
+        def ask(payload):
+            raise AssertionError("an invoice that adds up costs nothing extra")
+
+        def document():
+            raise AssertionError("nor is its copy read")
+
+        IR.balance_after_suggestions(data, [], [], ask=ask, document=document)
+
+    def test_the_invoice_itself_is_read_only_when_needed(self):
+        data, price = self._off()
+        read: list = []
+        IR.balance_after_suggestions(
+            data,
+            [price],
+            [],
+            ask=self._answer(15.0),
+            document=lambda: read.append(1) or {"type": "document"},
+        )
+        assert read == [1]
 
     def test_a_suggestion_that_would_unbalance_a_matching_invoice_goes(self):
         # Loaded's 2 x 10.00 already comes to 23.00: a list price that would
@@ -838,11 +953,7 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
         def ask(payload):
             seen.extend(ln["id"] for ln in payload["lines"])
             return {
-                "corrections": [
-                    {"scope": "line", "line_id": "ld-1", "field": f, "proposed": 15.0}
-                    for f in ("unit_price", "line_total")
-                ],
-                "confidence": "high",
+                "lines": [{"line_id": "ld-1", "unit_price": 15.0}],
                 "why": "the cleaning line is 15.00",
             }
 
@@ -926,12 +1037,12 @@ class TestBidfoodLineDiscounts:
                 "discount_amount": None,
             },
         )
-        assert r["lines"] == {"ld-1": {"unit_cost": 62.94}} and not r["guess"]
+        assert r["lines"] == {"ld-1": {"unit_cost": 62.94}}
         assert "the line total is what was charged" in r["whys"]["ld-1"]
 
-    def test_a_whole_multiple_is_a_quantity_guess(self):
-        # Bidfood 110167263: "2 x 41.11", line 164.44 — 4 at 41.11 (or 2 at
-        # 82.22); the figures can't say which.
+    def test_a_whole_multiple_is_a_misread_quantity(self):
+        # Bidfood 110167263: "2 x 41.11", line 164.44 — 4 at 41.11. Norm
+        # decides: 2 at 82.22 fits too, but needs two misreads.
         view = {
             "total": 189.11,
             "lines": [
@@ -952,7 +1063,7 @@ class TestBidfoodLineDiscounts:
         }
         r = RF.read_printed_prices(view, printed)
         assert r["lines"] == {"ld-1": {"quantity_received": 4.0, "unit_cost": 41.11}}
-        assert r["guess"] == {"ld-1"} and "check the quantity" in r["whys"]["ld-1"]
+        assert "4 at the printed 41.11, not the 2 it prints" in r["whys"]["ld-1"]
 
     def test_lines_the_invoice_doesnt_bill_and_zero_leftovers_are_ignored(self):
         # Bidfood 110185651 / 110167264: a $0 PECORINO and a duplicate feta.
@@ -1157,24 +1268,10 @@ class TestTheReviewLeavesNoBlockerWithoutAFix:
         # total say 5. The copy's own check finds nothing; on the values Norm
         # would receive, the model works out the quantity.
         def ask(payload):
-            if "values Norm will receive" not in " ".join(payload["failing"]):
-                return {}
+            if "earlier_answers" not in payload:
+                return {}  # the copy's own check, on its figures alone
             return {
-                "corrections": [
-                    {
-                        "scope": "line",
-                        "line_id": "ld-1",
-                        "field": "quantity",
-                        "proposed": 5.0,
-                    },
-                    {
-                        "scope": "line",
-                        "line_id": "ld-1",
-                        "field": "line_total",
-                        "proposed": 222.0,
-                    },
-                ],
-                "confidence": "high",
+                "lines": [{"line_id": "ld-1", "quantity": 5.0}],
                 "why": "5 at 44.40 is the 222.00 subtotal",
             }
 
@@ -1351,9 +1448,9 @@ class TestEveryBlockerHasAnAutopilotDecision:
         "not_an_invoice": {"kind": "delete_invoice"},
         "no_copy_attached": {"kind": "delete_invoice"},
         "copy_unreadable": {"kind": "delete_invoice"},
-        # Norm works out which lines are wrong (balance_after_suggestions).
-        # When no line explains the gap it still stops: see
-        # test_totals_no_line_explains_keep_their_blocker.
+        # Norm works out which lines are wrong, looking at the invoice itself
+        # when its figures alone don't say (balance_after_suggestions). Only
+        # a model that finds nothing in three tries leaves it standing.
         "totals_inconsistent": {
             "kind": "line_value",
             "field": "unit_cost",

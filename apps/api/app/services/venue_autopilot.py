@@ -40,7 +40,6 @@ AUTO_CREATE_SUPPLIERS = "auto_create_suppliers"
 RECEIVE_WITHOUT_UNIT = "receive_without_unit"
 RECEIVE_WITH_UNCONFIRMED_UNIT = "receive_with_unconfirmed_unit"
 RECEIVE_WITHOUT_PO = "receive_without_po"
-RECEIVE_UNRECONCILED_TOTALS = "receive_unreconciled_totals"
 AUTO_STRIKE_PHANTOM_LINES = "auto_strike_phantom_lines"
 # The delete gates authorise autopilot's only DESTRUCTIVE writes — three
 # separate toggles on purpose: deleting a duplicate is evidence-backed,
@@ -65,7 +64,6 @@ GATES: dict[str, str] = {
         "receive when the unit came from Loaded rather than the copy"
     ),
     RECEIVE_WITHOUT_PO: "receive without a valid purchase order",
-    RECEIVE_UNRECONCILED_TOTALS: ("receive when the copy's totals don't reconcile"),
     AUTO_STRIKE_PHANTOM_LINES: "strike lines the copy doesn't bill",
     AUTO_DELETE_DUPLICATES: "delete a duplicate invoice draft",
     AUTO_DELETE_NON_INVOICES: (

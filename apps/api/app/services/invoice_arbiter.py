@@ -1,4 +1,4 @@
-"""Two LLM arbitrations for defects deterministic checks can only flag.
+"""LLM arbitrations for defects deterministic checks can only flag.
 
 Same doctrine as ``unit_resolver``: one schema-constrained call each, an
 injectable ``ask_llm`` for tests, HARD validators on the answer, and {} on
@@ -10,6 +10,16 @@ subtotal+tax vs total). The model names WHICH figure was misread and the
 correction; the validator re-runs the arithmetic with the corrections
 applied and rejects the whole verdict unless it reconciles. Corrections
 surface as ordinary Accept-able suggestions.
+
+``work_out_totals`` — with every suggestion applied the invoice still
+doesn't come to its total. The model looks at the invoice itself, told how
+far out it is, and names the lines that are wrong; the caller's check (the
+invoice must then add up, Loaded's way) decides, and a failed answer goes
+back with why, for another try.
+
+``same_business`` — the printed supplier matches no Loaded record by name,
+but some look close. The model compares the details the invoice prints with
+each candidate's record: one of them, or a new supplier.
 
 ``arbitrate_pairing`` — two copy lines match the same Loaded line, so
 comparison can't proceed. The model pairs them from descriptions, codes,
@@ -62,6 +72,42 @@ _PAIRING_PROMPT = (
     '"confidence": "high|medium|low", "why": "<evidence>"}'
 )
 
+_WORK_OUT_PROMPT = (
+    "A supplier invoice is about to be received into a venue's stock system, "
+    "but the values it will be received with don't come to the invoice's "
+    "total. You are given each line as it will be received, beside what was "
+    "read off the invoice for it ('printed'), the invoice's printed subtotal, "
+    "GST and total, and the attached invoice itself when there is one. Work "
+    "out which lines are wrong and what they should be, so the invoice comes "
+    "to its total.\n"
+    "Rules:\n"
+    "- Look at the invoice: a misread quantity or price, a line charged "
+    "GST or GST-free the other way, or a misread total.\n"
+    "- Change only what the invoice shows is wrong. Never spread a "
+    "difference over the lines or invent a line.\n"
+    "- A line's value is quantity x unit price ex GST, plus GST when "
+    "charged. The total is every line plus its GST.\n"
+    "- 'earlier_answers' are answers that didn't add up, with what they came "
+    "to. Don't repeat one.\n"
+    "- why: ONE sentence naming what the invoice shows. A person reads it.\n\n"
+    'Return ONLY JSON: {"lines": [{"line_id": "<id>", "quantity": <number, '
+    'optional>, "unit_price": <number, optional>, "gst": "charged|free, '
+    'optional"}], "total": <number or null>, "why": "<evidence>"}'
+)
+
+_SAME_BUSINESS_PROMPT = (
+    "An invoice was issued by a supplier whose name matches none of the "
+    "venue's supplier records exactly. Some records look close. Decide "
+    "whether one of them IS the business that issued the invoice — the same "
+    "company under a trading name, legal name or branch — or none is.\n"
+    "Compare the details the invoice prints (address, phone, email, the "
+    "venue's account number with the supplier) with each candidate's record. "
+    "Businesses that only share a word ('Fresh', 'Sydney', 'Meats') are "
+    "different businesses.\n"
+    "- why: ONE sentence naming the evidence. A person reads it.\n\n"
+    'Return ONLY JSON: {"same": "<candidate id or null>", "why": "<evidence>"}'
+)
+
 # The same tolerance bands the replica's reconciliation uses.
 _LINE_TOL = 0.011
 _SUM_TOL = 0.02
@@ -75,7 +121,7 @@ def _f(v: object) -> float | None:
         return None
 
 
-def _default_ask(db, system_prompt: str):
+def _default_ask(db, system_prompt: str, documents: list[dict] | None = None):
     def _ask(payload: dict) -> dict:
         from app.interpreter.llm_interpreter import call_llm
 
@@ -85,6 +131,7 @@ def _default_ask(db, system_prompt: str):
             db=db,
             call_type="extraction",
             max_tokens=1200,
+            documents=documents,
         )
         return parsed if isinstance(parsed, dict) else {}
 
@@ -186,6 +233,133 @@ def diagnose_totals(
     return {
         "corrections": clean,
         "confidence": conf,
+        "why": str(raw.get("why") or "").strip(),
+    }
+
+
+#: Tries at working out the totals: the first answer, then two more told why
+#: the one before didn't add up.
+WORK_OUT_ATTEMPTS = 3
+
+
+def _clean_work_out(raw: object, ids: set[str]) -> dict:
+    """The model's answer, kept to lines that exist and fields that mean
+    something; {} when there's nothing in it."""
+    if not isinstance(raw, dict):
+        return {}
+    lines = []
+    for ln in raw.get("lines") or []:
+        if not isinstance(ln, dict) or str(ln.get("line_id")) not in ids:
+            continue
+        out: dict = {"line_id": str(ln["line_id"])}
+        for field in ("quantity", "unit_price"):
+            if _f(ln.get(field)) is not None:
+                out[field] = _f(ln[field])
+        if ln.get("gst") in ("charged", "free"):
+            out["gst"] = ln["gst"]
+        if len(out) > 1:
+            lines.append(out)
+    total = _f(raw.get("total"))
+    if not lines and total is None:
+        return {}
+    return {"lines": lines, "total": total, "why": str(raw.get("why") or "").strip()}
+
+
+def work_out_totals(
+    lines: list[dict],
+    header: dict,
+    check,
+    *,
+    document: dict | None = None,
+    ask_llm=None,
+    db=None,
+) -> dict:
+    """Up to WORK_OUT_ATTEMPTS calls → an answer the caller's ``check``
+    accepts, or {}.
+
+    ``lines``: [{id, description, quantity, unit_price, gst_rate, printed}];
+    ``header``: {subtotal, tax, total, came_to}. ``check(answer)`` returns
+    None when the invoice adds up with the answer applied, else what it then
+    comes to — which goes back to the model with the answer, for another
+    try. ``document``: the invoice copy as a content block, when there is one.
+    """
+    if not lines:
+        return {}
+    ask = ask_llm or _default_ask(
+        db, _WORK_OUT_PROMPT, [document] if document else None
+    )
+    ids = {str(ln.get("id")) for ln in lines}
+    earlier: list[dict] = []
+    for _ in range(WORK_OUT_ATTEMPTS):
+        payload = {"lines": lines, "header": header, "earlier_answers": list(earlier)}
+        try:
+            raw = ask(payload)
+        except Exception as exc:  # noqa: BLE001 — the blocker stands, as before
+            logger.info("working out the totals failed: %s", exc)
+            return {}
+        answer = _clean_work_out(raw, ids)
+        came_to = check(answer) if answer else None
+        if answer and came_to is None:
+            return answer
+        earlier.append(
+            {
+                "answer": answer or raw,
+                "problem": (
+                    f"with it the invoice comes to {came_to:.2f}"
+                    if answer
+                    else "it names no line that exists and no total"
+                ),
+            }
+        )
+    return {}
+
+
+def same_business(
+    name: str,
+    details: dict | None,
+    candidates: list[dict],
+    *,
+    ask_llm=None,
+    db=None,
+) -> dict:
+    """One call → ``{"id": <candidate id or None>, "why"}``, or {} on any
+    failure. ``candidates``: Loaded supplier records."""
+    if not candidates:
+        return {}
+    ids = {str(c.get("id")) for c in candidates}
+    payload = {
+        "invoice_supplier": {"name": name, **(details or {})},
+        "candidates": [
+            {
+                "id": str(c.get("id")),
+                "name": c.get("name"),
+                "address": ", ".join(
+                    str(c.get(k))
+                    for k in ("address1", "address2", "address3", "city", "postcode")
+                    if c.get(k)
+                ),
+                "phone": c.get("phone1") or c.get("phone2"),
+                "emails": [
+                    e.get("email") for e in c.get("emails") or [] if isinstance(e, dict)
+                ],
+                "contact_name": c.get("contactName"),
+                "account_number": c.get("customerNumber"),
+            }
+            for c in candidates
+        ],
+    }
+    try:
+        raw = (ask_llm or _default_ask(db, _SAME_BUSINESS_PROMPT))(payload)
+    except Exception as exc:  # noqa: BLE001 — undecided, as before
+        logger.info("supplier identity check failed: %s", exc)
+        return {}
+    if not isinstance(raw, dict) or "same" not in raw:
+        return {}
+    same = raw.get("same")
+    if same is not None and str(same) not in ids:
+        return {}
+    return {
+        "id": str(same) if same is not None else None,
         "why": str(raw.get("why") or "").strip(),
     }
 

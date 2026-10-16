@@ -42,6 +42,12 @@ def _view(user: User, entry: dict) -> dict:
     }
     if policy.get("levels"):
         chosen = approvals.preference(user, key)
+        switches = [
+            {"id": o.get("id"), "label": o.get("label")}
+            for o in policy.get("options") or []
+            if isinstance(o, dict)
+        ]
+        known = {sw["id"] for sw in switches}
         out.update(
             kind="levels",
             level=approvals.level(user, key),
@@ -50,13 +56,14 @@ def _view(user: User, entry: dict) -> dict:
                 for lv in policy["levels"]
                 if isinstance(lv, dict)
             ],
-            switches=[
-                {"id": o.get("id"), "label": o.get("label")}
-                for o in policy.get("options") or []
-                if isinstance(o, dict)
-            ],
+            switches=switches,
+            # A switch that no longer exists (receive_unreconciled_totals,
+            # removed 16 Oct 2026) stays in what people saved; sent back,
+            # it would be refused as unknown and nothing could be saved.
             options={
-                k: True for k, v in (chosen.get("options") or {}).items() if v is True
+                k: True
+                for k, v in (chosen.get("options") or {}).items()
+                if v is True and k in known
             },
         )
     elif policy.get("allow_auto"):

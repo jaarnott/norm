@@ -396,7 +396,6 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
             # would be silently rounded to 0.57 by Loaded and the suggestion
             # would come straight back on the next open.
             apply={"quantity_received": copy_qty},
-            sure=not rl.get("quantity_received_guess"),
             fixes=fixes.get("quantity_received"),
             confidence=rl.get("fixes_confidence")
             if "quantity_received" in fixes
@@ -430,7 +429,6 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
                 )
             ),
             apply={"unit_cost": copy_cost},
-            sure=not rl.get("unit_cost_guess"),
             fixes=fixes.get("unit_cost"),
             confidence=rl.get("fixes_confidence") if "unit_cost" in fixes else None,
         )
@@ -735,7 +733,6 @@ _REPLICA_ONLY_KEYS = frozenset(
         "unit_by",
         "unit_guess",
         "unit_read",
-        "unit_cost_guess",
         "unit_cost_set",
         "quantity_received_set",
         "total_cost_set",
@@ -962,6 +959,10 @@ def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> N
             or f"no Loaded supplier is called '{name}' — create it"
         )
         payload = {"supplier_name": name}
+        if replica.get("supplier_not_these"):
+            # Close names Norm checked and ruled out: autopilot's duplicate
+            # guard lets the create through past them.
+            payload["not_these"] = replica["supplier_not_these"]
         details = replica.get("supplier_details") or {}
         if details:
             payload["details"] = details
@@ -1161,7 +1162,6 @@ _ISSUE_GATES = {
     "unit_unconfirmed": _VA.RECEIVE_WITH_UNCONFIRMED_UNIT,
     "po_missing": _VA.RECEIVE_WITHOUT_PO,
     "po_unresolved": _VA.RECEIVE_WITHOUT_PO,
-    "totals_inconsistent": _VA.RECEIVE_UNRECONCILED_TOTALS,
     "loaded_line_not_on_copy": _VA.AUTO_STRIKE_PHANTOM_LINES,
     # The delete gates — autopilot's only destructive writes, three separate
     # toggles on purpose (different risk profiles; see venue_autopilot).
@@ -1209,14 +1209,18 @@ def _work_out_the_lines(
     pairs: dict[str, str],
     ask,
     db,
+    document=None,
 ) -> None:
     """With every suggestion applied the invoice still doesn't come to its
-    total: the model is shown each line as it would be received, beside the
-    invoice's printed reading of it, and names the lines that are wrong
-    (``invoice_arbiter.diagnose_totals``). Its answer counts only when the
-    invoice then adds up, Loaded's way (``totals_balance``) — then it is a
-    sure fix. Otherwise nothing changes and the totals blocker stands, with
-    its reason, in the run's list of invoices not received."""
+    total, so Norm works out which lines are wrong
+    (``invoice_arbiter.work_out_totals``): the model looks at the invoice
+    itself (``document()``, the copy as a content block), sees each line as
+    it would be received beside its printed reading, and names what's wrong.
+    An answer counts only when the invoice then adds up, Loaded's way
+    (``totals_balance``), with every other suggestion applied — then its
+    changes are sure fixes. One that doesn't goes back with what it came to,
+    for another try. Runs only here, so an invoice that adds up costs
+    nothing extra."""
     if ask is None and db is None:
         return
     from app.services import invoice_arbiter
@@ -1224,23 +1228,25 @@ def _work_out_the_lines(
     post = _all_applied(data, suggestions)
     _, _, came_to, declared = _totals_view(post)
     printed = {wid: _line(replica, rid) or {} for rid, wid in pairs.items()}
+    live = [
+        ln
+        for ln in post.get("lines") or []
+        if isinstance(ln, dict) and not ln.get("struck")
+    ]
+    # GST "charged" is the rate the invoice's lines already carry.
+    gst = max((_f(ln.get("sale_tax_rate")) or 0.0 for ln in live), default=0.0)
     lines = []
-    for ln in post.get("lines") or []:
-        if not isinstance(ln, dict) or ln.get("struck"):
-            continue
+    for ln in live:
         lid = str(ln.get("id"))
-        q, c = _f(ln.get("quantity_received")), _f(ln.get("unit_cost"))
         rl = printed.get(lid) or {}
         lines.append(
             {
                 "id": lid,
                 "description": ln.get("description"),
-                "quantity": q,
-                "unit_price": c,
-                "line_total": round(q * c, 4)
-                if q is not None and c is not None
-                else None,
-                "gst_rate": ln.get("sale_tax_rate"),
+                "code": ln.get("code"),
+                "quantity": _f(ln.get("quantity_received")),
+                "unit_price": _f(ln.get("unit_cost")),
+                "gst_rate": _f(ln.get("sale_tax_rate")),
                 "printed": {
                     "quantity": rl.get("quantity_received"),
                     "unit_price": rl.get("unit_cost"),
@@ -1250,60 +1256,51 @@ def _work_out_the_lines(
                 else None,
             }
         )
-    verdict = invoice_arbiter.diagnose_totals(
-        lines,
-        {
-            "subtotal": replica.get("subtotal"),
-            "tax": replica.get("tax_amount"),
-            "discount": replica.get("discount_amount"),
-            "total": declared,
-        },
-        [
-            f"these are the values Norm will receive: they come to "
-            f"{came_to:.2f}, not the invoice's total {declared:.2f}. Each line "
-            f"shows the invoice's printed reading of it under 'printed' — "
-            f"name the lines whose values are wrong"
-        ],
-        ask_llm=ask,
-        db=db,
-    )
-    # A line's corrected figures: a new line total is a new cost (at the
-    # corrected quantity, when that moved too).
-    corrected: dict[str, dict] = {}
-    for c in verdict.get("corrections") or []:
-        if c.get("scope") == "line" and _line(post, c.get("line_id")) is not None:
-            corrected.setdefault(str(c["line_id"]), {})[str(c["field"])] = c["proposed"]
-    trial = copy.deepcopy(suggestions)
-    by_id = {str(s.get("id")): s for s in trial}
-    why = (
-        f"with every other suggestion applied the invoice comes to "
-        f"{came_to:.2f}, not its total {declared:.2f} — {verdict.get('why')}"
-    )
-    for lid, got in corrected.items():
-        ln = _line(post, lid) or {}
-        q = got.get("quantity", _f(ln.get("quantity_received")))
-        cost = got.get("unit_price")
-        if cost is None and got.get("line_total") is not None and q:
-            cost = round(got["line_total"] / q, 4)
-        for field, value, tol in (
-            ("quantity_received", q, _QTY_TOL),
-            ("unit_cost", cost, _MONEY_TOL),
-        ):
-            if value is None or not _differ(ln.get(field), value, tol):
+
+    def with_answer(answer: dict) -> list[dict]:
+        trial = copy.deepcopy(suggestions)
+        by_id = {str(s.get("id")): s for s in trial}
+        why = (
+            f"with every other suggestion applied the invoice comes to "
+            f"{came_to:.2f}, not its total {declared:.2f} — {answer.get('why')}"
+        )
+        changes = [
+            (str(c["line_id"]), field, value)
+            for c in answer.get("lines") or []
+            for field, value in (
+                ("quantity_received", c.get("quantity")),
+                ("unit_cost", c.get("unit_price")),
+                (
+                    "sale_tax_rate",
+                    {"charged": gst or None, "free": 0.0}.get(c.get("gst")),
+                ),
+            )
+            if value is not None
+        ]
+        if answer.get("total") is not None:
+            changes.append((None, "total", answer["total"]))
+        for lid, field, value in changes:
+            if lid is None:
+                sid, before = "header_value:total", data.get("total")
+            else:
+                sid = f"line_value:{field}:{lid}"
+                before = (_line(post, lid) or {}).get(field)
+            if not _differ(before, value, _QTY_TOL):
                 continue
-            s = by_id.get(f"line_value:{field}:{lid}")
+            s = by_id.get(sid)
             if s is None:
                 _sugg(
                     trial,
-                    "line_value",
+                    "header_value" if lid is None else "line_value",
                     field=field,
                     line_id=lid,
-                    current=(_line(data, lid) or {}).get(field),
+                    current=(data if lid is None else _line(data, lid) or {}).get(
+                        field
+                    ),
                     proposed=value,
                     explanation=why,
                     apply={field: value},
                     fixes=issue_id,
-                    confidence=verdict.get("confidence"),
                 )
             else:
                 s.update(
@@ -1312,13 +1309,36 @@ def _work_out_the_lines(
                     explanation=why,
                     sure=True,
                     fixes=issue_id,
-                    confidence=verdict.get("confidence"),
                 )
-    if verdict and totals_balance(_all_applied(data, trial)):
-        suggestions[:] = trial
+        return trial
+
+    def check(answer: dict) -> float | None:
+        after = _all_applied(data, with_answer(answer))
+        return None if totals_balance(after) else _totals_view(after)[2]
+
+    try:
+        block = document() if document else None
+    except Exception as exc:  # noqa: BLE001 — the figures alone, then
+        logger.info("invoice copy unavailable for the totals: %s", exc)
+        block = None
+    answer = invoice_arbiter.work_out_totals(
+        lines,
+        {
+            "subtotal": replica.get("subtotal"),
+            "tax": replica.get("tax_amount"),
+            "total": declared,
+            "came_to": came_to,
+        },
+        check,
+        document=block,
+        ask_llm=ask,
+        db=db,
+    )
+    if answer:
+        suggestions[:] = with_answer(answer)
     else:
         logger.warning(
-            "totals don't balance and no line explains it on %s",
+            "totals don't balance and Norm couldn't work out the lines on %s",
             data.get("invoice_id"),
         )
 
@@ -1332,6 +1352,7 @@ def balance_after_suggestions(
     pairs: dict[str, str] | None = None,
     ask=None,
     db=None,
+    document=None,
 ) -> None:
     """The totals check, on the values the suggestions leave — not the copy's
     own printed figures (the user, 14 Oct 2026: "the goal is autoreceive so we
@@ -1363,7 +1384,14 @@ def balance_after_suggestions(
             suggestions[:] = [s for s in suggestions if not _moves_money(data, s)]
         else:
             _work_out_the_lines(
-                data, suggestions, issue_id, replica or {}, pairs or {}, ask, db
+                data,
+                suggestions,
+                issue_id,
+                replica or {},
+                pairs or {},
+                ask,
+                db,
+                document,
             )
 
     if totals_balance(data):
@@ -1377,24 +1405,22 @@ def balance_after_suggestions(
 
     _, _, came_to, declared = _totals_view(data)
     issue = existing or {"id": issue_id, "code": TOTALS_ISSUE, "line_id": None}
+    # No switch: Loaded won't receive an invoice that doesn't add up, so
+    # there is nothing for one to allow (the owner, 16 Oct 2026).
     issue.update(
         blocking=True,
-        gate=_VA.RECEIVE_UNRECONCILED_TOTALS,
         message=f"the invoice comes to {came_to:.2f}, not its total {declared:.2f}",
         clears_when={"scope": "header", "op": "balances"},
     )
     if existing is None:
         issues.append(issue)
-    # Its fix: every suggestion that moves the money. A guess among them is
-    # Norm's to apply alone only with the totals switch.
+    # Its fix: every suggestion that moves the money.
     for s in suggestions:
         if s.get("fixes") not in (None, issue_id):
             continue
         if s.get("fixes") is None and not _moves_money(data, s):
             continue
         s["fixes"] = issue_id
-        if s.get("sure") is False and not s.get("gate"):
-            s["gate"] = _VA.RECEIVE_UNRECONCILED_TOTALS
 
 
 def _finalise_issues(
@@ -1474,8 +1500,8 @@ _UNIT_ISSUES = (
 LOADED_WRITE_ORDER = ("create_supplier", "create_unit", "create_item", "create_brand")
 
 #: Blockers a venue switch waves through on its own: the switch IS the answer
-#: ("receive without an order", "receive on totals that don't add up"), so
-#: nothing has to be applied for it to stand down.
+#: ("receive without an order"), so nothing has to be applied for it to stand
+#: down.
 _SWITCH_SETTLES = ("po_missing", "po_unresolved", "unit_unconfirmed")
 # Not the totals: the blocker clears only because the invoice balances — never
 # by decree.
@@ -1969,7 +1995,8 @@ def autopilot_accept(
                     # picks the extraction layout, so a second 'SERVICE FOODS'
                     # sends every later invoice from that business to a prompt
                     # written for someone else (10 Aug 2026). Autopilot creates
-                    # only a supplier nothing plausibly matches.
+                    # only a supplier nothing plausibly matches — past the
+                    # close names Norm checked and ruled out (``not_these``).
                     name = payload.get("supplier_name") or ""
                     rows = _client().get("/1.0/stock/internal/suppliers")
                     rows = rows if isinstance(rows, list) else []
@@ -1980,7 +2007,12 @@ def autopilot_accept(
                         and not r.get("removedAt")
                         and not r.get("datestampDeleted")
                     ]
-                    if supplier_identity.plausible_matches(name, live):
+                    ruled_out = {str(i) for i in payload.get("not_these") or []}
+                    if [
+                        m
+                        for m in supplier_identity.plausible_matches(name, live)
+                        if str(m.get("id")) not in ruled_out
+                    ]:
                         logger.info(
                             "autopilot will not create supplier '%s' on %s: an "
                             "existing supplier is a plausible match",
@@ -2078,6 +2110,7 @@ def review_invoice(
     allow_sensei: bool = False,
     totals_ask=None,
     pairing_ask=None,
+    supplier_ask=None,
 ) -> dict:
     """Review one invoice and return the full replica_v2 doc payload.
 
@@ -2330,6 +2363,12 @@ def review_invoice(
                     unit, why = guess_unit(ln, units or [], ask_llm=ask, insist=insist)
                     return {**unit, "why": why} if unit else None
 
+            def invoice_copy() -> dict | None:
+                # Read only when the totals need it (balance_after_suggestions).
+                from app.services.invoice_extraction import _document_block
+
+                return _document_block(lh, str(file_id)) if file_id else None
+
             # A supplier Norm will create takes the details its invoice prints.
             read_details = None
             if db is not None:
@@ -2340,6 +2379,17 @@ def review_invoice(
                     # str(None) used to send "None" to the download (16 Oct).
                     return read_supplier_details(
                         db, lh, str(file_id or ""), supplier_name=name
+                    )
+
+            # An unknown printed name with close Loaded records: Norm decides
+            # which, if any, is the business (replica_finish.settle_supplier).
+            same_business = None
+            if db is not None or supplier_ask is not None:
+                from app.services import invoice_arbiter
+
+                def same_business(name: str, details, candidates) -> dict:
+                    return invoice_arbiter.same_business(
+                        name, details, candidates, ask_llm=supplier_ask, db=db
                     )
 
             def finish(pairs: dict[str, str]) -> None:
@@ -2367,6 +2417,7 @@ def review_invoice(
                     db=db,
                     extraction=extraction,
                     read_supplier_details=read_details,
+                    same_business=same_business,
                 )
 
             suggestions, extra_issues, pairs = build_suggestions(
@@ -2484,6 +2535,7 @@ def review_invoice(
                 pairs=pairs,
                 ask=totals_ask,
                 db=db,
+                document=invoice_copy,
             )
             link_fixes(data, replica, issues, suggestions)
             data["suggestions"] = suggestions
