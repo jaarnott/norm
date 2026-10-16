@@ -1,91 +1,368 @@
 """Pre-built dashboard templates — seed data for the config DB."""
 
 DASHBOARD_TEMPLATES: list[dict] = [
+    # Purchases-based cost of goods (Oct 2026): a venue that receives its
+    # invoices into Loaded but runs no stocktakes reads cost of goods as
+    # purchases ÷ POS sales. Every tile is a tool over Loaded's data; the
+    # dashboard's period control (this month / last month / last 12 months /
+    # this week / last week / last 13 weeks) replaces each `period` with that
+    # window on the venue's calendar, and `period_span` widens a trend chart
+    # to that many buckets ending at the chosen period. The cards add venues
+    # up (a ratio sums its two parts first); the lines pivot per venue.
+    # Checked against Loaded for September 2026 at Applegum Cafe: Food
+    # 7,896.63 + Beverage 2,177.78 + Other 1,383.19 + freight 177.00 =
+    # invoice subtotals 11,634.61; sales ex-GST 47,371.13; 24.6%.
     {
-        "slug": "procurement-dashboard",
+        "slug": "procurement-cogs",
         "agent_slug": "procurement",
-        "title": "Procurement Overview",
-        "description": "Outstanding orders, monthly spend, supplier breakdown, and order tracking.",
+        "title": "Cost of Goods",
+        "description": (
+            "Purchases against sales from Loaded — cost of goods %, the food / "
+            "beverage split, the trend, suppliers and price moves. For venues "
+            "that receive invoices but don't stocktake."
+        ),
         "charts": [
             {
-                "title": "Outstanding Orders",
-                "chart_type": "kpi",
-                "chart_spec": {"value_key": "outstanding_count", "format": "number"},
-                "script": {
-                    "connector": "loadedhub",
-                    "action": "get_purchase_orders_summary",
-                    "params": {},
-                },
-                "layout": {"col": 1, "row": 1, "colSpan": 8, "rowSpan": 4},
-            },
-            {
-                "title": "Monthly Spend",
+                "title": "Purchases ex-GST",
                 "chart_type": "kpi",
                 "chart_spec": {
-                    "value_key": "monthly_spend",
+                    "value_key": "purchases",
                     "format": "currency",
-                    "currency": "NZD",
-                    "delta_key": "delta_pct",
-                    "delta_label": "vs last month",
+                    "prefix": "$",
+                    "comparison_key": "previous.purchases",
+                    "comparison_label": "vs previous period",
                 },
-                "script": {
-                    "connector": "xero",
-                    "action": "get_monthly_spend",
-                    "params": {},
-                },
-                "layout": {"col": 9, "row": 1, "colSpan": 8, "rowSpan": 4},
-            },
-            {
-                "title": "Pending Deliveries",
-                "chart_type": "kpi",
-                "chart_spec": {"value_key": "pending_count", "format": "number"},
                 "script": {
                     "connector": "loadedhub",
-                    "action": "get_purchase_orders_summary",
-                    "params": {},
+                    "action": "get_purchase_cogs",
+                    "params": {"period": "this month", "interval": "month"},
+                    "rows": "summary",
                 },
-                "layout": {"col": 17, "row": 1, "colSpan": 8, "rowSpan": 4},
+                "layout": {"col": 1, "row": 1, "colSpan": 6, "rowSpan": 4},
             },
             {
-                "title": "Recent Orders",
-                "chart_type": "component",
+                "title": "Sales ex-GST",
+                "chart_type": "kpi",
                 "chart_spec": {
-                    "component_key": "orders_dashboard",
-                    "title": "Order Tracking",
+                    "value_key": "sales",
+                    "format": "currency",
+                    "prefix": "$",
+                    "comparison_key": "previous.sales",
+                    "comparison_label": "vs previous period",
                 },
-                "script": {},
-                "layout": {"col": 1, "row": 5, "colSpan": 24, "rowSpan": 10},
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_cogs",
+                    "params": {"period": "this month", "interval": "month"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 7, "row": 1, "colSpan": 6, "rowSpan": 4},
             },
             {
-                "title": "Orders by Supplier",
+                "title": "Cost of goods %",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "numerator_key": "purchases",
+                    "denominator_key": "sales",
+                    "previous_numerator_key": "previous.purchases",
+                    "previous_denominator_key": "previous.sales",
+                    "format": "percent",
+                    "comparison_label": "vs previous period",
+                    "lower_is_better": True,
+                    "note": "purchases ÷ sales, both ex-GST",
+                    "threshold": {
+                        "warning": 0.32,
+                        "danger": 0.38,
+                        "direction": "above",
+                    },
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_cogs",
+                    "params": {"period": "this month", "interval": "month"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 13, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Reconciliation gap",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "value_key": "reconciliation.difference",
+                    "format": "currency",
+                    "prefix": "$",
+                    "note": "Food + Beverage + Other + freight, less the invoice subtotals",
+                    "threshold": {"warning": 1, "danger": 10, "direction": "above"},
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_cogs",
+                    "params": {
+                        "period": "this month",
+                        "interval": "month",
+                        "compare_previous": False,
+                    },
+                    "rows": "summary",
+                },
+                "layout": {"col": 19, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Food cost of goods %",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "numerator_key": "food",
+                    "denominator_key": "food_sales",
+                    "previous_numerator_key": "previous.food",
+                    "previous_denominator_key": "previous.food_sales",
+                    "format": "percent",
+                    "comparison_label": "vs previous period",
+                    "lower_is_better": True,
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_cogs",
+                    "params": {"period": "this month", "interval": "month"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 1, "row": 5, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Beverage cost of goods %",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "numerator_key": "beverage",
+                    "denominator_key": "beverage_sales",
+                    "previous_numerator_key": "previous.beverage",
+                    "previous_denominator_key": "previous.beverage_sales",
+                    "format": "percent",
+                    "comparison_label": "vs previous period",
+                    "lower_is_better": True,
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_cogs",
+                    "params": {"period": "this month", "interval": "month"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 7, "row": 5, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Sales with no POS category",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "numerator_key": "uncategorised_sales",
+                    "denominator_key": "sales",
+                    "format": "percent",
+                    "note": "of sales — the food / beverage split misses these",
+                    "threshold": {
+                        "warning": 0.05,
+                        "danger": 0.25,
+                        "direction": "above",
+                    },
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_cogs",
+                    "params": {
+                        "period": "this month",
+                        "interval": "month",
+                        "compare_previous": False,
+                    },
+                    "rows": "summary",
+                },
+                "layout": {"col": 13, "row": 5, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Freight",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "value_key": "freight",
+                    "format": "currency",
+                    "prefix": "$",
+                    "note": "included in purchases",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_cogs",
+                    "params": {
+                        "period": "this month",
+                        "interval": "month",
+                        "compare_previous": False,
+                    },
+                    "rows": "summary",
+                },
+                "layout": {"col": 19, "row": 5, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Cost of goods % over time",
+                "chart_type": "line",
+                "chart_spec": {
+                    "x_axis": {"key": "bucket", "label": "Period"},
+                    "y_axis": {
+                        "key": "cogs_pct",
+                        "label": "Cost of goods",
+                        "format": "percent",
+                    },
+                    "series": [
+                        {
+                            "key": "cogs_pct",
+                            "label": "Cost of goods %",
+                            "color": "#b07d4f",
+                        }
+                    ],
+                    # Across venues: one line per venue, plus the group.
+                    "group_by": "venue",
+                    "numerator_key": "purchases",
+                    "denominator_key": "sales",
+                    "total_series": "All venues",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_cogs",
+                    "params": {
+                        "period": "last 12 months",
+                        "interval": "month",
+                        "compare_previous": False,
+                        "period_span": 12,
+                    },
+                    "rows": "rows",
+                },
+                "layout": {"col": 1, "row": 9, "colSpan": 12, "rowSpan": 8},
+            },
+            {
+                "title": "Purchases by category over time",
+                "chart_type": "stacked_bar",
+                "chart_spec": {
+                    "x_axis": {"key": "bucket", "label": "Period"},
+                    "y_axis": {"key": "spend", "label": "Spend", "format": "currency"},
+                    "series": [
+                        {"key": "food", "label": "Food", "color": "#4f8a5e"},
+                        {"key": "beverage", "label": "Beverage", "color": "#5b8abd"},
+                        {"key": "other", "label": "Other", "color": "#c4a882"},
+                        {"key": "freight", "label": "Freight", "color": "#8b6caf"},
+                    ],
+                    # The stacks are the categories; venues add up.
+                    "group_by": None,
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_received_items_for_period",
+                    "params": {
+                        "period": "last 12 months",
+                        "group_by": "month",
+                        "period_span": 12,
+                    },
+                    "rows": "rows",
+                },
+                "layout": {"col": 13, "row": 9, "colSpan": 12, "rowSpan": 8},
+            },
+            {
+                "title": "Purchases by supplier",
                 "chart_type": "bar",
                 "chart_spec": {
-                    "x_axis": {"key": "supplier", "label": "Supplier"},
-                    "series": [
-                        {"key": "amount", "label": "Amount", "color": "#b07d4f"}
-                    ],
+                    "x_axis": {"key": "supplier_name", "label": "Supplier"},
+                    "y_axis": {"key": "spend", "label": "Spend", "format": "currency"},
+                    "series": [{"key": "spend", "label": "Spend", "color": "#b07d4f"}],
                     "orientation": "horizontal",
                 },
                 "script": {
                     "connector": "loadedhub",
-                    "action": "get_purchase_orders_summary",
-                    "params": {"_all_venues": True},
+                    "action": "get_received_items_for_period",
+                    "params": {
+                        "period": "this month",
+                        "group_by": "supplier",
+                        "limit": 15,
+                    },
+                    "rows": "rows",
                 },
-                "layout": {"col": 1, "row": 15, "colSpan": 12, "rowSpan": 8},
+                "layout": {"col": 1, "row": 17, "colSpan": 12, "rowSpan": 8},
             },
             {
-                "title": "Spend Trend",
-                "chart_type": "line",
+                "title": "Purchases by stock group",
+                "chart_type": "table",
                 "chart_spec": {
-                    "x_axis": {"key": "month", "label": "Month"},
-                    "series": [{"key": "spend", "label": "Spend", "color": "#b07d4f"}],
+                    "x_axis": {"key": "group", "label": "Stock group"},
+                    "series": [
+                        {"key": "super_group", "label": "Category"},
+                        {"key": "spend", "label": "Spend"},
+                        {"key": "share", "label": "Share"},
+                        {"key": "invoice_count", "label": "Invoices"},
+                    ],
+                    "field_order": ["venue", "group", "super_group", "spend", "share"],
+                    "hidden_fields": [
+                        "credit_amount",
+                        "distinct_items",
+                        "top_items",
+                        "venues",
+                    ],
+                    "field_formats": {
+                        "spend": {"type": "currency"},
+                        "credit_amount": {"type": "currency"},
+                        "share": {"type": "percent"},
+                    },
                 },
                 "script": {
-                    "connector": "xero",
-                    "action": "get_monthly_spend",
-                    "params": {"period": "last_6_months"},
+                    "connector": "loadedhub",
+                    "action": "get_received_items_for_period",
+                    "params": {
+                        "period": "this month",
+                        "group_by": "group",
+                        "limit": 40,
+                    },
+                    "rows": "rows",
                 },
-                "layout": {"col": 13, "row": 15, "colSpan": 12, "rowSpan": 8},
+                "layout": {"col": 13, "row": 17, "colSpan": 12, "rowSpan": 8},
+            },
+            {
+                "title": "Price moves — biggest items, first to last receipt",
+                "chart_type": "table",
+                "chart_spec": {
+                    "x_axis": {"key": "item_name", "label": "Item"},
+                    "series": [
+                        {"key": "supplier_name", "label": "Supplier"},
+                        {"key": "spend", "label": "Spend"},
+                        {"key": "unit_cost_last", "label": "Last unit cost"},
+                        {"key": "unit_cost_change_pct", "label": "Change"},
+                    ],
+                    "field_order": [
+                        "venue",
+                        "item_name",
+                        "supplier_name",
+                        "base_unit",
+                        "spend",
+                        "unit_cost_last",
+                        "unit_cost_change_pct",
+                    ],
+                    "hidden_fields": [
+                        "item_id",
+                        "item_code",
+                        "supplier_id",
+                        "quantity_base",
+                        "invoice_count",
+                        "supplier_count",
+                        "credit_amount",
+                        "unit_cost_avg",
+                        "unit_cost_min",
+                        "unit_cost_max",
+                        "venues",
+                    ],
+                    "field_formats": {
+                        "spend": {"type": "currency"},
+                        "unit_cost_last": {"type": "currency", "decimals": 4},
+                        "unit_cost_change_pct": {"type": "percent"},
+                    },
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_received_items_for_period",
+                    "params": {
+                        "period": "this month",
+                        "group_by": "item_supplier",
+                        "limit": 40,
+                    },
+                    "rows": "rows",
+                },
+                "layout": {"col": 1, "row": 25, "colSpan": 24, "rowSpan": 8},
             },
         ],
     },

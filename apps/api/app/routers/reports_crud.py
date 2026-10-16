@@ -126,17 +126,76 @@ def _rows_from_payload(payload, script: dict) -> list:
         cur = payload
         for part in str(path).split("."):
             cur = cur.get(part) if isinstance(cur, dict) else None
-        return [r for r in cur if isinstance(r, dict)] if isinstance(cur, list) else []
+        if isinstance(cur, list):
+            return [r for r in cur if isinstance(r, dict)]
+        # A KPI reads a document's totals ("summary"): one row, so a fan-out
+        # over venues gives one row per venue for the card to add up.
+        return [cur] if isinstance(cur, dict) else []
     return payload if isinstance(payload, list) else [payload]
 
 
-def _apply_global_dates(resolved: dict, gf: dict) -> dict:
+#: The dashboard's period control (DashboardView) → a window on the venue's
+#: calendar, and the bucket the charts should use. Resolved here in Python so
+#: a refresh never spends a model call on "last 12 months".
+_PERIOD_CODES = {
+    "this_month": ("month", 0, 0),
+    "last_month": ("month", -1, -1),
+    "last_12_months": ("month", -11, 0),
+    "this_week": ("week", 0, 0),
+    "last_week": ("week", -1, -1),
+    "last_13_weeks": ("week", -12, 0),
+}
+
+
+def _period_window(code: str, venue, span: int = 0):
+    """(start ISO, end ISO, interval) for a period code, or None.
+
+    ``span`` is a trend chart's reach: the window is widened backwards to
+    that many buckets ending at the chosen period, so "this month" shows the
+    month on the cards and the last twelve months on the trend.
+    """
+    from app.services import business_calendar as _bc
+
+    spec = _PERIOD_CODES.get(str(code or ""))
+    if not spec:
+        return None
+    kind, first, last = spec
+    if span and span > 1:
+        first = min(first, last - (span - 1))
+    fn = _bc.trading_month if kind == "month" else _bc.trading_week
+    start = fn(venue, None, first).start
+    end = fn(venue, None, last).end
+    return start.isoformat(), end.isoformat(), kind
+
+
+def _apply_global_dates(resolved: dict, gf: dict, venue=None) -> dict:
     """A dashboard's date filter onto one chart's params.
 
     Tools take a plain-English ``period``; a window the viewer picked replaces
     it with start/end, confirmed — the viewer chose those times. Charts still
-    carrying explicit date keys get them overwritten, as before.
+    carrying explicit date keys get them overwritten, as before. A period
+    CODE from the dashboard's period control becomes that window on the
+    venue's calendar, and sets the chart's bucket (``interval`` / a month or
+    week ``group_by``) to match.
     """
+    span = resolved.pop("period_span", None)
+    if gf.get("period") and "period" in resolved:
+        try:
+            span = int(span or 0)
+        except (TypeError, ValueError):
+            span = 0
+        window = _period_window(gf["period"], venue, span)
+        if window:
+            start, end, kind = window
+            resolved.pop("period")
+            resolved["start"] = start
+            resolved["end"] = end
+            resolved["confirmed_by_user"] = True
+            if "interval" in resolved and resolved["interval"] in ("month", "week"):
+                resolved["interval"] = kind
+            if resolved.get("group_by") in ("month", "week"):
+                resolved["group_by"] = kind
+            return resolved
     if gf.get("start") and gf.get("end") and "period" in resolved:
         resolved.pop("period")
         resolved["start"] = gf["start"]
@@ -454,6 +513,179 @@ async def get_connector_tools(
     return list_connector_tools(connector_name, config_db)
 
 
+# ---------------------------------------------------------------------------
+# Dashboard endpoints
+# ---------------------------------------------------------------------------
+# The dashboard routes sit ABOVE the /{report_id} catch-all: declared after
+# it, GET /reports/dashboards was read as a report id and 404'd (Oct 2026).
+
+
+@router.get("/dashboards")
+async def list_dashboards(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List all dashboards visible to the current user."""
+    dashboards = (
+        db.query(Report)
+        .filter(
+            Report.is_dashboard.is_(True),
+            (Report.user_id == user.id) | (Report.is_published.is_(True)),
+        )
+        .order_by(Report.agent_slug, Report.updated_at.desc())
+        .all()
+    )
+    return {"dashboards": [_report_to_dict(d) for d in dashboards]}
+
+
+@router.get("/dashboards/{agent_slug}")
+async def get_dashboard_for_agent(
+    agent_slug: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get the active dashboard for a specific agent."""
+    # 1. Check user's explicit preference
+    prefs = user.dashboard_preferences or {}
+    pref_id = prefs.get(agent_slug)
+    if pref_id:
+        dashboard = db.query(Report).filter(Report.id == pref_id).first()
+        if dashboard:
+            return {"dashboard": _report_to_dict(dashboard)}
+
+    # 2. Fall back to user's own dashboard
+    dashboard = (
+        db.query(Report)
+        .filter(
+            Report.is_dashboard.is_(True),
+            Report.agent_slug == agent_slug,
+            Report.user_id == user.id,
+        )
+        .order_by(Report.updated_at.desc())
+        .first()
+    )
+    if not dashboard:
+        # 3. Fall back to published dashboards
+        dashboard = (
+            db.query(Report)
+            .filter(
+                Report.is_dashboard.is_(True),
+                Report.agent_slug == agent_slug,
+                Report.is_published.is_(True),
+            )
+            .order_by(Report.updated_at.desc())
+            .first()
+        )
+    if not dashboard:
+        return {"dashboard": None}
+    return {"dashboard": _report_to_dict(dashboard)}
+
+
+@router.get("/dashboards/{agent_slug}/available")
+async def get_available_dashboards(
+    agent_slug: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """List all dashboards available for an agent: templates, own, shared."""
+    from app.db.config_models import DashboardTemplate
+
+    # Templates from config DB
+    templates = (
+        config_db.query(DashboardTemplate)
+        .filter(
+            DashboardTemplate.agent_slug == agent_slug,
+            DashboardTemplate.enabled.is_(True),
+        )
+        .order_by(DashboardTemplate.title)
+        .all()
+    )
+
+    # User's own dashboards
+    own = (
+        db.query(Report)
+        .filter(
+            Report.is_dashboard.is_(True),
+            Report.agent_slug == agent_slug,
+            Report.user_id == user.id,
+        )
+        .order_by(Report.updated_at.desc())
+        .all()
+    )
+
+    # Shared dashboards from other users
+    shared = (
+        db.query(Report)
+        .filter(
+            Report.is_dashboard.is_(True),
+            Report.agent_slug == agent_slug,
+            Report.is_published.is_(True),
+            Report.user_id != user.id,
+        )
+        .order_by(Report.updated_at.desc())
+        .all()
+    )
+
+    prefs = user.dashboard_preferences or {}
+    return {
+        "active_id": prefs.get(agent_slug),
+        "templates": [
+            {
+                "slug": t.slug,
+                "title": t.title,
+                "description": t.description,
+                "chart_count": len(t.charts or []),
+            }
+            for t in templates
+        ],
+        "own": [_report_to_dict(r) for r in own],
+        "shared": [_report_to_dict(r) for r in shared],
+    }
+
+
+class SetActiveDashboardBody(BaseModel):
+    dashboard_id: str
+
+
+@router.post("/dashboards/{agent_slug}/set-active")
+async def set_active_dashboard(
+    agent_slug: str,
+    body: SetActiveDashboardBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Set or clear the user's active dashboard for an agent."""
+    prefs = dict(user.dashboard_preferences or {})
+
+    if not body.dashboard_id:
+        # Clear preference
+        prefs.pop(agent_slug, None)
+        user.dashboard_preferences = prefs
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(user, "dashboard_preferences")
+        db.commit()
+        return {"dashboard": None}
+
+    dashboard = db.query(Report).filter(Report.id == body.dashboard_id).first()
+    if not dashboard:
+        raise HTTPException(404, "Dashboard not found")
+
+    prefs[agent_slug] = body.dashboard_id
+    user.dashboard_preferences = prefs
+    from sqlalchemy.orm.attributes import flag_modified as _fm
+
+    _fm(user, "dashboard_preferences")
+    db.commit()
+    return {"dashboard": _report_to_dict(dashboard)}
+
+
+class TestChartBody(BaseModel):
+    venue_id: str | None = None
+    param_overrides: dict | None = None
+
+
 @router.get("/{report_id}")
 async def get_report(
     report_id: str,
@@ -690,7 +922,7 @@ async def refresh_report(
     def _resolve_params(params: dict) -> dict:
         """Resolve date placeholders and merge global date filters."""
         resolved = _resolve_date_placeholders(params, venue=date_venue)
-        return _apply_global_dates(resolved, gf)
+        return _apply_global_dates(resolved, gf, venue=date_venue)
 
     debug_info: list[dict] = []
 
@@ -853,7 +1085,7 @@ def refresh_single_chart(
 
     raw_params = script.get("params", {})
     resolved = _apply_global_dates(
-        _resolve_date_placeholders(raw_params, venue=date_venue), gf
+        _resolve_date_placeholders(raw_params, venue=date_venue), gf, venue=date_venue
     )
 
     # Resolve venue
@@ -906,177 +1138,6 @@ def refresh_single_chart(
         db.refresh(chart)
 
     return {"chart": _chart_to_dict(chart)}
-
-
-# ---------------------------------------------------------------------------
-# Dashboard endpoints
-# ---------------------------------------------------------------------------
-
-
-@router.get("/dashboards")
-async def list_dashboards(
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """List all dashboards visible to the current user."""
-    dashboards = (
-        db.query(Report)
-        .filter(
-            Report.is_dashboard.is_(True),
-            (Report.user_id == user.id) | (Report.is_published.is_(True)),
-        )
-        .order_by(Report.agent_slug, Report.updated_at.desc())
-        .all()
-    )
-    return {"dashboards": [_report_to_dict(d) for d in dashboards]}
-
-
-@router.get("/dashboards/{agent_slug}")
-async def get_dashboard_for_agent(
-    agent_slug: str,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Get the active dashboard for a specific agent."""
-    # 1. Check user's explicit preference
-    prefs = user.dashboard_preferences or {}
-    pref_id = prefs.get(agent_slug)
-    if pref_id:
-        dashboard = db.query(Report).filter(Report.id == pref_id).first()
-        if dashboard:
-            return {"dashboard": _report_to_dict(dashboard)}
-
-    # 2. Fall back to user's own dashboard
-    dashboard = (
-        db.query(Report)
-        .filter(
-            Report.is_dashboard.is_(True),
-            Report.agent_slug == agent_slug,
-            Report.user_id == user.id,
-        )
-        .order_by(Report.updated_at.desc())
-        .first()
-    )
-    if not dashboard:
-        # 3. Fall back to published dashboards
-        dashboard = (
-            db.query(Report)
-            .filter(
-                Report.is_dashboard.is_(True),
-                Report.agent_slug == agent_slug,
-                Report.is_published.is_(True),
-            )
-            .order_by(Report.updated_at.desc())
-            .first()
-        )
-    if not dashboard:
-        return {"dashboard": None}
-    return {"dashboard": _report_to_dict(dashboard)}
-
-
-@router.get("/dashboards/{agent_slug}/available")
-async def get_available_dashboards(
-    agent_slug: str,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
-):
-    """List all dashboards available for an agent: templates, own, shared."""
-    from app.db.config_models import DashboardTemplate
-
-    # Templates from config DB
-    templates = (
-        config_db.query(DashboardTemplate)
-        .filter(
-            DashboardTemplate.agent_slug == agent_slug,
-            DashboardTemplate.enabled.is_(True),
-        )
-        .order_by(DashboardTemplate.title)
-        .all()
-    )
-
-    # User's own dashboards
-    own = (
-        db.query(Report)
-        .filter(
-            Report.is_dashboard.is_(True),
-            Report.agent_slug == agent_slug,
-            Report.user_id == user.id,
-        )
-        .order_by(Report.updated_at.desc())
-        .all()
-    )
-
-    # Shared dashboards from other users
-    shared = (
-        db.query(Report)
-        .filter(
-            Report.is_dashboard.is_(True),
-            Report.agent_slug == agent_slug,
-            Report.is_published.is_(True),
-            Report.user_id != user.id,
-        )
-        .order_by(Report.updated_at.desc())
-        .all()
-    )
-
-    prefs = user.dashboard_preferences or {}
-    return {
-        "active_id": prefs.get(agent_slug),
-        "templates": [
-            {
-                "slug": t.slug,
-                "title": t.title,
-                "description": t.description,
-                "chart_count": len(t.charts or []),
-            }
-            for t in templates
-        ],
-        "own": [_report_to_dict(r) for r in own],
-        "shared": [_report_to_dict(r) for r in shared],
-    }
-
-
-class SetActiveDashboardBody(BaseModel):
-    dashboard_id: str
-
-
-@router.post("/dashboards/{agent_slug}/set-active")
-async def set_active_dashboard(
-    agent_slug: str,
-    body: SetActiveDashboardBody,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Set or clear the user's active dashboard for an agent."""
-    prefs = dict(user.dashboard_preferences or {})
-
-    if not body.dashboard_id:
-        # Clear preference
-        prefs.pop(agent_slug, None)
-        user.dashboard_preferences = prefs
-        from sqlalchemy.orm.attributes import flag_modified
-
-        flag_modified(user, "dashboard_preferences")
-        db.commit()
-        return {"dashboard": None}
-
-    dashboard = db.query(Report).filter(Report.id == body.dashboard_id).first()
-    if not dashboard:
-        raise HTTPException(404, "Dashboard not found")
-
-    prefs[agent_slug] = body.dashboard_id
-    user.dashboard_preferences = prefs
-    from sqlalchemy.orm.attributes import flag_modified as _fm
-
-    _fm(user, "dashboard_preferences")
-    db.commit()
-    return {"dashboard": _report_to_dict(dashboard)}
-
-
-class TestChartBody(BaseModel):
-    venue_id: str | None = None
-    param_overrides: dict | None = None
 
 
 @router.post("/{report_id}/charts/{chart_id}/test")

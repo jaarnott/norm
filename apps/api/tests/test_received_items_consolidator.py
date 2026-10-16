@@ -361,7 +361,7 @@ class TestGrouping:
         api = Api([])
         assert (
             "group_by must be one of"
-            in run_consolidator(api, group_by="supplier")["error"]
+            in run_consolidator(api, group_by="banana")["error"]
         )
 
 
@@ -618,4 +618,281 @@ class TestModesReturnPurposeFitShapes:
             "unit_cost_min",
             "unit_cost_max",
             "unit_cost_last",
+            "unit_cost_change_pct",
         } <= set(rows[0])
+
+    def test_item_supplier_reports_the_price_move_first_to_last(self):
+        """The price movers table: last receipt against the first in the
+        window, per base unit — so the bigger box at the same price is 0."""
+        rise = Api(
+            [
+                invoice(
+                    "i1",
+                    "Bidfood",
+                    "2026-08-02",
+                    [line(MILK, "1 Litre", 1.0, 10, 4.00)],
+                ),
+                invoice(
+                    "i2",
+                    "Bidfood",
+                    "2026-08-09",
+                    [line(MILK, "1 Litre", 1.0, 10, 5.00)],
+                ),
+            ]
+        )
+        row = run_consolidator(rise, group_by="item_supplier")["rows"][0]
+        assert row["unit_cost_change_pct"] == 0.25
+        box = Api(
+            [
+                invoice(
+                    "i1",
+                    "Bidfood",
+                    "2026-08-02",
+                    [line(MILK, "1 Litre", 1.0, 12, 4.60)],
+                ),
+                invoice(
+                    "i2", "Bidfood", "2026-08-09", [line(MILK, "6x1L", 6.0, 2, 27.60)]
+                ),
+            ]
+        )
+        row = run_consolidator(box, group_by="item_supplier")["rows"][0]
+        assert row["unit_cost_change_pct"] == 0.0
+        once = Api(
+            [
+                invoice(
+                    "i1",
+                    "Bidfood",
+                    "2026-08-02",
+                    [line(MILK, "1 Litre", 1.0, 10, 4.00)],
+                )
+            ]
+        )
+        row = run_consolidator(once, group_by="item_supplier")["rows"][0]
+        assert row["unit_cost_change_pct"] is None
+
+
+# ── Oct 2026: the purchases-based cost-of-goods dashboard ──────────────────
+#
+# Month / week buckets split by Loaded's three categories, spend per supplier,
+# freight, and the reconciliation the owner asked for: Food + Beverage + Other
+# + freight must equal what the invoices charged. Checked on September 2026
+# data at Applegum Cafe, Little West and Somewhere North (docs/plans/
+# procurement-cogs-dashboard.md): equal to the cent.
+
+
+def au_line(item_id, qty, cost, category, rate=0.0, ratio=1.0, unit="Kilo"):
+    return {
+        "StockItemId": item_id,
+        "StockVariantCode": None,
+        "Category": category,
+        "unitName": unit,
+        "unitRatio": ratio,
+        "quantityReceived": qty,
+        "unitCost": cost,
+        "saleTaxRate": rate,
+    }
+
+
+def au_invoice(inv_id, supplier, date, lines, freight=0.0, credit=False):
+    subtotal = round(sum(ln["quantityReceived"] * ln["unitCost"] for ln in lines), 2)
+    tax = round(
+        sum(ln["quantityReceived"] * ln["unitCost"] * ln["saleTaxRate"] for ln in lines)
+        + freight * 0.1,
+        2,
+    )
+    return {
+        "id": inv_id,
+        "type": "Invoice",
+        "creditRequest": credit,
+        "invoiceNumber": inv_id.upper(),
+        "invoicedAt": date,
+        "receivedAt": date,
+        "supplierId": "sup-" + supplier.lower().replace(" ", ""),
+        "supplierName": supplier,
+        "freight": freight,
+        "subtotal": round(subtotal + freight, 2),
+        "total": round(subtotal + freight + tax, 2),
+        "lines": lines,
+    }
+
+
+AU_ITEMS = [
+    {
+        "id": "i-flour",
+        "name": "FLOUR PLAIN",
+        "groupId": "g-dry",
+        "groupName": "Dry Goods",
+    },
+    {
+        "id": "i-milk",
+        "name": "MILK FULL CREAM",
+        "groupId": "g-dairy",
+        "groupName": "Dairy",
+    },
+    {
+        "id": "i-coffee",
+        "name": "COFFEE BEANS",
+        "groupId": "g-bev",
+        "groupName": "Coffee",
+    },
+    {
+        "id": "i-cups",
+        "name": "TAKEAWAY CUPS",
+        "groupId": "g-pack",
+        "groupName": "Packaging",
+    },
+]
+AU_UNITS = [
+    {"id": "u-kilo", "name": "Kilo", "ratio": 1.0, "stockUnitType": "Weight"},
+    {"id": "u-each", "name": "Each", "ratio": 1.0, "stockUnitType": "Count"},
+]
+AU_WINDOW = {
+    "start": "2026-09-01T00:00:00+10:00",
+    "end": "2026-09-30T23:59:59+10:00",
+    "trading_aligned": True,
+    "description": "September 2026",
+}
+
+
+def au_invoices():
+    return [
+        # GST-free food, with freight
+        au_invoice(
+            "i1",
+            "Sonoma Baking",
+            "2026-09-02",
+            [au_line("i-flour", 10, 2.5, "Food"), au_line("i-milk", 20, 1.8, "Food")],
+            freight=7.0,
+        ),
+        # beverage at 10% and packaging (Other Stock)
+        au_invoice(
+            "i2",
+            "Made of Many",
+            "2026-09-08",
+            [
+                au_line("i-coffee", 4, 38.0, "Beverage", rate=0.1),
+                au_line("i-cups", 500, 0.12, "Other Stock", rate=0.1, unit="Each"),
+            ],
+            freight=20.0,
+        ),
+        # a credit: negative quantity, negative subtotal
+        au_invoice(
+            "cn1",
+            "Sonoma Baking",
+            "2026-09-10",
+            [au_line("i-flour", -2, 2.5, "Food")],
+            credit=True,
+        ),
+        # the next week and the next month
+        au_invoice(
+            "i3",
+            "Sonoma Baking",
+            "2026-09-16",
+            [au_line("i-flour", 10, 2.6, "Food")],
+            freight=7.0,
+        ),
+        au_invoice(
+            "i4",
+            "Made of Many",
+            "2026-10-03",
+            [au_line("i-coffee", 2, 38.0, "Beverage", rate=0.1)],
+        ),
+    ]
+
+
+def run_au(group_by, **params):
+    api = Api(au_invoices(), items=AU_ITEMS, units=AU_UNITS, window=AU_WINDOW)
+    return run_consolidator(api, group_by=group_by, **params), api
+
+
+class TestCategoriesReconcileToTheInvoices:
+    def test_food_plus_beverage_plus_other_plus_freight_equals_the_subtotals(self):
+        out, _ = run_au("month")
+        s = out["summary"]
+        # lines: 25 + 36 + 152 + 60 − 5 + 26 + 76 = 370.00; freight 34.00
+        assert s["by_category"] == {
+            "Food": 82.0,
+            "Beverage": 228.0,
+            "Other Stock": 60.0,
+        }
+        assert s["freight"] == 34.0
+        rec = s["reconciliation"]
+        assert rec["categories"] == 370.0
+        assert rec["invoice_subtotals"] == 404.0
+        assert rec["difference"] == 0.0
+        assert rec["ok"] is True
+        assert rec["invoices"] == 5
+
+    def test_a_gap_is_reported_not_hidden(self):
+        invoices = au_invoices()
+        invoices[0]["subtotal"] += 5.0  # a header that doesn't match its lines
+        api = Api(invoices, items=AU_ITEMS, units=AU_UNITS, window=AU_WINDOW)
+        out = run_consolidator(api, group_by="item")
+        rec = out["summary"]["reconciliation"]
+        assert rec["ok"] is False and rec["difference"] == -5.0
+
+    def test_a_narrowed_read_carries_no_reconciliation(self):
+        out, _ = run_au("item", query="flour")
+        assert "reconciliation" not in out["summary"]
+        assert "freight" not in out["summary"]
+        assert out["summary"]["by_category"] == {"Food": 46.0}
+
+    def test_every_mode_carries_the_split(self):
+        for mode in ("item", "group", "super_group", "supplier", "week"):
+            out, _ = run_au(mode)
+            assert out["summary"]["by_category"]["Food"] == 82.0, mode
+
+
+class TestTimeBuckets:
+    def test_months_split_by_category_with_freight_and_credits(self):
+        out, api = run_au("month")
+        assert ("loadedhub", "get_stock_item_groups") in api.calls
+        rows = out["rows"]
+        assert [r["bucket"] for r in rows] == ["September 2026", "October 2026"]
+        sep, octo = rows
+        assert sep["bucket_start"] == "2026-09-01"
+        assert (sep["food"], sep["beverage"], sep["other"]) == (82.0, 152.0, 60.0)
+        assert sep["spend"] == 294.0
+        assert sep["freight"] == 34.0
+        assert sep["credit_amount"] == -5.0
+        assert sep["invoice_subtotals"] == 328.0
+        assert sep["invoice_count"] == 4
+        assert octo["beverage"] == 76.0 and octo["freight"] == 0.0
+        assert "venue" not in sep  # one venue: no column
+
+    def test_weeks_are_iso_weeks_from_monday(self):
+        out, _ = run_au("week")
+        rows = out["rows"]
+        assert [r["bucket"] for r in rows] == [
+            "2026-W36",
+            "2026-W37",
+            "2026-W38",
+            "2026-W40",
+        ]
+        assert rows[0]["bucket_start"] == "2026-08-31"  # the Monday of W36
+        assert rows[1]["food"] == -5.0 and rows[1]["beverage"] == 152.0
+
+    def test_across_venues_each_bucket_is_per_venue(self):
+        api = Api(au_invoices(), items=AU_ITEMS, units=AU_UNITS, window=AU_WINDOW)
+        out = run_consolidator(
+            api, group_by="month", venues=["Applegum", "Little West"]
+        )
+        rows = out["rows"]
+        assert {r["venue"] for r in rows} == {"Applegum", "Little West"}
+        assert [(r["bucket"], r["venue"]) for r in rows][:2] == [
+            ("September 2026", "Applegum"),
+            ("September 2026", "Little West"),
+        ]
+        assert out["summary"]["reconciliation"]["invoices"] == 10
+
+
+class TestSupplierMode:
+    def test_spend_per_supplier_with_share_and_top_items(self):
+        out, _ = run_au("supplier")
+        rows = out["rows"]
+        assert [r["supplier_name"] for r in rows] == ["Made of Many", "Sonoma Baking"]
+        mom, sonoma = rows
+        assert mom["spend"] == 288.0 and mom["invoice_count"] == 2
+        assert mom["share"] == round(288.0 / 370.0, 4)
+        assert mom["top_items"][0] == {"item": "COFFEE BEANS", "spend": 228.0}
+        assert sonoma["credit_amount"] == -5.0

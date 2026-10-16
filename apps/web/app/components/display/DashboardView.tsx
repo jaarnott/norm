@@ -71,6 +71,9 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   const [sharedVenue, setActiveVenue] = useActiveVenue();
   const rememberedVenue = persistVenue ? sharedVenue : null;
   const [selectedVenue, setSelectedVenue] = useState<string>('');
+  // The period control, for dashboards whose charts take a plain-English
+  // `period` (the cost-of-goods template). '' = each chart's own default.
+  const [selectedPeriod, setSelectedPeriod] = useState<string>('this_month');
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const [showPicker, setShowPicker] = useState(false);
   const { isMobile, isTablet } = useBreakpoint();
@@ -114,7 +117,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleRefresh = useCallback(async (filters?: { venue_id?: string }) => {
+  const handleRefresh = useCallback(async (filters?: { venue_id?: string; period?: string }) => {
     if (!dashboard?.id || !dashboard.charts?.length) return;
     setRefreshing(true);
 
@@ -125,6 +128,9 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     } else {
       globalFilters.venue_id = '__all__';
     }
+    // Harmless for a dashboard without period charts: the API applies it
+    // only to a chart that takes a `period`.
+    globalFilters.period = filters?.period !== undefined ? filters.period : selectedPeriod;
     const body = JSON.stringify({ global_filters: globalFilters });
 
     // Mark all charts as refreshing
@@ -160,7 +166,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     await Promise.all(promises);
     setLastRefreshed(new Date());
     setRefreshing(false);
-  }, [dashboard?.id, dashboard?.charts, selectedVenue]);
+  }, [dashboard?.id, dashboard?.charts, selectedVenue, selectedPeriod]);
 
   // Auto-refresh on initial load — show cached data immediately, refresh in background
   useEffect(() => {
@@ -177,6 +183,10 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     if (initialRefreshDone.current) handleRefresh({ venue_id: selectedVenue });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedVenue]);
+  useEffect(() => {
+    if (initialRefreshDone.current) handleRefresh({ period: selectedPeriod });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPeriod]);
 
   // Auto-refresh — handleRefresh in deps so interval always uses the latest venue selection
   useEffect(() => {
@@ -250,8 +260,32 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     />
   ) : null;
 
+  // Shown only when a chart takes a period — month and week views of the
+  // same numbers, resolved on the venue's calendar by the API.
+  const hasPeriod = dashboard.charts.some(c => !!c.script?.params?.period);
+  const periodPicker = hasPeriod ? (
+    <select
+      className="n-select"
+      aria-label="Period"
+      value={selectedPeriod}
+      onChange={e => setSelectedPeriod(e.target.value)}
+    >
+      <optgroup label="Months">
+        <option value="this_month">This month</option>
+        <option value="last_month">Last month</option>
+        <option value="last_12_months">Last 12 months</option>
+      </optgroup>
+      <optgroup label="Weeks">
+        <option value="this_week">This week</option>
+        <option value="last_week">Last week</option>
+        <option value="last_13_weeks">Last 13 weeks</option>
+      </optgroup>
+    </select>
+  ) : null;
+
   const actions = (
     <>
+      {periodPicker}
       {venuePicker}
       <Button
         onClick={() => handleRefresh()}

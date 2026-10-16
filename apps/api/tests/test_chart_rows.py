@@ -270,3 +270,98 @@ class TestDatePlaceholders:
         )
         assert out["status"] == "Acknowledged"
         assert out["end"][:2] == "20" and out["start"][:2] == "20"
+
+
+# ── Oct 2026: the dashboard's period control ────────────────────────────────
+#
+# The Cost of Goods template's charts take a plain-English `period`; the
+# control sends a CODE (this_month, last_12_months, this_week …) which the
+# API turns into that window on the venue's calendar — no model call per
+# tile — and the chart's bucket follows it. A trend chart's `period_span`
+# widens its window to that many buckets ending at the chosen period.
+
+
+class TestPeriodControl:
+    def _venue(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(timezone="Australia/Sydney", day_start_time=None)
+
+    def test_a_code_becomes_the_venues_window_confirmed(self):
+        out = _apply_global_dates(
+            {"period": "this month", "interval": "week"},
+            {"period": "this_month"},
+            venue=self._venue(),
+        )
+        assert "period" not in out
+        assert out["confirmed_by_user"] is True
+        assert out["start"][8:10] == "01"  # the 1st, on Sydney's calendar
+        assert out["start"].endswith(("+10:00", "+11:00"))
+        assert out["interval"] == "month"  # the bucket follows the control
+
+    def test_a_week_code_sets_a_week_bucket(self):
+        import datetime as dt
+
+        out = _apply_global_dates(
+            {"period": "this month", "group_by": "month"},
+            {"period": "last_week"},
+            venue=self._venue(),
+        )
+        start = dt.datetime.fromisoformat(out["start"])
+        end = dt.datetime.fromisoformat(out["end"])
+        assert start.weekday() == 0 and (end - start).days == 6
+        assert out["group_by"] == "week"
+
+    def test_a_trend_chart_reaches_back_its_span(self):
+        from app.services import business_calendar as _bc
+
+        venue = self._venue()
+        out = _apply_global_dates(
+            {"period": "last 12 months", "interval": "month", "period_span": 12},
+            {"period": "this_month"},
+            venue=venue,
+        )
+        assert "period_span" not in out  # never reaches the tool
+        # Twelve trading months ending with this one, on the venue's day start.
+        assert out["start"] == _bc.trading_month(venue, None, -11).start.isoformat()
+        assert out["end"] == _bc.trading_month(venue, None, 0).end.isoformat()
+
+    def test_last_12_months_is_twelve_whole_months(self):
+        from app.services import business_calendar as _bc
+
+        venue = self._venue()
+        out = _apply_global_dates(
+            {"period": "x"}, {"period": "last_12_months"}, venue=venue
+        )
+        assert out["start"] == _bc.trading_month(venue, None, -11).start.isoformat()
+        assert out["end"] == _bc.trading_month(venue, None, 0).end.isoformat()
+        # last_13_weeks the same way
+        out = _apply_global_dates(
+            {"period": "x"}, {"period": "last_13_weeks"}, venue=venue
+        )
+        assert out["start"] == _bc.trading_week(venue, None, -12).start.isoformat()
+        assert out["end"] == _bc.trading_week(venue, None, 0).end.isoformat()
+
+    def test_an_unknown_code_leaves_the_period_alone(self):
+        out = _apply_global_dates(
+            {"period": "this month", "period_span": 12}, {"period": "banana"}
+        )
+        assert out == {"period": "this month"}
+
+    def test_a_chart_without_a_period_ignores_the_control(self):
+        out = _apply_global_dates(
+            {"start_datetime": "today_start"}, {"period": "this_month"}
+        )
+        assert out == {"start_datetime": "today_start"}
+
+
+class TestASummaryIsOneRow:
+    def test_a_document_at_the_path_is_one_row(self):
+        doc = {
+            "rows": [],
+            "summary": {"purchases": 10.0, "previous": {"purchases": 8.0}},
+        }
+        assert _rows_from_payload(doc, {"rows": "summary"}) == [doc["summary"]]
+
+    def test_a_missing_summary_is_no_rows(self):
+        assert _rows_from_payload({"rows": []}, {"rows": "summary"}) == []

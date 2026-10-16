@@ -124,8 +124,14 @@ export interface ChartSpec {
   y_axis?: { key: string; label: string; format?: string };
   series: { key: string; label: string; color: string }[];
   orientation?: 'vertical' | 'horizontal';
-  group_by?: string;
+  // null: don't pivot a grouping column — the series are the stacks.
+  group_by?: string | null;
   value_key?: string;
+  // A ratio series: the two parts are summed per point, then divided.
+  numerator_key?: string;
+  denominator_key?: string;
+  // A pivoted ratio line also gets one series over every group.
+  total_series?: string;
   field_labels?: Record<string, string>;
   field_formats?: Record<string, string>;
   hidden_fields?: string[];

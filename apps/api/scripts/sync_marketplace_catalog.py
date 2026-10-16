@@ -326,7 +326,11 @@ APPS = [
     ),
     _app(
         "loaded-stock",
-        note="Stock-on-hand, received-stock and stocktake questions need item ids from get_stock — never guess them.",
+        note=(
+            "Stock-on-hand, received-stock and stocktake questions need item ids from "
+            "get_stock — never guess them. Cost of goods for a venue that doesn't "
+            "stocktake is purchases against sales: get_purchase_cogs."
+        ),
         name="Loaded Stock",
         member="procurement",
         icon="📦",
@@ -338,6 +342,9 @@ APPS = [
             # stock_find_stocktakes (Sep 2026, sync_last_raw_tools.py).
             "loadedhub.get_stocktakes",
             "loadedhub.get_received_items_for_period",
+            # Purchases ÷ POS sales per month / week, food vs beverage — the
+            # cost-of-goods figure for a venue without stocktakes (Oct 2026).
+            "loadedhub.get_purchase_cogs",
             "loadedhub.get_purchase_orders",
             "norm.create_purchase_order",
             "loadedhub.get_invoices",

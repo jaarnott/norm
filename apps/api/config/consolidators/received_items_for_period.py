@@ -58,7 +58,37 @@
 # review of 211 calls / 11 conversations / 90 days — see
 # ~/.claude/plans/context-editing.md). "line" is accepted as the old name for
 # "history" so a model that learned it is not refused.
-_GROUPINGS = ("item", "item_supplier", "history", "line", "group", "super_group")
+_GROUPINGS = (
+    "item",
+    "item_supplier",
+    "history",
+    "line",
+    "group",
+    "super_group",
+    # Oct 2026, the purchases-based cost-of-goods dashboard: spend per month /
+    # trading week split by Loaded's three categories, and spend per supplier.
+    "month",
+    "week",
+    "supplier",
+)
+_TIME_MODES = ("month", "week")
+# Loaded's three categories → the row keys a chart stacks. Anything else (a
+# line with no category) lands in "other", so the three always add up.
+_CATEGORY_KEY = {"food": "food", "beverage": "beverage"}
+_MONTH_NAMES = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
 # history rows are one per invoice line and REQUIRE a narrowing filter; with
 # one, "lamb rump since March" is 27 rows. 500 is generous. The old 2,000 with
 # no filter required produced the two largest responses in 90 days: 861 and
@@ -144,8 +174,33 @@ def _venue_split(by_venue, with_quantity=False):
     return sorted(out, key=lambda r: r["spend"], reverse=True)
 
 
+def _bucket_of(date_text, mode):
+    """(label, start date ISO) for an invoice date — the same labels get_sales
+    uses for its month / week rows, so purchases and sales join on them."""
+    try:
+        day = datetime.date.fromisoformat(str(date_text or "")[:10])
+    except ValueError:
+        return "(no date)", ""
+    if mode == "week":
+        iso = day.isocalendar()
+        monday = day - datetime.timedelta(days=day.weekday())
+        return str(iso[0]) + "-W" + str(iso[1]).zfill(2), monday.isoformat()
+    return _MONTH_NAMES[day.month - 1] + " " + str(day.year), day.replace(
+        day=1
+    ).isoformat()
+
+
+def _category_key(row):
+    text = str(row.get("super_group") or row.get("category") or "").strip().lower()
+    return _CATEGORY_KEY.get(text, "other")
+
+
 def _flatten(invoices, catalogue, units, subcats, group_by, supplier_filter, norm, num):
-    """One venue's received lines, flattened and converted. Returns (rows, notes).
+    """One venue's received lines, flattened and converted. Returns
+    (rows, notes, heads) — ``heads`` is one record per invoice (its freight and
+    header subtotal), which the lines don't carry: freight is charged on the
+    invoice, not on a line, and the subtotal is what the reconciliation checks
+    the categories against.
 
     Names and unit types are ENHANCEMENTS: if either lookup fails the numbers
     are still correct, so degrade with a visible note rather than failing the
@@ -193,6 +248,7 @@ def _flatten(invoices, catalogue, units, subcats, group_by, supplier_filter, nor
             unit_types.setdefault(key, unit.get("stockUnitType"))
 
     flat = []
+    heads = []
     unnamed = set()
     unratioed = 0
     for inv in invoices:
@@ -202,6 +258,18 @@ def _flatten(invoices, catalogue, units, subcats, group_by, supplier_filter, nor
             continue
         is_credit = bool(inv.get("creditRequest"))
         when = str(inv.get("invoicedAt") or inv.get("receivedAt") or "")[:10]
+        heads.append(
+            {
+                "invoice_id": inv.get("id"),
+                "invoice_number": inv.get("invoiceNumber"),
+                "supplier_name": inv.get("supplierName"),
+                "date": when,
+                "is_credit": is_credit,
+                "freight": num(inv.get("freight")) or 0.0,
+                "subtotal": num(inv.get("subtotal")),
+                "total": num(inv.get("total")),
+            }
+        )
         for line in inv.get("lines") or []:
             if not isinstance(line, dict):
                 continue
@@ -274,7 +342,49 @@ def _flatten(invoices, catalogue, units, subcats, group_by, supplier_filter, nor
             str(unratioed) + " line(s) had no unit ratio, so their quantity could "
             "not be converted to a base unit and is excluded from quantity_base"
         )
-    return flat, notes
+    return flat, notes, heads
+
+
+def _extras(flat, heads, narrowed):
+    """What every mode's summary carries besides its own figures: spend by
+    Loaded's three categories, the invoices' freight, and the reconciliation
+    the owner asked for — Food + Beverage + Other + freight against what the
+    invoices charged ex-GST (Σ header subtotal). Checked on September 2026
+    data for three venues: equal to the cent, 1c of rounding at two of them.
+
+    A narrowed read (item, query, group or supplier filter) is a subset, so
+    freight and the reconciliation would be meaningless; only the category
+    split is given then.
+    """
+    by_category = {}
+    for r in flat:
+        key = str(r.get("super_group") or r.get("category") or "(no category)")
+        by_category[key] = by_category.get(key, 0.0) + r["spend"]
+    out = {"by_category": {k: round(v, 2) for k, v in by_category.items()}}
+    if narrowed:
+        return out
+    freight = sum(h["freight"] for h in heads)
+    subtotals = [h["subtotal"] for h in heads if h["subtotal"] is not None]
+    categories = sum(by_category.values())
+    out["freight"] = round(freight, 2)
+    if len(subtotals) == len(heads):
+        difference = categories + freight - sum(subtotals)
+        # A cent of rounding per invoice is Loaded's own arithmetic, not a gap.
+        tolerance = 0.01 * max(len(heads), 1) + 0.005
+        out["reconciliation"] = {
+            "categories": round(categories, 2),
+            "freight": round(freight, 2),
+            "invoice_subtotals": round(sum(subtotals), 2),
+            "difference": round(difference, 2),
+            "ok": abs(difference) <= tolerance,
+            "invoices": len(heads),
+        }
+    else:
+        out["reconciliation"] = {
+            "ok": False,
+            "note": "some invoices carried no subtotal, so the check could not run",
+        }
+    return out
 
 
 def run(params, call_api, log, call_api_parallel=None):
@@ -393,9 +503,9 @@ def run(params, call_api, log, call_api_parallel=None):
         # now; this engine-side call wants the bare list, not the lookup).
         calls.append(("loadedhub", "get_stock_items_raw", dict(at)))
         calls.append(("loadedhub", "get_stock_units", dict(at)))
-        if group_by == "super_group":
+        if group_by == "super_group" or group_by in _TIME_MODES:
             calls.append(("loadedhub", "get_stock_item_groups", dict(at)))
-    per = 4 if group_by == "super_group" else 3
+    per = 4 if (group_by == "super_group" or group_by in _TIME_MODES) else 3
     results = _call_all(call_api, call_api_parallel, calls)
 
     warnings = []
@@ -403,6 +513,7 @@ def run(params, call_api, log, call_api_parallel=None):
     supplier_filter = {norm(s) for s in (params.get("suppliers") or []) if s}
     by_name = bool(params.get("query") or params.get("group"))
     flat = []
+    heads = []
     venues_read = []
     supplier_names = {}  # normalised -> as Loaded spells it, every venue read
     for i, v in enumerate(targets):
@@ -434,7 +545,7 @@ def run(params, call_api, log, call_api_parallel=None):
             name = inv.get("supplierName") if isinstance(inv, dict) else None
             if name:
                 supplier_names.setdefault(norm(name), str(name))
-        rows, notes = _flatten(
+        rows, notes, invoice_heads = _flatten(
             invoices if isinstance(invoices, list) else [],
             catalogue,
             units,
@@ -448,8 +559,11 @@ def run(params, call_api, log, call_api_parallel=None):
         warnings.extend(prefix + n for n in notes)
         for r in rows:
             r["venue"] = v
+        for h in invoice_heads:
+            h["venue"] = v
         venues_read.append(v)
         flat.extend(rows)
+        heads.extend(invoice_heads)
     if multi and not flat and venue_errors:
         return {"error": "every venue failed: " + json.dumps(venue_errors)}
 
@@ -523,6 +637,13 @@ def run(params, call_api, log, call_api_parallel=None):
     }
     if unmatched:
         result["unmatched_suppliers"] = unmatched
+    narrowed = bool(
+        params.get("item_id")
+        or params.get("query")
+        or params.get("group")
+        or params.get("suppliers")
+    )
+    extras = _extras(flat, heads, narrowed)
     if multi:
         # The group answer carries its own per-venue totals, so "and by
         # venue?" is answered without another fetch — from the FILTERED
@@ -551,6 +672,134 @@ def run(params, call_api, log, call_api_parallel=None):
                 "Some venues failed and are excluded from every total: "
                 + ", ".join(sorted(venue_errors))
             )
+
+    if group_by in _TIME_MODES:
+        # Spend per month or trading week, split by Loaded's three categories
+        # (plus the invoices' freight), one row per bucket — and per venue when
+        # the read spans venues, so a chart stacks the categories and draws a
+        # line per venue without a second call. Lines are bucketed on the
+        # invoice date; an invoice's freight goes with its date too.
+        buckets = {}
+
+        def bucket_for(venue, date):
+            label, start = _bucket_of(date, group_by)
+            key = (venue, label)
+            b = buckets.get(key)
+            if b is None:
+                b = buckets[key] = {
+                    "bucket": label,
+                    "bucket_start": start,
+                    "venue": venue,
+                    "spend": 0.0,
+                    "food": 0.0,
+                    "beverage": 0.0,
+                    "other": 0.0,
+                    "freight": 0.0,
+                    "credit_amount": 0.0,
+                    "invoice_subtotals": 0.0,
+                    "_invoices": set(),
+                }
+            return b
+
+        for row in flat:
+            b = bucket_for(row["venue"], row["date"])
+            b["spend"] += row["spend"]
+            b[_category_key(row)] += row["spend"]
+            if row["is_credit"] or row["quantity"] < 0:
+                b["credit_amount"] += row["spend"]
+            b["_invoices"].add(row["invoice_id"])
+        if not narrowed:
+            for h in heads:
+                b = bucket_for(h["venue"], h["date"])
+                b["freight"] += h["freight"]
+                b["invoice_subtotals"] += h["subtotal"] or 0.0
+                b["_invoices"].add(h["invoice_id"])
+        rows = []
+        for b in buckets.values():
+            b["invoice_count"] = len(b.pop("_invoices"))
+            for k in (
+                "spend",
+                "food",
+                "beverage",
+                "other",
+                "freight",
+                "credit_amount",
+                "invoice_subtotals",
+            ):
+                b[k] = round(b[k], 2)
+            if not multi:
+                b.pop("venue")
+            rows.append(b)
+        rows.sort(key=lambda r: (r["bucket_start"], r.get("venue") or ""))
+        result["summary"] = {
+            "rows": len(rows),
+            "lines": len(flat),
+            "invoices": len({r["invoice_id"] for r in flat}),
+            "net_spend": round(sum(r["spend"] for r in flat), 2),
+            "credit_amount": round(
+                sum(r["spend"] for r in flat if r["is_credit"] or r["quantity"] < 0), 2
+            ),
+            **extras,
+        }
+        result["rows"] = rows
+        return result
+
+    if group_by == "supplier":
+        buckets = {}
+        for row in flat:
+            key = norm(row["supplier_name"]) or "(no supplier)"
+            b = buckets.get(key)
+            if b is None:
+                b = buckets[key] = {
+                    "supplier_name": row["supplier_name"] or "(no supplier)",
+                    "supplier_id": row["supplier_id"],
+                    "spend": 0.0,
+                    "credit_amount": 0.0,
+                    "_items": {},
+                    "_invoices": set(),
+                    "_venues": {},
+                }
+            b["spend"] += row["spend"]
+            b["_venues"][row["venue"]] = (
+                b["_venues"].get(row["venue"], 0.0) + row["spend"]
+            )
+            if row["is_credit"] or row["quantity"] < 0:
+                b["credit_amount"] += row["spend"]
+            b["_invoices"].add(row["invoice_id"])
+            b["_items"][row["item_name"]] = (
+                b["_items"].get(row["item_name"], 0.0) + row["spend"]
+            )
+        total_spend = sum(r["spend"] for r in flat)
+        rows = []
+        for b in buckets.values():
+            items = b.pop("_items")
+            by_venue = b.pop("_venues")
+            if multi:
+                b["venues"] = _venue_split(by_venue)
+            b["invoice_count"] = len(b.pop("_invoices"))
+            b["share"] = round(b["spend"] / total_spend, 4) if total_spend else None
+            b["top_items"] = [
+                {"item": n, "spend": round(s, 2)}
+                for n, s in sorted(items.items(), key=lambda kv: kv[1], reverse=True)[
+                    :3
+                ]
+            ]
+            b["spend"] = round(b["spend"], 2)
+            b["credit_amount"] = round(b["credit_amount"], 2)
+            rows.append(b)
+        rows.sort(key=lambda r: r["spend"], reverse=True)
+        result["summary"] = {
+            "rows": len(rows),
+            "lines": len(flat),
+            "invoices": len({r["invoice_id"] for r in flat}),
+            "net_spend": round(total_spend, 2),
+            "credit_amount": round(
+                sum(r["spend"] for r in flat if r["is_credit"] or r["quantity"] < 0), 2
+            ),
+            **extras,
+        }
+        result["rows"] = cap_rows(rows, "supplier_name")
+        return result
 
     if group_by in ("group", "super_group"):
         label_key = "group" if group_by == "group" else "super_group"
@@ -609,6 +858,7 @@ def run(params, call_api, log, call_api_parallel=None):
             "credit_amount": round(
                 sum(r["spend"] for r in flat if r["is_credit"] or r["quantity"] < 0), 2
             ),
+            **extras,
         }
         result["rows"] = cap_rows(rows, label_key)
         return result
@@ -666,6 +916,7 @@ def run(params, call_api, log, call_api_parallel=None):
             "invoices": len({r["invoice_id"] for r in flat}),
             "distinct_items": len({r["item_id"] for r in flat}),
             "net_spend": round(sum(r["spend"] for r in flat), 2),
+            **extras,
         }
         result["rows"] = rows
         return result
@@ -763,6 +1014,12 @@ def run(params, call_api, log, call_api_parallel=None):
             row["unit_cost_min"] = min(values) if values else None
             row["unit_cost_max"] = max(values) if values else None
             row["unit_cost_last"] = values[-1] if values else None
+            # First to last receipt in the window — the price movers table.
+            row["unit_cost_change_pct"] = (
+                round((values[-1] - values[0]) / values[0], 4)
+                if len(values) > 1 and values[0]
+                else None
+            )
         rows.append(row)
 
     rows.sort(key=lambda r: r["spend"], reverse=True)
@@ -783,6 +1040,7 @@ def run(params, call_api, log, call_api_parallel=None):
             "included (they subtract). For what each purchase cost, use "
             "group_by 'history' with an item."
         ),
+        **extras,
     }
     result["rows"] = cap_rows(rows, "item_name")
     return result

@@ -72,6 +72,7 @@ SHAPES_PATH = FUNCTION_CODE_PATH.parent / "shapes.json"
 TOOL = {
     "action": ACTION,
     "method": "GET",  # consolidator dispatch; reads only, writes nothing ever
+    "effect": "read",  # an App-claimed tool declares what it does (Oct 2026)
     # Tightened 7 Oct 2026: each rule stated once (the tool list is ~65% of
     # every prompt).
     "description": (
@@ -83,7 +84,11 @@ TOOL = {
         "cost — for ONE item or supplier; needs item_id, query or suppliers) | "
         "'item_supplier' (each supplier's unit cost avg/min/max/last — 'are we paying "
         "different prices') | 'group' / 'super_group' (spend by stock group / Loaded "
-        "category). Quantities use each line's unit ratio, so 6x1L and 1L add up. For "
+        "category) | 'month' / 'week' (spend per month or trading week split Food / "
+        "Beverage / Other plus freight — the cost-of-goods trend) | 'supplier' (spend "
+        "per supplier with its share). Every summary carries by_category, freight and "
+        "a reconciliation of Food + Beverage + Other + freight against the invoice "
+        "subtotals. Quantities use each line's unit ratio, so 6x1L and 1L add up. For "
         "the group, venues='all' (or a list) gives ONE merged ranking with per-venue "
         "splits — never fetch venue by venue. Ask ONCE for the whole period."
     ),

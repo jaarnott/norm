@@ -185,35 +185,64 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
     const hasDuplicates = new Set(xValues).size < xValues.length;
     if (!hasDuplicates) return { chartRows: rows, chartSeries: effectiveSeries };
 
-    // Use explicit group_by from chart spec, or auto-detect a grouping column
-    const specGroupBy = chartProps?.group_by as string | undefined;
-    const groupCol = specGroupBy || dataKeys.find(k => /^venue$|^venue_name$|^location$/i.test(k));
+    // Use explicit group_by from chart spec, or auto-detect a grouping column.
+    // `group_by: null` says "don't pivot": the series ARE the stacks (food /
+    // beverage / other per month) and venues add up.
+    const specGroupBy = chartProps?.group_by as string | null | undefined;
+    const groupCol = specGroupBy === null
+      ? undefined
+      : specGroupBy || dataKeys.find(k => /^venue$|^venue_name$|^location$/i.test(k));
     const specValueKey = chartProps?.value_key as string | undefined;
+    // A ratio series (cost of goods % = purchases ÷ sales) is summed as its
+    // two parts and divided per point — never by adding percentages.
+    const numKey = chartProps?.numerator_key as string | undefined;
+    const denKey = chartProps?.denominator_key as string | undefined;
+    const isRatio = !!(numKey && denKey);
+    // A line pivots only when told to: a stacked bar always did.
+    const pivots = groupCol && (chartType === 'stacked_bar' || (chartType === 'line' && !!specGroupBy));
 
-    if (chartType === 'stacked_bar' && groupCol) {
+    if (pivots && groupCol) {
       // Pivot: one row per x-value, one series column per group
       const groups = [...new Set(rows.map(r => String(r[groupCol] ?? 'Other')))];
       const valueKey = specValueKey || effectiveSeries[0]?.key || '';
+      const totalLabel = chartProps?.total_series as string | undefined;
       const grouped = new Map<string, Record<string, unknown>>();
+      const parts = new Map<string, Record<string, [number, number]>>();
       for (const row of rows) {
         const xVal = String(row[xKey] ?? '');
         const group = String(row[groupCol] ?? 'Other');
-        if (!grouped.has(xVal)) grouped.set(xVal, { [xKey]: row[xKey] });
+        if (!grouped.has(xVal)) { grouped.set(xVal, { [xKey]: row[xKey] }); parts.set(xVal, {}); }
         const entry = grouped.get(xVal)!;
-        entry[group] = Number(entry[group] || 0) + Number(row[valueKey] || 0);
+        if (isRatio) {
+          const p = parts.get(xVal)!;
+          for (const g of totalLabel ? [group, totalLabel] : [group]) {
+            const acc = p[g] || [0, 0];
+            p[g] = [acc[0] + Number(row[numKey!] || 0), acc[1] + Number(row[denKey!] || 0)];
+          }
+        } else {
+          entry[group] = Number(entry[group] || 0) + Number(row[valueKey] || 0);
+        }
       }
+      if (isRatio) {
+        for (const [xVal, p] of parts) {
+          const entry = grouped.get(xVal)!;
+          for (const [g, [n, d]] of Object.entries(p)) entry[g] = d === 0 ? null : n / d;
+        }
+      }
+      const seriesKeys = isRatio && totalLabel && groups.length > 1 ? [...groups, totalLabel] : groups;
       // Use configured series colours if they match, otherwise generate
       const configuredSeries = (chartProps?.series as { key: string; label: string; color: string }[]) || [];
       const configMap = new Map(configuredSeries.map(s => [s.key, s]));
-      const pivotedSeries = groups.map((g, i) => {
+      const pivotedSeries = seriesKeys.map((g, i) => {
         const existing = configMap.get(g);
         return {
           key: g,
           label: existing?.label || g,
-          color: existing?.color || STACK_COLORS[i % STACK_COLORS.length],
+          color: existing?.color || (g === totalLabel ? 'var(--text)' : STACK_COLORS[i % STACK_COLORS.length]),
         };
       });
-      return { chartRows: Array.from(grouped.values()), chartSeries: pivotedSeries };
+      const sorted = Array.from(grouped.values());
+      return { chartRows: sorted, chartSeries: pivotedSeries };
     }
 
     // Default: aggregate by summing numeric values per x-key
