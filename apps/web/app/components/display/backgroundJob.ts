@@ -9,6 +9,7 @@ export interface JobProgress {
   total?: number;
   done?: number;
   received?: number;
+  deleted?: number;
   needs_you?: number;
   failed?: number;
   current?: string;

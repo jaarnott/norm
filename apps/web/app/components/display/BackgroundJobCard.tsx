@@ -88,6 +88,7 @@ export default function BackgroundJobCard({ data, onAction }: DisplayBlockProps)
     job.status === 'done' ? 'ok' : job.status === 'failed' ? 'error' : job.status === 'cancelled' ? 'neutral' : 'info';
   const counts: [string, number | undefined, BadgeTone][] = [
     ['received', p.received, 'ok'],
+    ['deleted', p.deleted, 'neutral'],
     ['need you', p.needs_you, 'accent'],
     ["couldn't be reviewed", p.failed, 'error'],
   ];

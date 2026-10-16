@@ -43,7 +43,10 @@ _WD_CONFIG = {
     "ref_fields": ["invoice_id"],
 }
 
-_RECEIVED = {"received", "deleted"}
+_RECEIVED = {"received"}
+#: A draft Norm deleted (no copy, a duplicate) is NOT received — counting it
+#: as received told the person a deleted draft was booked.
+_DELETED = {"deleted"}
 _FAILED = {"review failed", "could not fetch from Loaded"}
 
 
@@ -132,6 +135,8 @@ def start(
 def _outcome_bucket(outcome: str) -> str:
     if outcome in _RECEIVED:
         return "received"
+    if outcome in _DELETED:
+        return "deleted"
     if outcome in _FAILED:
         return "failed"
     return "needs_you"
@@ -215,7 +220,7 @@ def run(ctx: background_jobs.JobContext) -> dict:
         ctx.update(applied_mode=out.get("mode"))
     return {
         k: ctx.progress.get(k)
-        for k in ("total", "done", "received", "needs_you", "failed")
+        for k in ("total", "done", "received", "deleted", "needs_you", "failed")
     }
 
 
@@ -228,6 +233,7 @@ def summary_text(job, cards: int = 0) -> str:
         f"{int(p.get(k) or 0)} {label}"
         for k, label in (
             ("received", "received"),
+            ("deleted", "deleted"),
             ("needs_you", "need you"),
             ("failed", "couldn't be reviewed"),
         )

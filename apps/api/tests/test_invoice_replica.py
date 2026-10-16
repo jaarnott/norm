@@ -1522,3 +1522,45 @@ class TestSupplierPlaceholder:
         )
         assert doc["linked_supplier_id"] == "sup-bidfood"
         assert any("Bidfood (containment)" in e for e in doc["resolution_log"])
+
+
+class TestGstPerLineFromTheInvoice:
+    """The invoice says which lines carry GST, and each line's rate follows it
+    (16 Oct 2026). Blue Seas SI671842 marks GST on the syrups, baking paper,
+    gloves and fuel levy only; with the venue's rate on every line, the totals
+    spread cut every price ~6% to force the total, on 64 Applegum invoices."""
+
+    AU = {0: 0.0, 1: 0.1}
+
+    def _ext(self, marks):
+        lines = [
+            {
+                "code": f"C{n}",
+                "description": f"Line {n}",
+                "quantity": 1,
+                "unit": "EA",
+                "unit_of_measure": None,
+                "unit_price_ex_tax": 10.0,
+                "line_total_ex_tax": 10.0,
+                "gst": mark,
+            }
+            for n, mark in enumerate(marks)
+        ]
+        return dict(
+            EXTRACTION,
+            lines=lines,
+            subtotal_ex_tax=30.0,
+            tax_amount=1.0,
+            total_incl_tax=31.0,
+        )
+
+    def test_each_line_takes_the_rate_the_invoice_marks(self):
+        doc = _build(self._ext(["free", "charged", "free"]), tax_rates=self.AU)
+        lines = doc["lines"]
+        assert [ln["sale_tax_rate"] for ln in lines] == [0.0, 0.1, 0.0]
+        assert all(ln.get("sale_tax_rate_set") for ln in lines)
+        assert lines[0]["sale_tax_rate_why"] == "the invoice marks this line GST-free"
+
+    def test_a_line_with_no_mark_keeps_todays_rule(self):
+        doc = _build(self._ext([None]), tax_rates=self.AU)
+        assert not doc["lines"][0].get("sale_tax_rate_set")

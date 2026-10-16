@@ -81,7 +81,7 @@ class TestTheQueue:
             status="running",
             claimed_by="dead-worker",
             attempts=1,
-            heartbeat_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+            heartbeat_at=datetime.now(timezone.utc) - timedelta(seconds=bj.HEARTBEAT_STALE_SECONDS + 60),
             progress={"done": 37, "done_ids": ["a"]},
         )
         ctx = bj.claim("worker-b")
@@ -106,7 +106,7 @@ class TestTheQueue:
             status="running",
             claimed_by="dead",
             attempts=bj.MAX_ATTEMPTS,
-            heartbeat_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+            heartbeat_at=datetime.now(timezone.utc) - timedelta(seconds=bj.HEARTBEAT_STALE_SECONDS + 60),
         )
         assert bj.claim("worker-b") is None
         db_session.refresh(job)
@@ -118,7 +118,7 @@ class TestTheQueue:
         """Every deploy restarts the instance. A job that gets further each
         time is not failing — only claims without progress count."""
         job = _job(db_session, progress={"done": 0})
-        stale = datetime.now(timezone.utc) - timedelta(minutes=10)
+        stale = datetime.now(timezone.utc) - timedelta(seconds=bj.HEARTBEAT_STALE_SECONDS + 60)
         for n in range(1, bj.MAX_ATTEMPTS + 3):
             ctx = bj.claim(f"worker-{n}")
             assert ctx is not None, f"given up on restart {n}"
@@ -127,6 +127,18 @@ class TestTheQueue:
             job.heartbeat_at = stale
             db_session.flush()
         assert job.status == "running"
+
+    def test_a_worker_that_lost_the_job_stops_before_the_next_invoice(
+        self, db_session, sessions
+    ):
+        """16 Oct 2026: a worker taken over mid-run kept going, and two
+        workers did the same ten invoices — deleting drafts twice and
+        flagging an invoice it had already received."""
+        job = _job(db_session, status="running", claimed_by="worker-b")
+        mine = bj.JobContext(job.id, "worker-a", {}, {})
+        theirs = bj.JobContext(job.id, "worker-b", {}, {})
+        assert mine.cancelled() is True
+        assert theirs.cancelled() is False
 
     def test_the_old_worker_stops_once_another_has_taken_over(
         self, db_session, sessions
@@ -279,6 +291,22 @@ class TestTheReceiveJob:
         monkeypatch.setattr(
             irj, "save_draft", lambda db, t, v, data: f"doc-{data['invoice_id']}"
         )
+
+    def test_a_deleted_draft_is_counted_as_deleted_not_received(
+        self, db_session, admin_user, venue, sessions, monkeypatch
+    ):
+        """It used to share the "received" count, so the card and the summary
+        told the person a deleted draft had been booked (16 Oct 2026)."""
+        thread = _make_thread(db_session, admin_user)
+        job = self._start(db_session, venue, thread, ["i0", "i1", "i2"])
+        self._fake_review(monkeypatch, {"i1": "deleted"}, [])
+        monkeypatch.setattr(
+            "app.services.email_service.send_system_email", lambda *a, **k: None
+        )
+        bj.run(bj.claim("w"))
+        db_session.refresh(job)
+        assert (job.progress["received"], job.progress["deleted"]) == (2, 1)
+        assert "3 of 3 reviewed — 2 received, 1 deleted" in irj.summary_text(job)
 
     def test_every_invoice_is_saved_and_counted_as_it_goes(
         self, db_session, admin_user, venue, sessions, monkeypatch

@@ -808,8 +808,25 @@ def build_replica(
                         and p[1] == 1
                         and not any(ch.isdigit() for ch in str(printed))
                     )
-        rate = None
-        if item and tax_rates and item.get("globalSalesTaxSortOrder") is not None:
+        # GST per line, as the invoice marks it (16 Oct 2026: Australian food
+        # is GST-free, and with 10% on every line the totals spread cut every
+        # cost to make the total — 64 Applegum invoices). Read on 12 test reads,
+        # every line right. Not marked: the stock item's rate, else prevailing.
+        rate, rate_why = None, None
+        gst_mark = el.get("gst")
+        if gst_mark in ("charged", "free") and tax_rates:
+            rate = max(tax_rates.values()) if gst_mark == "charged" else 0.0
+            rate_why = (
+                "the invoice charges GST on this line"
+                if gst_mark == "charged"
+                else "the invoice marks this line GST-free"
+            )
+        if (
+            rate is None
+            and item
+            and tax_rates
+            and item.get("globalSalesTaxSortOrder") is not None
+        ):
             rate = tax_rates.get(int(item["globalSalesTaxSortOrder"]))
         if rate is None:
             rate = prevailing
@@ -872,6 +889,11 @@ def build_replica(
                     else None
                 ),
                 "sale_tax_rate": rate,
+                **(
+                    {"sale_tax_rate_set": True, "sale_tax_rate_why": rate_why}
+                    if rate_why
+                    else {}
+                ),
                 "linked_item_id": item.get("id") if item else None,
                 "item_name": item.get("name") if item else None,
                 "linked_brand_id": (variant or {}).get("brandId")

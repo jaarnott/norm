@@ -899,11 +899,8 @@ class TestBatchModes:
         db = _VenueDb({"mode": mode, **(gates or {})})
         lh = _BatchLh(details)
         monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda db, cdb, vid: lh)
-        monkeypatch.setattr(
-            IR,
-            "extract_invoice_copies_parallel",
-            lambda db, lh_, reqs: [extractions[i] for i in range(len(reqs))],
-        )
+        reads = iter(extractions)  # one read per invoice, in order
+        monkeypatch.setattr(IR, "extract_invoice_copy", lambda *a, **k: next(reads))
         monkeypatch.setattr(
             IR, "extraction_instructions", lambda cdb, lh_, det, al=None: "INSTR"
         )
@@ -934,11 +931,7 @@ class TestBatchModes:
         monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda db, cdb, vid: lh)
         lh = _Flaky({"inv-1": DETAIL(), "inv-bad": {}})
         db = _VenueDb({"mode": "approve_all"})
-        monkeypatch.setattr(
-            IR,
-            "extract_invoice_copies_parallel",
-            lambda db, lh_, reqs: [EXTRACTION() for _ in reqs],
-        )
+        monkeypatch.setattr(IR, "extract_invoice_copy", lambda *a, **k: EXTRACTION())
         monkeypatch.setattr(
             IR, "extraction_instructions", lambda cdb, lh_, det, al=None: "INSTR"
         )
@@ -1017,9 +1010,7 @@ class TestBatchModes:
         db = _VenueDb({"mode": "approve_all"})
         lh = _BatchLh({"inv-1": DETAIL()})
         monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda d, c, v: lh)
-        monkeypatch.setattr(
-            IR, "extract_invoice_copies_parallel", lambda d, l_, r: [EXTRACTION()]
-        )
+        monkeypatch.setattr(IR, "extract_invoice_copy", lambda *a, **k: EXTRACTION())
         monkeypatch.setattr(
             IR, "extraction_instructions", lambda c, l_, d_, al=None: "INSTR"
         )
@@ -3224,7 +3215,6 @@ class TestABatchSavesAsItGoes:
 
         monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda *a, **k: _Lh())
         monkeypatch.setattr(IR, "account_suppliers", lambda lh: [])
-        monkeypatch.setattr(IR, "extract_invoice_copies_parallel", lambda *a, **k: [])
         monkeypatch.setattr(
             "app.services.spec_dojo.prefetch_replica_reference", lambda *a, **k: None
         )
@@ -3284,64 +3274,64 @@ class TestABatchSavesAsItGoes:
         assert out["cards"] == []
 
 
-class TestEveryNewSupplierIsStudied:
-    """The batch studies every supplier with no spec before reading its
-    invoices, as the receive card does — it used to stop at two per run, and a
-    supplier with no spec isn't catalogued, so its products were asked about
-    on every invoice (Alsco, 15 Oct 2026). Once per supplier; a cancel or the
-    chat's time budget stops it."""
+class TestEachInvoiceLikeTheCard:
+    """A batch is invoices reviewed one after another, each exactly as the
+    receive card reviews one — no batch-only steps (16 Oct 2026, the owner:
+    "prioritise simplicity over efficiency. less code and less paths"). A
+    supplier with no spec is studied as its invoice is reviewed, and the
+    venue's reference data is fetched fresh for each invoice, so what one
+    invoice created in Loaded is there for the next."""
 
-    SUPPLIERS = {"a1": "Alsco", "a2": "Alsco", "p1": "PNM", "m1": "M H Luxe", "f1": "Prime Fresh"}
-
-    def _stub(self, monkeypatch, studied):
-        suppliers = self.SUPPLIERS
+    def test_one_at_a_time_studying_and_fetching_fresh(self, monkeypatch):
+        calls: list = []
 
         class _Lh:
             def invoice(self, iid):
-                return {"id": iid, "supplierName": suppliers[iid], "fileId": f"f-{iid}"}
+                calls.append(("fetch", iid))
+                return {"id": iid, "supplierName": "Alsco", "fileId": f"f-{iid}"}
 
         monkeypatch.setattr(IR, "LoadedInvoiceClient", lambda *a, **k: _Lh())
-        monkeypatch.setattr(IR, "account_suppliers", lambda lh: [])
-        monkeypatch.setattr(IR, "supplier_aliases", lambda lh, det, sup: ())
-        monkeypatch.setattr(IR, "extraction_instructions", lambda *a, **k: "")
         monkeypatch.setattr(
-            IR, "extract_invoice_copies_parallel", lambda db, lh, reqs: [None] * len(reqs)
-        )
-        monkeypatch.setattr(
-            "app.services.spec_dojo.prefetch_replica_reference", lambda *a, **k: None
-        )
-        monkeypatch.setattr(
-            IR,
-            "review_invoice",
-            lambda db, cdb, vid, iid, **kw: {
-                "invoice_id": iid,
-                "confidence": "needs_review",
-                "issues": [],
-                "suggestions": [],
-            },
+            "app.services.spec_dojo.prefetch_replica_reference",
+            lambda *a, **k: calls.append(("reference",)) or {},
         )
 
-        def maybe(db, cdb, vid, iid, name, *aliases):
-            studied.append(name)
-            return True
+        def review(db, cdb, vid, iid, **kw):
+            calls.append(("review", iid, kw.get("allow_sensei")))
+            return {"invoice_id": iid, "issues": [], "suggestions": []}
 
-        monkeypatch.setattr(IR, "_maybe_sensei", maybe)
+        monkeypatch.setattr(IR, "review_invoice", review)
+        IR.review_invoices(None, None, "v-1", ["a", "b"])
+        assert calls == [
+            ("fetch", "a"), ("reference",), ("review", "a", True),
+            ("fetch", "b"), ("reference",), ("review", "b", True),
+        ]
 
-    def test_every_new_supplier_once_with_no_limit(self, monkeypatch):
-        studied: list[str] = []
-        self._stub(monkeypatch, studied)
-        out = IR.review_invoices(None, None, "v-1", list(self.SUPPLIERS))
-        assert studied == ["Alsco", "PNM", "M H Luxe", "Prime Fresh"]
-        assert [s["supplier_name"] for s in out["sensei"]] == studied
+class TestTheWholeBacklogIsListed:
+    """Loaded lists 200 drafts a page. Reading only the first page left 390
+    of Applegum's 590 drafts unseen (16 Oct 2026)."""
 
-    def test_out_of_time_or_cancelled_studies_nothing_more(self, monkeypatch):
-        import time
+    def test_every_page_is_read(self):
+        pages = {
+            0: [{"id": f"a{n}", "createdAt": "2026-01-02"} for n in range(200)],
+            1: [{"id": f"b{n}", "createdAt": "2025-06-01"} for n in range(200)],
+            2: [{"id": f"c{n}", "createdAt": "2025-05-25"} for n in range(190)],
+        }
+        asked = []
 
-        studied: list[str] = []
-        self._stub(monkeypatch, studied)
-        out = IR.review_invoices(
-            None, None, "v-1", list(self.SUPPLIERS), deadline=time.monotonic() - 1
-        )
-        assert studied == [] and out["stopped"] == "out of time"
-        IR.review_invoices(None, None, "v-1", list(self.SUPPLIERS), should_stop=lambda: True)
-        assert studied == []
+        class _Lh:
+            def get(self, path):
+                page = int(path.split("page=")[1].split("&")[0])
+                asked.append(page)
+                return pages.get(page, [])
+
+        rows = IR.list_window_invoices(_Lh())
+        assert len(rows) == 590 and asked == [0, 1, 2]
+
+    def test_a_full_last_page_asks_once_more_and_stops_on_an_empty_one(self):
+        class _Lh:
+            def get(self, path):
+                page = int(path.split("page=")[1].split("&")[0])
+                return [{"id": f"p{page}-{n}"} for n in range(200)] if page == 0 else []
+
+        assert len(IR.list_window_invoices(_Lh())) == 200

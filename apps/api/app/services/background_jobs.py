@@ -39,8 +39,10 @@ from app.db.models import BackgroundJob
 logger = logging.getLogger(__name__)
 
 #: A running job whose worker hasn't been heard from for this long is taken
-#: to be dead (its instance restarted) and is claimed again.
-HEARTBEAT_STALE_SECONDS = 180
+#: to be dead (its instance restarted) and is claimed again. The job is heard
+#: from after every invoice, and one invoice can include a 1–2 minute supplier
+#: study: at 3 minutes a live worker was taken over (16 Oct 2026).
+HEARTBEAT_STALE_SECONDS = 15 * 60
 #: Claims in a row that die without progress before the job is marked failed.
 MAX_ATTEMPTS = 3
 WORKER_INTERVAL_SECONDS = 5
@@ -189,6 +191,7 @@ def thread_manifest(thread, db: Session) -> str:
             f"{p[k]} {label}"
             for k, label in (
                 ("received", "received"),
+                ("deleted", "deleted"),
                 ("needs_you", "need the person"),
                 ("failed", "failed"),
             )
@@ -261,13 +264,19 @@ class JobContext:
         self.update()
 
     def cancelled(self) -> bool:
+        """Stop before the next unit of work: cancelled, or the job now
+        belongs to another worker (two workers on one job did the same
+        invoices twice, 16 Oct 2026)."""
         db = _session()
         try:
             job = (
                 db.query(BackgroundJob).filter(BackgroundJob.id == self.job_id).first()
             )
             return bool(
-                job is None or job.cancel_requested or job.status == "cancelled"
+                job is None
+                or job.cancel_requested
+                or job.status == "cancelled"
+                or job.claimed_by != self.worker
             )
         finally:
             db.close()

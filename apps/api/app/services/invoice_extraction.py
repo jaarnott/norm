@@ -111,6 +111,11 @@ PDF_SCHEMA = {
             ),
             "unit_price_ex_tax": "number — exactly as printed",
             "line_total_ex_tax": "number — exactly as printed",
+            "gst": (
+                "'charged' when the document shows this line carries GST, "
+                "'free' when it shows the line carries none (GST free, exempt, "
+                "0%), null when the document doesn't show GST per line"
+            ),
         }
     ],
     "subtotal_ex_tax": "number or null",
@@ -353,6 +358,10 @@ def extraction_from_loaded(detail: dict) -> dict:
                 "line_total_ex_tax": (
                     line_total if line_total is not None else ln.get("totalCost")
                 ),
+                # Loaded's import puts the venue's default rate on every line;
+                # only the header GST is the supplier's. Not shown per line,
+                # so the header decides (replica_finish.settle_tax_rates).
+                "gst": None,
             }
         )
     return {

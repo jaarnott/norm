@@ -50,7 +50,6 @@ from app.services import venue_autopilot as _VA
 from app.services.invoice_extraction import (
     compose_pdf_instructions,
     extract_invoice_copy,
-    extract_invoice_copies_parallel,
     extraction_from_loaded,
     find_spec_for_supplier,
     is_feed_invoice,
@@ -2225,8 +2224,10 @@ def review_invoice(
                 from app.services.invoice_extraction import read_supplier_details
 
                 def read_details(name: str) -> dict:
+                    # No copy (an Ordermentum feed invoice): nothing to read.
+                    # str(None) used to send "None" to the download (16 Oct).
                     return read_supplier_details(
-                        db, lh, str(file_id), supplier_name=name
+                        db, lh, str(file_id or ""), supplier_name=name
                     )
 
             def finish(pairs: dict[str, str]) -> None:
@@ -2592,7 +2593,7 @@ def review_invoices(
       change (no suggestions at all); anything else becomes a card.
     - ``autopilot``: auto-accept all suggestions, receive when ready.
 
-    Returns ``{"cards", "verdicts", "received", "skipped", "sensei", "mode"}`` —
+    Returns ``{"cards", "verdicts", "received", "skipped", "mode"}`` —
     cards are full replica_v2 doc payloads (they ride into ``fix_invoices``
     verbatim for the working-document fan-out).
     """
@@ -2621,83 +2622,7 @@ def review_invoices(
             for r in list_window_invoices(lh, from_date=from_date, to_date=to_date)
         ]
 
-    details: dict[str, dict] = {}
-    unfetched: list[dict] = []
-    for iid in invoice_ids:
-        try:
-            details[iid] = lh.invoice(iid)
-        except Exception as exc:  # noqa: BLE001 — one bad invoice never sinks the batch
-            logger.warning("invoice %s unavailable: %s", iid, exc)
-            # Reported, not dropped: it used to vanish from both received and
-            # skipped, so the count came up short and a bad invoice_id
-            # returned an empty "success" (consolidator review, 1 Oct 2026).
-            unfetched.append(
-                {
-                    "invoice_id": iid,
-                    "outcome": "could not fetch from Loaded",
-                    "reasons": [f"could not fetch this invoice from Loaded: {exc}"],
-                }
-            )
-
-    # Once for the whole batch: the account's own record of which names are
-    # different businesses, which every alias below is vetted against.
-    suppliers = account_suppliers(lh)
-
     import time as _time
-
-    # Sensei first, for EVERY supplier with no spec — as the receive card does
-    # for the invoice it opens — and before any extraction (the spec's instructions are cache-key
-    # material). It used to train at most two per run; a new venue's backlog
-    # left the rest spec-less, and a supplier with no spec is not catalogued,
-    # so its products were asked about again on every invoice (Alsco, 15 Oct
-    # 2026: 36 questions before its spec arrived in the second run). Each
-    # study is once per supplier, ever. A cancel or the chat's time budget
-    # stops it; the next run carries on.
-    sensei_runs: list[dict] = []
-    seen: set[str] = set()
-    for iid, det in details.items():
-        if (should_stop is not None and should_stop()) or (
-            deadline is not None and _time.monotonic() > deadline
-        ):
-            break
-        name = str(det.get("supplierName") or "").strip()
-        key = _norm(name)
-        if not name or not det.get("fileId") or key in seen:
-            continue
-        seen.add(key)
-        # With the account's own spellings — the bare feed name matches no
-        # spec for a supplier filed under a different one. The helper owns
-        # the "does it need one" decision.
-        aliases = supplier_aliases(lh, det, suppliers)
-        if _maybe_sensei(db, config_db, venue_id, iid, name, *aliases):
-            sensei_runs.append({"invoice_id": iid, "supplier_name": name})
-
-    # Parallel extraction warm-up (cache-first; misses fan out).
-    order = [iid for iid in invoice_ids if iid in details]
-    requests = []
-    for iid in order:
-        det = details[iid]
-        requests.append(
-            {
-                "file_id": det.get("fileId"),
-                "instructions": extraction_instructions(
-                    config_db, lh, det, supplier_aliases(lh, det, suppliers)
-                ),
-                "venue_key": venue_id,
-            }
-            if det.get("fileId")
-            else None
-        )
-    to_extract = [r for r in requests if r]
-    extracted = extract_invoice_copies_parallel(db, lh, to_extract)
-    it = iter(extracted)
-    extractions = {iid: (next(it) if r else None) for iid, r in zip(order, requests)}
-
-    reference = None
-    try:
-        reference = prefetch_replica_reference(db, config_db, venue_id)
-    except Exception as exc:  # noqa: BLE001 — per-invoice fetches still work
-        logger.info("replica reference prefetch failed: %s", exc)
 
     def _report(iid: str, record: dict, data: dict | None) -> None:
         if on_invoice is None:
@@ -2707,15 +2632,18 @@ def review_invoices(
         except Exception:  # noqa: BLE001 — saving one never sinks the batch
             logger.exception("on_invoice failed for %s", iid)
 
-    for rec in unfetched:
-        _report(rec["invoice_id"], rec, None)
-
     cards: list[dict] = []
     verdicts: list[dict] = []
     received: list[dict] = []
     skipped: list[dict] = []
     remaining: list[str] = []
     stopped: str | None = None
+    # One invoice after another, each exactly as the receive card reviews one
+    # (16 Oct 2026, the owner: "simplicity over efficiency"): fetch it, fetch
+    # the venue's reference data fresh — what the last invoice created in
+    # Loaded is in it — and review. A supplier with no spec is studied before
+    # its invoice is read, so what Norm learns serves the next invoice.
+    order = [str(i) for i in invoice_ids]
     for n, iid in enumerate(order):
         if should_stop is not None and should_stop():
             stopped = "cancelled"
@@ -2724,7 +2652,18 @@ def review_invoices(
         if stopped:
             remaining = order[n:]
             break
-        det = details[iid]
+        try:
+            det = lh.invoice(iid)
+        except Exception as exc:  # noqa: BLE001 — one bad invoice never sinks the batch
+            logger.warning("invoice %s unavailable: %s", iid, exc)
+            gone = {
+                "invoice_id": iid,
+                "outcome": "could not fetch from Loaded",
+                "reasons": [f"could not fetch this invoice from Loaded: {exc}"],
+            }
+            skipped.append(gone)
+            _report(iid, gone, None)
+            continue
         try:
             data = review_invoice(
                 db,
@@ -2733,9 +2672,9 @@ def review_invoices(
                 iid,
                 lh=lh,
                 detail=det,
-                extraction=extractions.get(iid),
-                reference=reference,
+                reference=prefetch_replica_reference(db, config_db, venue_id),
                 require_valid_po=require_valid_po,
+                allow_sensei=True,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("review failed for %s: %s", iid, exc)
@@ -2857,8 +2796,7 @@ def review_invoices(
         "cards": cards,
         "verdicts": verdicts,
         "received": received,
-        "skipped": skipped + unfetched,
-        "sensei": sensei_runs,
+        "skipped": skipped,
         # The rung actually applied — the venue's setting, lowered by the
         # caller's ceiling — so the report can say what really governed it.
         "mode": mode,
@@ -2868,17 +2806,30 @@ def review_invoices(
     }
 
 
+_LIST_PAGE_SIZE = 200
+#: 5,000 drafts — far past any real backlog; it only stops a runaway loop.
+_LIST_MAX_PAGES = 25
+
+
 def list_window_invoices(
     lh, *, from_date: str | None = None, to_date: str | None = None
 ) -> list[dict]:
     """The venue's unreceived invoices in a date window, newest first, as
     ``{id, supplier_name, reference_number, date, total}`` — what a batch
     reviews, and what a background job counts and works through."""
-    rows = lh.get(
-        "/1.0/stock/internal/invoices"
-        "?from=1901-01-01&to=9999-12-31&status=NotReceived&page=0&pageSize=200"
-    )
-    rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
+    # Every page: Loaded serves 200 at a time, and reading only the first
+    # left Applegum's other 390 drafts unseen (16 Oct 2026) — each run
+    # "received all outstanding" and the backlog was still there.
+    rows: list = []
+    for page in range(_LIST_MAX_PAGES):
+        batch = lh.get(
+            "/1.0/stock/internal/invoices?from=1901-01-01&to=9999-12-31"
+            f"&status=NotReceived&page={page}&pageSize={_LIST_PAGE_SIZE}"
+        )
+        batch = batch if isinstance(batch, list) else (batch or {}).get("data") or []
+        rows.extend(batch)
+        if len(batch) < _LIST_PAGE_SIZE:
+            break
     out = [
         {
             "id": str(r["id"]),
