@@ -29,6 +29,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from sqlalchemy.exc import IntegrityError
 
 from app.services.insights import detectors as det
+from app.services.insights import wording
 
 logger = logging.getLogger(__name__)
 
@@ -337,7 +338,7 @@ def save(
         row.area, row.audience = f.area, f.audience
         kept = (row.data or {}).get("wording") or {}
         row.headline, row.data = f.headline, dict(f.data)
-        if kept.get("template") == f.prompt:
+        if kept.get("template") == f.prompt and kept.get("v") == wording.VERSION:
             # The same words as last run: keep their rewording (wording.py).
             row.prompt = kept.get("prompt") or f.prompt
             row.data["wording"] = kept
@@ -546,12 +547,10 @@ def due_venues(
 
 
 def word_pending(db, org_ids: set[str], now: datetime) -> dict:
-    """Reword every live insight of these organisations that has no wording
-    yet (wording.py) — after all their venues ran, so a sister venue's price
-    gaps are worded too. Never fails the run."""
+    """Reword every live insight of these organisations not yet worded under
+    the current instructions (wording.py) — after all their venues ran, so a
+    sister venue's price gaps are worded too. Never fails the run."""
     from app.db.models import Insight, Venue
-
-    from . import wording
 
     out: dict = {}
     try:

@@ -25,6 +25,11 @@ import time
 logger = logging.getLogger(__name__)
 
 CALL_TYPE = "insight_wording"
+#: Bumped when the instructions change, so every live insight is reworded on
+#: its organisation's next run. 2 (17 Oct 2026): name the venue every time,
+#: keep what a comparison is against ("up 37% on last year" had become "$143k
+#: vs $105k last 4 weeks").
+VERSION = 2
 MAX_CHARS = 240
 MAX_VOCABULARY = 20
 
@@ -32,7 +37,9 @@ SYSTEM = """You rewrite suggested questions that a hospitality manager can tap t
 
 Rewrite every prompt — don't hand it back unchanged:
 - As the manager would actually type it to Norm: short, conversational, first person ("we", "our", "show me"). The question first.
-- Aim for under 140 characters. Keep the venue's name and the one or two figures that matter most; leave out secondary figures and comparisons.
+- Aim for under 140 characters. Keep the one or two figures that matter most; leave out secondary figures.
+- Name the venue exactly as given, in every prompt — even when it's "we" paying more than a sister venue.
+- Keep what a comparison is against — last year, the 4 weeks before, a usual Friday, the week as a whole, another venue — or leave that comparison out. Never attach a figure to a different period or venue than the original did.
 - Never change a number or add one: every figure you keep is copied exactly as given ($7,553 stays $7,553). Add no facts or advice.
 - A figure you keep still says what it measured: "16% of sales went on discounts" must not become "16% of discounts"; "$175 an hour in sales" is sales, not wages. If you can't keep its meaning in fewer words, leave the figure out.
 - Where the organisation's vocabulary has its own word for something, use it.
@@ -100,9 +107,14 @@ def vocabulary(db, org_id: str, venue_id: str | None) -> list[str]:
 
 
 def needs_wording(row) -> bool:
-    """Not yet tried for its current words: the run's save() keeps the
-    wording only while the template is unchanged."""
-    return "wording" not in (row.data or {})
+    """Not yet tried for its current words under these instructions: the
+    run's save() keeps the wording only while the template is unchanged."""
+    return ((row.data or {}).get("wording") or {}).get("v") != VERSION
+
+
+def template_of(row) -> str:
+    """The detector's own words — kept beside a rewording."""
+    return ((row.data or {}).get("wording") or {}).get("template") or row.prompt
 
 
 def word(db, venue, rows) -> dict:
@@ -117,7 +129,7 @@ def word(db, venue, rows) -> dict:
     ask = {
         "venue": venue.name,
         "vocabulary": vocabulary(db, venue.organization_id, venue.id),
-        "prompts": [{"id": i, "prompt": r.prompt} for i, r in by_id.items()],
+        "prompts": [{"id": i, "prompt": template_of(r)} for i, r in by_id.items()],
     }
     try:
         answer = _call(db, json.dumps(ask, ensure_ascii=False))
@@ -131,17 +143,22 @@ def word(db, venue, rows) -> dict:
     }
     worded = 0
     for i, row in by_id.items():
+        template = template_of(row)
         text = answers.get(i, "")
-        ok = keeps_the_facts(row.prompt, text, venue.name)
+        ok = keeps_the_facts(template, text, venue.name)
         # A rewording that fails the check is remembered as tried (prompt
-        # None), so the same template isn't asked again every run.
+        # None), so the same template isn't asked again every run — and the
+        # template is what shows, never an older rewording.
         row.data = {
             **(row.data or {}),
-            "wording": {"template": row.prompt, "prompt": text if ok else None},
+            "wording": {
+                "template": template,
+                "prompt": text if ok else None,
+                "v": VERSION,
+            },
         }
-        if ok:
-            row.prompt = text
-            worded += 1
+        row.prompt = text if ok else template
+        worded += ok
     return {"asked": len(rows), "worded": worded}
 
 

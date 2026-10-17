@@ -107,10 +107,42 @@ def test_changed_insights_are_reworded_in_one_call(db_session, place, monkeypatc
     out = wording.word(db_session, venue, [good, bad])
     assert out == {"asked": 2, "worded": 1} and len(asked) == 1
     assert good.prompt == WORDED
-    assert good.data["wording"] == {"template": TEMPLATE, "prompt": WORDED}
+    assert good.data["wording"] == {
+        "template": TEMPLATE,
+        "prompt": WORDED,
+        "v": wording.VERSION,
+    }
     # The failed one keeps its template and is not asked again for it.
     assert bad.prompt == TEMPLATE and bad.data["wording"]["prompt"] is None
     assert not wording.needs_wording(bad)
+
+
+def test_an_older_rewording_is_redone_from_the_template(db_session, place, monkeypatch):
+    """New instructions (VERSION) reword what was worded before — from the
+    detector's words, and a redo that fails the check shows the template,
+    never the older rewording (Dunedin, 17 Oct: "up 37% on last year" had
+    become "$143,046 vs $104,765 last 4 weeks")."""
+    org, venue = place
+    old = "Is FT worth it at Dunedin Social Club? $7,553 vs 14% last week"
+    row = _insight(db_session, org, venue, prompt=old)
+    row.data = {"wording": {"template": TEMPLATE, "prompt": old}}
+    assert wording.needs_wording(row)
+    asked = []
+
+    def fake_call(db, user_prompt):
+        asked.append(user_prompt)
+        return {"prompts": [{"id": "1", "prompt": "Is FT worth it?"}]}
+
+    monkeypatch.setattr(settings, "INSIGHT_WORDING_ENABLED", True)
+    monkeypatch.setattr(wording, "_call", fake_call)
+    wording.word(db_session, venue, [row])
+    assert TEMPLATE in asked[0] and old not in asked[0]
+    assert row.prompt == TEMPLATE
+    assert row.data["wording"] == {
+        "template": TEMPLATE,
+        "prompt": None,
+        "v": wording.VERSION,
+    }
 
 
 def test_switched_off_nothing_is_asked(db_session, place, monkeypatch):
@@ -202,7 +234,9 @@ def test_an_unchanged_template_keeps_its_wording_and_a_changed_one_loses_it(
     )
     runner.save(db_session, org.id, venue.id, NOW.date(), [finding], NOW)
     row = db_session.query(Insight).filter_by(venue_id=venue.id).one()
-    row.data = {"wording": {"template": TEMPLATE, "prompt": WORDED}}
+    row.data = {
+        "wording": {"template": TEMPLATE, "prompt": WORDED, "v": wording.VERSION}
+    }
     row.prompt = WORDED
     db_session.flush()
 
