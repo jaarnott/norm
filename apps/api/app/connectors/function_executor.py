@@ -570,6 +570,23 @@ def execute_function(
         ):
             venue_lookup.pop("venue_id", None)
         config_row = _resolve_venue_config(connector, venue_lookup, use_db)
+        named = (
+            venue_lookup.get("venue")
+            or venue_lookup.get("venue_name")
+            or venue_lookup.get("venue_id")
+        )
+        if not config_row and named:
+            # A venue was NAMED and has no login here: not the caller's, not
+            # a whole venue name ("Applegum" for "Applegum Cafe"), or not
+            # connected to this system. The fallback below then ran the call
+            # on the organisation's FIRST login — another venue's data, and
+            # for a write, another venue's change (17 Oct 2026: a preview of
+            # set_revenue_group for Applegum Cafe read La Zeppa's 781 POS
+            # items). Say so instead; the fallback is for calls naming none.
+            raise ValueError(
+                f"'{named}' isn't a venue you can use {connector} at — use the "
+                "venue's full name (list_venues), or connect it first"
+            )
         if not config_row:
             from app.services.caller_scope import venue_query
 

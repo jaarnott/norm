@@ -114,7 +114,14 @@ def _wire_fake_connector(monkeypatch, payloads, tools=None):
     import app.connectors.spec_executor as spec_mod
 
     monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", FakeConfigSession)
-    monkeypatch.setattr(tool_loop_mod, "_resolve_venue_config", lambda *a, **k: None)
+    # The venue resolves to a login (empty credentials — the HTTP is faked).
+    # A named venue with NO login is refused since 17 Oct 2026 rather than
+    # run on another venue's, so a None here would stop every call.
+    monkeypatch.setattr(
+        tool_loop_mod,
+        "_resolve_venue_config",
+        lambda *a, **k: SimpleNamespace(config={}, venue_id=None),
+    )
 
     calls = []
 

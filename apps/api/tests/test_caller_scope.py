@@ -245,6 +245,85 @@ class TestCredentials:
             )
         assert row is None
 
+    def test_a_named_venue_without_a_login_never_borrows_another(
+        self, db_session, world, monkeypatch
+    ):
+        """A consolidator call naming a venue that doesn't resolve ran on the
+        organisation's FIRST login — another venue's data, or for a write,
+        another venue's change (17 Oct 2026: set_revenue_group's preview for
+        Applegum Cafe read La Zeppa's POS items). Naming no venue still falls
+        back, as single-venue organisations rely on."""
+        import app.connectors.spec_executor as spec_mod
+        import app.db.engine as engine
+        from app.connectors.function_executor import execute_function
+        from app.db.config_models import ConnectionSpec
+        from app.db.models import Connection
+
+        db_session.add(
+            ConnectionSpec(
+                id=str(uuid.uuid4()),
+                connector_name="scopehub",
+                display_name="S",
+                execution_mode="template",
+                auth_type="none",
+                auth_config={},
+                base_url_template="https://",
+                tools=[{"action": "read", "method": "GET", "path_template": "//x"}],
+                enabled=True,
+            )
+        )
+        for venue in (world.goose, world.murdochs):
+            db_session.add(
+                Connection(
+                    id=str(uuid.uuid4()),
+                    connector_name="scopehub",
+                    venue_id=venue.id,
+                    config={"k": venue.name},
+                    enabled="true",
+                )
+            )
+        db_session.flush()
+
+        class _Cfg:  # the spec lookup's own session, pointed at this test's
+            def query(self, *a):
+                return db_session.query(*a)
+
+            def expunge(self, obj):
+                pass
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(engine, "_ConfigSessionLocal", lambda: _Cfg())
+        sent = []
+
+        def fake_execute_spec(spec, tool_def, params, credentials, db, *a, **kw):
+            sent.append((credentials or {}).get("k"))
+            return SimpleNamespace(
+                success=True, response_payload={"ok": True}, error_message=None
+            ), None
+
+        monkeypatch.setattr(spec_mod, "execute_spec", fake_execute_spec)
+
+        def call(venue):
+            code = (
+                "def run(params, call_api, log):\n"
+                "    return call_api('scopehub', 'read', params)\n"
+            )
+            with _in(world.ours):
+                return execute_function(
+                    code, venue, db_session, None, options={"max_api_calls": 2}
+                )["data"]
+
+        out = call({"venue": "Murdochs Rooftop"})  # no venue of ours has that name
+        assert "isn't a venue you can use scopehub" in out["error"] and sent == []
+        assert "error" in call({"venue": "La Zeppa"})  # another organisation's
+        assert sent == []
+        assert call({"venue": "Mr Murdochs"}) == {"ok": True}
+        assert sent == ["Mr Murdochs"]
+        assert call({}) == {"ok": True}  # no venue named: the scoped fallback
+        assert len(sent) == 2
+
     def test_parallel_workers_keep_the_scope(self, db_session, world, monkeypatch):
         """call_api_parallel runs workers in threads; a bare thread starts
         with no scope at all."""
