@@ -88,6 +88,14 @@ function formatValue(val: unknown, fmt?: string | FieldFormat): string {
   return `${pre}${String(val ?? '')}${suf}`;
 }
 
+/** Rows that carry a `bucket_start` (month / week rows) in date order; anything
+ *  else as it came. Across venues the x values arrive venue by venue, so a
+ *  month one venue alone has would otherwise be drawn at the end. */
+function inBucketOrder(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  if (rows.length < 2 || !rows.every(r => typeof r.bucket_start === 'string')) return rows;
+  return [...rows].sort((a, b) => String(a.bucket_start).localeCompare(String(b.bucket_start)));
+}
+
 /** Get a display label for a field, using field_labels if available. */
 function getLabel(key: string, fieldLabels?: Record<string, string>): string {
   if (fieldLabels && fieldLabels[key]) return fieldLabels[key];
@@ -214,7 +222,12 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
       for (const row of rows) {
         const xVal = String(row[xKey] ?? '');
         const group = String(row[groupCol] ?? 'Other');
-        if (!grouped.has(xVal)) { grouped.set(xVal, { [xKey]: row[xKey] }); parts.set(xVal, {}); }
+        if (!grouped.has(xVal)) {
+          // Keep the bucket's own start so months read in date order even
+          // when venues' rows arrive one venue after another.
+          grouped.set(xVal, { [xKey]: row[xKey], ...(typeof row.bucket_start === 'string' ? { bucket_start: row.bucket_start } : {}) });
+          parts.set(xVal, {});
+        }
         const entry = grouped.get(xVal)!;
         if (isRatio) {
           const p = parts.get(xVal)!;
@@ -244,8 +257,7 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
           color: existing?.color || (g === totalLabel ? 'var(--text)' : STACK_COLORS[i % STACK_COLORS.length]),
         };
       });
-      const sorted = Array.from(grouped.values());
-      return { chartRows: sorted, chartSeries: pivotedSeries };
+      return { chartRows: inBucketOrder(Array.from(grouped.values())), chartSeries: pivotedSeries };
     }
 
     // Default: aggregate by summing numeric values per x-key
@@ -261,7 +273,7 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
         }
       }
     }
-    return { chartRows: Array.from(grouped.values()), chartSeries: effectiveSeries };
+    return { chartRows: inBucketOrder(Array.from(grouped.values())), chartSeries: effectiveSeries };
   }, [rows, xKey, chartType, effectiveSeries, dataKeys]);
 
   const handleAddToReport = async () => {

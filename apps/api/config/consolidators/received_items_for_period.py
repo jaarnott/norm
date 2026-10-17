@@ -174,6 +174,29 @@ def _venue_split(by_venue, with_quantity=False):
     return sorted(out, key=lambda r: r["spend"], reverse=True)
 
 
+def _trading_date(iso_text, day_start=None):
+    """The trading date an instant belongs to: the civil date, or the day
+    before when the clock is earlier than the venue's day start (a "HH:MM"
+    string; without one, anything before noon is the night before)."""
+    try:
+        moment = datetime.datetime.fromisoformat(str(iso_text))
+    except (TypeError, ValueError):
+        return str(iso_text or "")[:10]
+    cut = datetime.time(12, 0)
+    if hasattr(day_start, "hour"):
+        cut = datetime.time(day_start.hour, getattr(day_start, "minute", 0))
+    elif isinstance(day_start, str) and ":" in day_start:
+        parts = day_start.split(":")
+        try:
+            cut = datetime.time(int(parts[0]), int(parts[1]))
+        except ValueError:
+            pass
+    day = moment.date()
+    if moment.time() < cut:
+        day = day - datetime.timedelta(days=1)
+    return day.isoformat()
+
+
 def _bucket_of(date_text, mode):
     """(label, start date ISO) for an invoice date — the same labels get_sales
     uses for its month / week rows, so purchases and sales join on them."""
@@ -779,9 +802,27 @@ def run(params, call_api, log, call_api_parallel=None):
             if not multi:
                 b.pop("venue")
             rows.append(b)
+        # Only the window's own buckets. The feed is queried by the date an
+        # invoice was RECEIVED, so an invoice dated the month before (or the
+        # 1st of the next, received before the day start) lands in a bucket
+        # outside the asked period; a trend read it as an extra month.
+        first_start = _bucket_of(str(window.get("start", ""))[:10], group_by)[1]
+        last_start = _bucket_of(
+            _trading_date(window.get("end"), window.get("day_start")), group_by
+        )[1]
+        kept = [
+            r
+            for r in rows
+            if r["bucket_start"]
+            and (not first_start or r["bucket_start"] >= first_start)
+            and (not last_start or r["bucket_start"] <= last_start)
+        ]
+        outside = len(rows) - len(kept)
+        rows = kept
         rows.sort(key=lambda r: (r["bucket_start"], r.get("venue") or ""))
         result["summary"] = {
             "rows": len(rows),
+            "buckets_outside_window": outside,
             "lines": len(flat),
             "invoices": len({r["invoice_id"] for r in flat}),
             "net_spend": round(sum(r["spend"] for r in flat), 2),

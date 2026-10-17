@@ -839,8 +839,13 @@ class TestTimeBuckets:
         out, api = run_au("month")
         assert ("loadedhub", "get_stock_item_groups") in api.calls
         rows = out["rows"]
-        assert [r["bucket"] for r in rows] == ["September 2026", "October 2026"]
-        sep, octo = rows
+        # The feed is queried by RECEIVED date, so the invoice dated 3 Oct comes
+        # back too; it is next month's bucket, not a point on September's
+        # trend. Its lines still count in the summary (the reconciliation is
+        # over everything the feed returned).
+        assert [r["bucket"] for r in rows] == ["September 2026"]
+        assert out["summary"]["buckets_outside_window"] == 1
+        (sep,) = rows
         assert sep["bucket_start"] == "2026-09-01"
         assert (sep["food"], sep["beverage"], sep["other"]) == (82.0, 152.0, 60.0)
         assert sep["spend"] == 294.0
@@ -848,8 +853,20 @@ class TestTimeBuckets:
         assert sep["credit_amount"] == -5.0
         assert sep["invoice_subtotals"] == 328.0
         assert sep["invoice_count"] == 4
-        assert octo["beverage"] == 76.0 and octo["freight"] == 0.0
         assert "venue" not in sep  # one venue: no column
+
+    def test_a_window_that_covers_october_keeps_the_october_bucket(self):
+        api = Api(
+            au_invoices(),
+            items=AU_ITEMS,
+            units=AU_UNITS,
+            window={**AU_WINDOW, "end": "2026-10-31T23:59:59+11:00"},
+        )
+        out = run_consolidator(api, group_by="month")
+        assert [r["bucket"] for r in out["rows"]] == ["September 2026", "October 2026"]
+        octo = out["rows"][1]
+        assert octo["beverage"] == 76.0 and octo["freight"] == 0.0
+        assert out["summary"]["buckets_outside_window"] == 0
 
     def test_weeks_are_iso_weeks_from_monday(self):
         out, _ = run_au("week")
