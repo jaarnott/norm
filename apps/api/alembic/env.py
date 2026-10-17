@@ -18,6 +18,7 @@ if config.config_file_name is not None:
 from app.db.models import Base
 from app.db import mcp_models  # noqa: F401 — register MCP tables on Base.metadata
 from app.db import functions_models  # noqa: F401 — Norm Functions (fn_*) tables
+
 target_metadata = Base.metadata
 
 # Override sqlalchemy.url from DATABASE_URL env var if set (for CI/CD and production)
@@ -57,16 +58,24 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    # A migration that can't get its lock gives up instead of queueing: while
+    # DDL waits for a lock, every query on the tables it already holds waits
+    # behind it. On 17 Oct 2026 a DROP TABLE waited half an hour behind a
+    # transaction left idle in production and held the app's venue and thread
+    # reads all that time. Past this the run rolls back (one transaction) and
+    # the deploy stops with production on the old image — re-run it once the
+    # database is quiet. Set at connect, so no transaction is opened early.
+    # MIGRATION_LOCK_TIMEOUT overrides.
+    lock_timeout = os.environ.get("MIGRATION_LOCK_TIMEOUT", "5s")
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"options": f"-c lock_timeout={lock_timeout}"},
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()
