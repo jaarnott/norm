@@ -638,6 +638,29 @@ class TestModesReturnPurposeFitShapes:
         assert row["unit_cost_change_pct"] == 0.0
         assert row["last_price_change"] is None
 
+    def test_a_price_ten_times_lower_is_a_unit_error_too(self):
+        """Burrata at La Zeppa (Oct 2026): $104.28 then $10.43 for "200
+        Grams" — a box booked as one tub, not a 90% price cut."""
+        api = Api(
+            [
+                invoice(
+                    "i1",
+                    "Prodotti",
+                    "2026-08-02",
+                    [line(MILK, "200 Grams", 0.2, 1, 104.28)],
+                ),
+                invoice(
+                    "i2",
+                    "Prodotti",
+                    "2026-09-01",
+                    [line(MILK, "200 Grams", 0.2, 10, 10.43)],
+                ),
+            ]
+        )
+        row = run_consolidator(api, group_by="item_supplier")["rows"][0]
+        assert row["unit_cost_change_pct"] is None
+        assert row["last_price_change"] is None
+
 
 # ── Oct 2026: the purchases-based cost-of-goods dashboard ──────────────────
 #

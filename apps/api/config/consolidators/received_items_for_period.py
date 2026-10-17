@@ -387,9 +387,16 @@ def _extras(flat, heads, narrowed):
     return out
 
 
-#: A move bigger than this between receipts is a unit booked wrongly on an
-#: invoice (a box at a kilo's price), not a price — reported as unknown.
-_PRICE_MOVE_LIMIT = 2.0
+#: A price more than this many times the one before it — up OR down — is a
+#: unit booked wrongly on an invoice (a box at a kilo's price, Oct 2026:
+#: chicken thigh "down 91%" from $197.62 to $16.80 a kilo), not a price.
+_PRICE_RATIO_LIMIT = 3.0
+
+
+def _plausible(before, after):
+    return bool(before and after) and (
+        1 / _PRICE_RATIO_LIMIT <= after / before <= _PRICE_RATIO_LIMIT
+    )
 
 
 def _price_move(prices):
@@ -415,15 +422,10 @@ def _price_move(prices):
             return None, None
         first, last = base[0], base[-1]
         unit, series = "", []
-    move = (last - first) / first if first else None
-    change = (
-        round(move * 100, 1)
-        if move is not None and abs(move) <= _PRICE_MOVE_LIMIT
-        else None
-    )
+    change = round((last - first) / first * 100, 1) if _plausible(first, last) else None
     step = None
     for (_d0, c0), (d1, c1) in zip(series, series[1:]):
-        if c0 and 0.02 <= abs(c1 - c0) / c0 <= _PRICE_MOVE_LIMIT:
+        if _plausible(c0, c1) and abs(c1 - c0) / c0 >= 0.02:
             step = {
                 "date": d1,
                 "from": round(c0, 4),
