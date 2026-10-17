@@ -314,6 +314,10 @@ APPS = [
             "loadedhub.get_labour",
             "loadedhub.get_budgets",
             "loadedhub.get_cogs_detail_for_period",
+            # POS items into Food / Beverage / Other — what makes food vs
+            # beverage sales and cost of goods right. get_sales' items breakdown
+            # is the read (sync_revenue_groups_config.py)
+            "loadedhub.set_revenue_group",
         ],
         skills=[
             "product_sales_analysis",
