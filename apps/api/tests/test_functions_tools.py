@@ -138,6 +138,7 @@ class TestFindEnquiries:
         assert data["money"]["currency"] == "NZD"
 
     def test_list_filters_work_as_the_model_sends_them(self, db_session):
+        """Also: an unknown value is refused with the choices."""
         w = make_world(db_session)
         mine = enquiry(db_session, w, booking_type="group_booking")
         enquiries_svc.close_enquiry(
@@ -152,15 +153,14 @@ class TestFindEnquiries:
             )
         )
         assert data["enquiries"] == []
-
-    def test_unknown_values_are_refused_with_the_choices(self, db_session):
-        w = make_world(db_session)
+        # An unknown value is refused with the choices.
         out = call(db_session, w.staff, "find_enquiries", stage="open")
         assert not out["success"] and "new, replied" in out["error"]
 
 
 class TestGetEnquiry:
     def test_options_say_who_must_approve_and_what_norm_may_edit(self, db_session):
+        """Also: the enquiry is found by its contact's email."""
         w = make_world(db_session)
         e = enquiry(db_session, w)
         deck = min_spends_svc.add_min_spend(
@@ -193,9 +193,7 @@ class TestGetEnquiry:
         deck_row = next(o for o in data["options"] if o["label"] == "The Deck")
         assert deck_row["state"] == "approved" and deck_row["editable_by_norm"] is False
 
-    def test_found_by_contact_email(self, db_session):
-        w = make_world(db_session)
-        e = enquiry(db_session, w)
+        # Found by the contact's email, in any case.
         data = ok(
             call(db_session, w.staff, "get_enquiry", contact_email=CUSTOMER.upper())
         )
@@ -218,6 +216,7 @@ class TestEvents:
         return e, event
 
     def test_find_and_get_with_status_money_and_allergies_withheld(self, db_session):
+        """Also: the printed sheets come from the print service."""
         w = make_world(db_session)
         _e, event = self._booked(db_session, w)
         data = ok(call(db_session, w.staff, "find_events", date_from=str(NEXT_FRIDAY)))
@@ -240,9 +239,7 @@ class TestEvents:
         )
         assert asked["food"]["allergies"] == "Two coeliacs"
 
-    def test_printed_sheets_come_from_the_print_service(self, db_session):
-        w = make_world(db_session)
-        _e, event = self._booked(db_session, w)
+        # Printed sheets come from the print service, allergies withheld too.
         sheet = ok(
             call(db_session, w.staff, "get_event", event_id=event.id, view="full")
         )
@@ -812,6 +809,7 @@ class TestDraftEmail:
         )
 
     def test_template_names_are_filled_and_blanks_reported(self, db_session):
+        """Also: a proposal draft needs an enquiry."""
         w = make_world(db_session)
         e = enquiry(db_session, w)
         body = "<p>Hi {{client_name}}, booked for [DATE].</p><p>{{ sender_name }} {{quote_link}} [SPEND — check with James]</p>"
@@ -823,9 +821,7 @@ class TestDraftEmail:
         (warning,) = [x for x in data["warnings"] if "Unfilled blanks" in x]
         assert "[DATE]" in warning and "[SPEND — check with James]" in warning
         assert "quote_link" not in warning
-
-    def test_a_proposal_draft_needs_an_enquiry(self, db_session):
-        w = make_world(db_session)
+        # A proposal draft belongs to an enquiry.
         out = call(
             db_session, w.staff, "draft_email", kind="proposal", body="Here it is"
         )
@@ -865,7 +861,9 @@ def seed_mail(db, w, fake):
 
 
 class TestThreads:
-    def test_find_count_and_read(self, db_session, fake):
+    def test_find_read_and_relink(self, db_session, fake):
+        """Threads are found, counted and read (full or digest); relinking a
+        thread ends the old link and keeps the new."""
         w = mailbox_world(db_session)
         seed_mail(db_session, w, fake)
         data = ok(
@@ -898,6 +896,44 @@ class TestThreads:
             )
         )
         assert "text" not in digest["messages"][0] and digest["messages"][0]["snippet"]
+
+        old = enquiry(db_session, w)
+        new = enquiry(db_session, w, email="pat@example.com", subject="Pat's farewell")
+        enquiries_svc.link_thread(
+            db_session,
+            w.ctx(),
+            account_id=w.account.id,
+            gmail_thread_id="t-casey",
+            enquiry_id=old.id,
+        )
+        out = card(
+            db_session,
+            w.staff,
+            "file_thread",
+            account_id=w.account.id,
+            gmail_thread_id="t-casey",
+            unlink=True,
+            link_enquiry_id=new.id,
+        )
+        assert rows(out)["Unlink from"][1] == "enquiry “Casey's 40th”"
+        data = ok(
+            call(
+                db_session,
+                w.staff,
+                "file_thread",
+                account_id=w.account.id,
+                gmail_thread_id="t-casey",
+                unlink=True,
+                link_enquiry_id=new.id,
+            )
+        )
+        assert data["linked_enquiry_id"] == new.id and data["unlinked"] == 1
+        live = (
+            db_session.query(FnThreadLink)
+            .filter_by(gmail_thread_id="t-casey", unlinked_at=None)
+            .all()
+        )
+        assert [lk.enquiry_id for lk in live] == [new.id]
 
     def test_file_previews_without_writing_then_files_links_and_creates(
         self, db_session, fake
@@ -953,79 +989,11 @@ class TestThreads:
         )
         assert again.kind == "done"
 
-    def test_relinking_ends_the_old_link_and_keeps_the_new(self, db_session, fake):
-        w = mailbox_world(db_session)
-        seed_mail(db_session, w, fake)
-        old = enquiry(db_session, w)
-        new = enquiry(db_session, w, email="pat@example.com", subject="Pat's farewell")
-        enquiries_svc.link_thread(
-            db_session,
-            w.ctx(),
-            account_id=w.account.id,
-            gmail_thread_id="t-casey",
-            enquiry_id=old.id,
-        )
-        out = card(
-            db_session,
-            w.staff,
-            "file_thread",
-            account_id=w.account.id,
-            gmail_thread_id="t-casey",
-            unlink=True,
-            link_enquiry_id=new.id,
-        )
-        assert rows(out)["Unlink from"][1] == "enquiry “Casey's 40th”"
-        data = ok(
-            call(
-                db_session,
-                w.staff,
-                "file_thread",
-                account_id=w.account.id,
-                gmail_thread_id="t-casey",
-                unlink=True,
-                link_enquiry_id=new.id,
-            )
-        )
-        assert data["linked_enquiry_id"] == new.id and data["unlinked"] == 1
-        live = (
-            db_session.query(FnThreadLink)
-            .filter_by(gmail_thread_id="t-casey", unlinked_at=None)
-            .all()
-        )
-        assert [lk.enquiry_id for lk in live] == [new.id]
-
-    def test_a_draft_can_be_handed_to_gmail_and_is_then_locked(self, db_session, fake):
-        w = mailbox_world(db_session)
-        seed_mail(db_session, w, fake)
-        e = enquiry(db_session, w)
-        enquiries_svc.link_thread(
-            db_session,
-            w.ctx(),
-            account_id=w.account.id,
-            gmail_thread_id="t-casey",
-            enquiry_id=e.id,
-        )
-        data = ok(
-            call(
-                db_session,
-                w.staff,
-                "draft_email",
-                enquiry_id=e.id,
-                body="<p>Which date suits?</p>",
-                hand_to_gmail=True,
-            )
-        )
-        assert data["in_gmail"] is True and fake.drafts and fake.sent == []
-        locked = call(
-            db_session,
-            w.staff,
-            "draft_email",
-            draft_id=data["draft_id"],
-            body="changed",
-        )
-        assert not locked["success"] and "Gmail" in locked["error"]
-
-    def test_a_reply_draft_takes_its_recipients_from_the_thread(self, db_session, fake):
+    def test_reply_drafts_follow_the_thread_and_can_be_handed_to_gmail(
+        self, db_session, fake
+    ):
+        """A draft about an enquiry with a linked thread is a reply on it, to
+        the thread's customer; one handed to Gmail is then locked in Norm."""
         w = mailbox_world(db_session)
         seed_mail(db_session, w, fake)
         e = enquiry(db_session, w)
@@ -1048,6 +1016,26 @@ class TestThreads:
         assert data["reply_on_thread"] == "t-casey"
         assert data["to"] == [CUSTOMER] and data["subject"] == "Re: Wedding in March"
         assert data["mailbox"] == MAILBOX and fake.sent == []
+
+        data = ok(
+            call(
+                db_session,
+                w.staff,
+                "draft_email",
+                enquiry_id=e.id,
+                body="<p>Which date suits?</p>",
+                hand_to_gmail=True,
+            )
+        )
+        assert data["in_gmail"] is True and fake.drafts and fake.sent == []
+        locked = call(
+            db_session,
+            w.staff,
+            "draft_email",
+            draft_id=data["draft_id"],
+            body="changed",
+        )
+        assert not locked["success"] and "Gmail" in locked["error"]
 
 
 # ------------------------------------------------------------- fences ----

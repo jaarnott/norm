@@ -128,17 +128,16 @@ class TestClaudeWorkflowRunBoundary:
         return {t["name"] for t in safe_for_claude([{"name": n} for n in names], None)}
 
     def test_reads_drafts_and_approval_gated_writes_are_kept(self, monkeypatch):
+        """...a workflow-mode tool keeps the autonomy the user set, and actions
+        that fire immediately stay in Norm."""
         kept = self._kept(monkeypatch)
         assert "loadedhub__get_sales" in kept
         assert "norm__create_purchase_order" in kept  # a draft reviewed in Norm
         assert "loadedhub__update_shift" in kept  # suspends for approval in Norm
         assert "norm__read_playbook" in kept
 
-    def test_a_workflow_mode_tool_keeps_the_autonomy_the_user_set(self, monkeypatch):
-        assert "loadedhub__review_and_receive_invoices" in self._kept(monkeypatch)
+        assert "loadedhub__review_and_receive_invoices" in kept
 
-    def test_actions_that_fire_immediately_stay_in_norm(self, monkeypatch):
-        kept = self._kept(monkeypatch)
         assert "norm_email__send_report_email" not in kept
         assert "norm__remember" not in kept  # auto-approved write
         assert "loadedhub__receive_loadedhub_invoice" not in kept

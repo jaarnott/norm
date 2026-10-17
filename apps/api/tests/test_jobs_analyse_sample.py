@@ -11,6 +11,8 @@ import pytest
 
 from app.jobs import analyse_sample as job
 
+from .supplier_fakes import bind_sessions
+
 
 class TestExitCode:
     def _claimable(self, monkeypatch, entry=None):
@@ -56,9 +58,6 @@ class TestExitCode:
         monkeypatch.setattr("app.services.spec_dojo.analyse_sample", capture)
         assert job.main(["sample-1"]) == 0
         assert seen["feedback"] == "the unit is a 12 pack"
-
-    def test_a_green_analysis_exits_zero(self, monkeypatch):
-        assert self._run(monkeypatch, {"status": "ready"}) == 0
 
     def test_a_not_green_analysis_is_still_a_successful_run(self, monkeypatch):
         # "not_green" is a real proposal the admin can act on — the run did
@@ -152,19 +151,7 @@ class TestSecretLoading:
     """
 
     def _bind(self, monkeypatch, db_session):
-        class _Shim:
-            def __init__(self, s):
-                self._s = s
-
-            def __getattr__(self, k):
-                return getattr(self._s, k)
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr(
-            "app.db.engine._ConfigSessionLocal", lambda: _Shim(db_session)
-        )
+        bind_sessions(monkeypatch, db_session, "_ConfigSessionLocal")
 
     def test_the_config_db_key_overrides_the_injected_one(
         self, db_session, monkeypatch

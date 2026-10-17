@@ -73,23 +73,15 @@ class TestCardBodiesNeverReachTheModel:
     sample suggestion and told to search, made 13 search calls (~10 per run
     over a fortnight), and retyped as a table what the card was already showing
     with Accept buttons beside it.
+
+    These tests use the bare payload — what `tc.result_payload` holds and
+    what builds the cards. The envelope `_execute_tool_call` hands the slim
+    call site is NOT interchangeable: testing only the bare shape is how this
+    shipped as a no-op (thread 9e71aa33, 27 Aug 2026) — see
+    TestItStripsTheShapeProductionActuallyPasses.
     """
 
     TOOL_DEF = {"working_document": {"items_path": "fix_invoices"}}
-
-    @staticmethod
-    def _envelope(payload):
-        """EXACTLY what `_execute_tool_call` hands the slim call site. The bare
-        payload is what `tc.result_payload` holds and what builds the cards —
-        they are NOT interchangeable, and testing only the bare shape is how
-        this shipped as a no-op (thread 9e71aa33, 27 Aug 2026)."""
-        return {
-            "success": True,
-            "data": payload,
-            "reference": None,
-            "error": None,
-            "auth_failed": False,
-        }
 
     def _result(self, cards=2):
         card = {
@@ -107,20 +99,17 @@ class TestCardBodiesNeverReachTheModel:
         }
 
     def test_the_bodies_are_gone_from_the_model_copy(self):
-        out = _without_card_bodies(self._result(), self.TOOL_DEF)
+        """The summary survives whole — what the model narrates: the counts
+        and the per-invoice reasons — and it still knows how many cards are
+        below: dropping them silently would leave the model unable to say "one
+        card below" without going and looking, the exact round trip this
+        removes. (A bare payload, as some callers pass, as well as the
+        envelope below.)"""
+        out = _without_card_bodies(self._result(cards=3), self.TOOL_DEF)
         assert "fix_invoices" not in out
-
-    def test_the_summary_survives_whole(self):
-        """What the model narrates: the counts and the per-invoice reasons."""
-        out = _without_card_bodies(self._result(), self.TOOL_DEF)
         assert out["reviewed"] == 12
         assert out["summary"] == {"received": 1, "skipped": 11}
         assert out["skipped"][0]["reason"] == "unit missing"
-
-    def test_it_still_knows_how_many_cards_are_below(self):
-        """Dropping them silently would leave the model unable to say "one card
-        below" without going and looking — the exact round trip this removes."""
-        out = _without_card_bodies(self._result(cards=3), self.TOOL_DEF)
         assert out["fix_invoices_count"] == 3
 
     def test_the_original_is_untouched_so_the_cards_still_build(self):
@@ -194,17 +183,12 @@ class TestItStripsTheShapeProductionActuallyPasses:
         }
 
     def test_the_bodies_are_stripped_from_inside_data(self):
+        """...the envelope itself is preserved (the caller reads success /
+        auth_failed off it), and the summary inside data survives."""
         out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)
         assert "fix_invoices" not in out["data"]
         assert out["data"]["fix_invoices_count"] == 23
-
-    def test_the_envelope_itself_is_preserved(self):
-        """The caller reads success/auth_failed off it."""
-        out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)
         assert out["success"] is True and out["auth_failed"] is False
-
-    def test_the_summary_inside_data_survives(self):
-        out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)
         assert out["data"]["reviewed"] == 23
         assert len(out["data"]["skipped"]) == 14
 
@@ -225,11 +209,6 @@ class TestItStripsTheShapeProductionActuallyPasses:
         assert "_too_large" in before
         assert "_too_large" not in after
         assert json.loads(after)["data"]["reviewed"] == 23
-
-    def test_a_bare_payload_still_works(self):
-        """Some callers pass the unwrapped payload; both shapes are handled."""
-        out = _without_card_bodies(self._payload(), self.TOOL_DEF)
-        assert "fix_invoices" not in out and out["fix_invoices_count"] == 23
 
     def test_an_envelope_for_a_non_fan_out_tool_is_left_alone(self):
         env = self._envelope({"items": [{"a": 1}]})
@@ -276,6 +255,8 @@ class TestAToolCanNameItsOwnCardKeys:
         return {"success": True, "data": payload, "error": None}
 
     def test_the_named_keys_go_and_the_report_stays(self):
+        """...and each omitted key leaves its count, so the model can say "67
+        statements" without going to look."""
         out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)[
             "data"
         ]
@@ -285,12 +266,6 @@ class TestAToolCanNameItsOwnCardKeys:
             "copy shows 3459273"
         )
         assert out["summary"]["not_reconciled"] == 1
-
-    def test_each_omitted_key_leaves_its_count(self):
-        """So the model can say "67 statements" without going to look."""
-        out = _without_card_bodies(self._envelope(self._payload()), self.TOOL_DEF)[
-            "data"
-        ]
         assert out["statements_count"] == 67
         assert out["results_count"] == 20
         assert out["reconciled_count"] == 9

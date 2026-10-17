@@ -80,3 +80,7 @@ apps/e2e/tests/
 /.local/
 .env
 .env.local
+
+# pytest-cov data
+.coverage
+.coverage.*

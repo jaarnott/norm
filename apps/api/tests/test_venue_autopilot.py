@@ -49,6 +49,8 @@ class TestTheCallerCanOnlyLowerTheRung:
             ("autopilot", "approve_all", "approve_all"),
             ("autopilot", "approve_fixes", "approve_fixes"),
             ("approve_fixes", "autopilot", "approve_fixes"),
+            # The one that matters: a chat request or a stale scheduled task
+            # must not be able to receive at a venue that never opted in.
             ("approve_all", "autopilot", "approve_all"),
             ("autopilot", None, "autopilot"),
             # "No limit asked for" is not "limit to nothing". The mode injected
@@ -63,18 +65,11 @@ class TestTheCallerCanOnlyLowerTheRung:
     def test_the_lower_rung_wins(self, venue, asked, expected):
         assert VA.at_most(venue, asked) == expected
 
-    def test_a_venue_on_approve_all_cannot_be_talked_into_autopilot(self):
-        """The one that matters: a chat request or a stale scheduled task must
-        not be able to receive at a venue that never opted in."""
-        assert VA.at_most(VA.MODE_APPROVE_ALL, VA.MODE_AUTOPILOT) == VA.MODE_APPROVE_ALL
-
 
 class TestGates:
-    def test_an_unticked_gate_is_shut(self):
+    def test_a_gate_is_open_only_when_ticked(self):
         s = VA.settings_from({"mode": "autopilot"})
         assert VA.gate_open(s, VA.AUTO_CREATE_ITEMS) is False
-
-    def test_a_ticked_gate_is_open(self):
         s = VA.settings_from({"mode": "autopilot", "auto_create_items": True})
         assert VA.gate_open(s, VA.AUTO_CREATE_ITEMS) is True
 

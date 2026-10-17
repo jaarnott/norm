@@ -26,21 +26,37 @@ NZ_WINTER = dt.timedelta(hours=12)  # NZST
 
 
 def _resolve(query, llm_periods, db=None):
-    """Drive resolve_dates through its LLM fallback with a canned reply."""
+    """Drive resolve_dates through its LLM fallback with a canned reply.
+
+    Asserts the fake model was actually consulted. A phrase the business
+    calendar recognises ("the week beginning 5 October 2026", "April 2026")
+    returns before the LLM path, the canned reply is never read, and a test
+    built on it passes whatever the fallback does — which is how the three
+    offset tests below protected nothing until Oct 2026.
+    """
     handler = get_handler("norm", "resolve_dates")
     with patch(
         "app.interpreter.llm_interpreter.call_llm",
         return_value=({"periods": llm_periods}, "llm-1"),
-    ):
-        return handler({"query": query, "timezone": "Pacific/Auckland"}, db, None)
+    ) as llm:
+        out = handler({"query": query, "timezone": "Pacific/Auckland"}, db, None)
+    llm.assert_called_once()
+    return out
 
 
 class TestOffsetIsNotInherited:
+    """The queries are phrases only the model can resolve. The phrase from the
+    incident, "the week beginning 5 October 2026", is now answered by the
+    business calendar (see TestDeterministicPhrasesSkipTheLlm), so it no longer
+    reaches the fallback this class guards. The winter case (a naive July time
+    gets +12:00) shares its canned reply with, and is asserted in,
+    TestTheLlmPathAlsoReturnsAWindow::test_a_trading_aligned_start_needs_no_confirmation."""
+
     def test_a_naive_summer_time_gets_the_summer_offset(self):
         """The failing case, verbatim. A date inside NZDT must resolve to +13:00
         no matter when the question is asked."""
         out = _resolve(
-            "the week beginning 5 October 2026",
+            "the second week of the October school holidays",
             [
                 {
                     "label": "x",
@@ -53,25 +69,11 @@ class TestOffsetIsNotInherited:
         assert start.utcoffset() == NZ_SUMMER
         assert start.strftime("%H:%M") == "07:00"
 
-    def test_a_naive_winter_time_gets_the_winter_offset(self):
-        out = _resolve(
-            "the week beginning 6 July 2026",
-            [
-                {
-                    "label": "x",
-                    "start": "2026-07-06T07:00:00",
-                    "end": "2026-07-13T06:59:59",
-                }
-            ],
-        )
-        start = dt.datetime.fromisoformat(out["data"]["periods"][0]["start"])
-        assert start.utcoffset() == NZ_WINTER
-
     def test_each_end_is_localised_independently(self):
         """A window spanning the transition has different offsets at its ends.
         Applying one offset to both is the bug in miniature."""
         out = _resolve(
-            "the week beginning 21 September 2026",
+            "the week daylight saving starts",
             [
                 {
                     "label": "x",
@@ -183,9 +185,14 @@ class TestTheLlmPathAlsoReturnsAWindow:
         assert window["kind"] == "custom"
 
     def test_a_trading_aligned_start_needs_no_confirmation(self):
-        """07:00 is the venue's day start, so the deviation gate stays shut."""
+        """07:00 is the venue's day start, so the deviation gate stays shut.
+
+        Also the winter half of the offset incident in the module docstring
+        (was TestOffsetIsNotInherited::test_a_naive_winter_time_gets_the_winter_offset):
+        a naive July time from the model gets NZST, +12:00, whatever today's
+        offset is."""
         out = _resolve(
-            "an unusual phrase",
+            "the first full week of the July school holidays",
             [
                 {
                     "label": "x",
@@ -195,6 +202,8 @@ class TestTheLlmPathAlsoReturnsAWindow:
             ],
         )
         assert out["data"]["window"]["trading_aligned"] is True
+        start = dt.datetime.fromisoformat(out["data"]["periods"][0]["start"])
+        assert start.utcoffset() == NZ_WINTER
 
     def test_a_midnight_start_is_reported_as_not_trading_aligned(self):
         """Alignment is derived, never asserted — the model saying "a week"

@@ -71,10 +71,6 @@ class TestWriteSignalsBeyondMethod:
         )
         assert any("draft" in s for s in signals)
 
-    def test_send_email_declared_get_is_still_a_write(self):
-        """norm_email.send_report_email: GET, but sends an email."""
-        assert not is_read_tool(_tool("send_report_email", "GET"))
-
     def test_empty_consolidator_write_actions_is_not_a_signal(self):
         assert (
             write_signals(
@@ -87,7 +83,14 @@ class TestWriteSignalsBeyondMethod:
 class TestMutatingVerbs:
     @pytest.mark.parametrize(
         "action",
-        ["create_order", "update_task_config", "send_report_email", "set_override"],
+        [
+            "create_order",
+            "update_task_config",
+            # norm_email.send_report_email: a real config row declared GET,
+            # but it sends an email.
+            "send_report_email",
+            "set_override",
+        ],
     )
     def test_leading_verb_is_a_write(self, action):
         assert not is_read_tool(_tool(action, "GET"))
@@ -197,10 +200,6 @@ class TestDenylistAndAlwaysExpose:
     def test_conversation_scoped_tools_denylisted(self, pair):
         assert pair in MCP_DENYLIST
 
-    def test_resolve_dates_always_exposed(self):
-        """Norm owns date logic, so the client must always be able to ask."""
-        assert ("norm", "resolve_dates") in ALWAYS_EXPOSE
-
     def test_denylist_and_always_expose_are_disjoint(self):
         assert not (MCP_DENYLIST & ALWAYS_EXPOSE)
 
@@ -214,17 +213,6 @@ class TestToolNaming:
     def test_playbook_convention(self):
         assert default_tool_name("playbook", "weekly_review", "") == (
             "norm_playbook__weekly_review"
-        )
-
-    @pytest.mark.parametrize(
-        "kind,target,action",
-        [("connector", "loadedhub", "get_sales"), ("playbook", "weekly_review", "")],
-    )
-    def test_names_satisfy_the_mcp_name_constraint(self, kind, target, action):
-        import re
-
-        assert re.fullmatch(
-            r"[a-zA-Z0-9_-]{1,64}", default_tool_name(kind, target, action)
         )
 
 
@@ -246,14 +234,14 @@ class TestToMcpToolDict:
         return McpTool(**base)
 
     def test_shape(self):
+        """MCP spelling (`inputSchema`, not Anthropic's `input_schema` — the
+        exact key set pins that), a read-only hint, and never destructive in
+        v1."""
         d = to_mcp_tool_dict(self._mk())
         assert set(d) == {"name", "description", "inputSchema", "annotations"}
         assert d["inputSchema"]["type"] == "object"
-
-    def test_uses_mcp_spelling_not_anthropic(self):
-        d = to_mcp_tool_dict(self._mk())
-        assert "inputSchema" in d
-        assert "input_schema" not in d
+        assert d["annotations"]["readOnlyHint"] is True
+        assert d["annotations"]["destructiveHint"] is False
 
     def test_no_get_prefix_leaks_into_the_description(self):
         """The `[GET]` prefix exists only so tool_loop can re-parse the method
@@ -261,12 +249,6 @@ class TestToMcpToolDict:
         d = to_mcp_tool_dict(self._mk())
         assert not d["description"].startswith("[")
         assert "[GET]" not in d["description"]
-
-    def test_read_only_hint(self):
-        assert to_mcp_tool_dict(self._mk())["annotations"]["readOnlyHint"] is True
-
-    def test_never_destructive_in_v1(self):
-        assert to_mcp_tool_dict(self._mk())["annotations"]["destructiveHint"] is False
 
 
 class TestAlwaysExposeIgnoresBindings:

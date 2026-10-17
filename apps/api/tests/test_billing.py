@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 
 class TestGetBilling:
     """GET /api/billing/{org_id}"""
@@ -30,17 +32,6 @@ class TestGetBilling:
         data = resp.json()
         assert data["organization_id"] == organization.id
 
-    def test_get_billing_not_member_returns_403(
-        self,
-        client,
-        db_session,
-        manager_user,
-        manager_headers,
-        organization,
-    ):
-        resp = client.get(f"/api/billing/{organization.id}", headers=manager_headers)
-        assert resp.status_code == 403
-
 
 class TestSetupBilling:
     """POST /api/billing/{org_id}/setup"""
@@ -65,22 +56,6 @@ class TestSetupBilling:
         )
         assert resp.status_code == 200
         assert resp.json()["client_secret"] == "seti_test_client_secret"
-
-    def test_setup_billing_as_member_returns_403(
-        self,
-        client,
-        db_session,
-        manager_user,
-        manager_headers,
-        organization,
-        manager_org_membership,
-    ):
-        resp = client.post(
-            f"/api/billing/{organization.id}/setup",
-            json={"token_plan": "basic"},
-            headers=manager_headers,
-        )
-        assert resp.status_code == 403
 
 
 class TestSubscribe:
@@ -130,47 +105,6 @@ class TestChangePlan:
             headers=admin_headers,
         )
         assert resp.status_code == 200
-
-    def test_change_plan_as_member_returns_403(
-        self,
-        client,
-        db_session,
-        manager_user,
-        manager_headers,
-        organization,
-        manager_org_membership,
-    ):
-        resp = client.put(
-            f"/api/billing/{organization.id}/plan",
-            json={"token_plan": "standard"},
-            headers=manager_headers,
-        )
-        assert resp.status_code == 403
-
-
-class TestUpdateAgents:
-    """PUT /api/billing/{org_id}/agents"""
-
-    def test_update_agents_as_owner(
-        self,
-        client,
-        db_session,
-        admin_user,
-        admin_headers,
-        organization,
-        admin_org_membership,
-    ):
-        with patch("app.services.billing_service.get_billing_info") as mock_info:
-            mock_info.return_value = {
-                "organization_id": organization.id,
-                "agents": {"hr": True, "procurement": False},
-            }
-            resp = client.put(
-                f"/api/billing/{organization.id}/agents",
-                json={"hr": True, "procurement": False},
-                headers=admin_headers,
-            )
-            assert resp.status_code == 200
 
 
 class TestAgentEntitlementBilling:
@@ -302,22 +236,6 @@ class TestTopUp:
         )
         assert resp.status_code == 200
 
-    def test_top_up_as_member_returns_403(
-        self,
-        client,
-        db_session,
-        manager_user,
-        manager_headers,
-        organization,
-        manager_org_membership,
-    ):
-        resp = client.post(
-            f"/api/billing/{organization.id}/topup",
-            json={"units": 1},
-            headers=manager_headers,
-        )
-        assert resp.status_code == 403
-
 
 class TestListInvoices:
     """GET /api/billing/{org_id}/invoices"""
@@ -336,19 +254,6 @@ class TestListInvoices:
         )
         assert resp.status_code == 200
         assert resp.json()["invoices"] == []
-
-    def test_list_invoices_not_member_returns_403(
-        self,
-        client,
-        db_session,
-        manager_user,
-        manager_headers,
-        organization,
-    ):
-        resp = client.get(
-            f"/api/billing/{organization.id}/invoices", headers=manager_headers
-        )
-        assert resp.status_code == 403
 
 
 class TestCancelSubscription:
@@ -369,17 +274,40 @@ class TestCancelSubscription:
         )
         assert resp.status_code == 400
 
-    def test_cancel_as_member_returns_403(
+
+class TestNonOwnersAreRefused:
+    """The billing routes refuse someone who isn't the org's owner: a plain
+    member (no billing permission), or a user outside the org entirely."""
+
+    @pytest.mark.parametrize(
+        "verb,path,body,is_member",
+        [
+            ("get", "", None, False),
+            ("post", "/setup", {"token_plan": "basic"}, True),
+            ("put", "/plan", {"token_plan": "standard"}, True),
+            ("post", "/topup", {"units": 1}, True),
+            ("get", "/invoices", None, False),
+            ("delete", "/subscription", None, True),
+        ],
+        ids=["get", "setup", "plan", "topup", "invoices", "cancel"],
+    )
+    def test_returns_403(
         self,
+        request,
         client,
         db_session,
         manager_user,
         manager_headers,
         organization,
-        manager_org_membership,
+        verb,
+        path,
+        body,
+        is_member,
     ):
-        resp = client.delete(
-            f"/api/billing/{organization.id}/subscription",
-            headers=manager_headers,
-        )
+        if is_member:
+            request.getfixturevalue("manager_org_membership")
+        kwargs = {"headers": manager_headers}
+        if body is not None:
+            kwargs["json"] = body
+        resp = getattr(client, verb)(f"/api/billing/{organization.id}{path}", **kwargs)
         assert resp.status_code == 403

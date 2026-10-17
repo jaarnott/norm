@@ -10,17 +10,10 @@ day (civil-midnight bucketing under-reported a Saturday by $4.5k); items
 and staff return top rows + an '(others)' rollup whose totals stay honest.
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-CODE_PATH = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "get_sales.py"
-)
-CODE = CODE_PATH.read_text()
+CODE_PATH = harness.CONSOLIDATORS / "get_sales.py"
+CODE = harness.source("get_sales")
 
 WINDOW = {
     "start": "2026-08-17T07:00:00+12:00",
@@ -158,13 +151,18 @@ class Api:
 
 
 def run(api, **params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(CODE, ns)
-    return ns["run"](
-        {"venue": "La Zeppa", "period": "this week", **params},
-        api.call_api,
-        api.log,
-        api.call_api_parallel,
+    return run_with(
+        api.call_api, api.call_api_parallel, **{"period": "this week", **params}
+    )
+
+
+def run_with(call_api, call_api_parallel=None, **params):
+    """get_sales for La Zeppa, through a call_api the test scripts itself."""
+    return harness.call(
+        CODE,
+        {"venue": "La Zeppa", **params},
+        call_api,
+        call_api_parallel=call_api_parallel,
     )
 
 
@@ -182,11 +180,7 @@ class TestTotals:
 
     def test_no_period_is_refused(self):
         api = Api()
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
-            {"venue": "La Zeppa"}, api.call_api, api.log, api.call_api_parallel
-        )
+        out = run_with(api.call_api, api.call_api_parallel)
         assert "period" in out["error"]
 
     def test_all_venues_budget_and_last_year_in_one_call(self):
@@ -223,16 +217,7 @@ class TestTotals:
                 return {"success": True, "data": dict(VENUES)}
             return api._for(connector, action, p)
 
-        from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
-            {"venue": "La Zeppa", "period": "this week", "venues": "all"},
-            call,
-            api.log,
-            None,
-        )
+        out = run_with(call, period="this week", venues="all")
         assert {r["venue"] for r in out["rows"]} == {"La Zeppa", "Glass Goose"}
 
     def test_a_failing_venue_is_a_flagged_row_not_a_silent_gap(self):
@@ -268,14 +253,7 @@ class TestTotals:
                 return {"window": dict(incomplete)}
             return api._for(connector, action, params)
 
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
-            {"venue": "La Zeppa", "period": "this week", "venues": "all"},
-            call_api,
-            api.log,
-            None,
-        )
+        out = run_with(call_api, period="this week", venues="all")
         assert out["window"]["incomplete"] is True
 
 
@@ -295,19 +273,7 @@ class TestDaily:
                 {"startTime": "2026-08-22T07:00:00+12:00", "invoices": 9500.0},
             ]
 
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
-            {
-                "venue": "La Zeppa",
-                "period": "this week",
-                "breakdown": "daily",
-                "compare": "budget",
-            },
-            sales,
-            api.log,
-            None,
-        )
+        out = run_with(sales, period="this week", breakdown="daily", compare="budget")
         rows = {r["date"]: r for r in out["rows"]}
         assert rows["2026-08-17"]["budget"] == 7000.0
         assert rows["2026-08-17"]["vs_budget"] == 1000.0
@@ -328,18 +294,8 @@ class TestDaily:
                 return [{"startTime": "2025-08-18T07:00:00+12:00", "invoices": 5000.0}]
             return [{"startTime": "2026-08-17T07:00:00+12:00", "invoices": 8000.0}]
 
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
-            {
-                "venue": "La Zeppa",
-                "period": "this week",
-                "breakdown": "daily",
-                "compare": "last_year",
-            },
-            sales,
-            api.log,
-            None,
+        out = run_with(
+            sales, period="this week", breakdown="daily", compare="last_year"
         )
         row = out["rows"][0]
         assert row["date"] == "2026-08-17"
@@ -364,18 +320,11 @@ class TestTimeWindows:
                 {"startTime": "2026-08-23T01:00:00+12:00", "invoices": 500.0},
             ]
 
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
-            {
-                "venue": "La Zeppa",
-                "period": "this week",
-                "time_windows": [{"start_hour": 20, "end_hour": 3, "label": "late"}],
-                "group_by": "each",
-            },
+        out = run_with(
             sales,
-            api.log,
-            None,
+            period="this week",
+            time_windows=[{"start_hour": 20, "end_hour": 3, "label": "late"}],
+            group_by="each",
         )
         assert len(out["rows"]) == 1
         row = out["rows"][0]
@@ -425,20 +374,12 @@ class TestItems:
                 return {"window": window}
             return api._for(connector, action, p)
 
-        from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
-            {
-                "venue": "La Zeppa",
-                "period": "last 2 months",
-                "breakdown": "items",
-                "group_by": "month",
-            },
+        out = run_with(
             call,
-            api.log,
             api.call_api_parallel,
+            period="last 2 months",
+            breakdown="items",
+            group_by="month",
         )
         ales = [r for r in out["rows"] if r["item"] == "Pale Ale"]
         assert {r["period"] for r in ales} == {"July 2026", "August 2026"}
@@ -562,16 +503,7 @@ class TestRecurringPeriods:
                 ]
             return api._for(connector, action, p)
 
-        from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        return api, ns["run"](
-            {"venue": "La Zeppa", "period": "every friday for 3 weeks", **params},
-            call,
-            api.log,
-            None,
-        )
+        return api, run_with(call, period="every friday for 3 weeks", **params)
 
     def test_daily_keeps_only_the_matching_weekday(self):
         api, out = self._run(breakdown="daily")
@@ -591,20 +523,12 @@ class TestRecurringPeriods:
         assert "day of week" in out["error"]
 
     def test_unresolvable_phrase_is_an_error_not_a_guess(self):
-        from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-        api = Api()
-
         def call(connector, action, p=None):
             if action == "resolve_dates":
                 return {}
             raise AssertionError("must not fetch without a window")
 
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
-            {"venue": "La Zeppa", "period": "the vibes era"}, call, api.log, None
-        )
+        out = run_with(call, period="the vibes era")
         assert "Could not resolve" in out["error"]
 
 
@@ -820,6 +744,10 @@ class TestOrders:
     """Orders are what was PLACED (the orders feed), not what was paid."""
 
     def test_orders_are_placed_orders_from_the_orders_feed(self):
+        """Orders and sales differ by design: orders are valued as rung up and
+        counted whether or not they are paid; sales are what the bills took,
+        after discounts — $2,307.50 ordered here against the $1,793.50 taken
+        (TestTax::test_tax_is_included_by_default_and_says_so, same day)."""
         api = FeedApi(LZ_28_SEP)
         out = run_day(api, measure="orders")
         assert out["measure"] == "orders"
@@ -832,19 +760,12 @@ class TestOrders:
             }
         ]
         assert out["totals"]["orders"] == 46
+        assert out["totals"]["order_value"] == 2307.5
         feeds = [a for a, _ in api.seen if a in ("get_pos_orders", "get_sales_data")]
         assert feeds == ["get_pos_orders"]
         fetch = next(p for a, p in api.seen if a == "get_pos_orders")
         assert fetch["start"] == DAY_WINDOW["start"]
         assert fetch["end"] == DAY_WINDOW["end"]
-
-    def test_orders_and_sales_differ_by_design(self):
-        """Orders are valued as rung up and counted whether or not they are
-        paid; sales are what the bills took, after discounts."""
-        api = FeedApi(LZ_28_SEP)
-        sales = run_day(api)["totals"]["actual"]
-        ordered = run_day(api, measure="orders")["totals"]["order_value"]
-        assert (sales, ordered) == (1793.5, 2307.5)
 
     def test_orders_ex_tax_divides_the_value_by_the_gst_rate(self):
         out = run_day(FeedApi(LZ_28_SEP), measure="orders", tax="exclude")
@@ -1004,9 +925,7 @@ class TestTheShape:
 
         from app.connectors.response_transform import apply_response_transform
 
-        shapes = json.loads(
-            (pathlib.Path(CODE_PATH).parent / "shapes.json").read_text()
-        )
+        shapes = json.loads((CODE_PATH.parent / "shapes.json").read_text())
         shape = shapes["loadedhub.get_sales"]["loadedhub.get_sales_data"]
         raw = [
             {
@@ -1034,9 +953,7 @@ class TestTheShape:
 
         from app.connectors.response_transform import apply_response_transform
 
-        shapes = json.loads(
-            (pathlib.Path(CODE_PATH).parent / "shapes.json").read_text()
-        )
+        shapes = json.loads((CODE_PATH.parent / "shapes.json").read_text())
         shape = shapes["loadedhub.get_sales"]["loadedhub.get_pos_orders"]
         raw = [
             {
@@ -1056,7 +973,7 @@ class TestTheShape:
     def test_the_installer_carries_code_and_shapes(self):
         import importlib.util
 
-        path = pathlib.Path(CODE_PATH).parents[2] / "scripts" / "sync_sales_config.py"
+        path = CODE_PATH.parents[2] / "scripts" / "sync_sales_config.py"
         spec = importlib.util.spec_from_file_location("sync_sales_config", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)

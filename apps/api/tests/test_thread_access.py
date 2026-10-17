@@ -1,8 +1,10 @@
-"""Who may open, and continue, a conversation.
+"""Who may list, open, continue and delete a conversation.
 
 Until Oct 2026 GET /threads/{id} checked only `tasks:read`, and POST /messages
 took any thread id: anyone holding an id could read another person's
 conversation — another organisation's included — or run a turn in it.
+
+The thread list and delete tests came from test_tasks.py.
 """
 
 import uuid
@@ -10,7 +12,7 @@ import uuid
 import pytest
 
 from app.auth.security import create_access_token
-from app.db.models import AutomatedTask, AutomatedTaskRun, Role
+from app.db.models import AutomatedTask, AutomatedTaskRun, Role, Thread
 from tests.conftest import (
     _make_membership,
     _make_organization,
@@ -28,8 +30,9 @@ def org(db_session):
     return _make_organization(db_session, name="Cook Brothers")
 
 
-def _member(db, org):
-    """A user whose org role holds tasks:read (what GET /threads/{id} needs)."""
+def _member(db, org, permissions=("tasks:read",)):
+    """A user whose org role holds tasks:read (what GET /threads/{id} needs);
+    deleting a thread also needs tasks:write."""
     user = _make_user(db)
     membership = _make_membership(db, user, org)
     role = Role(
@@ -37,7 +40,7 @@ def _member(db, org):
         organization_id=org.id,
         name=f"r-{uuid.uuid4().hex[:6]}",
         display_name="Reader",
-        permissions=["tasks:read"],
+        permissions=list(permissions),
     )
     db.add(role)
     db.flush()
@@ -94,6 +97,12 @@ class TestOpeningAConversation:
         r = client.get(f"/api/threads/{thread.id}", headers=_headers(admin_user))
         assert r.status_code == 200, r.text
 
+    def test_get_thread_not_found_returns_404(self, client, admin_headers):
+        """An unknown id is not found, to read or to delete."""
+        missing = f"/api/threads/{uuid.uuid4()}"
+        assert client.get(missing, headers=admin_headers).status_code == 404
+        assert client.delete(missing, headers=admin_headers).status_code == 404
+
 
 class TestScheduledTaskThreadsAreShared:
     def test_a_teammate_opens_the_task_conversation_and_runs(
@@ -136,3 +145,66 @@ class TestContinuingAConversation:
 
         assert r.status_code == 404
         assert ran == []
+
+
+def _old_thread(db, user, **kw):
+    thread = Thread(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        domain=kw.get("domain", "procurement"),
+        status="awaiting_user_input",
+        intent=kw.get("intent", "place_order"),
+        raw_prompt=kw.get("raw_prompt", "Order milk"),
+    )
+    db.add(thread)
+    db.flush()
+    return thread
+
+
+class TestListThreads:
+    """GET /api/threads"""
+
+    def test_list_threads_returns_user_threads(
+        self, client, db_session, admin_user, admin_headers
+    ):
+        _old_thread(db_session, admin_user)
+        _old_thread(
+            db_session,
+            admin_user,
+            domain="hr",
+            intent="new_employee",
+            raw_prompt="Hire someone",
+        )
+        resp = client.get("/api/threads", headers=admin_headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "threads" in data
+        assert len(data["threads"]) == 2
+
+    def test_list_threads_does_not_return_other_users_threads(
+        self, client, db_session, admin_user, org
+    ):
+        member = _member(db_session, org)
+        _old_thread(db_session, admin_user)
+        # The member should not see the admin's threads
+        resp = client.get("/api/threads", headers=_headers(member))
+        assert resp.status_code == 200
+        assert len(resp.json()["threads"]) == 0
+
+
+class TestDeleteThread:
+    """DELETE /api/threads/{thread_id}"""
+
+    def test_delete_own_thread(self, client, db_session, admin_user, admin_headers):
+        thread = _old_thread(db_session, admin_user)
+        resp = client.delete(f"/api/threads/{thread.id}", headers=admin_headers)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_delete_other_users_thread_returns_404(
+        self, client, db_session, admin_user, org
+    ):
+        member = _member(db_session, org, ("tasks:read", "tasks:write"))
+        thread = _old_thread(db_session, admin_user)
+        resp = client.delete(f"/api/threads/{thread.id}", headers=_headers(member))
+        assert resp.status_code == 404

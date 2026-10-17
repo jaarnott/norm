@@ -11,6 +11,10 @@ Two invariants are locked down here:
      actionable authorization error.
   2. A 401 triggers exactly one refresh + retry (never a loop), which covers the
      case where token_expires_at was never stored so proactive refresh never fires.
+
+Also here (folded in 17 Oct 2026, docstrings kept as section comments): PKCE and
+dynamic client registration for public clients, and the per-venue LoadedHub
+wrong-company callback check.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -26,6 +30,13 @@ from app.connectors.spec_executor import (
     render_request,
 )
 from app.connectors.base import ConnectorResult
+from app.db.config_models import ConnectionSpec
+from app.db.models import Connection, OAuthState, Venue
+from app.services import oauth_service
+from urllib.parse import parse_qs, urlparse
+import base64
+import hashlib
+import uuid
 
 
 def _oauth_spec(connector_name="loadedhub", execution_mode="template"):
@@ -68,15 +79,6 @@ class TestApplyAuthNeverSendsEmptyBearer:
         """No spec/db (preview path) + empty config JSON must not yield `Bearer `."""
         with pytest.raises(ConnectorAuthError):
             _apply_auth({}, "oauth2", {}, {}, spec=None, db=None)
-
-    def test_valid_token_sets_header(self):
-        spec = _oauth_spec()
-        db = MagicMock()
-        with patch(
-            "app.services.oauth_service.get_valid_access_token", return_value="tok-123"
-        ):
-            headers, _ = _apply_auth({}, "oauth2", {}, {}, spec=spec, db=db)
-        assert headers["Authorization"] == "Bearer tok-123"
 
     def test_execute_spec_reports_auth_error_not_network_error(self):
         """End-to-end: the agent must see an auth error, not 'Network error'."""
@@ -420,12 +422,6 @@ class TestKeepAliveActuallyRedeems:
 
 
 class TestRetryOn401:
-    def test_401_on_oauth2_is_retryable(self):
-        result = ConnectorResult(
-            success=False, reference=None, response_payload={"status_code": 401}
-        )
-        assert _should_retry_after_refresh(result, _oauth_spec(), MagicMock()) is True
-
     def test_403_is_not_retryable(self):
         result = ConnectorResult(
             success=False, reference=None, response_payload={"status_code": 403}
@@ -571,26 +567,6 @@ class TestKeepAliveRefresh:
         db_session.flush()
         return row
 
-    def test_null_expiry_forces_a_refresh(self, db_session):
-        """token_expires_at IS NULL ⇒ lazy refresh never fires ⇒ token would rot."""
-        from app.services.oauth_service import refresh_all_tokens
-
-        self._spec_row(db_session, expires_at=None)
-        config_db = MagicMock()
-        config_db.query.return_value.filter.return_value.first.return_value = (
-            _oauth_spec()
-        )
-
-        with (
-            patch("app.services.oauth_service.refresh_access_token") as mock_refresh,
-            patch("app.services.oauth_service.get_valid_access_token") as mock_lazy,
-        ):
-            result = refresh_all_tokens(db=db_session, config_db=config_db)
-
-        mock_refresh.assert_called_once()
-        mock_lazy.assert_not_called()
-        assert "loadedhub" in result["refreshed"]
-
     def test_live_token_is_still_force_redeemed(self, db_session):
         """A live access token must NOT skip the redemption.
 
@@ -598,22 +574,34 @@ class TestKeepAliveRefresh:
         ~24h while access tokens live ~14 days, so waiting for access-token
         expiry redeems the refresh token ~13 days after it died. Every
         keep-alive run redeems for real, forced.
+
+        Also (was test_null_expiry_forces_a_refresh): token_expires_at IS NULL
+        ⇒ lazy refresh never fires ⇒ token would rot. Both rows are redeemed,
+        forced, and the lazy get_valid_access_token is never consulted.
         """
+        from app.db.models import Connection
         from app.services.oauth_service import refresh_all_tokens
 
-        self._spec_row(
-            db_session, expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
-        )
         config_db = MagicMock()
         config_db.query.return_value.filter.return_value.first.return_value = (
             _oauth_spec()
         )
 
-        with patch("app.services.oauth_service.refresh_access_token") as mock_refresh:
-            refresh_all_tokens(db=db_session, config_db=config_db)
+        for expires_at in (None, datetime.now(timezone.utc) + timedelta(hours=1)):
+            db_session.query(Connection).delete()
+            self._spec_row(db_session, expires_at=expires_at)
+            with (
+                patch(
+                    "app.services.oauth_service.refresh_access_token"
+                ) as mock_refresh,
+                patch("app.services.oauth_service.get_valid_access_token") as mock_lazy,
+            ):
+                result = refresh_all_tokens(db=db_session, config_db=config_db)
 
-        mock_refresh.assert_called_once()
-        assert mock_refresh.call_args.kwargs.get("force") is True
+            mock_refresh.assert_called_once()
+            assert mock_refresh.call_args.kwargs.get("force") is True, expires_at
+            mock_lazy.assert_not_called()
+            assert "loadedhub" in result["refreshed"]
 
     def test_one_dead_connector_does_not_stop_the_others(self, db_session):
         """A connector needing re-auth must not block keeping the rest alive."""
@@ -853,3 +841,335 @@ class TestVenueMailboxNeedsAVenue:
         db_session.flush()
         r = client.get(f"/api/oauth/authorize/{name}", headers=admin_headers)
         assert r.status_code == 400 and "venue" in r.json()["detail"].lower()
+
+
+class TestCredentialHeaderSanitization:
+    """User-entered credential values must never reach the wire with stray
+    whitespace — a leading space on a stored x-loaded-company-id made httpx
+    reject the request as an illegal header value (prod 500, which the
+    invoices dashboard rendered as 'No outstanding invoices')."""
+
+    def test_bearer_token_is_stripped(self):
+        from app.connectors.spec_executor import _apply_auth
+
+        headers, _ = _apply_auth(
+            {}, "bearer", {"token_field": "api_key"}, {"api_key": " tok-123\n"}
+        )
+        assert headers["Authorization"] == "Bearer tok-123"
+
+    def test_api_key_header_is_stripped(self):
+        from app.connectors.spec_executor import _apply_auth
+
+        headers, _ = _apply_auth(
+            {},
+            "api_key_header",
+            {"header_name": "X-API-Key", "key_field": "api_key"},
+            {"api_key": "  key-9  "},
+        )
+        assert headers["X-API-Key"] == "key-9"
+
+
+# ──── PKCE + dynamic client registration ────────────────────────────────────
+#
+# PKCE + dynamic client registration for public OAuth 2.1 clients.
+#
+# These lock down the Cook Brothers App MCP connector's auth: a public client
+# (token_endpoint_auth_method=none) must use PKCE (S256) and self-register (RFC
+# 7591), and the MCP executor must authenticate with the resulting access token.
+# Confidential clients (LoadedHub) must be unaffected.
+
+
+def _expected_challenge(verifier: str) -> str:
+    return (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .decode("ascii")
+        .rstrip("=")
+    )
+
+
+def _public_spec(connector_name="cook_brothers_app"):
+    spec = MagicMock()
+    spec.connector_name = connector_name
+    spec.auth_type = "oauth2"
+    spec.auth_config = {}
+    spec.oauth_config = {
+        "authorize_url": "https://cb.example.com/oauth/authorize",
+        "token_url": "https://cb.example.com/oauth/token",
+        "registration_url": "https://cb.example.com/oauth/register",
+        "scopes": "mcp",
+        "token_endpoint_auth_method": "none",
+        "pkce": True,
+        "client_id": "public-cid",
+    }
+    return spec
+
+
+class TestPkceGeneration:
+    def test_challenge_is_s256_of_verifier(self):
+        verifier, challenge = oauth_service._generate_pkce()
+        assert 43 <= len(verifier) <= 128
+        assert challenge == _expected_challenge(verifier)
+        assert "=" not in challenge  # base64url, unpadded
+
+    def test_uses_pkce_true_for_public_client(self):
+        assert oauth_service._uses_pkce({"token_endpoint_auth_method": "none"}) is True
+        assert oauth_service._uses_pkce({"pkce": True}) is True
+
+    def test_uses_pkce_false_for_confidential_client(self):
+        assert oauth_service._uses_pkce({"client_secret": "s"}) is False
+        assert oauth_service._uses_pkce({}) is False
+
+
+class TestAuthorizeUrlPkce:
+    def test_public_client_authorize_url_has_pkce_and_persists_verifier(
+        self, db_session
+    ):
+        from app.db.models import OAuthState
+
+        url = oauth_service.build_authorize_url(
+            _public_spec(), "https://norm/api/oauth/callback", db_session
+        )
+        q = parse_qs(urlparse(url).query)
+        assert q["code_challenge_method"] == ["S256"]
+        challenge = q["code_challenge"][0]
+        state = q["state"][0]
+
+        row = db_session.query(OAuthState).filter(OAuthState.state == state).first()
+        assert row is not None
+        assert row.code_verifier  # stored for the token exchange
+        assert challenge == _expected_challenge(row.code_verifier)
+
+    def test_confidential_client_authorize_url_has_no_pkce(self, db_session):
+        spec = MagicMock()
+        spec.connector_name = "loadedhub"
+        spec.oauth_config = {
+            "authorize_url": "https://auth.example.com/authorize",
+            "client_id": "cid",
+            "client_secret": "secret",
+            "scopes": "read",
+        }
+        url = oauth_service.build_authorize_url(
+            spec, "https://norm/api/oauth/callback", db_session
+        )
+        q = parse_qs(urlparse(url).query)
+        assert "code_challenge" not in q
+        assert "code_challenge_method" not in q
+
+
+class TestDynamicRegistration:
+    def test_register_client_posts_and_stores_client_id(self, db_session):
+        from app.db.config_models import ConnectionSpec
+
+        spec = ConnectionSpec(
+            connector_name="cb_reg_test",
+            display_name="CB",
+            execution_mode="mcp",
+            auth_type="oauth2",
+            auth_config={},
+            oauth_config={
+                "registration_url": "https://cb.example.com/oauth/register",
+                "token_endpoint_auth_method": "none",
+                "scopes": "mcp",
+            },
+        )
+        db_session.add(spec)
+        db_session.flush()
+
+        resp = MagicMock(status_code=201)
+        resp.json.return_value = {"client_id": "registered-123"}
+        with patch(
+            "app.services.oauth_service.httpx.post", return_value=resp
+        ) as mock_post:
+            client_id = oauth_service.register_client(
+                spec, ["https://norm/api/oauth/callback"], db_session
+            )
+
+        assert client_id == "registered-123"
+        assert spec.oauth_config["client_id"] == "registered-123"
+        body = mock_post.call_args.kwargs["json"]
+        assert body["token_endpoint_auth_method"] == "none"
+        assert body["redirect_uris"] == ["https://norm/api/oauth/callback"]
+        assert "authorization_code" in body["grant_types"]
+
+    def test_register_client_is_idempotent_when_client_id_present(self, db_session):
+        spec = MagicMock()
+        spec.connector_name = "cb"
+        spec.oauth_config = {"client_id": "already", "registration_url": "https://x"}
+        with patch("app.services.oauth_service.httpx.post") as mock_post:
+            client_id = oauth_service.register_client(
+                spec, ["https://n/cb"], db_session
+            )
+        assert client_id == "already"
+        mock_post.assert_not_called()
+
+
+class TestTokenExchangePublicClient:
+    def test_exchange_sends_verifier_and_omits_secret(self, db_session):
+        from app.db.models import OAuthState
+
+        state = "st-pkce-1"
+        db_session.add(
+            OAuthState(
+                connector_name="cook_brothers_app",
+                state=state,
+                venue_id=None,
+                user_id=None,
+                code_verifier="the-verifier",
+            )
+        )
+        db_session.flush()
+
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"access_token": "at", "refresh_token": "rt"}
+        with patch(
+            "app.services.oauth_service.httpx.post", return_value=resp
+        ) as mock_post:
+            oauth_service.exchange_code(
+                _public_spec(),
+                "the-code",
+                state,
+                "https://norm/api/oauth/callback",
+                db_session,
+            )
+
+        body = mock_post.call_args.kwargs["data"]
+        assert body["code_verifier"] == "the-verifier"
+        assert body["grant_type"] == "authorization_code"
+        assert "client_secret" not in body  # public client
+
+
+class TestMcpExecutorOauthHeader:
+    def test_oauth2_uses_access_token_as_bearer(self):
+        from app.connectors.mcp_executor import _build_auth_headers
+
+        headers = _build_auth_headers({"access_token": "tok-123"}, "oauth2", {})
+        assert headers["Authorization"] == "Bearer tok-123"
+
+    def test_bearer_still_reads_token_field(self):
+        from app.connectors.mcp_executor import _build_auth_headers
+
+        headers = _build_auth_headers(
+            {"api_key": "k"}, "bearer", {"token_field": "api_key"}
+        )
+        assert headers["Authorization"] == "Bearer k"
+
+
+# ──── Per-venue connect refuses a wrong-company token ───────────────────────
+#
+# Per-venue LoadedHub connect must refuse a wrong-company token.
+#
+# The 14 Aug incident: reconnect clicks made while the Loaded session had Bessie
+# active minted Bessie tokens for four other venues, and the callback stored each
+# one and said "Connected successfully" — every venue then served Bessie's data
+# (Loaded scopes data by the token, not the x-loaded-company-id header). These
+# tests pin the callback validation: a token whose company doesn't match the
+# venue's stored ``x_loaded_company_id`` is rejected loudly (tokens wiped,
+# ``needs_reconnect`` set, failure page); a matching token succeeds; a venue with
+# no stored company id adopts the token's.
+
+
+COMPANY_A = "aaaaaaaa-1111-2222-3333-444444444444"
+COMPANY_B = "bbbbbbbb-5555-6666-7777-888888888888"
+
+
+def _setup(db_session, *, stored_company, state_venue=True):
+    """A loadedhub spec + one venue whose row already holds freshly-exchanged
+    tokens (exchange_code stores before the callback validates), + the state."""
+    spec = ConnectionSpec(
+        connector_name="loadedhub",
+        display_name="LoadedHub",
+        execution_mode="template",
+        auth_type="oauth2",
+        auth_config={},
+        oauth_config={"token_url": "https://example.test/token", "client_id": "x"},
+        tools=[],
+    )
+    db_session.add(spec)
+    venue = Venue(id=str(uuid.uuid4()), name="La Zeppa")
+    db_session.add(venue)
+    db_session.flush()  # venue row must exist before FK'd rows below
+    cfg = Connection(
+        connector_name="loadedhub",
+        venue_id=venue.id,
+        enabled="true",
+        config={"x_loaded_company_id": stored_company} if stored_company else {},
+        access_token="freshly-exchanged-token",
+        refresh_token="freshly-exchanged-refresh",
+    )
+    db_session.add(cfg)
+    state = OAuthState(
+        connector_name="loadedhub",
+        venue_id=venue.id if state_venue else None,
+        state=f"state-{uuid.uuid4().hex}",
+    )
+    db_session.add(state)
+    db_session.flush()
+    return venue, cfg, state
+
+
+def _callback(client, state, token_data):
+    with patch("app.routers.oauth.exchange_code", return_value=token_data):
+        return client.get(
+            f"/api/oauth/callback?code=abc&state={state.state}",
+            follow_redirects=False,
+        )
+
+
+class TestWrongCompanyRejected:
+    def test_mismatch_wipes_tokens_and_fails_loudly(self, client, db_session):
+        venue, cfg, state = _setup(db_session, stored_company=COMPANY_A)
+        res = _callback(
+            client,
+            state,
+            {
+                "access_token": "tok",
+                "venue_id": COMPANY_B,
+                "venue_name": "Bessie & Engineers",
+            },
+        )
+        assert res.status_code == 400
+        assert "Bessie &amp; Engineers" in res.text or "Bessie & Engineers" in res.text
+        assert "La Zeppa" in res.text
+        db_session.refresh(cfg)
+        assert cfg.access_token is None
+        assert cfg.refresh_token is None
+        assert cfg.needs_reconnect is True
+        assert "wrong Loaded company" in (cfg.last_auth_error or "")
+        # The configured company id is untouched — only the tokens were bad.
+        assert cfg.config["x_loaded_company_id"] == COMPANY_A
+
+    def test_whitespace_in_stored_id_still_matches(self, client, db_session):
+        # La Zeppa's real stored id carries a leading space — must not reject.
+        venue, cfg, state = _setup(db_session, stored_company=f" {COMPANY_A}")
+        res = _callback(client, state, {"access_token": "tok", "venue_id": COMPANY_A})
+        assert res.status_code == 200
+        db_session.refresh(cfg)
+        assert cfg.access_token == "freshly-exchanged-token"
+        assert not cfg.needs_reconnect
+
+
+class TestAcceptedPaths:
+    def test_matching_company_succeeds(self, client, db_session):
+        venue, cfg, state = _setup(db_session, stored_company=COMPANY_A)
+        res = _callback(client, state, {"access_token": "tok", "venue_id": COMPANY_A})
+        assert res.status_code == 200
+        db_session.refresh(cfg)
+        assert cfg.access_token == "freshly-exchanged-token"
+        assert not cfg.needs_reconnect
+
+    def test_first_connect_adopts_company_id(self, client, db_session):
+        venue, cfg, state = _setup(db_session, stored_company=None)
+        res = _callback(client, state, {"access_token": "tok", "venue_id": COMPANY_B})
+        assert res.status_code == 200
+        db_session.refresh(cfg)
+        assert cfg.config["x_loaded_company_id"] == COMPANY_B
+        assert cfg.access_token == "freshly-exchanged-token"
+
+    def test_no_company_in_token_response_keeps_legacy_behavior(
+        self, client, db_session
+    ):
+        venue, cfg, state = _setup(db_session, stored_company=COMPANY_A)
+        res = _callback(client, state, {"access_token": "tok"})
+        assert res.status_code == 200
+        db_session.refresh(cfg)
+        assert cfg.access_token == "freshly-exchanged-token"

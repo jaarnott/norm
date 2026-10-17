@@ -10,8 +10,8 @@ The logic is exec'd exactly as production does it (through the sandbox, with
 actually runs under the AST guard.
 """
 
-import pathlib
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -24,27 +24,6 @@ from tests.conftest import (
     _make_venue,
     _make_venue_access,
 )
-
-FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "app" / "builtin_apps"
-SPEC = {
-    "actions": [],
-    "writes": [],
-    "scopes": ["mcp:hr:read"],
-    "storage": {
-        "namespace": "hr_suite",
-        "collections": [
-            "people",
-            "programs",
-            "modules",
-            "sections",
-            "content",
-            "assignments",
-            "completions",
-            "plans",
-            "plan_sections",
-        ],
-    },
-}
 
 
 @pytest.fixture()
@@ -503,13 +482,6 @@ class TestAuthoring:
     a missed one leaves rows nothing can reach and progress denominators that
     count content belonging to a deleted section."""
 
-    def test_a_program_needs_a_name(self, db_session, org, author, app_and_version):
-        app, version = app_and_version
-        out = _run(
-            db_session, app, version, author, op="save_program", fields={"name": "  "}
-        )
-        assert "needs a name" in out["error"]
-
     def test_create_then_edit_keeps_the_record_clean(
         self, db_session, org, author, app_and_version
     ):
@@ -537,35 +509,18 @@ class TestAuthoring:
         # The envelope storage adds must never be written back INTO the record.
         raw = db_session.query(AppRecord).filter(AppRecord.id == created["id"]).first()
         assert "created_at" not in raw.data and "id" not in raw.data
+        # a program needs a name
+        out = _run(
+            db_session, app, version, author, op="save_program", fields={"name": "  "}
+        )
+        assert "needs a name" in out["error"]
 
     def test_an_on_shift_section_gets_its_evidence_item(
         self, db_session, org, author, app_and_version
     ):
         """On-shift work is signed off against uploaded evidence. Without an
         item to hang it on, the section has nothing to complete and the tracker
-        can never move past it."""
-        app, version = app_and_version
-        program = _run(
-            db_session, app, version, author, op="save_program", fields={"name": "P"}
-        )["program"]
-        module = _run(
-            db_session, app, version, author, op="add_module", program_id=program["id"]
-        )["module"]
-        _run(
-            db_session,
-            app,
-            version,
-            author,
-            op="add_section",
-            module_id=module["id"],
-            section_type="on_shift",
-        )
-        tree = _run(
-            db_session, app, version, author, op="program", program_id=program["id"]
-        )
-        assert [c["content_type"] for c in tree["content"]] == ["file_upload"]
-
-    def test_an_online_section_does_not(self, db_session, org, author, app_and_version):
+        can never move past it. An online section gets no such item."""
         app, version = app_and_version
         program = _run(
             db_session, app, version, author, op="save_program", fields={"name": "P"}
@@ -586,6 +541,20 @@ class TestAuthoring:
             db_session, app, version, author, op="program", program_id=program["id"]
         )
         assert tree["content"] == []
+        on_shift = _run(
+            db_session,
+            app,
+            version,
+            author,
+            op="add_section",
+            module_id=module["id"],
+            section_type="on_shift",
+        )["section"]
+        tree = _run(
+            db_session, app, version, author, op="program", program_id=program["id"]
+        )
+        assert [c["content_type"] for c in tree["content"]] == ["file_upload"]
+        assert tree["content"][0]["section_id"] == on_shift["id"]
 
     def test_deleting_a_section_takes_its_content_and_schedule(
         self, db_session, org, author, app_and_version
@@ -734,11 +703,7 @@ class TestAuthoring:
             db_session, app, version, author, op="program", program_id=program["id"]
         )
         assert [m["name"] for m in tree["modules"]] == ["C", "A", "B"]
-
-    def test_reorder_refuses_a_collection_that_is_not_ordered(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
+        # only an ordered collection can be reordered
         out = _run(
             db_session,
             app,
@@ -792,22 +757,6 @@ class TestAssignmentStatus:
         )
         assert back["assignment"]["status"] == "assigned"
         assert back["assignment"]["completed_at"] is None
-
-    def test_an_unknown_status_is_refused(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
-        program, _, _, _ = _program_with_two_items(db_session, org, author)
-        person = _rec(
-            db_session, org, author, "people", {"name": "Ana", "is_active": True}
-        )
-        assignment = _rec(
-            db_session,
-            org,
-            author,
-            "assignments",
-            {"program_id": program, "person_id": person, "status": "assigned"},
-        )
         out = _run(
             db_session,
             app,
@@ -842,11 +791,15 @@ class TestEnrolment:
             person_id=person,
         )
         assert out["assignment"]["status"] == "assigned"
+        # no default_due_days means no due date
+        assert out["assignment"].get("due_date") is None
 
     def test_due_date_comes_from_default_due_days(
         self, db_session, org, author, app_and_version
     ):
+        """Today (UTC) + default_due_days, as Orbit's DB trigger set it."""
         app, version = app_and_version
+        before = datetime.now(timezone.utc).date()
         program = _rec(
             db_session,
             org,
@@ -866,30 +819,17 @@ class TestEnrolment:
             program_id=program,
             person_id=person,
         )
-        assert out["assignment"]["due_date"] is not None
-
-    def test_no_default_due_days_means_no_due_date(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
-        program, _, _, _ = _program_with_two_items(db_session, org, author)
-        person = _rec(
-            db_session, org, author, "people", {"name": "New", "is_active": True}
-        )
-        out = _run(
-            db_session,
-            app,
-            version,
-            author,
-            op="enrol",
-            program_id=program,
-            person_id=person,
-        )
-        assert out["assignment"].get("due_date") is None
+        after = datetime.now(timezone.utc).date()
+        # Either side of a midnight that fell during the call is right.
+        assert out["assignment"]["due_date"] in {
+            (before + timedelta(days=30)).isoformat(),
+            (after + timedelta(days=30)).isoformat(),
+        }
 
     def test_cannot_enrol_twice_on_the_same_instance(
         self, db_session, org, author, app_and_version
     ):
+        """...but a second variant of the program is allowed."""
         app, version = app_and_version
         program, _, _, _ = _program_with_two_items(db_session, org, author)
         person = _rec(
@@ -915,14 +855,6 @@ class TestEnrolment:
         )
         assert "already enrolled" in out["error"]
 
-    def test_but_a_second_variant_is_allowed(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
-        program, _, _, _ = _program_with_two_items(db_session, org, author)
-        person = _rec(
-            db_session, org, author, "people", {"name": "New", "is_active": True}
-        )
         _run(
             db_session,
             app,
@@ -1396,20 +1328,6 @@ class TestPlanCompletion:
             0
         ][0]
         assert cell["status"] == "complete"
-
-    def test_set_plan_status_rejects_bad_status(
-        self, db_session, org, author, app_and_version
-    ):
-        app, version = app_and_version
-        program = _rec(db_session, org, author, "programs", {"name": "P"})
-        person = _rec(db_session, org, author, "people", {"name": "D"})
-        plan = _rec(
-            db_session,
-            org,
-            author,
-            "plans",
-            {"program_id": program, "person_id": person, "status": "active"},
-        )
         d = _run(
             db_session,
             app,

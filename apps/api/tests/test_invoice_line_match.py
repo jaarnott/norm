@@ -1,34 +1,12 @@
 """invoice_line_match — THE line↔catalogue matcher.
 
-``plain_match``/``variant_claim`` began as verbatim ports of the sandboxed
-engine's ``_plain_match``/``_variant_claim``; since the replica-primary
-refactor the engine's copies are gone and these are the single
-implementation, used by the replica, review-time pairing and the split
-classifier.
+``plain_match`` began as a verbatim port of the sandboxed engine's
+``_plain_match``; since the replica-primary refactor the engine's copy is gone
+and this is the single implementation, used by the replica and review-time
+pairing. ``CatalogueIndex`` is the replica's catalogue lookup.
 """
 
 from app.services import invoice_line_match as M
-
-LINES = [
-    {"id": "l-1", "code": "FGT001", "description": "FREIGHT", "totalCostExclTax": 9.5}
-]
-ITEM = {
-    "id": "i1",
-    "name": "FREIGHT - FOOD",
-    "suppliers": [
-        {
-            "supplierId": "sup-1",
-            "stockCode": "FGT001",
-            "description": "Courier Freight",
-        }
-    ],
-}
-CANDIDATES = [
-    {"code": "FGT001", "description": "Freight Chg", "line_total_ex_tax": 9.5},
-    {"code": "PBO0.7", "description": "Salmon Fillet", "line_total_ex_tax": 219.78},
-    {"code": None, "description": "Mystery Product", "line_total_ex_tax": 5.0},
-    {"code": None, "description": "Ale", "line_total_ex_tax": 1},
-]
 
 
 class TestPlainMatch:
@@ -47,37 +25,6 @@ class TestPlainMatch:
         )
         assert got is pool[0]
         assert M.plain_match({"code": None, "description": "LAMB RUMP"}, pool) is None
-
-
-class TestVariantClaim:
-    def test_exact_code_claims(self):
-        got = M.variant_claim(LINES[0], ITEM, "sup-1", CANDIDATES)
-        assert got is CANDIDATES[0]
-
-    def test_deleted_variants_ignored(self):
-        item = {
-            "id": "i2",
-            "name": "X",
-            "suppliers": [
-                {
-                    "supplierId": "sup-1",
-                    "stockCode": "FGT001",
-                    "datestampDeleted": "2026-01-01",
-                }
-            ],
-        }
-        assert M.variant_claim(LINES[0], item, "sup-1", CANDIDATES) is None
-
-    def test_short_fragments_never_substring_match(self):
-        # 'Ale' (3 chars) is under the 8-char floor.
-        item = {"id": "i3", "name": "PALE ALE KEG", "suppliers": []}
-        ln = {
-            "code": None,
-            "description": "PALE ALE KEG DELIVERY",
-            "totalCostExclTax": 1,
-        }
-        got = M.variant_claim(ln, item, "sup-1", [CANDIDATES[3]])
-        assert got is None or got is not CANDIDATES[3] or len("ale") >= 8
 
 
 class TestCatalogueIndex:

@@ -68,23 +68,8 @@ class TestSchema:
             "total_incl_tax",
             "lines",
         }
-
-    def test_credit_notes_are_taught_in_the_prompt(self):
-        # The schema has always ALLOWED 'credit_note'; nothing taught the
-        # model to use it, or what to do with the signs. Credit notes now
-        # auto-receive when clean, so the classification must be specified
-        # behaviour rather than emergent.
-        text = ie.BUILTIN_MAIN_PROMPT.lower()
-        assert "credit_note" in text
-        assert "credit note" in text
-        assert "exactly as printed" in text  # never invent or drop a minus
-
-    def test_buyer_po_fields_folded_in(self):
         # PO_EXTRACT_SCHEMA is retired: ONE extraction reads the buyer PO and
-        # the supplier's own order number alongside the lines.
-        assert "customer_purchase_order_number" in ie.PDF_SCHEMA
-        assert "supplier_order_number" in ie.PDF_SCHEMA
-        assert "discount_amount" in ie.PDF_SCHEMA
+        # the supplier's own order number (both above) alongside the lines.
         line = ie.PDF_SCHEMA["lines"][0]
         for key in (
             "code",
@@ -97,6 +82,16 @@ class TestSchema:
             "line_total_ex_tax",
         ):
             assert key in line
+
+    def test_credit_notes_are_taught_in_the_prompt(self):
+        # The schema has always ALLOWED 'credit_note'; nothing taught the
+        # model to use it, or what to do with the signs. Credit notes now
+        # auto-receive when clean, so the classification must be specified
+        # behaviour rather than emergent.
+        text = ie.BUILTIN_MAIN_PROMPT.lower()
+        assert "credit_note" in text
+        assert "credit note" in text
+        assert "exactly as printed" in text  # never invent or drop a minus
 
 
 class TestComposer:
@@ -125,20 +120,16 @@ class TestComposer:
         assert out == "MAIN"
 
     def test_main_prompt_row_overrides_builtin(self, db_session):
-        db_session.add(
-            SupplierInvoiceSpec(
-                name=ie.MAIN_PROMPT_NAME, aliases=[], instructions="ADMIN MAIN"
-            )
+        # ...unless the row is empty, which falls back to the built-in.
+        row = SupplierInvoiceSpec(
+            name=ie.MAIN_PROMPT_NAME, aliases=[], instructions="  "
         )
-        db_session.flush()
-        assert ie.main_prompt(db_session) == "ADMIN MAIN"
-
-    def test_empty_main_prompt_row_falls_back_to_builtin(self, db_session):
-        db_session.add(
-            SupplierInvoiceSpec(name=ie.MAIN_PROMPT_NAME, aliases=[], instructions="  ")
-        )
+        db_session.add(row)
         db_session.flush()
         assert ie.main_prompt(db_session) == ie.BUILTIN_MAIN_PROMPT
+        row.instructions = "ADMIN MAIN"
+        db_session.flush()
+        assert ie.main_prompt(db_session) == "ADMIN MAIN"
 
     def test_pdf_instructions_for_resolves_spec_notes(self, db_session):
         db_session.add(

@@ -2,11 +2,12 @@
 
 Two directions share these rules:
 
-- The review ENGINE matches a Loaded line against the invoice COPY's lines
-  (``plain_match``) and, via a known stock item's supplier variants, lets a
-  variant claim a copy line (``variant_claim``). They began as ports of the
-  sandboxed consolidator's ``_plain_match``/``_variant_claim``; since the
-  review moved server-side (Aug 2026) these are the only implementation.
+- The review pairs a Loaded line with the invoice COPY's lines
+  (``plain_match``: exact normalized code, then description substring). It
+  began as a port of the sandboxed consolidator's ``_plain_match``; since the
+  review moved server-side (Aug 2026) this is the only implementation. (Its
+  sibling ``variant_claim`` lost its last caller with the replica-primary
+  refactor and was removed in Oct 2026.)
 
 - The replica builder matches an EXTRACTED line against the venue's whole
   catalogue (``CatalogueIndex`` + ``match_line``): Loaded's own ingestion
@@ -21,23 +22,9 @@ ambiguity returns None and the caller falls back to the LLM matcher.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
-
 
 def _norm(text: object) -> str:
     return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
-
-
-def _dec(value: object) -> Decimal | None:
-    if value is None:
-        return None
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
-
-
-LINE_TOL = Decimal("0.01")
 
 
 def plain_match(ln: dict, pool: list[dict]) -> dict | None:
@@ -54,66 +41,6 @@ def plain_match(ln: dict, pool: list[dict]) -> dict | None:
             or _norm(ln.get("description")) in _norm(cand.get("description"))
         ):
             return cand
-    return None
-
-
-def variant_claim(
-    ln: dict, item: dict, supplier_id: str | None, candidates: list[dict]
-) -> dict | None:
-    """Match a Loaded line against doc lines via the stock item's supplier
-    variants. Conservative by design: a wrong claim clears the mismatch
-    reason and can let autopilot auto-receive, so only a UNIQUE hit (or a
-    tie broken by the line total) claims. Exact tiers first, then substring
-    with a length floor so short generic fragments can't match.
-    Originally a verbatim port of the engine's ``_variant_claim``; since the
-    replica-primary refactor this is the only implementation."""
-    variants = [
-        v
-        for v in (item.get("suppliers") or [])
-        if isinstance(v, dict)
-        and not (v.get("datestampDeleted") or v.get("removedAt") or v.get("deletedAt"))
-    ]
-    scoped = [v for v in variants if v.get("supplierId") == supplier_id]
-    variants = scoped or variants
-    texts = [_norm(v.get("description")) for v in variants] + [_norm(item.get("name"))]
-    texts = [t for t in texts if t]
-    codes = [_norm(v.get("stockCode")) for v in variants]
-    codes = [c for c in codes if c]
-
-    hits = []
-    for cand in candidates:
-        cdesc = _norm(cand.get("description"))
-        ccode = _norm(cand.get("code"))
-        if (ccode and ccode in codes) or (cdesc and cdesc in texts):
-            hits.append(cand)
-    if not hits:
-        for cand in candidates:
-            cdesc = _norm(cand.get("description"))
-            if not cdesc:
-                continue
-            for t in texts:
-                small, big = (t, cdesc) if len(t) <= len(cdesc) else (cdesc, t)
-                if len(small) >= 8 and small in big:
-                    hits.append(cand)
-                    break
-    if len(hits) == 1:
-        return hits[0]
-    if len(hits) > 1:
-        # Loaded renamed totalCost → totalCostExclTax (05 Aug 2026): new name
-        # first, old as fallback — exactly the engine's _ln_tot.
-        tot = ln.get("totalCostExclTax")
-        if tot is None:
-            tot = ln.get("totalCost")
-        ln_tot = _dec(tot)
-        if ln_tot is not None:
-            close_hits = [
-                c
-                for c in hits
-                if _dec(c.get("line_total_ex_tax")) is not None
-                and abs(_dec(c.get("line_total_ex_tax")) - ln_tot) <= LINE_TOL
-            ]
-            if len(close_hits) == 1:
-                return close_hits[0]
     return None
 
 

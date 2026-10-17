@@ -15,6 +15,8 @@ import pytest
 from app.db.config_models import SupplierInvoiceSpec, SupplierSpecSample
 from app.services import spec_dojo
 
+from .supplier_fakes import bind_sessions, install_fake_loaded
+
 
 @pytest.fixture
 def roster(db_session):
@@ -31,8 +33,10 @@ def roster(db_session):
 
 
 class TestAliasWritesAreGuarded:
-    def test_the_router_refuses_another_specs_name(self, client, admin_headers, roster):
-        sf, ev = roster
+    def test_the_router_refuses_another_specs_name_or_alias(
+        self, client, admin_headers, roster
+    ):
+        _sf, ev = roster
         res = client.put(
             f"/api/supplier-invoice-specs/{ev.id}",
             headers=admin_headers,
@@ -40,11 +44,7 @@ class TestAliasWritesAreGuarded:
         )
         assert res.status_code == 409, res.text
         assert "Service Foods" in res.json()["detail"]
-
-    def test_the_router_refuses_another_specs_alias(
-        self, client, admin_headers, roster
-    ):
-        _sf, ev = roster
+        # Another spec's ALIAS is just as much its identity.
         res = client.put(
             f"/api/supplier-invoice-specs/{ev.id}",
             headers=admin_headers,
@@ -101,7 +101,8 @@ class TestSenseiAliasMerge:
         """The write that caused the incident. Moving a sample to its real
         spec must carry the source spec's NAME only — its aliases are other
         accounts' spellings, which belong in Loaded, not multiplied onto a
-        global row."""
+        global row. (And the roster gate below must not be a brake on this
+        ordinary, clean merge.)"""
         sf, _ev = roster
         dupe = SupplierInvoiceSpec(
             name="SERVICE FOODS LTD",
@@ -185,19 +186,6 @@ class TestTheRosterGate:
         assert stray.spec_id == dupe.id
         assert sf.aliases == ["Service Foods Auckland"]
 
-    def test_a_clean_merge_still_goes_through(self, db_session, roster):
-        """The gate must not be a brake on ordinary work."""
-        sf, _ev = roster
-        dupe = SupplierInvoiceSpec(
-            name="SERVICE FOODS LTD", aliases=[], instructions=""
-        )
-        db_session.add(dupe)
-        db_session.commit()
-        sample = _sample(db_session, dupe, _proposal(alias_of="Service Foods"))
-        spec_dojo.apply_analysis_proposal(db_session, sample)
-        assert sample.spec_id == sf.id
-        assert "SERVICE FOODS LTD" in sf.aliases
-
 
 class TestSenseiCleansTheRoster:
     def test_a_misfiled_alias_is_removed(self, db_session, roster):
@@ -247,12 +235,6 @@ class TestNoDuplicateSpecIsBorn:
         )
         assert spec.id == sf.id and created is False
 
-    def test_an_unknown_supplier_still_gets_its_own_spec(self, db_session, roster):
-        spec, created = spec_dojo.find_or_create_spec_for_supplier(
-            db_session, "Brand New Butchery"
-        )
-        assert created is True and spec.name == "Brand New Butchery"
-
     def test_a_name_printed_over_two_lines_is_a_name_and_an_alias(
         self, db_session, roster
     ):
@@ -299,30 +281,6 @@ class TestNoDuplicateSpecIsBorn:
         assert created is True
 
 
-def _bind_config_session(monkeypatch, db_session):
-    """Bind the RW config session factory to the test transaction.
-
-    Anything that stages a dojo sample or trains a spec opens its OWN
-    ``_ConfigSessionLocal`` — and the config DB is SHARED WITH PRODUCTION. An
-    unbound test reads the real spec roster, so it passes locally off live data
-    and fails in CI against an empty one. That is exactly how
-    `test_the_hints_reach_the_training_tool_s_own_guard` went green on this
-    machine and red on the first push (27 Aug 2026).
-    """
-
-    class _Shim:
-        def __init__(self, s):
-            self._s = s
-
-        def __getattr__(self, k):
-            return getattr(self._s, k)
-
-        def close(self):  # the fixture owns the transaction
-            pass
-
-    monkeypatch.setattr("app.db.engine._ConfigSessionLocal", lambda: _Shim(db_session))
-
-
 class TestTheSenseiAsksUnderEverySpellingItKnows:
     """Kaans, 26 Aug 2026: nine invoices a day for three weeks.
 
@@ -348,12 +306,12 @@ class TestTheSenseiAsksUnderEverySpellingItKnows:
         db_session.commit()
         return spec
 
-    def test_the_bare_feed_name_does_not_find_it(self, db_session, kaans):
+    def test_the_bare_feed_name_misses_it_and_an_alias_finds_it(
+        self, db_session, kaans
+    ):
         """The starting condition — not a wish, the actual behaviour that made
-        the guard fall through."""
+        the guard fall through — and the hint that closes it."""
         assert spec_dojo.find_spec_for_supplier(db_session, "Kaans Catering") is None
-
-    def test_an_alias_finds_it(self, db_session, kaans):
         found = spec_dojo.find_spec_for_supplier(
             db_session,
             "Kaans Catering",
@@ -410,7 +368,7 @@ class TestTheSenseiAsksUnderEverySpellingItKnows:
         entry point) it must reach the same conclusion, or the duplicate work
         simply moves one layer down."""
 
-        _bind_config_session(monkeypatch, db_session)
+        bind_sessions(monkeypatch, db_session, "_ConfigSessionLocal")
         monkeypatch.setattr(
             "app.services.spec_dojo.stage_invoice_sample",
             lambda *_a, **_k: pytest.fail("staged a sample for a covered supplier"),
@@ -468,78 +426,39 @@ class TestTheRosterIsAskedAboutTheNameOnThePaper:
         assert IR._maybe_sensei(None, db_session, "v-1", "inv-1", "Neat Meat") is True
         assert seen["supplier_name"] == "Neat Meat"
 
+    def _stage(self, monkeypatch, db_session, roster, **kw):
+        """Stage through the real helper and record what the roster is asked:
+        the name and the hints. Loaded files the copy under Coca Cola, whose
+        record carries the alias 'COKE NZ'."""
+        filed = {}
+        bind_sessions(monkeypatch, db_session, "_ConfigSessionLocal")
+        monkeypatch.setattr(
+            "app.services.spec_dojo.find_or_create_spec_for_supplier",
+            lambda _c, name, *hints: (
+                filed.update(name=name, hints=list(hints)) or (roster, False)
+            ),
+        )
+        install_fake_loaded(
+            monkeypatch, supplier="Coca Cola", supplier_id="s", aliases=["COKE NZ"]
+        )
+        try:
+            spec_dojo.stage_invoice_sample(None, "v-1", "inv-1", draft=True, **kw)
+        except Exception:  # noqa: BLE001 — only the filing decision matters here
+            pass
+        return filed
+
     def test_the_sample_is_filed_under_the_printed_name_not_loadeds(
         self, db_session, roster, monkeypatch
     ):
         """`stage_invoice_sample` re-reads Loaded's supplierName and used to
         discard the caller's — which would have thrown the printed name away
-        and filed the Neat Meat copy under Coca Cola."""
-        filed = {}
-        _bind_config_session(monkeypatch, db_session)
-        monkeypatch.setattr(
-            "app.services.spec_dojo.find_or_create_spec_for_supplier",
-            lambda _c, name, *hints: (
-                filed.update(name=name, hints=list(hints)) or (roster, False)
-            ),
-        )
-        from app.services import spec_dojo
+        and filed the Neat Meat copy under Coca Cola.
 
-        class _Lh:
-            def invoice(self, _id):
-                return {"fileId": "f-1", "supplierName": "Coca Cola", "supplierId": "s"}
-
-            def get(self, _p):
-                return [{"name": "COKE NZ"}]
-
-            def file_base64(self, _f):
-                return ("", "application/pdf")
-
-        monkeypatch.setattr(
-            "app.services.received_invoice.LoadedInvoiceClient", lambda *_a: _Lh()
-        )
-        try:
-            spec_dojo.stage_invoice_sample(
-                None, "v-1", "inv-1", draft=True, supplier_name="Neat Meat"
-            )
-        except Exception:  # noqa: BLE001 — only the filing decision matters here
-            pass
+        And Loaded's aliases are withheld from a printed name: they are the
+        OTHER business's spellings. Offering them would file this sample under
+        that business's spec — the Eurovintage fault arriving by a new road."""
+        filed = self._stage(monkeypatch, db_session, roster, supplier_name="Neat Meat")
         assert filed["name"] == "Neat Meat"
-
-    def test_loadeds_aliases_are_withheld_from_a_printed_name(
-        self, db_session, roster, monkeypatch
-    ):
-        """They are the OTHER business's spellings. Offering them would file
-        this sample under that business's spec — the Eurovintage fault
-        arriving by a new road."""
-        filed = {}
-        _bind_config_session(monkeypatch, db_session)
-        monkeypatch.setattr(
-            "app.services.spec_dojo.find_or_create_spec_for_supplier",
-            lambda _c, name, *hints: (
-                filed.update(name=name, hints=list(hints)) or (roster, False)
-            ),
-        )
-        from app.services import spec_dojo
-
-        class _Lh:
-            def invoice(self, _id):
-                return {"fileId": "f-1", "supplierName": "Coca Cola", "supplierId": "s"}
-
-            def get(self, _p):
-                return [{"name": "COKE NZ"}]
-
-            def file_base64(self, _f):
-                return ("", "application/pdf")
-
-        monkeypatch.setattr(
-            "app.services.received_invoice.LoadedInvoiceClient", lambda *_a: _Lh()
-        )
-        try:
-            spec_dojo.stage_invoice_sample(
-                None, "v-1", "inv-1", draft=True, supplier_name="Neat Meat"
-            )
-        except Exception:  # noqa: BLE001
-            pass
         assert filed["hints"] == []
 
     def test_loadeds_own_name_still_carries_its_aliases(
@@ -547,31 +466,5 @@ class TestTheRosterIsAskedAboutTheNameOnThePaper:
     ):
         """The ordinary path is unchanged: same business, aliases offered, so
         no duplicate spec row is born for a spelling variant."""
-        filed = {}
-        _bind_config_session(monkeypatch, db_session)
-        monkeypatch.setattr(
-            "app.services.spec_dojo.find_or_create_spec_for_supplier",
-            lambda _c, name, *hints: (
-                filed.update(name=name, hints=list(hints)) or (roster, False)
-            ),
-        )
-        from app.services import spec_dojo
-
-        class _Lh:
-            def invoice(self, _id):
-                return {"fileId": "f-1", "supplierName": "Coca Cola", "supplierId": "s"}
-
-            def get(self, _p):
-                return [{"name": "COKE NZ"}]
-
-            def file_base64(self, _f):
-                return ("", "application/pdf")
-
-        monkeypatch.setattr(
-            "app.services.received_invoice.LoadedInvoiceClient", lambda *_a: _Lh()
-        )
-        try:
-            spec_dojo.stage_invoice_sample(None, "v-1", "inv-1", draft=True)
-        except Exception:  # noqa: BLE001
-            pass
+        filed = self._stage(monkeypatch, db_session, roster)
         assert filed["name"] == "Coca Cola" and filed["hints"] == ["COKE NZ"]

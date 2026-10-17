@@ -477,6 +477,10 @@ class TestANewSupplierTakesItsInvoiceDetails:
         }
 
     def test_the_details_land_in_loadeds_fields(self):
+        # Exactly these fields — so it also fails if emailEnabled creeps in:
+        # that makes Loaded EMAIL every purchase order to the address, and an
+        # invoice prints the accounts address as often as the orders one. Nor
+        # unitCostIncludesTax: costs stay ex tax, Norm reads every invoice so.
         assert CAT.supplier_body("Tickety-Boo Ltd", self.DETAILS) == {
             "name": "Tickety-Boo Ltd",
             "address1": "Unit 4",
@@ -492,14 +496,6 @@ class TestANewSupplierTakesItsInvoiceDetails:
     def test_nothing_read_is_a_bare_name(self):
         assert CAT.supplier_body("X Ltd") == {"name": "X Ltd"}
         assert CAT.supplier_body("X Ltd", {}) == {"name": "X Ltd"}
-
-    def test_purchase_orders_are_never_switched_to_email(self):
-        # emailEnabled makes Loaded EMAIL every purchase order to that address
-        # — and an invoice prints the accounts address as often as the
-        # orders one. Costs stay ex tax: Norm reads every invoice that way.
-        body = CAT.supplier_body("X Ltd", self.DETAILS)
-        assert "emailEnabled" not in body
-        assert "unitCostIncludesTax" not in body
 
     def test_an_existing_record_is_never_touched(self):
         lh = _SupplierLoaded([{"id": "s-1", "name": "Tickety-Boo"}])

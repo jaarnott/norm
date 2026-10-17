@@ -7,6 +7,8 @@ list, the drift check against config/consolidators/*.py, and the added_at
 stamping listener that gives the tools list its "date added" column.
 """
 
+from sqlalchemy.orm.attributes import set_committed_value
+
 from app.db.config_models import ConnectionSpec
 from app.services import consolidator_coverage as cc
 
@@ -61,6 +63,13 @@ class TestClassificationAndLeaks:
         # the [consolidator-only] prefix no longer makes a row special: with
         # no code of its own it is an endpoint.
         assert c["counts"] == {"consolidator": 1, "built-in": 0, "endpoint": 3}
+        # endpoints no tool calls are unused; the one get_sales calls is not
+        assert sorted(r["action"] for r in c["unused"]) == [
+            "get_sales_raw",
+            "unrelated_tool",
+        ]
+        used = next(r for r in c["tools"] if r["action"] == "get_sales_data")
+        assert used["used_by"] == ["fakehub.get_sales"]
 
     def test_a_registered_handler_is_a_built_in(self, db_session, monkeypatch):
         monkeypatch.setattr(cc, "_canonical_files", lambda: {})
@@ -72,41 +81,28 @@ class TestClassificationAndLeaks:
         assert c["counts"]["built-in"] == 1
 
     def test_an_endpoint_an_app_claims_is_a_leak(self, db_session, monkeypatch):
+        """...and a tool the same App claims is not."""
         _spec(db_session, tools=TOOLS)
         c = _report(
             db_session,
             monkeypatch,
-            claims={"fakehub.get_sales_data": "loaded-reports"},
+            claims={
+                "fakehub.get_sales_data": "loaded-reports",
+                "fakehub.get_sales": "loaded-reports",
+            },
             usage={"fakehub__get_sales_data": 66},
         )
         assert [leak["action"] for leak in c["leaks"]] == ["get_sales_data"]
         leak = c["leaks"][0]
         assert leak["app"] == "loaded-reports"
         assert leak["calls_30d"] == 66
+        tool = next(r for r in c["tools"] if r["action"] == "get_sales")
+        assert tool["app"] == "loaded-reports"
 
     def test_an_endpoint_enabled_on_mcp_is_a_leak(self, db_session, monkeypatch):
         _spec(db_session, tools=TOOLS)
         c = _report(db_session, monkeypatch, mcp={("fakehub", "unrelated_tool")})
         assert [leak["action"] for leak in c["leaks"]] == ["unrelated_tool"]
-
-    def test_a_claimed_tool_is_not_a_leak(self, db_session, monkeypatch):
-        _spec(db_session, tools=TOOLS)
-        c = _report(
-            db_session, monkeypatch, claims={"fakehub.get_sales": "loaded-reports"}
-        )
-        assert c["leaks"] == []
-        tool = next(r for r in c["tools"] if r["action"] == "get_sales")
-        assert tool["app"] == "loaded-reports"
-
-    def test_endpoints_no_tool_calls_are_unused(self, db_session, monkeypatch):
-        _spec(db_session, tools=TOOLS)
-        c = _report(db_session, monkeypatch)
-        assert sorted(r["action"] for r in c["unused"]) == [
-            "get_sales_raw",
-            "unrelated_tool",
-        ]
-        used = next(r for r in c["tools"] if r["action"] == "get_sales_data")
-        assert used["used_by"] == ["fakehub.get_sales"]
 
     def test_for_period_twin_is_inferred_by_name(self, db_session, monkeypatch):
         tools = [
@@ -124,10 +120,12 @@ class TestClassificationAndLeaks:
 
 class TestDrift:
     def test_differs_and_missing_files_are_flagged(self, db_session, monkeypatch):
+        """...and code matching its file is clean (not listed at all)."""
+        code = "def run(p, c, l): return 1"
         monkeypatch.setattr(
             cc,
             "_canonical_files",
-            lambda: {"get_sales": "def run(p, c, l): return 1"},
+            lambda: {"get_sales": code, "get_clean": code},
         )
         monkeypatch.setattr(cc, "_usage", lambda db, days: {})
         tools = [
@@ -139,6 +137,10 @@ class TestDrift:
                 "action": "get_other",
                 "consolidator_config": {"function_code": "x"},
             },
+            {
+                "action": "get_clean",
+                "consolidator_config": {"function_code": code},
+            },
         ]
         _spec(db_session, tools=tools)
         report = cc.coverage_report(db_session, db_session)
@@ -148,23 +150,6 @@ class TestDrift:
             "get_sales": "differs_from_file",
             "get_other": "no_canonical_file",
         }
-
-    def test_matching_code_is_clean(self, db_session, monkeypatch):
-        code = "def run(p, c, l): return 1"
-        monkeypatch.setattr(cc, "_canonical_files", lambda: {"get_sales": code})
-        monkeypatch.setattr(cc, "_usage", lambda db, days: {})
-        _spec(
-            db_session,
-            tools=[
-                {
-                    "action": "get_sales",
-                    "consolidator_config": {"function_code": code},
-                }
-            ],
-        )
-        report = cc.coverage_report(db_session, db_session)
-        c = next(x for x in report["connectors"] if x["connector"] == "fakehub")
-        assert c["drift"] == []
 
     def test_wrappers_share_for_period_as_their_canonical_file(
         self, db_session, monkeypatch
@@ -232,13 +217,15 @@ class TestAddedAtStamp:
             assert by["a"].get("added_at") == first
 
     def test_pre_stamping_tools_stay_unstamped(self, db_session):
-        s = _spec(db_session, name="legacy", tools=[{"action": "old"}])
-        # simulate a legacy entry with no stamp surviving a rewrite
-        s.tools = [{"action": "old"}]
-        s.tools = [dict(t, description="edited") for t in s.tools]
-        old = next(t for t in s.tools if t["action"] == "old")
-        # whatever the initial-assignment behaviour, a later rewrite never
-        # FABRICATES a date for an entry that had none at the previous state
-        # unless it was genuinely new — pinned by the 'b' case above; here we
-        # only require the entry to still exist and not error.
-        assert old["description"] == "edited"
+        """An action that predates stamping shows "—", never a made-up date."""
+        s = _spec(db_session, name="legacy", tools=[{"action": "seed"}])
+        # The row as loaded from the database before stamping existed: set
+        # without firing the listener, so the old value holds an action with
+        # no stamp.
+        set_committed_value(s, "tools", [{"action": "old"}])
+        s.tools = [dict(t, description="edited") for t in s.tools] + [{"action": "new"}]
+        by = {t["action"]: t for t in s.tools}
+        assert by["old"]["description"] == "edited"
+        assert "added_at" not in by["old"], "a date was fabricated"
+        # the listener did run: an action new in this write is stamped
+        assert by["new"].get("added_at")

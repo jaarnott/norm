@@ -12,6 +12,7 @@ import pytest
 from app.db.models import InvoiceAutopilotOutcome
 
 from .conftest import _make_organization, _make_venue, _make_venue_access
+from .supplier_fakes import bind_sessions
 
 
 def _venue(db, name="Bessie"):
@@ -27,22 +28,7 @@ def bind_recorder(db_session, monkeypatch):
     must never turn a completed receive into an error — but that would be a
     different transaction here, unable to see db_session's uncommitted venue.
     """
-
-    class _Shim:
-        def __init__(self, s):
-            self._s = s
-
-        def __getattr__(self, k):
-            return getattr(self._s, k)
-
-        def commit(self):
-            self._s.flush()
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr("app.db.engine.SessionLocal", lambda: _Shim(db_session))
-    return db_session
+    return bind_sessions(monkeypatch, db_session, "SessionLocal")
 
 
 def _row(db, venue, outcome, **over):
@@ -172,8 +158,11 @@ class TestCannotReceive:
         monkeypatch,
         bind_recorder,
     ):
-        from app.routers import invoice_fixes as IF
-
+        """Also: pressing "Can't receive" on an invoice that was never opened
+        has no working document to read the supplier from, so the row used to
+        land in the report's "(no supplier)" bucket — losing exactly the
+        attribution a supplier's training history is for. Staging has already
+        resolved it, and the row takes it from there."""
         v = _venue(db_session, "Goose")
         # The button acts only at a venue the presser can open.
         _make_venue_access(db_session, manager_user, v)
@@ -226,6 +215,7 @@ class TestCannotReceive:
         assert row is not None
         assert row.outcome == "dojo" and row.received is False
         assert row.detail["dojo"]["reason"] == "unit is wrong"
+        assert row.supplier_name == "Bidfood"  # from staging; there is no draft
 
     def test_an_invoice_with_no_copy_still_records_the_verdict(
         self,
@@ -259,52 +249,6 @@ class TestCannotReceive:
             .first()
         )
         assert row.outcome == "dojo" and row.detail["dojo"]["staged"] is False
-
-
-class TestTheSupplierIsAttributed:
-    def test_a_dojo_row_with_no_draft_still_names_the_supplier(
-        self,
-        client,
-        manager_user,
-        manager_headers,
-        db_session,
-        monkeypatch,
-        bind_recorder,
-    ):
-        """Pressing "Can't receive" on an invoice that was never opened has no
-        working document to read the supplier from, so the row used to land in
-        the report's "(no supplier)" bucket — losing exactly the attribution a
-        supplier's training history is for. Staging has already resolved it."""
-        v = _venue(db_session, "Freeman")
-        # The button acts only at a venue the presser can open.
-        _make_venue_access(db_session, manager_user, v)
-
-        monkeypatch.setattr(
-            "app.services.spec_dojo.stage_invoice_sample",
-            lambda db, venue_id, invoice_id, *, draft: {
-                "sample_id": "s-9",
-                "spec_id": "sp-9",
-                "spec_name": "Bidfood",
-                "created_spec": False,
-                "already_in_dojo": False,
-            },
-        )
-        monkeypatch.setattr(
-            "app.services.sensei_runner.start_analysis", lambda sid, fb=None: "job"
-        )
-        res = client.post(
-            "/api/invoice-fixes/cannot-receive",
-            headers=manager_headers,
-            json={"venue_id": v.id, "invoice_id": "inv-nodoc"},
-        )
-        assert res.status_code == 200, res.text
-
-        row = (
-            db_session.query(InvoiceAutopilotOutcome)
-            .filter(InvoiceAutopilotOutcome.invoice_id == "inv-nodoc")
-            .first()
-        )
-        assert row.supplier_name == "Bidfood"
 
 
 class TestAFiledInvoiceIsVisible:

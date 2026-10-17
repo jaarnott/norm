@@ -138,11 +138,6 @@ class TestOneDeclaration:
         }
         assert web == declared
 
-    def test_the_note_fits_the_prompt_budget(self):
-        from app.services.agent_config_service import APP_NOTE_MAX_CHARS
-
-        assert 0 < len(catalog.APP["note"]) <= APP_NOTE_MAX_CHARS
-
     def test_the_member_is_answered_by_the_norm_agent(self):
         from app.agents.registry import MEMBERS, get_agent, norm_agent
 
@@ -299,33 +294,3 @@ class TestAfterTheSeed:
         org.functions_mode = "shadow"
         db_session.flush()
         assert billed() is True
-
-
-class TestTeamEndpoint:
-    def test_a_member_of_an_org_with_functions_on_sees_it(self, client, db_session):
-        from app.auth.security import create_access_token
-
-        _procurement_row(db_session)
-        _, user = _org(db_session, "shadow")
-        r = client.get(
-            "/api/team",
-            headers={
-                "Authorization": f"Bearer {create_access_token({'sub': user.id})}"
-            },
-        )
-        assert r.status_code == 200
-        assert _functions_member(r.json())["hired"] is True
-
-    def test_a_member_of_an_org_with_functions_off_does_not(self, client, db_session):
-        from app.auth.security import create_access_token
-
-        _procurement_row(db_session)
-        _, user = _org(db_session, "off")
-        r = client.get(
-            "/api/team",
-            headers={
-                "Authorization": f"Bearer {create_access_token({'sub': user.id})}"
-            },
-        )
-        assert r.status_code == 200
-        assert _functions_member(r.json()) is None

@@ -56,7 +56,10 @@ class TestRecompute:
         assert out["totalHours"] == 15.5, "stale all-venue total leaked through"
 
     def test_without_recompute_the_total_goes_stale(self):
-        """Pin the old behaviour, so the reason this exists stays visible."""
+        """Pin the old behaviour, so the reason this exists stays visible.
+
+        Also (was test_absent_recompute_key_changes_nothing): the other 143
+        tools declare no recompute and must be unaffected."""
         cfg = {k: v for k, v in CONFIG.items() if k != "recompute"}
         out = apply_response_transform([_roster(SHIFTS)], cfg)[0]
         assert len(out["rosteredShifts"]) == 2
@@ -138,10 +141,3 @@ class TestRecompute:
             cfg = {**CONFIG, "recompute": bad}
             out = apply_response_transform([_roster(SHIFTS)], cfg)[0]
             assert out["totalHours"] == 999.0
-
-    def test_absent_recompute_key_changes_nothing(self):
-        """The other 143 tools declare no recompute and must be unaffected."""
-        cfg = {k: v for k, v in CONFIG.items() if k != "recompute"}
-        assert (
-            apply_response_transform([_roster(SHIFTS)], cfg)[0]["totalHours"] == 999.0
-        )

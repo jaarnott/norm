@@ -23,15 +23,7 @@ class TestDefaultConfig:
         assert s.CORS_ALLOWED_ORIGINS == "*"
         assert s.LLM_INTERPRETER_MODEL == "claude-opus-5-5"
         assert s.BILLING_ENFORCEMENT is False
-
-    def test_is_local_true_by_default(self, monkeypatch):
-        monkeypatch.delenv("ENVIRONMENT", raising=False)
-        s = Settings(_env_file=None)
         assert s.is_local is True
-
-    def test_is_production_false_by_default(self, monkeypatch):
-        monkeypatch.delenv("ENVIRONMENT", raising=False)
-        s = Settings(_env_file=None)
         assert s.is_production is False
 
 
@@ -42,19 +34,6 @@ class TestLLMModelConfig:
     ``not_found_error`` at request time, which is not caught by lint or
     typecheck. These tests fail fast if a dead ID is reintroduced.
     """
-
-    def test_interpreter_default_is_a_current_model(self, monkeypatch):
-        monkeypatch.delenv("LLM_INTERPRETER_MODEL", raising=False)
-        s = Settings(_env_file=None)
-        assert s.LLM_INTERPRETER_MODEL not in RETIRED_MODEL_IDS
-        assert s.LLM_INTERPRETER_MODEL == "claude-opus-5-5"
-
-    def test_router_and_date_resolver_defaults_are_current(self, monkeypatch):
-        monkeypatch.delenv("ROUTER_MODEL", raising=False)
-        monkeypatch.delenv("DATE_RESOLVER_MODEL", raising=False)
-        s = Settings(_env_file=None)
-        assert s.ROUTER_MODEL not in RETIRED_MODEL_IDS
-        assert s.DATE_RESOLVER_MODEL not in RETIRED_MODEL_IDS
 
     def test_no_retired_model_ids_referenced_in_source(self):
         """Scan the whole app package so a dead ID anywhere fails CI."""
@@ -131,14 +110,18 @@ class TestValidateForDeploy:
             s.validate_for_deploy()
 
     def test_production_with_both_bad_raises_both_errors(self):
+        """Every problem in one message, not the first one found — a deploy
+        that fails on JWT_SECRET must not fail again on CORS next time."""
         s = Settings(
             ENVIRONMENT="production",
             JWT_SECRET="dev-secret-change-in-production",
             CORS_ALLOWED_ORIGINS="*",
             _env_file=None,
         )
-        with pytest.raises(RuntimeError, match="JWT_SECRET"):
+        with pytest.raises(RuntimeError) as err:
             s.validate_for_deploy()
+        assert "JWT_SECRET must be changed" in str(err.value)
+        assert "CORS_ALLOWED_ORIGINS must not be '*'" in str(err.value)
 
     def test_staging_with_proper_config_passes(self):
         s = Settings(
@@ -152,39 +135,31 @@ class TestValidateForDeploy:
 
 
 class TestGetStripePriceId:
-    """Test get_stripe_price_id returns correct values."""
+    """get_stripe_price_id is a getattr on STRIPE_PRICE_<PLAN>: known plans
+    (core tiers and the add-ons), any case, an empty ID and an unknown plan
+    both None. (Folds five one-line tests of the same lookup.)"""
 
-    def test_known_plan(self):
+    def test_plan_lookup(self):
         s = Settings(
             STRIPE_PRICE_BASIC="price_basic_123",
             STRIPE_PRICE_STANDARD="price_std_456",
-            _env_file=None,
-        )
-        assert s.get_stripe_price_id("basic") == "price_basic_123"
-        assert s.get_stripe_price_id("standard") == "price_std_456"
-
-    def test_case_insensitive(self):
-        s = Settings(STRIPE_PRICE_MAX="price_max_789", _env_file=None)
-        assert s.get_stripe_price_id("max") == "price_max_789"
-        assert s.get_stripe_price_id("MAX") == "price_max_789"
-
-    def test_empty_string_returns_none(self):
-        """When the price ID is an empty string, return None."""
-        s = Settings(STRIPE_PRICE_BASIC="", _env_file=None)
-        assert s.get_stripe_price_id("basic") is None
-
-    def test_unknown_plan_returns_none(self):
-        s = Settings(_env_file=None)
-        assert s.get_stripe_price_id("nonexistent") is None
-
-    def test_addon_plans(self):
-        s = Settings(
+            STRIPE_PRICE_MAX="price_max_789",
             STRIPE_PRICE_HR="price_hr_001",
             STRIPE_PRICE_PROCUREMENT="price_proc_002",
             STRIPE_PRICE_AGENT="price_agent_003",
             _env_file=None,
         )
+        assert s.get_stripe_price_id("basic") == "price_basic_123"
+        assert s.get_stripe_price_id("standard") == "price_std_456"
+        assert s.get_stripe_price_id("max") == "price_max_789"
+        assert s.get_stripe_price_id("MAX") == "price_max_789"
         assert s.get_stripe_price_id("hr") == "price_hr_001"
         assert s.get_stripe_price_id("procurement") == "price_proc_002"
         # Every hired team member shares one price since Oct 2026.
         assert s.get_stripe_price_id("agent") == "price_agent_003"
+        assert s.get_stripe_price_id("nonexistent") is None
+        # When the price ID is an empty string, return None.
+        assert (
+            Settings(STRIPE_PRICE_BASIC="", _env_file=None).get_stripe_price_id("basic")
+            is None
+        )

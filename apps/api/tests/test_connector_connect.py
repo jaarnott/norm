@@ -463,6 +463,7 @@ class TestConnectIntentDetection:
         db_session.flush()
 
     def test_detects_connector_by_name(self, db_session):
+        """By connector name, and (was test_detects_via_alias) by alias."""
         from app.services.supervisor import _detect_connect_intent
 
         self._specs(db_session)
@@ -471,51 +472,38 @@ class TestConnectIntentDetection:
             == "bamboohr"
         )
         assert _detect_connect_intent("reconnect loadedhub", db_session) == "loadedhub"
-
-    def test_detects_via_alias(self, db_session):
-        from app.services.supervisor import _detect_connect_intent
-
-        self._specs(db_session)
         assert (
             _detect_connect_intent("please connect loaded", db_session) == "loadedhub"
         )
         assert _detect_connect_intent("connect bamboo hr", db_session) == "bamboohr"
 
-    def test_no_verb_no_match(self, db_session):
+    def test_no_match_is_none(self, db_session):
+        """Folds test_no_verb_no_match, test_verb_but_no_connector and
+        test_never_matches_norm_internal."""
         from app.services.supervisor import _detect_connect_intent
 
         self._specs(db_session)
+        # a connector named, but no verb
         assert (
             _detect_connect_intent("how were sales at loadedhub last week", db_session)
             is None
         )
-
-    def test_verb_but_no_connector(self, db_session):
-        from app.services.supervisor import _detect_connect_intent
-
-        self._specs(db_session)
+        # a verb, but no connector
         assert (
             _detect_connect_intent("connect the dots on our sales", db_session) is None
         )
-
-    def test_never_matches_norm_internal(self, db_session):
-        from app.services.supervisor import _detect_connect_intent
-
-        self._specs(db_session)
+        # Norm's own internal connector never matches
         assert _detect_connect_intent("connect to norm", db_session) is None
 
 
 class TestMcpConnectLink:
     def test_connect_link_targets_the_web_connect_route(self):
+        """With a venue, and (was test_connect_link_without_venue) without."""
         from app.mcp import links
 
         url = links.connect_link("loadedhub", venue_id="v1")
         assert "?connect=loadedhub" in url
         assert "venue=v1" in url
-
-    def test_connect_link_without_venue(self):
-        from app.mcp import links
-
         assert links.connect_link("loadedhub").endswith("?connect=loadedhub")
 
 

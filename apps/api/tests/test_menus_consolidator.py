@@ -19,13 +19,11 @@ Facts pinned:
 
 import copy
 import json
-import pathlib
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
+from tests import consolidator_harness as harness
 
-_DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-READ = (_DIR / "get_menus.py").read_text()
-WRITE = (_DIR / "manage_menu.py").read_text()
+READ = harness.source("get_menus")
+WRITE = harness.source("manage_menu")
 
 
 def _line(i, name, price, recipe=True, order=None):
@@ -128,9 +126,7 @@ class Api:
 
 
 def run(code, api, **params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(code, ns)
-    return ns["run"]({"venue": "La Zeppa", **params}, api.call_api, lambda m: None)
+    return harness.run(code, api, **{"venue": "La Zeppa", **params})
 
 
 class TestList:

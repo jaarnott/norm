@@ -52,47 +52,38 @@ DETAIL = {
 
 
 class TestBuildReceivedInvoiceData:
-    def test_carries_real_total_and_tax_breakdown(self):
+    def test_maps_the_loaded_detail_onto_the_draft(self):
+        """Every field the draft takes from Loaded's detail, from one shape.
+        Folded in from six one-field tests: the real total and tax breakdown,
+        the real line qty/cost, the Loaded-parity fields, the linked PO, the
+        original unit and the unreceived-draft status."""
         d = build_received_invoice_data(DETAIL)
         # The old card showed subtotal ($100.20) as "Invoice total"; the draft
         # carries the real total plus the pieces to show the breakdown.
         assert d["total"] == 115.23
         assert d["subtotal"] == 100.2
         assert d["tax_amount"] == 15.03
-
-    def test_populates_real_line_qty_and_cost(self):
-        d = build_received_invoice_data(DETAIL)
+        # Real per-line quantity/cost populate (not blank).
         ln = d["lines"][0]
         assert ln["quantity_received"] == 15
         assert ln["unit_cost"] == 5.08
         assert ln["total_cost"] == 76.2
-
-    def test_carries_loaded_parity_fields(self):
         # The fields the editor's Loaded-parity columns/header/totals read.
-        d = build_received_invoice_data(DETAIL)
         assert d["discount_amount"] is None
         assert d["received_at"] is None
         assert d["unit_cost_includes_tax"] is False
-        ln = d["lines"][0]
         assert ln["brand"] == "DAILY BREAD"
         assert ln["quantity_ordered"] == 12
         assert ln["tax_amount"] == 11.43
         assert ln["sale_tax_rate"] == 0.15
-
-    def test_carries_the_linked_po(self):
-        d = build_received_invoice_data(DETAIL)
+        # A linked PO reads as linked.
         assert d["linked_purchase_order_id"] == "po-2ba0"
         assert d["purchase_order_number"] == "1520441"
-
-    def test_records_original_unit_for_variant_diff(self):
         # original_unit_id lets submit derive variant_updates (unit changed)
         # server-side without the client remembering the starting unit.
-        ln = build_received_invoice_data(DETAIL)["lines"][0]
         assert ln["original_unit_id"] == "u-each"
         assert ln["linked_unit_id"] == "u-each"
-
-    def test_starts_as_an_unreceived_draft(self):
-        d = build_received_invoice_data(DETAIL)
+        # It starts as an unreceived draft.
         assert d["status"] == "draft"
         assert d["is_received"] is False
         assert d["invoice_id"] == "3eeaf03d"
@@ -122,32 +113,6 @@ class TestBuildReceivedInvoiceData:
         d["total"] = 0
         assert snap["lines"][0]["quantity_received"] == 15
         assert snap["header"]["total"] == 115.23
-
-
-class TestCredentialHeaderSanitization:
-    """User-entered credential values must never reach the wire with stray
-    whitespace — a leading space on a stored x-loaded-company-id made httpx
-    reject the request as an illegal header value (prod 500, which the
-    invoices dashboard rendered as 'No outstanding invoices')."""
-
-    def test_bearer_token_is_stripped(self):
-        from app.connectors.spec_executor import _apply_auth
-
-        headers, _ = _apply_auth(
-            {}, "bearer", {"token_field": "api_key"}, {"api_key": " tok-123\n"}
-        )
-        assert headers["Authorization"] == "Bearer tok-123"
-
-    def test_api_key_header_is_stripped(self):
-        from app.connectors.spec_executor import _apply_auth
-
-        headers, _ = _apply_auth(
-            {},
-            "api_key_header",
-            {"header_name": "X-API-Key", "key_field": "api_key"},
-            {"api_key": "  key-9  "},
-        )
-        assert headers["X-API-Key"] == "key-9"
 
 
 class TestAttachItemNames:

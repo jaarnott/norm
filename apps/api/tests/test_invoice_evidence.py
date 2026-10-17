@@ -437,25 +437,21 @@ class TestRecordingASplit:
     }
 
     def test_it_writes_the_note_and_the_reference(self):
+        """One write, checked four ways (folded in): it never links the order,
+        disturbs nothing else, and writes the note the rule reads."""
         lh = _WriteLh(self.BASE)
         out = EV.record_split(lh, "inv-1", "1521169", "IN11411819")
         body = lh.puts[0][2]
         assert out == {"ok": True, "noted": True, "referenced": True}
         assert body["notes"] == "Split order: order 1521169 also covers IN11411819"
         assert body["purchaseOrderNumber"] == "1521169"
-
-    def test_it_never_links_the_order(self):
-        """Loaded is 1:1 — the link belongs to the sibling. Writing it here
-        would steal it from the invoice that legitimately holds it."""
-        lh = _WriteLh(self.BASE)
-        EV.record_split(lh, "inv-1", "1521169", "IN11411819")
-        assert lh.puts[0][2]["linkedPurchaseOrderId"] is None
-
-    def test_it_disturbs_nothing_else(self):
-        lh = _WriteLh(self.BASE)
-        EV.record_split(lh, "inv-1", "1521169", "IN11411819")
-        body = lh.puts[0][2]
+        # Loaded is 1:1 — the link belongs to the sibling. Writing it here
+        # would steal it from the invoice that legitimately holds it.
+        assert body["linkedPurchaseOrderId"] is None
+        # It disturbs nothing else.
         assert body["total"] == 295.09 and body["lines"] == [{"id": "l1"}]
+        # Receiving writes this sentence too; both must parse.
+        assert EV.split_order_number(body["notes"]) == "1521169"
 
     def test_it_is_idempotent(self):
         """A daily run must not rewrite the same invoice forever."""
@@ -485,12 +481,6 @@ class TestRecordingASplit:
         notes = lh.puts[0][2]["notes"]
         assert notes.startswith("Driver left it out back")
         assert "Split order: order 1521169" in notes
-
-    def test_the_note_it_writes_is_the_one_the_rule_reads(self):
-        """Receiving writes this sentence too; both must parse."""
-        lh = _WriteLh(self.BASE)
-        EV.record_split(lh, "inv-1", "1521169", "IN11411819")
-        assert EV.split_order_number(lh.puts[0][2]["notes"]) == "1521169"
 
     def test_an_unreadable_invoice_writes_nothing(self):
         lh = _WriteLh({})
@@ -693,31 +683,16 @@ class TestItComposesInstructionsExactlyLikeReceiving:
 
         return _spy
 
-    def test_it_trains_a_spec_less_supplier_before_composing(self, monkeypatch):
-        """A spec-less supplier is a spec-less supplier — sister venue or not.
-        Training must land BEFORE the instructions are composed, because a
-        fresh spec is part of this pass's cache key, not the next one's."""
-        calls = []
-        self._run(
-            monkeypatch,
-            [
-                {
-                    "id": "inv-1",
-                    "fileId": "f-1",
-                    "supplierName": "The Glass Goose",
-                    "supplierId": "s-1",
-                }
-            ],
-            sensei=self._sensei_spy(calls),
-        )
-        assert [c[1] for c in calls] == ["The Glass Goose"]
-
     def test_the_sensei_is_asked_with_the_same_aliases_extraction_uses(
         self, monkeypatch
     ):
         """THE bug: asked under the bare feed name, a supplier filed under a
         different spelling looks spec-less for ever, so the guard never fires
-        and a working spec is re-analysed on every invoice."""
+        and a working spec is re-analysed on every invoice.
+
+        Folded in: a spec-less supplier is trained — sister venue or not —
+        BEFORE the instructions are composed, because a fresh spec is part of
+        this pass's cache key, not the next one's."""
         calls = []
         self._run(
             monkeypatch,
@@ -731,6 +706,7 @@ class TestItComposesInstructionsExactlyLikeReceiving:
             ],
             sensei=self._sensei_spy(calls),
         )
+        assert [c[1] for c in calls] == ["Kaans Catering"]
         assert calls[0][2] == ["CATERING SUPPLIES LTD", "Kaan's Catering"]
 
     def test_every_new_supplier_is_studied_once_with_no_limit(self, monkeypatch):

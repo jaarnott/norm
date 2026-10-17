@@ -32,15 +32,13 @@ class TestItPrefersArithmeticToTheModel:
         assert unit["id"] == "u-700"
         assert "same pack" in why
 
-    def test_an_exact_name_wins_a_tie(self):
+    def test_an_exactly_printed_name_is_taken_at_its_word(self):
         """'6x1000mL' and '6 Pack' are equivalent by count, so equivalence
-        alone cannot choose — the printed name can."""
+        alone cannot choose — the printed name can, either way round: '6 Pack'
+        printed on the copy IS the '6 Pack' unit, even though '6x1000mL' is
+        arithmetically equivalent to it."""
         unit, _ = guess_unit({"unit": "6x1000mL"}, UNITS)
         assert unit["id"] == "u-6x1l"
-
-    def test_an_exactly_printed_name_is_taken_at_its_word(self):
-        """'6 Pack' printed on the copy IS the '6 Pack' unit, even though
-        '6x1000mL' is arithmetically equivalent to it."""
         unit, why = guess_unit({"unit": "6 Pack"}, UNITS)
         assert unit["id"] == "u-6pk" and "exactly" in why
 

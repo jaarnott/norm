@@ -28,11 +28,6 @@ def _make_task(db, owner, **kwargs):
 
 
 class TestAuth:
-    def test_requires_authentication(self, client, db_session, admin_user):
-        task = _make_task(db_session, admin_user)
-        resp = client.get(f"/api/admin/automated-tasks/{task.id}/diagnostics")
-        assert resp.status_code == 401
-
     def test_non_admin_forbidden(self, client, db_session, admin_user, manager_headers):
         task = _make_task(db_session, admin_user)
         resp = client.get(

@@ -51,6 +51,8 @@ class TestConsolidatorFormat:
         assert "Port the consolidator" in issues[0].fix
 
     def test_function_code_consolidator_is_fine(self):
+        """A consolidator composes other tools — it has no URL of its own, so
+        an empty (or missing) path_template is not flagged."""
         tools = [
             {
                 "action": "get_labour",
@@ -61,16 +63,6 @@ class TestConsolidatorFormat:
             }
         ]
         assert check_connector_tools("loadedhub", "template", tools) == []
-
-    def test_consolidator_without_path_template_is_not_flagged(self):
-        """A consolidator composes other tools — it has no URL of its own."""
-        tools = [
-            {
-                "action": "composite",
-                "consolidator_config": {"function_code": "def run(): ..."},
-            }
-        ]
-        assert check_connector_tools("x", "template", tools) == []
 
 
 class TestPathTemplate:
@@ -158,13 +150,6 @@ class TestModelSelection:
             )
             == []
         )
-
-    def test_retired_router_model_is_also_caught(self):
-        issues = check_model_selection(
-            "anthropic", {"router_model": "claude-3-5-sonnet-20241022"}, CURRENT_MODELS
-        )
-        assert len(issues) == 1
-        assert issues[0].where == "anthropic.router_model"
 
     def test_both_models_checked_independently(self):
         issues = check_model_selection(

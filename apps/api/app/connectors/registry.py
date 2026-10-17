@@ -2,36 +2,9 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.connectors.base import BaseConnector
 from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
-
-
-def get_connector(domain: str, db: Session) -> BaseConnector:
-    """Build a BaseConnector instance from DB config.
-
-    Used only for legacy code paths that need a BaseConnector.
-    Prefer resolve_connector() for spec-driven resolution.
-    """
-    from app.db.models import Connection
-
-    # Look up the connector config for this domain
-    row = (
-        db.query(Connection)
-        .filter(
-            Connection.connector_name == domain,
-            Connection.enabled == "true",
-        )
-        .first()
-    )
-
-    if row and domain == "bamboohr":
-        from app.connectors.bamboohr import BambooHrConnector
-
-        return BambooHrConnector(config=row.config)
-
-    raise ValueError(f"No connector configured for domain: {domain}")
 
 
 # ---------------------------------------------------------------------------

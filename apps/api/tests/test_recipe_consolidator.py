@@ -8,12 +8,9 @@ line refs); notes HTML is stripped to text; cost rides in from Loaded's own
 costs endpoint at priceType=Live and its failure never breaks the read.
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-_DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-CODE = (_DIR / "get_recipes.py").read_text()
+CODE = harness.source("get_recipes")
 
 # Field names as the live endpoint returns them (WINTER SOUR probe, 21 Aug
 # 2026): quantities are stored in STOCK units (0.03 at unitRatio 0.001 is
@@ -124,9 +121,7 @@ class Api:
 
 
 def run(code, api, **params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(code, ns)
-    return ns["run"]({"venue": "La Zeppa", **params}, api.call_api, lambda m: None)
+    return harness.run(code, api, **{"venue": "La Zeppa", **params})
 
 
 class TestSearch:
@@ -144,11 +139,6 @@ class TestSearch:
     def test_deleted_recipes_filtered(self):
         out = run(CODE, Api(), query="retired")
         assert out["total_matches"] == 0
-
-    def test_limit_caps_query_matches(self):
-        out = run(CODE, Api(), query="cocktail", limit=1)
-        assert out["shown"] == 1
-        assert out["total_matches"] == 2
 
     def test_no_query_lists_all_with_note(self):
         out = run(CODE, Api())
@@ -182,6 +172,7 @@ class TestSearch:
 
 class TestOneRecipe:
     def test_summary_shape(self):
+        """...with the notes' pasted HTML stripped to text."""
         out = run(CODE, Api(), recipe_id="r-1")
         r = out["recipe"]
         assert out["detail"] == "summary"
@@ -202,10 +193,7 @@ class TestOneRecipe:
             },
         ]
         assert out["cost"] == {"cost": 1.088, "unit": "Serving", "price_type": "Live"}
-
-    def test_notes_html_stripped(self):
-        out = run(CODE, Api(), recipe_id="r-1")
-        notes = out["recipe"]["notes"]
+        notes = r["notes"]
         assert "<" not in notes and "&amp;" not in notes
         assert "Add bourbon & lemon" in notes
         assert "Shake hard" in notes
@@ -220,9 +208,7 @@ class TestOneRecipe:
                 return big
             return api.call_api(connector, action, params)
 
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"]({"venue": "x", "recipe_id": "r-1"}, call_api, lambda m: None)
+        out = harness.call(CODE, {"venue": "x", "recipe_id": "r-1"}, call_api)
         assert len(out["recipe"]["notes"]) < 1600
         assert "truncated" in out["recipe"]["notes"]
 
@@ -237,9 +223,11 @@ class TestOneRecipe:
         assert out == {"error": "not found"}
 
     def test_cost_failure_never_breaks_the_read(self):
+        """...and is reported, not silent (consolidator review, 1 Oct 2026)."""
         out = run(CODE, Api(cost_error=True), recipe_id="r-1")
         assert out["recipe"]["name"] == "COCKTAIL - WINTER SOUR"
         assert "cost" not in out
+        assert "cost lookup failed" in out["cost_error"]
 
 
 class TestReviewFixes:
@@ -272,11 +260,6 @@ class TestReviewFixes:
         none = run(CODE, Api(), recipe_id="f1dd7fda")
         assert "matches no recipe" in none["error"]
 
-    def test_a_failed_cost_lookup_is_reported_not_silent(self):
-        out = run(CODE, Api(cost_error=True), recipe_id="r-1")
-        assert "cost" not in out
-        assert "cost lookup failed" in out["cost_error"]
-
     def test_include_cost_false_as_text_is_false(self):
         api = Api()
         run(CODE, api, query="cocktail", include_cost="false")
@@ -289,6 +272,7 @@ class TestReviewFixes:
         assert [a for a, _ in api.calls].count("get_recipe_costs_raw") == 1
 
     def test_limit_one_does_not_open_an_arbitrary_match(self):
+        """limit caps the matches shown, not the count found."""
         api = Api()
         out = run(CODE, api, query="cocktail", limit=1)
         assert out["total_matches"] == 2 and out["shown"] == 1

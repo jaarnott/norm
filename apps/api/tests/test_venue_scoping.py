@@ -56,16 +56,14 @@ class TestGetUserVenues:
 
 class TestUserCanAccessVenue:
     def test_true_only_with_a_matching_access_row(self, db_session, admin_user, venue):
+        """Also: no venue requested is allowed, and so is the system context
+        (user_id=None)."""
         assert user_can_access_venue(db_session, admin_user.id, venue.id) is False
+        assert user_can_access_venue(db_session, admin_user.id, None) is True
+        assert user_can_access_venue(db_session, None, venue.id) is True
         db_session.add(UserVenueAccess(user_id=admin_user.id, venue_id=venue.id))
         db_session.flush()
         assert user_can_access_venue(db_session, admin_user.id, venue.id) is True
-
-    def test_no_venue_requested_is_allowed(self, db_session, admin_user):
-        assert user_can_access_venue(db_session, admin_user.id, None) is True
-
-    def test_system_context_allowed(self, db_session, venue):
-        assert user_can_access_venue(db_session, None, venue.id) is True
 
 
 class TestListVenuesEndpoint:

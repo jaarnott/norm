@@ -32,12 +32,10 @@ And from the consolidator review (1 Oct 2026), each against the live account:
 """
 
 import copy
-import pathlib
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
+from tests import consolidator_harness as harness
 
-_DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-CODE = (_DIR / "get_hr.py").read_text()
+CODE = harness.source("get_hr")
 
 
 def _emp(
@@ -251,9 +249,7 @@ class Api:
 
 
 def run(api, **params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(CODE, ns)
-    return ns["run"](dict(params), api.call_api, lambda m: None)
+    return harness.run(CODE, api, **params)
 
 
 class TestEmployees:
@@ -311,12 +307,6 @@ class TestJobs:
     def test_status_all_and_location(self):
         out = run(Api(), view="jobs", status="all", location="la zeppa")
         assert [j["id"] for j in out["jobs"]] == [100]
-
-    def test_bad_status_refused(self):
-        assert (
-            "job status must be one of"
-            in run(Api(), view="jobs", status="closed")["error"]
-        )
 
 
 class TestApplications:
@@ -461,7 +451,10 @@ class TestFailuresAreBambooHRs:
 
     def test_a_bad_job_status_is_refused_before_calling(self):
         api = Api()
-        assert "job status must be one of" in run(api, view="jobs", status="x")["error"]
+        assert (
+            "job status must be one of"
+            in run(api, view="jobs", status="closed")["error"]
+        )
         assert api.calls == []
 
 

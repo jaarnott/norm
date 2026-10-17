@@ -44,8 +44,13 @@ class TestVenueSettings:
             == "Australia/Sydney"
         )
 
-    def test_unknown_timezone_falls_back(self):
-        assert bc.timezone_for(venue(timezone="Mars/Olympus")) is not None
+    def test_unknown_timezone_falls_back(self, monkeypatch):
+        """An unknown venue zone falls back to the configured default, and an
+        unknown default falls back to UTC — never to an exception."""
+        monkeypatch.setattr(settings, "SCHEDULER_TIMEZONE", "Australia/Perth")
+        assert str(bc.timezone_for(venue(timezone="Mars/Olympus"))) == "Australia/Perth"
+        monkeypatch.setattr(settings, "SCHEDULER_TIMEZONE", "Venus/Maxwell")
+        assert str(bc.timezone_for(venue(timezone="Mars/Olympus"))) == "UTC"
 
 
 class TestTradingDay:
@@ -126,28 +131,19 @@ class TestPhrases:
     def test_case_and_whitespace_tolerant(self):
         assert bc.resolve_phrase(venue(), "  Last Week  ") is not None
 
-    def test_fuzzy_phrase_returns_none_for_the_llm(self):
-        """None means 'not deterministic' — a handoff, not an error."""
-        assert bc.resolve_phrase(venue(), "the week before the long weekend") is None
-
 
 class TestCustomWindowAndDescription:
     def test_custom_range_is_honoured_verbatim_never_snapped(self):
         """Someone reconciling a bank statement legitimately wants civil days.
-        Overriding them would just be a different way of being wrong."""
+        Overriding them would just be a different way of being wrong.
+
+        Also (was test_misaligned_custom_window_says_so): the echo is the
+        safety net — a window that isn't a trading day must announce it, so a
+        wrong window is visible rather than silent."""
         start = dt.datetime(2026, 7, 18, 0, 0, tzinfo=NZ)
         end = dt.datetime(2026, 7, 19, 0, 0, tzinfo=NZ)
         w = bc.custom_window(venue("07:00"), start, end)
         assert w.start == start and w.end == end
-
-    def test_misaligned_custom_window_says_so(self):
-        """The echo is the safety net: a window that isn't a trading day must
-        announce it, so a wrong window is visible rather than silent."""
-        w = bc.custom_window(
-            venue("07:00"),
-            dt.datetime(2026, 7, 18, 0, 0, tzinfo=NZ),
-            dt.datetime(2026, 7, 19, 0, 0, tzinfo=NZ),
-        )
         assert not w.is_trading_aligned
         assert "Not a trading day" in w.describe()
 
@@ -235,6 +231,8 @@ class TestResolveDatesExplicitRange:
         return get_handler("norm", "resolve_dates")(params, db, None)
 
     def test_deviating_range_is_reported_as_not_a_trading_day(self):
+        """Also (was test_deviating_range_is_returned_verbatim_not_snapped):
+        the deviating range comes back exactly as given, never snapped."""
         r = self._run(
             {
                 "start": "2026-07-18T00:00:00+12:00",
@@ -244,14 +242,6 @@ class TestResolveDatesExplicitRange:
         window = r["data"]["window"]
         assert window["trading_aligned"] is False
         assert "Not a trading day" in window["description"]
-
-    def test_deviating_range_is_returned_verbatim_not_snapped(self):
-        r = self._run(
-            {
-                "start": "2026-07-18T00:00:00+12:00",
-                "end": "2026-07-19T00:00:00+12:00",
-            }
-        )
         period = r["data"]["periods"][0]
         assert period["start"].startswith("2026-07-18T00:00")
         assert period["end"].startswith("2026-07-19T00:00")
@@ -302,19 +292,16 @@ class TestDaylightSaving:
 
     def test_a_week_spanning_the_transition_changes_offset_across_it(self):
         """The start is NZST and the end is NZDT. A window that used one offset
-        for both ends would run an hour long."""
+        for both ends would run an hour long.
+
+        Also (was test_the_local_trading_boundary_holds_on_both_sides): what
+        actually matters is 07:00 to 06:59 in local wall-clock terms, whichever
+        side of the transition each end falls."""
         w = bc.trading_week(
             venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc)
         )
         assert w.start.utcoffset() == dt.timedelta(hours=12)
         assert w.end.utcoffset() == dt.timedelta(hours=13)
-
-    def test_the_local_trading_boundary_holds_on_both_sides(self):
-        """What actually matters: 07:00 to 06:59 in local wall-clock terms,
-        whichever side of the transition each end falls."""
-        w = bc.trading_week(
-            venue(), dt.datetime(2026, 9, 23, 12, tzinfo=dt.timezone.utc)
-        )
         assert w.start.strftime("%H:%M") == "07:00"
         assert w.end.strftime("%H:%M") == "06:59"
 

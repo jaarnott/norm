@@ -16,7 +16,7 @@ import { readPageParam, useFunctionsMeta } from './shared/meta';
 import EventPage from './events/EventPage';
 import EventsOverview from './events/EventsOverview';
 import type { EventsView } from './events/EventsOverview';
-import { todayIn } from './events/logic';
+import { todayIn } from './shared/dates';
 import { setPageParams } from './events/nav';
 
 const viewParam = (): EventsView => (readPageParam('view') === 'calendar' ? 'calendar' : 'list');

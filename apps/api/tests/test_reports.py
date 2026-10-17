@@ -24,7 +24,7 @@ class TestCreateReport:
         assert data["charts"] == []
         assert data["id"]
 
-    def test_create_report_default_title(self, client, admin_headers):
+        # no title → "Untitled Report"
         resp = client.post("/api/reports", json={}, headers=admin_headers)
         assert resp.status_code == 200
         assert resp.json()["title"] == "Untitled Report"
@@ -91,15 +91,13 @@ class TestGetReport:
         assert resp.status_code == 200
         assert resp.json()["title"] == "My Report"
 
-    def test_get_report_not_found_returns_404(self, client, admin_headers):
-        resp = client.get(f"/api/reports/{uuid.uuid4()}", headers=admin_headers)
-        assert resp.status_code == 404
-
 
 class TestUpdateReport:
     """PATCH /api/reports/{report_id}"""
 
-    def test_update_report_title(self, client, db_session, admin_user, admin_headers):
+    def test_update_report_title_and_layout(
+        self, client, db_session, admin_user, admin_headers
+    ):
         report = Report(
             id=str(uuid.uuid4()),
             user_id=admin_user.id,
@@ -120,15 +118,6 @@ class TestUpdateReport:
         assert resp.json()["title"] == "New Title"
         assert resp.json()["description"] == "Updated description"
 
-    def test_update_report_layout(self, client, db_session, admin_user, admin_headers):
-        report = Report(
-            id=str(uuid.uuid4()),
-            user_id=admin_user.id,
-            title="Report",
-        )
-        db_session.add(report)
-        db_session.flush()
-
         layout = [{"chart_id": "abc", "col": 1, "row": 1, "colSpan": 12, "rowSpan": 8}]
         resp = client.patch(
             f"/api/reports/{report.id}",
@@ -139,16 +128,6 @@ class TestUpdateReport:
         )
         assert resp.status_code == 200
         assert resp.json()["layout"] == layout
-
-    def test_update_report_not_found_returns_404(self, client, admin_headers):
-        resp = client.patch(
-            f"/api/reports/{uuid.uuid4()}",
-            json={
-                "title": "Nope",
-            },
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
 
 
 class TestDeleteReport:
@@ -166,10 +145,6 @@ class TestDeleteReport:
         resp = client.delete(f"/api/reports/{report.id}", headers=admin_headers)
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
-
-    def test_delete_report_not_found_returns_404(self, client, admin_headers):
-        resp = client.delete(f"/api/reports/{uuid.uuid4()}", headers=admin_headers)
-        assert resp.status_code == 404
 
 
 class TestAddChart:
@@ -201,16 +176,6 @@ class TestAddChart:
         assert data["charts"][0]["chart_type"] == "bar"
         # Layout should be auto-populated
         assert len(data["layout"]) == 1
-
-    def test_add_chart_report_not_found_returns_404(self, client, admin_headers):
-        resp = client.post(
-            f"/api/reports/{uuid.uuid4()}/charts",
-            json={
-                "title": "Chart",
-            },
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
 
     def test_add_chart_missing_title_returns_422(
         self,
@@ -264,24 +229,6 @@ class TestUpdateChart:
         assert resp.json()["title"] == "New Chart"
         assert resp.json()["chart_type"] == "line"
 
-    def test_update_chart_not_found_returns_404(
-        self, client, db_session, admin_user, admin_headers
-    ):
-        report = Report(
-            id=str(uuid.uuid4()),
-            user_id=admin_user.id,
-            title="Report",
-        )
-        db_session.add(report)
-        db_session.flush()
-
-        resp = client.patch(
-            f"/api/reports/{report.id}/charts/{uuid.uuid4()}",
-            json={"title": "Nope"},
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
-
 
 class TestRemoveChart:
     """DELETE /api/reports/{report_id}/charts/{chart_id}"""
@@ -313,9 +260,13 @@ class TestRemoveChart:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
-    def test_remove_chart_not_found_returns_404(
+
+class TestNotFound:
+    def test_every_route_404s_for_an_unknown_report_or_chart(
         self, client, db_session, admin_user, admin_headers
     ):
+        """Get, update and delete a report, and add, update and remove a
+        chart: an id that does not exist is a 404 on each (folds six tests)."""
         report = Report(
             id=str(uuid.uuid4()),
             user_id=admin_user.id,
@@ -323,9 +274,15 @@ class TestRemoveChart:
         )
         db_session.add(report)
         db_session.flush()
-
-        resp = client.delete(
-            f"/api/reports/{report.id}/charts/{uuid.uuid4()}",
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
+        missing = uuid.uuid4()
+        calls = [
+            ("GET", f"/api/reports/{missing}", None),
+            ("PATCH", f"/api/reports/{missing}", {"title": "Nope"}),
+            ("DELETE", f"/api/reports/{missing}", None),
+            ("POST", f"/api/reports/{missing}/charts", {"title": "Chart"}),
+            ("PATCH", f"/api/reports/{report.id}/charts/{missing}", {"title": "Nope"}),
+            ("DELETE", f"/api/reports/{report.id}/charts/{missing}", None),
+        ]
+        for method, url, body in calls:
+            resp = client.request(method, url, json=body, headers=admin_headers)
+            assert resp.status_code == 404, (method, url, resp.status_code)

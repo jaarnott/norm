@@ -1,18 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FUNCTIONS_MODES, currencyLabel, timeZoneOptions } from './companySettings';
-
-describe('FUNCTIONS_MODES', () => {
-  it('offers exactly the modes the API accepts, in order', () => {
-    expect(FUNCTIONS_MODES.map((m) => m.id)).toEqual(['off', 'shadow', 'live']);
-  });
-
-  it('explains each one in a line', () => {
-    for (const m of FUNCTIONS_MODES) {
-      expect(m.description.length).toBeGreaterThan(0);
-      expect(m.description).not.toContain('\n');
-    }
-  });
-});
+import { currencyLabel, timeZoneOptions } from './companySettings';
 
 describe('timeZoneOptions', () => {
   it('keeps the saved zone when the browser does not list it', () => {

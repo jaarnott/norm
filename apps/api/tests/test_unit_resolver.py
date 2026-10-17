@@ -158,15 +158,13 @@ class TestCodeFindsTheUnit:
         assert match_unit("4.5 L", UNITS)["id"] == "u-6x750"  # a multipack's total
         assert match_unit("6x750mL", UNITS)["id"] == "u-6x750"
 
-    def test_one_litre_is_never_each(self):
-        # The loose 'equivalent' rule reads a single bottle as Each; picking a
-        # unit must not (Coconut Milk 1L landed on Each in testing).
-        assert match_unit("1 L", UNITS)["id"] in ("u-1l", "u-litre")
-        assert match_unit("each", UNITS)["id"] == "u-each"
-
     def test_the_size_as_written_then_a_base_unit(self):
+        # One litre is never Each: the loose 'equivalent' rule reads a single
+        # bottle as Each; picking a unit must not (Coconut Milk 1L landed on
+        # Each in testing).
         assert match_unit("1 L", UNITS)["id"] == "u-1l"
         assert match_unit("1 litre", UNITS)["id"] == "u-litre"
+        assert match_unit("each", UNITS)["id"] == "u-each"
 
     def test_nothing_that_merely_resembles(self):
         assert match_unit("750 mL", UNITS) is None

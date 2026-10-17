@@ -10,8 +10,12 @@
 * the sync follows a handed-over draft: sent from Gmail → sent and linked
   to the message (a proposal draft's link then makes the enquiry quoted);
   deleted in Gmail → unlocked; a hand-over that died half-way → unlocked;
-* shadow mode refuses every draft write; other organisations' drafts don't
-  exist.
+* other organisations' drafts don't exist.
+
+Versioned edits (a stale version is a 409) and shadow mode refusing draft
+writes are held through HTTP, in test_functions_mailbox_inbox.py
+(``test_drafts_over_http_including_the_hand_over``, ``TestGates``) — the
+router passes straight through to this service.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ import pytest
 
 from app.db.functions_models import FnEmailDraft, FnProposal, FnProposalEvent
 from app.services.functions import status as status_svc
-from app.services.functions.errors import Conflict, Invalid, NotFound, NotLive
+from app.services.functions.errors import Conflict, Invalid, NotFound
 from app.services.functions.mailbox import drafts, sync
 from tests.functions_mailbox_fakes import (
     MAILBOX,
@@ -46,8 +50,8 @@ def fake(monkeypatch):
     return fake
 
 
-def _setup(db, fake, mode="live"):
-    w = mailbox_world(db, mode=mode)
+def _setup(db, fake):
+    w = mailbox_world(db)
     fake.add_message(
         frm=f"Casey <{CUSTOMER}>",
         to=[MAILBOX],
@@ -84,18 +88,6 @@ def _reload(db, d) -> FnEmailDraft:
 
 
 class TestNormDrafts:
-    def test_edits_are_versioned(self, db_session, fake):
-        w = _setup(db_session, fake)
-        d = _draft(db_session, w)
-        v = d.version
-        drafts.update_draft(
-            db_session, w.ctx(), d.id, expected_version=v, subject="Re: Party"
-        )
-        with pytest.raises(Conflict):
-            drafts.update_draft(
-                db_session, w.ctx(), d.id, expected_version=v, subject="stale"
-            )
-
     def test_bodies_are_cleaned_on_save(self, db_session, fake):
         w = _setup(db_session, fake)
         d = _draft(
@@ -112,11 +104,6 @@ class TestNormDrafts:
         assert d.status == "sent" and d.sent_gmail_message_id == result.gmail_message_id
         with pytest.raises(Conflict):
             drafts.update_draft(db_session, w.ctx(), d.id, subject="late")
-
-    def test_shadow_mode_refuses_draft_writes(self, db_session, fake):
-        w = _setup(db_session, fake, mode="shadow")
-        with pytest.raises(NotLive):
-            _draft(db_session, w)
 
     def test_another_organisations_draft_does_not_exist(self, db_session, fake):
         w = _setup(db_session, fake)
@@ -271,19 +258,18 @@ class TestSyncFollowsHandedOverDrafts:
 class TestDraftModes:
     """A draft's mode decides how it goes out: reply / reply_all on its
     thread, new as a new conversation, forward as a new conversation that
-    carries the thread's message. Forward drafts need the drafts ``mode``
-    column (requested from the coordinator); until it exists they are
-    refused and the forward is sent directly."""
+    carries the thread's message."""
 
-    def test_the_default_mode_is_what_the_draft_holds(self, db_session, fake):
+    def test_the_default_mode_is_what_the_draft_holds_and_must_fit(
+        self, db_session, fake
+    ):
+        """Without a mode, a draft on a thread is a reply and one without is
+        new; a mode that doesn't fit the conversation is refused."""
         w = _setup(db_session, fake)
         reply = _draft(db_session, w)
         new = _draft(db_session, w, gmail_thread_id=None, subject="Hello")
         assert drafts.draft_dict(reply)["mode"] == "reply"
         assert drafts.draft_dict(new)["mode"] == "new"
-
-    def test_modes_must_fit_the_conversation(self, db_session, fake):
-        w = _setup(db_session, fake)
         with pytest.raises(Invalid):
             _draft(db_session, w, mode="new")  # has a thread
         with pytest.raises(Invalid):
@@ -296,19 +282,11 @@ class TestDraftModes:
     ):
         w = _setup(db_session, fake)
         d = _draft(db_session, w, mode="reply_all", cc=["partner@clientco.nz"])
-        assert drafts.draft_dict(d)["mode"] in ("reply_all", "reply")
+        assert drafts.draft_dict(d)["mode"] == "reply_all"
         drafts.send_draft(db_session, w.ctx(), d.id, idempotency_key="ra-1")
         assert fake.sent[-1]["threadId"] == "t-1"
         assert fake.sent_message()["Cc"] == "partner@clientco.nz"
 
-    @pytest.mark.skipif(drafts._HAS_MODE, reason="the mode column exists")
-    def test_forward_drafts_wait_for_the_mode_column(self, db_session, fake):
-        w = _setup(db_session, fake)
-        with pytest.raises(Invalid) as exc:
-            _draft(db_session, w, mode="forward", to=["boss@cookbros.co.nz"])
-        assert "send the forward" in exc.value.message
-
-    @pytest.mark.skipif(not drafts._HAS_MODE, reason="needs fn_email_drafts.mode")
     def test_a_forward_draft_forwards_and_survives_a_hand_over(self, db_session, fake):
         w = _setup(db_session, fake)
         d = _draft(

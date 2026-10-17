@@ -17,7 +17,6 @@ plays Calendar, Drive and tokeninfo and records every request. Pinned:
   connection is never used, even when its id is handed in.
 """
 
-import io
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -290,6 +289,7 @@ class TestSingleInterview:
     def test_invite_from_the_venue_mailbox_to_the_panel(
         self, db_session, org, author, venue, hiring, google
     ):
+        """The invite, and the pack shared with its guests only."""
         conn = _mailbox(db_session, venue)
         job, (app_id,), panel = _world(db_session, org, author, venue)
         out = _run(
@@ -333,26 +333,13 @@ class TestSingleInterview:
         )
         assert iv["pack_file_id"] and iv["pack_drive_file_ids"] == ["drive1"]
 
-    def test_the_pack_is_shared_with_guests_only(
-        self, db_session, org, author, venue, hiring, google
-    ):
-        _mailbox(db_session, venue)
-        job, (app_id,), panel = _world(db_session, org, author, venue)
-        out = _run(
-            db_session,
-            hiring,
-            author,
-            op="schedule_interview",
-            application_id=app_id,
-            scheduled_at=FUTURE.isoformat(),
-            interviewer_ids=panel,
-        )
+        # The pack is shared with the guests only — never "anyone with the link".
         perms = google.calls("POST", "/permissions")
         assert [p[2] for p in perms] == [
             {"role": "reader", "type": "user", "emailAddress": "pat@fed.nz"}
         ]
         assert not [p for p in perms if (p[2] or {}).get("type") == "anyone"]
-        event = google.events[out["calendar"]["event_id"]]
+        event = google.events[cal["event_id"]]
         assert event["attachments"][0]["fileUrl"] == "https://drive/1"
         assert event["attachments"][0]["mimeType"] == "application/pdf"
         # the pack itself: the CV merged after the cover page
@@ -738,13 +725,6 @@ class TestTheDoorDirectly:
         assert ran(True)["pdf_override"] is not None
         built = ran(False)
         assert built["calendar_override"] is None and built["pdf_override"] is None
-
-
-def test_pack_bytes_are_a_real_pdf():
-    from pypdf import PdfReader
-
-    data = _small_pdf()
-    assert PdfReader(io.BytesIO(data)).pages[0].extract_text().strip() == "My CV"
 
 
 class TestNormOnlyTouchesItsOwnEvents:

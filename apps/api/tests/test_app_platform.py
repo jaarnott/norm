@@ -1023,22 +1023,6 @@ class TestAppAgent:
             "Authorization": f"Bearer {create_access_token({'sub': user.id, 'email': user.email})}"
         }
 
-    def test_an_app_can_join_a_real_agents_menu(self, db_session, org, author):
-        out = AR.save_app(
-            db_session,
-            author,
-            {
-                "name": "Hiring",
-                "slug": "recruiting",
-                "agent": "hr",
-                "spec": READ_SPEC,
-                "ui_source": "<div/>",
-            },
-        )
-        assert out["slug"] == "recruiting"
-        app = db_session.query(App).filter(App.slug == "recruiting").first()
-        assert app.agent == "hr"
-
     def test_an_unregistered_agent_is_refused_by_name(self, db_session, org, author):
         with pytest.raises(HTTPException) as e:
             AR.save_app(
@@ -1073,10 +1057,11 @@ class TestAppAgent:
     def test_a_later_save_that_omits_the_agent_does_not_move_the_app(
         self, db_session, org, author
     ):
-        """The builder revises an app by sending a whole spec. If that dropped
-        the agent, an app would silently jump back to the App Builder menu on
-        its next edit."""
-        AR.save_app(
+        """An app can join a real agent's menu — and stays there. The builder
+        revises an app by sending a whole spec. If that dropped the agent, an
+        app would silently jump back to the App Builder menu on its next
+        edit."""
+        out = AR.save_app(
             db_session,
             author,
             {
@@ -1087,6 +1072,9 @@ class TestAppAgent:
                 "ui_source": "<div/>",
             },
         )
+        assert out["slug"] == "hiring2"
+        app = db_session.query(App).filter(App.slug == "hiring2").first()
+        assert app.agent == "hr"
         AR.save_app(
             db_session,
             author,

@@ -98,25 +98,10 @@ class TestFinalSummaryContract:
     site took the tuple whole, so `_extract_text` hit `.content` on a tuple,
     raised AttributeError, and a bare `except Exception` swallowed it —
     replacing the summary the user had just watched stream in with boilerplate.
+    The unpack itself is pinned by the real loop: test_tool_loop_endings.py::
+    TestTheSiblingExitsAlsoLandAndSettle::test_a_wrap_up_answer_settles_the_thread
+    saves the wrap-up's own text, which a tuple there could never produce.
     """
-
-    def test_extract_text_cannot_read_an_unpacked_tuple(self):
-        # Why the unpack matters: this is the failure the bare except hid.
-        import pytest
-
-        with pytest.raises(AttributeError):
-            _extract_text((_resp(_text("the real summary")), "llm-call-id"))
-
-    def test_the_summary_call_site_unpacks(self):
-        # Guards the specific line that regressed, without booting the loop.
-        import inspect
-
-        from app.agents import tool_loop
-
-        src = inspect.getsource(tool_loop._execute_loop)
-        assert "final_response, _ = call_llm_with_tools(" in src, (
-            "the max-iterations summary must unpack (response, llm_call_id)"
-        )
 
     def test_boilerplate_is_reserved_for_real_api_failures(self):
         # A bare `except Exception` turned coding errors into that boilerplate.

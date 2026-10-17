@@ -1,9 +1,10 @@
 """Supplier invoice specs: CRUD router + the engine-only read handler.
 
 The specs are admin-maintained per-supplier extraction notes (name + aliases +
-instructions) the review engine appends to the PDF-extraction prompt. The
-engine-side matching/injection is covered in
-test_invoice_review_consolidator.py::TestSupplierSpecs.
+instructions) the review engine appends to the PDF-extraction prompt. Which
+spec an invoice gets is covered in test_supplier_identity.py (matching) and
+test_invoice_extraction.py::TestComposer (the notes reaching the prompt); the
+alias guards on these routes in test_supplier_spec_hygiene.py.
 """
 
 
@@ -65,15 +66,13 @@ class TestSupplierSpecCrud:
         assert res.status_code == 422
         assert "too short" in res.json()["detail"]
 
-    def test_write_requires_platform_admin(self, client, manager_headers):
+    def test_read_and_write_require_platform_admin(self, client, manager_headers):
         res = client.post(
             "/api/supplier-invoice-specs",
             headers=manager_headers,
             json={"name": "X Foods", "aliases": [], "instructions": ""},
         )
         assert res.status_code == 403
-
-    def test_list_requires_platform_admin(self, client, manager_headers):
         # Specs are site-wide config: admins only, even for viewing.
         res = client.get("/api/supplier-invoice-specs", headers=manager_headers)
         assert res.status_code == 403

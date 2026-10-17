@@ -337,3 +337,58 @@ class TestGetAttachmentTool:
         thread = _make_thread(db_session, admin_user)
         out = IT._get_attachment({}, db_session, thread.id)
         assert out["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# A consolidator's file, made model-ready (Oct 2026; moved from
+# test_tool_loop_documents.py).
+
+_WORD = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _doc(media_type, data):
+    import base64
+
+    return {
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": base64.b64encode(data).decode(),
+        },
+    }
+
+
+class TestModelReadyBlock:
+    """BambooHR hands back a Word CV as wordprocessingml; the model reads only
+    PDFs and common images, so attaching it as-is failed the NEXT model call
+    and lost the whole turn."""
+
+    def test_a_word_cv_becomes_text(self):
+        out = A.model_ready_block(
+            _doc(_WORD, _docx_bytes("Head chef, 8 years, Auckland"))
+        )
+        assert out["type"] == "text"
+        assert "Head chef, 8 years, Auckland" in out["text"]
+
+    def test_a_pdf_stays_a_document(self):
+        out = A.model_ready_block(_doc("application/pdf", b"%PDF-1.4 x"))
+        assert out["type"] == "document"
+        assert out["source"]["media_type"] == "application/pdf"
+
+    def test_a_generic_type_is_sniffed_from_the_bytes(self):
+        pdf = A.model_ready_block(_doc("application/octet-stream", b"%PDF-1.4 x"))
+        assert pdf["type"] == "document"
+        assert pdf["source"]["media_type"] == "application/pdf"
+        word = A.model_ready_block(
+            _doc("application/octet-stream", _docx_bytes("Barista"))
+        )
+        assert word["type"] == "text" and "Barista" in word["text"]
+
+    def test_an_unreadable_file_becomes_a_sentence_not_a_broken_request(self):
+        out = A.model_ready_block(_doc("application/zip", b"\x00\x01\x02"))
+        assert out["type"] == "text" and "couldn't be read" in out["text"]
+
+    def test_a_text_block_passes_through(self):
+        block = {"type": "text", "text": "[Attachment: notes.txt]\nhi"}
+        assert A.model_ready_block(block) is block

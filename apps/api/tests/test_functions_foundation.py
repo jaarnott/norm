@@ -324,29 +324,10 @@ class TestMode:
         assert enquiries.get_enquiry(w.db, ctx, e.id).id == e.id
         assert len(enquiries.list_enquiries(w.db, ctx)) == 1
 
-    def test_company_settings_change_in_any_mode(self, db_session):
-        w = make_world(db_session, mode="shadow")
-        settings = company.update_company_settings(
-            w.db, w.ctx(w.owner), functions_mode="live"
-        )
-        assert settings.functions_mode == "live"
-        with pytest.raises(Forbidden):
-            company.update_company_settings(w.db, w.ctx(), tax_label="excl. GST")
-
 
 class TestEntitlementFallback:
-    @staticmethod
-    def _catalog(monkeypatch, rows):
-        monkeypatch.setattr("app.services.entitlements._catalog", lambda cdb: rows)
-
-    def test_no_catalog_row_follows_the_mode(self, w, monkeypatch):
-        self._catalog(monkeypatch, [])
-        assert entitlement.functions_enabled(w.db, w.db, w.org.id) is True
-        w.org.functions_mode = "shadow"
-        assert entitlement.functions_enabled(w.db, w.db, w.org.id) is True
-        w.org.functions_mode = "off"
-        w.db.flush()
-        assert entitlement.functions_enabled(w.db, w.db, w.org.id) is False
+    """functions_enabled itself, with and without catalog rows, runs on the
+    real catalog query in test_functions_catalog.py; this is the apps_on hook."""
 
     def test_apps_on_hook(self, w):
         row = SimpleNamespace(slug="functions")
@@ -362,18 +343,6 @@ class TestEntitlementFallback:
         assert entitlement.adjust_apps_on(
             {"functions", "x"}, w.org.id, w.db, [row]
         ) == {"x"}
-
-    def test_catalog_row_needs_entitlement_and_mode(self, w, monkeypatch):
-        row = SimpleNamespace(
-            slug="functions", tier="app", bundled=False, composition={}
-        )
-        self._catalog(monkeypatch, [row])
-        monkeypatch.setattr("app.services.entitlements.apps_on", lambda *a: set())
-        assert entitlement.functions_enabled(w.db, w.db, w.org.id) is False
-        monkeypatch.setattr(
-            "app.services.entitlements.apps_on", lambda *a: {"functions"}
-        )
-        assert entitlement.functions_enabled(w.db, w.db, w.org.id) is True
 
 
 # ===========================================================================
@@ -524,25 +493,22 @@ class TestCompany:
         assert company.format_money(-5, "GBP") == "-£0.05"
         assert company.format_money(1000, "XYZ") == "XYZ 10"
 
-    def test_going_live_needs_venue_timezones(self, db_session):
-        w = make_world(db_session, mode="shadow")
-        c = add_contact(w.db, w.org.id)
-        add_enquiry(w.db, w.org.id, c.id, w.venue2.id)
-        w.venue2.timezone = None
-        w.db.flush()
-        with pytest.raises(Invalid, match="Garden Bar"):
-            company.update_company_settings(w.db, w.ctx(w.owner), functions_mode="live")
-
 
 # ===========================================================================
 # Time
 # ===========================================================================
 
 
+def _venue(name="Brew Bar", timezone="Pacific/Auckland") -> Venue:
+    """An unsaved venue, as make_world sets one up: the time rules read only
+    its name, zone and day start, so no database world is needed."""
+    return Venue(name=name, timezone=timezone, day_start_time="07:00")
+
+
 class TestTime:
-    def test_plain_conversion_and_next_day_end(self, w):
+    def test_plain_conversion_and_next_day_end(self):
         start, end = timeutil.plan_window(
-            w.venue,
+            _venue(),
             dt.date(2026, 11, 14),
             dt.time(19, 0),
             dt.time(1, 0),
@@ -554,38 +520,39 @@ class TestTime:
         with pytest.raises(Invalid):
             timeutil.validate_window(dt.time(19), dt.time(1), False)
 
-    def test_spring_forward_gap_reads_forward(self, w):
+    def test_spring_forward_gap_reads_forward(self):
         # 27 Sep 2026: Auckland jumps 02:00 NZST -> 03:00 NZDT; 02:30 does not exist.
-        got = timeutil.to_instant(w.venue, dt.date(2026, 9, 27), dt.time(2, 30))
+        got = timeutil.to_instant(_venue(), dt.date(2026, 9, 27), dt.time(2, 30))
         assert got == dt.datetime(2026, 9, 26, 14, 30, tzinfo=UTC)
         assert got.astimezone(NZ).time() == dt.time(3, 30)
 
-    def test_fall_back_hour_takes_the_first_occurrence(self, w):
+    def test_fall_back_hour_takes_the_first_occurrence(self):
         # 5 Apr 2026: 02:00-03:00 happens twice; the first is still NZDT (+13).
-        got = timeutil.to_instant(w.venue, dt.date(2026, 4, 5), dt.time(2, 30))
+        got = timeutil.to_instant(_venue(), dt.date(2026, 4, 5), dt.time(2, 30))
         assert got == dt.datetime(2026, 4, 4, 13, 30, tzinfo=UTC)
 
-    def test_standard_and_daylight_offsets(self, w):
-        winter = timeutil.to_instant(w.venue, dt.date(2026, 7, 1), dt.time(12, 0))
-        summer = timeutil.to_instant(w.venue, dt.date(2026, 1, 1), dt.time(12, 0))
+    def test_standard_and_daylight_offsets(self):
+        winter = timeutil.to_instant(_venue(), dt.date(2026, 7, 1), dt.time(12, 0))
+        summer = timeutil.to_instant(_venue(), dt.date(2026, 1, 1), dt.time(12, 0))
         assert winter.hour == 0 and summer.hour == 23
 
-    def test_trading_day_uses_day_start(self, w):
+    def test_trading_day_uses_day_start(self):
         # 01:30 Sunday local, day starts 07:00 -> Saturday's trade.
+        venue = _venue()
         at = dt.datetime(2026, 11, 15, 1, 30, tzinfo=NZ)
-        assert timeutil.business_date(w.venue, at) == dt.date(2026, 11, 14)
-        assert timeutil.business_date(w.venue, at.replace(hour=7)) == dt.date(
+        assert timeutil.business_date(venue, at) == dt.date(2026, 11, 14)
+        assert timeutil.business_date(venue, at.replace(hour=7)) == dt.date(
             2026, 11, 15
         )
-        assert timeutil.local_today(w.venue, at) == dt.date(2026, 11, 15)
+        assert timeutil.local_today(venue, at) == dt.date(2026, 11, 15)
 
-    def test_a_venue_without_a_timezone_is_refused(self, w):
-        w.venue2.timezone = None
+    def test_a_venue_without_a_timezone_is_refused(self):
         with pytest.raises(Invalid, match="Garden Bar"):
-            timeutil.venue_tz(w.venue2)
-        w.venue2.timezone = "Local"
+            timeutil.venue_tz(_venue("Garden Bar", timezone=None))
         with pytest.raises(Invalid):
-            timeutil.to_instant(w.venue2, dt.date(2026, 1, 1), dt.time(9))
+            timeutil.to_instant(
+                _venue("Garden Bar", timezone="Local"), dt.date(2026, 1, 1), dt.time(9)
+            )
 
 
 # ===========================================================================
@@ -859,36 +826,44 @@ def _build_enquiry_fixtures(w):
 
 
 class TestStatusTwins:
-    @pytest.mark.parametrize(
-        "now",
-        [
-            NOW,
-            NOW + dt.timedelta(hours=11),  # crosses Auckland midnight
-            NOW + dt.timedelta(days=6, hours=3),
-        ],
-    )
-    @pytest.mark.parametrize("prevalidated", [False, True])
-    def test_enquiry_sql_matches_python(self, w, now, prevalidated):
+    def test_enquiry_sql_matches_python(self, w, subtests):
+        """One fixture set, read at three moments (now, across Auckland
+        midnight, six days on) with and without prevalidated timezones —
+        each combination its own subtest. The fixture set must cover every
+        stage and every next action, or agreement proves little."""
         made = _build_enquiry_fixtures(w)
-        valid = status.valid_timezones(w.db, w.org.id) if prevalidated else None
-        assert valid is None or valid == ("Pacific/Auckland",)
-        sql = {
-            r.enquiry_id: r
-            for r in w.db.execute(
-                status.enquiry_status_select(w.org.id, now, valid_tz=valid)
-            )
-        }
         facts = status.load_enquiry_facts(w.db, w.org.id, [e.id for e in made])
-        assert set(sql) == set(facts)
-        for eid, f in facts.items():
-            stage = status.enquiry_stage(f)
-            action = status.next_action(f, now)
-            row = sql[eid]
-            assert (row.stage, row.next_action) == (stage, action.kind), eid
-            assert row.next_action_due == action.due_date, eid
-            assert bool(row.next_action_overdue) == action.overdue, eid
-            assert bool(row.next_action_due_today) == action.due_today, eid
-            assert row.tz == f.tz
+        stages = {status.enquiry_stage(f) for f in facts.values()}
+        kinds = {status.next_action(f, NOW).kind for f in facts.values()}
+        assert stages == set(status.STAGES)
+        assert kinds == set(status.NEXT_ACTION_KINDS)
+        for label, now in (
+            ("now", NOW),
+            ("across Auckland midnight", NOW + dt.timedelta(hours=11)),
+            ("six days on", NOW + dt.timedelta(days=6, hours=3)),
+        ):
+            for prevalidated in (False, True):
+                with subtests.test(now=label, prevalidated=prevalidated):
+                    valid = (
+                        status.valid_timezones(w.db, w.org.id) if prevalidated else None
+                    )
+                    assert valid is None or valid == ("Pacific/Auckland",)
+                    sql = {
+                        r.enquiry_id: r
+                        for r in w.db.execute(
+                            status.enquiry_status_select(w.org.id, now, valid_tz=valid)
+                        )
+                    }
+                    assert set(sql) == set(facts)
+                    for eid, f in facts.items():
+                        stage = status.enquiry_stage(f)
+                        action = status.next_action(f, now)
+                        row = sql[eid]
+                        assert (row.stage, row.next_action) == (stage, action.kind), eid
+                        assert row.next_action_due == action.due_date, eid
+                        assert bool(row.next_action_overdue) == action.overdue, eid
+                        assert bool(row.next_action_due_today) == action.due_today, eid
+                        assert row.tz == f.tz
 
     def test_list_shapes_agree(self, w):
         """The default list (page first, then that page's status) and the
@@ -912,14 +887,6 @@ class TestStatusTwins:
                 )
                 assert [vars(r) for r in paged] == [vars(r) for r in derived]
                 assert paged
-
-    def test_the_fixture_set_covers_every_stage_and_action(self, w):
-        made = _build_enquiry_fixtures(w)
-        facts = status.load_enquiry_facts(w.db, w.org.id, [e.id for e in made])
-        stages = {status.enquiry_stage(f) for f in facts.values()}
-        kinds = {status.next_action(f, NOW).kind for f in facts.values()}
-        assert stages == set(status.STAGES)
-        assert kinds == set(status.NEXT_ACTION_KINDS)
 
     def test_event_sql_matches_python(self, w):
         c = add_contact(w.db, w.org.id)

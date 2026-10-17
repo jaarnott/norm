@@ -1,18 +1,19 @@
-"""Unit tests for the invoice-fixes appliers (link_po, unit + variant).
+"""The Receive Invoice editor's server surface and the receive it drives.
 
-Exercises the orchestration logic with a scripted _Loaded fake — no network,
-no DB — asserting the exact LoadedHub request sequence each fix produces.
+Mostly ``do_receive`` against a scripted Loaded fake — no network, no DB —
+asserting the exact LoadedHub request sequence each receive produces; plus
+the PO-number resolver, the /draft metadata heal, the delete applier, the
+supplier endpoints and the heal-review loop guard.
+
+Elsewhere: the PO reconciliation projection in test_invoice_po_reference.py,
+the unit rules and the create-unit seam in test_invoice_units.py.
 """
-
-import re
 
 import uuid
 
 import pytest
 
 from app.routers import invoice_fixes as IF
-from app.services import invoice_catalog as CAT
-from app.services import item_match as IM
 from app.services import received_invoice as RI
 from app.services.received_invoice import resolve_po_id
 
@@ -43,50 +44,27 @@ PO_LIST = [
     {"id": "po-1", "orderNumber": "1520987"},
     {"id": "po-2", "orderNumber": "1520988"},
 ]
-UNITS = [
-    {"id": "u-each", "name": "Each", "ratio": 1.0, "stockUnitType": "Count"},
-    {"id": "u-kilo", "name": "Kilo", "ratio": 1.0, "stockUnitType": "Weight"},
-    {"id": "u-100pc", "name": "100 piece", "ratio": 100.0, "stockUnitType": "Count"},
-]
 
 
-def _invoice():
-    return {
-        "id": "inv-1",
-        "linkedPurchaseOrderId": None,
-        "purchaseOrderNumber": None,
-        "lines": [
-            {"id": "ln-1", "code": "NAP", "unit": "Each", "linkedUnitId": "u-each"}
-        ],
-    }
+def _receive_request(**over):
+    base = dict(
+        venue_id="v1",
+        invoice_id="inv-1",
+        linked_purchase_order_id=None,
+        po_number=None,
+        lines=[],
+        variant_updates=[],
+        receive=True,
+    )
+    base.update(over)
+    return RI.ReceiveRequest(**base)
 
 
-class TestLinkPo:
-    def test_links_matching_po(self):
-        lh = FakeLoaded(
-            {"/1.0/stock/internal/purchase-orders": PO_LIST},
-            {"inv-1": _invoice()},
-        )
-        msg = IF._apply_link_po(
-            lh, {"invoice_id": "inv-1", "po_number": "PO#1520987"}, None
-        )
-        assert "1520987" in msg
-        method, path, body = lh.writes[-1]
-        assert method == "PUT" and path.endswith("/invoices/inv-1")
-        assert body["linkedPurchaseOrderId"] == "po-1"
-        assert body["purchaseOrderNumber"] == "1520987"
-
-    def test_missing_po_raises(self):
-        lh = FakeLoaded(
-            {"/1.0/stock/internal/purchase-orders": PO_LIST},
-            {"inv-1": _invoice()},
-        )
-        try:
-            IF._apply_link_po(lh, {"invoice_id": "inv-1", "po_number": "9999"}, None)
-            assert False, "expected failure"
-        except RuntimeError as e:
-            assert "not found" in str(e)
-        assert lh.writes == []  # nothing written on failure
+@pytest.fixture()
+def req():
+    """Builds the ReceiveRequest every receive test sends (inv-1 at v1, no PO,
+    no edits) — pass only what the test changes."""
+    return _receive_request
 
 
 class TestDeleteInvoice:
@@ -98,332 +76,9 @@ class TestDeleteInvoice:
         assert lh.writes == [("DELETE", "/1.0/stock/internal/invoices/inv-1", None)]
 
 
-class TestUnit:
-    def _lh(self):
-        item = {
-            "suppliers": [
-                {"id": "var-1", "supplierId": "sup-1", "stockCode": "NAP"},
-                {"id": "var-2", "supplierId": "sup-1", "stockCode": "OTHER"},
-            ]
-        }
-        return FakeLoaded(
-            {
-                "/1.0/stock/internal/units": UNITS,
-                "/1.0/stock/internal/items/": item,
-            },
-            {"inv-1": _invoice()},
-        )
-
-    def _fix(self, proposed="100 piece"):
-        return {
-            "invoice_id": "inv-1",
-            "line_id": "ln-1",
-            "line_code": "NAP",
-            "linked_item_id": "item-1",
-            "linked_supplier_id": "sup-1",
-            "proposed_unit": proposed,
-        }
-
-    def test_updates_line_then_variant(self):
-        lh = self._lh()
-        msg = IF._apply_unit(lh, self._fix("100 piece"), None)
-        assert "100 piece" in msg and "variant" in msg
-        put = [w for w in lh.writes if w[0] == "PUT"][0]
-        assert put[2]["lines"][0]["linkedUnitId"] == "u-100pc"
-        patch = [w for w in lh.writes if w[0] == "PATCH"][0]
-        assert patch[1].endswith("/item-supplier-variant/var-1")
-        assert patch[2] == {"unitId": "u-100pc"}
-
-    def test_guideline_equivalent_unit_resolves(self):
-        # "1 each" is guideline-equivalent to the Loaded "Each" unit.
-        lh = self._lh()
-        IF._apply_unit(lh, self._fix("1 each"), None)
-        put = [w for w in lh.writes if w[0] == "PUT"][0]
-        assert put[2]["lines"][0]["linkedUnitId"] == "u-each"
-
-    def test_unresolvable_unit_writes_nothing(self, monkeypatch):
-        # A bare packaging word ("carton") isn't a real unit; the LLM spec resolve
-        # declines → we raise and write nothing (no bad unit created).
-        monkeypatch.setattr(CAT, "llm_unit_spec", lambda name, db: None)
-        lh = self._lh()
-        with pytest.raises(CAT.CatalogError, match="couldn't work out the size"):
-            IF._apply_unit(lh, self._fix("carton"), None)
-        assert lh.writes == []
-
-    def test_no_variant_still_updates_line(self):
-        # Variant not found (different supplier) → line updated, no PATCH.
-        lh = self._lh()
-        msg = IF._apply_unit(
-            lh, {**self._fix("Each"), "linked_supplier_id": "sup-X"}, None
-        )
-        assert "variant" not in msg
-        assert [w for w in lh.writes if w[0] == "PATCH"] == []
-        assert [w for w in lh.writes if w[0] == "PUT"]
-
-    def test_creates_missing_multipack_unit(self, monkeypatch):
-        # An OUTER multipack ("5x3kg") isn't in the catalogue → create it with
-        # the size read off the name (5 x 3kg = 15 kg, no LLM), then set it on
-        # the line + variant.
-        monkeypatch.setattr(CAT, "llm_unit_spec", _no_llm)
-
-        class CreatingLoaded(FakeLoaded):
-            def request(self, method, path, body=None):
-                self.writes.append((method, path, body))
-                if method == "POST" and path.endswith("/units"):
-                    return {
-                        "id": "u-5x3kg",
-                        "name": body["name"],
-                        "ratio": body["ratio"],
-                        "stockUnitType": body["stockUnitType"],
-                    }
-                return {}
-
-        item = {
-            "suppliers": [{"id": "var-1", "supplierId": "sup-1", "stockCode": "NAP"}]
-        }
-        lh = CreatingLoaded(
-            {"/1.0/stock/internal/units": UNITS, "/1.0/stock/internal/items/": item},
-            {"inv-1": _invoice()},
-        )
-        msg = IF._apply_unit(lh, self._fix("5x3kg"), None)
-        assert "Created" in msg
-        post = [w for w in lh.writes if w[0] == "POST"][0]
-        assert post[1].endswith("/units")
-        assert post[2] == {"name": "5x3kg", "ratio": 15.0, "stockUnitType": "Weight"}
-        put = [w for w in lh.writes if w[0] == "PUT"][0]
-        assert put[2]["lines"][0]["linkedUnitId"] == "u-5x3kg"
-        patch = [w for w in lh.writes if w[0] == "PATCH"][0]
-        assert patch[2] == {"unitId": "u-5x3kg"}
-
-    def test_multipack_matches_exact_name_only(self):
-        # A multipack proposed name resolves by EXACT name; it is NOT fuzzily
-        # reused for a same-ratio simple unit — an unmatched multipack → None
-        # (so _apply_unit creates it).
-        units = UNITS + [
-            {"id": "u-15kg", "name": "15 KG", "ratio": 15.0, "stockUnitType": "Weight"}
-        ]
-        lh = FakeLoaded({"/1.0/stock/internal/units": units}, {})
-        assert CAT.resolve_unit(lh, "5x3kg") is None
-        units2 = units + [
-            {"id": "u-5x3", "name": "5x3kg", "ratio": 15.0, "stockUnitType": "Weight"}
-        ]
-        lh2 = FakeLoaded({"/1.0/stock/internal/units": units2}, {})
-        assert CAT.resolve_unit(lh2, "5x3kg")["id"] == "u-5x3"
-
-
-def test_is_multipack_mirror_tolerates_spacing():
-    # Mirror of the consolidator's _is_multipack (kept in sync deliberately):
-    # spaced pack notation is the same pack — '6x 750ml' == '6x750ml'.
-    from app.services.invoice_units import is_multipack
-
-    for good in ("5x3kg", "6x750ml", "6x 750ml", "4 x 6 pack", "2X12"):
-        assert is_multipack(good), good
-    for bad in ("Case(s)", "750ml", "x2", "box", "", None):
-        assert not is_multipack(bad), bad
-
-
-def test_multipack_equal_mirror():
-    # Mirror of the consolidator's _multipack_equal: component-wise pack
-    # equality ('6x1L' == '6 X 1 Litre'), never across pack shapes.
-    from app.services.invoice_units import multipack_equal
-
-    assert multipack_equal("6x1L", "6 X 1 Litre")
-    assert multipack_equal("6x750ml", "6x 750ml")
-    assert not multipack_equal("6x750ml", "6x1L")
-    assert not multipack_equal("4x6 pack", "24 pack")
-    assert not multipack_equal("2x12 pack", "24 pack")
-    # Case/whitespace never distinguish; digits and DOTS do (user rule,
-    # 08 Aug 2026 — the alnum norm let '1.9 KG' name-match '19 KG').
-    assert multipack_equal("Each", " each")
-    assert not multipack_equal("6x1.5L", "6x15L")
-
-
-def test_units_equivalent_mirror():
-    # Mirror of the consolidator's _units_equivalent (Hancocks 4358010,
-    # 08 Aug 2026): a copy printing only a pack COUNT names the same pack as
-    # the sized multipack, and EA names a single sized bottle — neither may
-    # churn a unit suggestion. Counts still gate everything else.
-    from app.services.invoice_units import units_equivalent
-
-    # Pack "6 PK" vs the Loaded multipack it denotes
-    assert units_equivalent("6x750mL", "6 pack")
-    assert units_equivalent("6 pk", "6x 750ml")
-    assert units_equivalent("dozen", "12x330ml")
-    # EA vs the single-bottle unit
-    assert units_equivalent("375 mL", "each")
-    assert units_equivalent("750 mL", "EA")
-    # Magnitude equality still holds
-    assert units_equivalent("0.7 L", "700 mL")
-    # Counts must actually match
-    assert not units_equivalent("6x750mL", "12 pack")
-    assert not units_equivalent("each", "12 pack")
-    assert not units_equivalent("24 pack", "4x6 pack")
-    # 'each' never absorbs weight-priced units (quantities mean kilos)
-    assert not units_equivalent("1.9 KG", "each")
-    # Vague packaging words still aren't equivalence material
-    assert not units_equivalent("Case(s)", "6x750ml")
-    assert not units_equivalent("Case(s)", "750ml")
-
-
-def test_resolve_unit_keeps_dots_distinct():
-    # '1.9 KG' must never NAME-match '19 KG' (the old alnum norm merged them);
-    # with no name hit and different magnitudes, resolution correctly fails.
-    units = UNITS + [
-        {"id": "u-19kg", "name": "19 KG", "ratio": 19.0, "stockUnitType": "Weight"}
-    ]
-    lh = FakeLoaded({"/1.0/stock/internal/units": units}, {})
-    assert CAT.resolve_unit(lh, "1.9 KG") is None
-    # Case/whitespace variants of the SAME name still resolve.
-    assert CAT.resolve_unit(lh, " 19 kg ")["id"] == "u-19kg"
-
-
-def test_resolve_unit_component_equivalent_multipack():
-    # Accepting '6x1L' must RESOLVE to the existing '6 X 1 Litre' unit rather
-    # than creating a near-duplicate; a differently-shaped pack still creates.
-    units = UNITS + [
-        {"id": "u-6x1l", "name": "6 X 1 Litre", "ratio": 6.0, "stockUnitType": "Volume"}
-    ]
-    lh = FakeLoaded({"/1.0/stock/internal/units": units}, {})
-    assert CAT.resolve_unit(lh, "6x1L")["id"] == "u-6x1l"
-    assert CAT.resolve_unit(lh, "6x 1 litre")["id"] == "u-6x1l"
-    assert CAT.resolve_unit(lh, "12x1L") is None  # different count → create
-
-
-def _no_llm(name, db):
-    raise AssertionError(f"the LLM was asked about {name!r}")
-
-
-class _CreatingUnits(FakeLoaded):
-    """Loaded answering POST /units with the created unit."""
-
-    def request(self, method, path, body=None):
-        self.writes.append((method, path, body))
-        if method == "POST" and path.endswith("/units"):
-            return {
-                "id": "u-new",
-                "name": body["name"],
-                "ratio": body["ratio"],
-                "stockUnitType": body["stockUnitType"],
-            }
-        return {}
-
-
-class TestGetOrCreateUnit:
-    """The shared resolve-or-create seam (services/invoice_catalog) behind
-    _apply_unit, the /invoice-fixes/create-unit endpoint, the claude.ai card
-    and autopilot."""
-
-    def test_existing_unit_short_circuits_without_writes(self):
-        lh = FakeLoaded({"/1.0/stock/internal/units": UNITS}, {})
-        unit, created = CAT.get_or_create_unit(lh, "100 piece", None)
-        assert unit["id"] == "u-100pc"
-        assert created is False
-        assert lh.writes == []
-
-    def test_a_name_that_reads_is_created_without_the_llm(self, monkeypatch):
-        monkeypatch.setattr(CAT, "llm_unit_spec", _no_llm)
-        lh = _CreatingUnits({"/1.0/stock/internal/units": UNITS}, {})
-        unit, created = CAT.get_or_create_unit(lh, "49.5L", None)
-        assert created is True
-        assert unit["id"] == "u-new"
-        assert lh.writes == [
-            (
-                "POST",
-                "/1.0/stock/internal/units",
-                {"name": "49.5L", "ratio": 49.5, "stockUnitType": "Volume"},
-            )
-        ]
-
-    def test_a_name_that_does_not_read_asks_the_llm(self, monkeypatch):
-        # Metres are descriptive, not a stock dimension: the parser can't say,
-        # so the LLM's reading (8 rolls) is used.
-        monkeypatch.setattr(
-            CAT,
-            "llm_unit_spec",
-            lambda name, db: {"ratio": 8.0, "stock_unit_type": "Count"},
-        )
-        lh = _CreatingUnits({"/1.0/stock/internal/units": UNITS}, {})
-        CAT.get_or_create_unit(lh, "8x300m", None)
-        assert lh.writes[0][2] == {
-            "name": "8x300m",
-            "ratio": 8.0,
-            "stockUnitType": "Count",
-        }
-
-    def test_the_persons_own_size_wins(self, monkeypatch):
-        # The new-unit form: what the person entered is what Loaded gets, even
-        # where the name alone would read differently.
-        monkeypatch.setattr(CAT, "llm_unit_spec", _no_llm)
-        lh = _CreatingUnits({"/1.0/stock/internal/units": UNITS}, {})
-        CAT.get_or_create_unit(lh, "Case", None, ratio=24, unit_type="Count")
-        assert lh.writes[0][2] == {
-            "name": "Case",
-            "ratio": 24.0,
-            "stockUnitType": "Count",
-        }
-
-    @pytest.mark.parametrize(
-        "ratio,unit_type",
-        [(0, "Count"), (-1, "Weight"), ("lots", "Count"), (2, "Length")],
-    )
-    def test_a_bad_size_or_type_is_refused(self, ratio, unit_type):
-        lh = _CreatingUnits({"/1.0/stock/internal/units": UNITS}, {})
-        with pytest.raises(CAT.CatalogError) as e:
-            CAT.get_or_create_unit(lh, "Case", None, ratio=ratio, unit_type=unit_type)
-        assert e.value.status == 400
-        assert lh.writes == []
-
-    def test_an_existing_unit_is_used_whatever_size_was_entered(self):
-        # Resolve-first beats the form: a twin of an existing unit is never made.
-        lh = _CreatingUnits({"/1.0/stock/internal/units": UNITS}, {})
-        unit, created = CAT.get_or_create_unit(
-            lh, "each", None, ratio=1, unit_type="Count"
-        )
-        assert (unit["id"], created) == ("u-each", False)
-        assert lh.writes == []
-
-    def test_unresolvable_spec_raises_and_writes_nothing(self, monkeypatch):
-        monkeypatch.setattr(CAT, "llm_unit_spec", lambda name, db: None)
-        lh = FakeLoaded({"/1.0/stock/internal/units": UNITS}, {})
-        with pytest.raises(CAT.CatalogError) as e:
-            CAT.get_or_create_unit(lh, "carton", None)
-        assert e.value.status == 422
-        assert lh.writes == []
-
-
-@pytest.mark.parametrize(
-    "name,spec",
-    [
-        ("500g", {"ratio": 0.5, "stock_unit_type": "Weight"}),
-        ("6x700ml", {"ratio": 4.2, "stock_unit_type": "Volume"}),
-        ("4x6 pack", {"ratio": 24.0, "stock_unit_type": "Count"}),
-        ("12 pack", {"ratio": 12.0, "stock_unit_type": "Count"}),
-        ("5x3kg", {"ratio": 15.0, "stock_unit_type": "Weight"}),
-        ("carton", None),
-        ("8x300m", None),
-    ],
-)
-def test_parsed_unit_spec_matches_the_llm_conventions(name, spec):
-    # The answers llm_unit_spec's prompt documents, without the call.
-    assert CAT.parsed_unit_spec(name) == spec
-
-
 class TestReceive:
     """The Accept & Receive orchestration: link PO, apply line edits, receive,
     then PATCH changed variants."""
-
-    def _req(self, **over):
-        base = dict(
-            venue_id="v1",
-            invoice_id="inv-1",
-            linked_purchase_order_id=None,
-            po_number=None,
-            lines=[],
-            variant_updates=[],
-            receive=True,
-        )
-        base.update(over)
-        return RI.ReceiveRequest(**base)
 
     def _inv(self):
         return {
@@ -456,26 +111,14 @@ class TestReceive:
             {"inv-1": self._inv()},
         )
 
-    def test_header_totals_written_through(self):
-        # Accepted copy totals (feed left the header $0) land on the PUT.
-        lh = self._lh()
-        RI.do_receive(
-            lh,
-            self._req(total=1189.27, subtotal=1034.15, tax_amount=155.12),
-        )
-        put = [w for w in lh.writes if w[0] == "PUT"][0]
-        assert put[2]["total"] == 1189.27
-        assert put[2]["subtotal"] == 1034.15
-        assert put[2]["taxAmount"] == 155.12
-
-    def test_credit_note_writes_loaded_sign_convention(self):
+    def test_credit_note_writes_loaded_sign_convention(self, req):
         # Parity with what Loaded actually stores for a credit note (verified
         # on 18 live credits): quantity NEGATIVE, unit cost POSITIVE, line
         # total and header totals NEGATIVE.
         lh = self._lh()
         RI.do_receive(
             lh,
-            self._req(
+            req(
                 total=-252.75,
                 subtotal=-219.78,
                 tax_amount=-32.97,
@@ -496,7 +139,7 @@ class TestReceive:
         assert ln["totalCost"] == -219.78 and ln["totalCostExclTax"] == -219.78
         assert put["total"] == -252.75 and put["subtotal"] == -219.78
 
-    def test_a_rounding_line_on_an_invoice_that_adds_up_receives(self):
+    def test_a_rounding_line_on_an_invoice_that_adds_up_receives(self, req):
         # Blue Seas SI655075: a $13.26 sauce, an "Invoice Rounding" -0.01, no
         # GST, $13.25 — the rounding line runs the other way, and that's fine.
         lh = self._lh()
@@ -514,7 +157,7 @@ class TestReceive:
         )
         out = RI.do_receive(
             lh,
-            self._req(
+            req(
                 total=13.25,
                 lines=[
                     {
@@ -536,7 +179,7 @@ class TestReceive:
         )
         assert out["received"] is True
 
-    def test_mixed_sign_lines_are_refused(self):
+    def test_mixed_sign_lines_are_refused(self, req):
         # Accepting the sign flip on only SOME lines of a credit produces a
         # document Loaded rejects opaquely — refuse it in our own words.
         from fastapi import HTTPException
@@ -556,7 +199,7 @@ class TestReceive:
         with pytest.raises(HTTPException) as exc:
             RI.do_receive(
                 lh,
-                self._req(
+                req(
                     total=-252.75,
                     lines=[
                         {
@@ -578,27 +221,19 @@ class TestReceive:
         assert "run the other way" in exc.value.detail
         assert "don't make the total" in exc.value.detail
 
-    def test_reference_number_written_through(self):
-        # Accepted "Invoice number X → Y (per the invoice copy)" lands on the
-        # PUT as referenceNumber — the copy-number suggestion's write path.
-        lh = self._lh()
-        RI.do_receive(lh, self._req(reference_number="INV-9999"))
-        put = [w for w in lh.writes if w[0] == "PUT"][0]
-        assert put[2]["referenceNumber"] == "INV-9999"
-
-    def test_unlink_purchase_order_clears_link(self):
+    def test_unlink_purchase_order_clears_link(self, req):
         # Accepted "unlink this order" (PO belongs to another supplier): the
         # fetched invoice carries the stale link; the flag must clear BOTH
         # fields on the PUT — a null po_id alone means "don't touch".
         lh = self._lh()
         lh._invoices["inv-1"]["linkedPurchaseOrderId"] = "po-oops"
         lh._invoices["inv-1"]["purchaseOrderNumber"] = "4041451-1"
-        RI.do_receive(lh, self._req(unlink_purchase_order=True))
+        RI.do_receive(lh, req(unlink_purchase_order=True))
         put = [w for w in lh.writes if w[0] == "PUT"][0]
         assert put[2]["linkedPurchaseOrderId"] is None
         assert put[2]["purchaseOrderNumber"] is None
 
-    def test_loaded_rejection_surfaces_as_502_with_detail(self):
+    def test_loaded_rejection_surfaces_as_502_with_detail(self, req):
         # Loaded's own validations (invoice-totals-mismatch, Allied
         # TLC-686713, 08 Aug 2026) must reach the card as a detailed error,
         # never an opaque 500 ("X Error 500" was all the user saw).
@@ -618,32 +253,32 @@ class TestReceive:
 
         lh.request = rejecting
         with pytest.raises(HTTPException) as exc:
-            RI.do_receive(lh, self._req())
+            RI.do_receive(lh, req())
         assert exc.value.status_code == 502
         assert "invoice-totals-mismatch" in str(exc.value.detail)
 
-    def test_purchase_order_number_reference_written_through(self):
+    def test_purchase_order_number_reference_written_through(self, req):
         # Split order accepted from the copy: the order-number REFERENCE
         # rides the header write-through (never the 1:1 link).
         lh = self._lh()
-        RI.do_receive(lh, self._req(purchase_order_number="1520987"))
+        RI.do_receive(lh, req(purchase_order_number="1520987"))
         put = [w for w in lh.writes if w[0] == "PUT"][0]
         assert put[2]["purchaseOrderNumber"] == "1520987"
         assert put[2]["linkedPurchaseOrderId"] is None
 
-    def test_link_path_owns_the_number_when_linking(self):
+    def test_link_path_owns_the_number_when_linking(self, req):
         # A stale reference field from the card must never overwrite the
         # number the link path resolved.
         lh = self._lh()
         RI.do_receive(
             lh,
-            self._req(linked_purchase_order_id="po-77", purchase_order_number="STALE"),
+            req(linked_purchase_order_id="po-77", purchase_order_number="STALE"),
         )
         put = [w for w in lh.writes if w[0] == "PUT"][0]
         assert put[2]["linkedPurchaseOrderId"] == "po-77"
         assert put[2]["purchaseOrderNumber"] != "STALE"
 
-    def test_split_notes_stamped_on_po_and_sibling(self):
+    def test_split_notes_stamped_on_po_and_sibling(self, req):
         # Receiving a split invoice stamps cross-reference notes on the PO
         # and the sibling invoice (best-effort; verified live 08 Aug 2026).
         lh = self._lh()
@@ -659,7 +294,7 @@ class TestReceive:
         lh._invoices["sib-9"] = {"id": "sib-9", "notes": ""}
         RI.do_receive(
             lh,
-            self._req(
+            req(
                 split_po_id="po-split",
                 split_sibling_invoice_id="sib-9",
                 reference_number="IN-2ND",
@@ -670,7 +305,7 @@ class TestReceive:
         sib_put = [w for w in lh.writes if w[1].endswith("/invoices/sib-9")][0]
         assert "Split order: order 1520987 also covers IN-2ND" in sib_put[2]["notes"]
 
-    def test_receive_survives_note_failures(self):
+    def test_receive_survives_note_failures(self, req):
         # A note-write failure must never fail the receive itself.
         lh = self._lh()
         lh._gets = {
@@ -683,7 +318,7 @@ class TestReceive:
         }
         out = RI.do_receive(
             lh,
-            self._req(
+            req(
                 split_po_id="po-split",
                 split_sibling_invoice_id="sib-missing",  # KeyError in the fake
             ),
@@ -693,7 +328,7 @@ class TestReceive:
         assert by_target["purchase_order"]["ok"] is True
         assert by_target["sibling_invoice"]["ok"] is False
 
-    def test_unlink_then_relink_links_the_new_po(self):
+    def test_unlink_then_relink_links_the_new_po(self, req):
         # Unlink + a new PO in the same receive: the unlink clears the stale
         # link first, then the chosen order links — the user unlinked the
         # wrong supplier's PO and picked the right one before receiving.
@@ -701,12 +336,12 @@ class TestReceive:
         lh._invoices["inv-1"]["linkedPurchaseOrderId"] = "po-oops"
         RI.do_receive(
             lh,
-            self._req(unlink_purchase_order=True, linked_purchase_order_id="po-77"),
+            req(unlink_purchase_order=True, linked_purchase_order_id="po-77"),
         )
         put = [w for w in lh.writes if w[0] == "PUT"][0]
         assert put[2]["linkedPurchaseOrderId"] == "po-77"
 
-    def test_receive_with_no_lines_rejected(self):
+    def test_receive_with_no_lines_rejected(self, req):
         # An empty draft (a letter/statement uploaded as an invoice — live:
         # the Air Liquide surcharge notice) must never be received; deleting
         # the draft is the action. Also covers an all-lines-struck receive.
@@ -718,14 +353,14 @@ class TestReceive:
             {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
         )
         try:
-            RI.do_receive(lh, self._req())
+            RI.do_receive(lh, req())
             raise AssertionError("expected 400")
         except HTTPException as e:
             assert e.status_code == 400
             assert "nothing to receive" in str(e.detail)
         assert lh.writes == []
 
-    def test_receive_without_supplier_rejected(self):
+    def test_receive_without_supplier_rejected(self, req):
         # Loaded's server 500s (opaque internal-error — seen live on Sawmill
         # 201458) when receiving an invoice with NO linked supplier. We must
         # 400 with a clear message before anything is written.
@@ -737,7 +372,7 @@ class TestReceive:
             {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
         )
         try:
-            RI.do_receive(lh, self._req())
+            RI.do_receive(lh, req())
             raise AssertionError("expected 400")
         except HTTPException as e:
             assert e.status_code == 400
@@ -750,12 +385,12 @@ class TestReceive:
             {"/1.0/stock/internal/purchase-orders": PO_LIST},
             {"inv-1": dict(self._inv(), linkedSupplierId=None)},
         )
-        RI.do_receive(lh2, self._req(linked_supplier_id="sup-1"))
+        RI.do_receive(lh2, req(linked_supplier_id="sup-1"))
         assert [w for w in lh2.writes if w[0] == "PUT"]
 
-    def test_links_po_edits_line_receives_and_patches_variant(self):
+    def test_links_po_edits_line_receives_and_patches_variant(self, req):
         lh = self._lh()
-        req = self._req(
+        body = req(
             po_number="1520987",
             lines=[
                 {
@@ -772,7 +407,7 @@ class TestReceive:
                 {"linked_item_id": "item-1", "line_code": "NAP", "unit_id": "u-100pc"}
             ],
         )
-        out = RI.do_receive(lh, req)
+        out = RI.do_receive(lh, body)
         assert out["ok"] and out["received"]
         assert out["linked_purchase_order"] == "1520987"
         put = [w for w in lh.writes if w[0] == "PUT"][0]
@@ -786,97 +421,69 @@ class TestReceive:
         assert patch[2] == {"unitId": "u-100pc"}
         assert out["variant_updates"] == [{"code": "NAP", "ok": True}]
 
-    def test_editable_header_fields_persist(self):
+    def test_editable_header_fields_persist(self, req):
+        """Every header edit lands on the PUT. Folded in: the accepted copy
+        totals (a feed left the header $0) and the accepted "Invoice number
+        X → Y (per the invoice copy)" — the copy-number suggestion's write
+        path is referenceNumber."""
         lh = self._lh()
-        req = self._req(
-            reference_number="INV-EDITED",
-            issued_at="2026-07-30",
-            due_at="2026-08-20",
-            total=169.60,
-            linked_supplier_id="sup-2",
-            unit_cost_includes_tax=True,
-            notes="Short delivery on line 2",
+        RI.do_receive(
+            lh,
+            req(
+                reference_number="INV-EDITED",
+                issued_at="2026-07-30",
+                due_at="2026-08-20",
+                total=1189.27,
+                subtotal=1034.15,
+                tax_amount=155.12,
+                linked_supplier_id="sup-2",
+                unit_cost_includes_tax=True,
+                notes="Short delivery on line 2",
+            ),
         )
-        RI.do_receive(lh, req)
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         assert body["referenceNumber"] == "INV-EDITED"
         assert body["issuedAt"] == "2026-07-30"
         assert body["dueAt"] == "2026-08-20"
-        assert body["total"] == 169.60
+        assert body["total"] == 1189.27
+        assert body["subtotal"] == 1034.15
+        assert body["taxAmount"] == 155.12
         assert body["linkedSupplierId"] == "sup-2"
         assert body["unitCostIncludesTax"] is True
         assert body["notes"] == "Short delivery on line 2"
 
-    def test_received_date_from_header_is_not_overwritten(self):
+    def test_received_date_from_header_is_not_overwritten(self, req):
         lh = self._lh()
-        RI.do_receive(lh, self._req(received_at="2026-07-31T19:57:00Z"))
+        RI.do_receive(lh, req(received_at="2026-07-31T19:57:00Z"))
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         assert body["isReceived"] is True
         assert body["receivedAt"] == "2026-07-31T19:57:00Z"
 
-    def test_unsupplied_header_fields_leave_the_invoice_untouched(self):
+    def test_unsupplied_header_fields_leave_the_invoice_untouched(self, req):
         lh = self._lh()
-        RI.do_receive(lh, self._req())  # no header edits
+        RI.do_receive(lh, req())  # no header edits
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         # linkedSupplierId came from the fetched invoice, not the request.
         assert body["linkedSupplierId"] == "sup-1"
         assert "notes" not in body
 
-    def test_add_item_appends_a_new_line(self):
+    def test_receive_false_leaves_draft(self, req):
         lh = self._lh()
-        req = self._req(
-            lines=[
-                {
-                    "id": "new-tmp-1",  # a client temp id, not on the invoice
-                    "code": "OILG3",
-                    "description": "OIL GRAPESEED",
-                    "linked_item_id": "item-oil",
-                    "linked_unit_id": "u-3l",
-                    "unit": "3 L",
-                    "unit_ratio": 3000.0,
-                    "quantity_received": 1,
-                    "unit_cost": 49.95,
-                    "total_cost": 49.95,
-                }
-            ],
-        )
-        RI.do_receive(lh, req)
-        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
-        assert len(body["lines"]) == 2  # original + the added one
-        added = body["lines"][1]
-        assert added["code"] == "OILG3"
-        assert added["linkedItemId"] == "item-oil"
-        assert added["quantityReceived"] == 1
-        assert added["unitCost"] == 49.95
-        # The id is OURS to generate: Loaded does not assign one, it silently
-        # ignores a line that has none. This assertion used to say the
-        # opposite, which is how the belief survived (INV562277, 17 Aug 2026).
-        uuid.UUID(str(added["id"]))
-
-    def test_add_item_ignores_an_empty_row(self):
-        lh = self._lh()
-        # A row with no code/item must not create a rubbish line.
-        RI.do_receive(lh, self._req(lines=[{"id": "new-x", "quantity_received": 2}]))
-        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
-        assert len(body["lines"]) == 1
-
-    def test_receive_false_leaves_draft(self):
-        lh = self._lh()
-        out = RI.do_receive(lh, self._req(receive=False))
+        out = RI.do_receive(lh, req(receive=False))
         assert out["received"] is False
         put = [w for w in lh.writes if w[0] == "PUT"][0]
         assert "isReceived" not in put[2]
 
-    def test_unknown_po_number_raises(self):
+    def test_unknown_po_number_raises(self, req):
         lh = self._lh()
         try:
-            RI.do_receive(lh, self._req(po_number="9999"))
+            RI.do_receive(lh, req(po_number="9999"))
             assert False, "expected failure"
         except Exception as e:
             assert "not found" in str(e)
         assert [w for w in lh.writes if w[0] == "PUT"] == []
 
-    def test_receive_blocked_by_a_new_stock_item(self):
+    def test_receive_blocked_by_a_new_stock_item(self, req):
         # A line with no linkedItemId (NEW stock item) must block receive so it
         # can't be created silently — nothing is PUT.
         inv = self._inv()
@@ -885,26 +492,26 @@ class TestReceive:
             {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
         )
         try:
-            RI.do_receive(lh, self._req())
+            RI.do_receive(lh, req())
             assert False, "expected the receive guard to block"
         except Exception as e:
             assert "must be created in Loaded before receiving" in str(e)
         assert [w for w in lh.writes if w[0] == "PUT"] == []
 
-    def test_receive_blocked_by_a_new_unit(self):
+    def test_receive_blocked_by_a_new_unit(self, req):
         inv = self._inv()
         inv["lines"][0].pop("linkedUnitId")
         lh = FakeLoaded(
             {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
         )
         try:
-            RI.do_receive(lh, self._req())
+            RI.do_receive(lh, req())
             assert False, "expected the receive guard to block"
         except Exception as e:
             assert "must be created in Loaded before receiving" in str(e)
         assert [w for w in lh.writes if w[0] == "PUT"] == []
 
-    def test_receive_blocked_by_a_brand_loaded_does_not_know(self):
+    def test_receive_blocked_by_a_brand_loaded_does_not_know(self, req):
         """A brand named on the line with no Loaded record still blocks —
         Loaded won't receive a line naming a brand it doesn't have."""
         inv = self._inv()
@@ -913,13 +520,13 @@ class TestReceive:
             {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
         )
         try:
-            RI.do_receive(lh, self._req())
+            RI.do_receive(lh, req())
             assert False, "expected the receive guard to block"
         except Exception as e:
             assert "brand 'FARMBYNATURE'" in str(e)
         assert [w for w in lh.writes if w[0] == "PUT"] == []
 
-    def test_a_created_brand_travels_to_loaded_and_unblocks_the_receive(self):
+    def test_a_created_brand_travels_to_loaded_and_unblocks_the_receive(self, req):
         """Bidfood 109944512, 15 Aug 2026 — the regression this exists for.
 
         The user accepted 'create this brand', Loaded created it, and the
@@ -935,7 +542,7 @@ class TestReceive:
         )
         RI.do_receive(
             lh,
-            self._req(lines=[{"id": "ln-1", "linked_brand_id": "brand-new-1"}]),
+            req(lines=[{"id": "ln-1", "linked_brand_id": "brand-new-1"}]),
         )
         put = next(w for w in lh.writes if w[0] == "PUT")
         assert put[2]["lines"][0]["linkedBrandId"] == "brand-new-1"
@@ -951,7 +558,7 @@ class TestReceive:
             },
             {"inv-1": inv},
         )
-        RI.do_receive(lh, self._req(lines=[{"id": "ln-1", **edit}]))
+        RI.do_receive(lh, _receive_request(lines=[{"id": "ln-1", **edit}]))
         return next(w for w in lh.writes if w[0] == "PUT")[2]["lines"][0]
 
     def test_a_brand_cleared_in_the_card_clears_on_loadeds_line(self):
@@ -973,13 +580,13 @@ class TestReceive:
         with pytest.raises(Exception, match="brand 'BIDFOOD'"):
             self._received_brand({})
 
-    def test_an_unbranded_line_is_unaffected(self):
+    def test_an_unbranded_line_is_unaffected(self, req):
         lh = self._lh()
-        RI.do_receive(lh, self._req())
+        RI.do_receive(lh, req())
         put = next(w for w in lh.writes if w[0] == "PUT")
         assert "linkedBrandId" not in put[2]["lines"][0]
 
-    def test_an_added_line_carries_an_id_loaded_will_accept(self):
+    def test_an_added_line_carries_an_id_loaded_will_accept(self, req):
         """Red and White Cellars INV562277, 17 Aug 2026 — freight went missing.
 
         The append used to drop the editor's temp id, on the belief that
@@ -989,42 +596,74 @@ class TestReceive:
         persisted with a client-generated GUID and vanished without one. That
         invoice went to Loaded $12 light with its own freight line deleted and
         nothing in its place.
+
+        Folded in: an added line appends after the original with its fields
+        mapped, and carries the tax rate the engine stamped on the add-line
+        suggestion.
         """
         lh = self._lh()
         RI.do_receive(
             lh,
-            self._req(
+            req(
                 lines=[
                     {
-                        "id": "rep-1",  # the editor's temp id
-                        "description": "FREIGHT - BEVERAGE",
-                        "linked_item_id": "item-freight",
-                        "linked_unit_id": "u-each",
+                        "id": "new-tmp-1",  # the editor's temp id
+                        "code": "OILG3",
+                        "description": "OIL GRAPESEED",
+                        "linked_item_id": "item-oil",
+                        "linked_unit_id": "u-3l",
+                        "unit": "3 L",
+                        "unit_ratio": 3000.0,
                         "quantity_received": 1,
-                        "unit_cost": 12,
-                    }
+                        "unit_cost": 49.95,
+                        "total_cost": 49.95,
+                        "sale_tax_rate": 0.15,
+                    },
+                    {
+                        # named only by its item: no code, no description
+                        "id": "new-tmp-2",
+                        "linked_item_id": "item-salt",
+                        "linked_unit_id": "u-3l",
+                        "unit": "3 L",
+                        "unit_ratio": 3000.0,
+                        "quantity_received": 2,
+                        "unit_cost": 3.5,
+                        "total_cost": 7.0,
+                    },
                 ]
             ),
         )
         put = next(w for w in lh.writes if w[0] == "PUT")
-        added = next(
-            ln for ln in put[2]["lines"] if ln.get("linkedItemId") == "item-freight"
-        )
+        assert len(put[2]["lines"]) == 3  # original + the two added
+        item_only = put[2]["lines"][2]
+        assert item_only["linkedItemId"] == "item-salt"
+        assert "code" not in item_only and "description" not in item_only
+        uuid.UUID(str(item_only["id"]))
+        added = put[2]["lines"][1]
+        assert added["code"] == "OILG3"
+        assert added["linkedItemId"] == "item-oil"
+        assert added["quantityReceived"] == 1
+        assert added["unitCost"] == 49.95
+        assert added["unitCostExclTax"] == 49.95
+        assert added["saleTaxRate"] == 0.15
         assert added.get("id"), "Loaded drops a line with no id, without saying so"
-        # A real GUID, not the editor's temp id — Loaded's own line ids are
-        # uuids and the temp one means nothing to it.
+        # The id is OURS to generate: Loaded does not assign one. An assertion
+        # here used to say the opposite, which is how the belief survived
+        # (INV562277, 17 Aug 2026). A real GUID, not the editor's temp id —
+        # Loaded's own line ids are uuids and the temp one means nothing to it.
         uuid.UUID(str(added["id"]))
-        assert added["id"] != "rep-1"
+        assert added["id"] != "new-tmp-1"
 
-    def test_an_empty_added_row_is_still_not_appended(self):
-        """The id is generated AFTER the "names a real item" guard, so giving
-        every appended line an id must not start creating rubbish."""
+    def test_an_empty_added_row_is_still_not_appended(self, req):
+        """A row with no code/item must not create a rubbish line — and the id
+        is generated AFTER that "names a real item" guard, so giving every
+        appended line an id must not start creating rubbish."""
         lh = self._lh()
-        RI.do_receive(lh, self._req(lines=[{"id": "rep-9", "quantity_received": 1}]))
+        RI.do_receive(lh, req(lines=[{"id": "rep-9", "quantity_received": 1}]))
         put = next(w for w in lh.writes if w[0] == "PUT")
         assert len(put[2]["lines"]) == 1  # the original line only
 
-    def test_receive_not_blocked_when_only_saving(self):
+    def test_receive_not_blocked_when_only_saving(self, req):
         # The guard is receive-only: a save (receive=False) of an unresolved line
         # still PUTs (the editor persists work-in-progress before resolving).
         inv = self._inv()
@@ -1032,7 +671,7 @@ class TestReceive:
         lh = FakeLoaded(
             {"/1.0/stock/internal/purchase-orders": PO_LIST}, {"inv-1": inv}
         )
-        RI.do_receive(lh, self._req(receive=False))
+        RI.do_receive(lh, req(receive=False))
         assert [w for w in lh.writes if w[0] == "PUT"]
 
 
@@ -1079,41 +718,31 @@ class TestLinkedPoNumberIsWrittenForDisplay:
             {"inv-1": self._inv()},
         )
 
-    def _req(self, **over):
-        base = dict(
-            venue_id="v1",
-            invoice_id="inv-1",
-            linked_purchase_order_id="po-1",
-            po_number=None,
-            lines=[],
-            variant_updates=[],
-            receive=True,
-        )
-        base.update(over)
-        return RI.ReceiveRequest(**base)
-
-    def test_supplier_number_is_replaced_with_the_linked_po(self):
+    def test_supplier_number_is_replaced_with_the_linked_po(self, req):
+        # Also the 1:1 guard's open case (TestConditionalPoWriteback): a PO
+        # linked to no invoice is linked, and no skip is reported.
         lh = self._lh()
-        out = RI.do_receive(lh, self._req())
+        out = RI.do_receive(lh, req(linked_purchase_order_id="po-1"))
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         assert body["linkedPurchaseOrderId"] == "po-1"
         assert body["purchaseOrderNumber"] == "1520387"
         assert out["linked_purchase_order"] == "1520387"
+        assert out["po_link_skipped"] is False
 
-    def test_explicit_number_still_wins(self):
+    def test_explicit_number_still_wins(self, req):
         lh = self._lh()
-        RI.do_receive(lh, self._req(po_number="1520999"))
+        RI.do_receive(lh, req(linked_purchase_order_id="po-1", po_number="1520999"))
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         assert body["purchaseOrderNumber"] == "1520999"
 
-    def test_lookup_failure_does_not_block_the_receive(self):
+    def test_lookup_failure_does_not_block_the_receive(self, req):
         # A PO that can't be read must still link and receive — only the
         # display number is best-effort.
         lh = FakeLoaded(
             {"/1.0/stock/internal/purchase-orders": PO_LIST},
             {"inv-1": self._inv()},
         )
-        out = RI.do_receive(lh, self._req())
+        out = RI.do_receive(lh, req(linked_purchase_order_id="po-1"))
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         assert out["ok"] and body["linkedPurchaseOrderId"] == "po-1"
         assert body["purchaseOrderNumber"] == "12195941-1"  # untouched
@@ -1170,52 +799,30 @@ class TestRefreshMetadata:
         assert doc.data["unit_cost_includes_tax"] is True  # metadata refreshed
 
 
-class TestAttachPoReference:
-    """The linked PO's ordered qty / reference cost / order date and the
-    substitution + un-received flags, matched to invoice lines by STOCK CODE
-    (not item id) so a same-name product swap surfaces rather than hides."""
+class TestTheRouterAttachesThePoReference:
+    """``IF._attach_po_reference`` is the router's thin delegate to
+    services/invoice_po_reference: fetch the linked order, project it onto the
+    draft. The projection's rules (pairing by stock item, substitutes,
+    "ordered, not delivered", split orders) are pinned in
+    test_invoice_po_reference.py; this checks the delegate reaches them."""
 
-    # A PO ordering GARLIC (VEGS251) and BROCCOLINI (BROC).
-    PO = {
-        "createdAt": "2026-07-20",
-        "lines": [
-            {
-                "itemCode": "VEGS251",
-                "itemName": "GARLIC PEELED",
-                "unitName": "1kg",
-                "quantityOrdered": 3,
-                "unitCost": 8.0,
-                "itemId": "item-garlic",  # same item id as the substitute below
-            },
-            {
-                "itemCode": "BROC",
-                "itemName": "BROCCOLINI",
-                "unitName": "Each",
-                "quantityOrdered": 4,
-                "unitCost": 2.5,
-                "itemId": "item-broc",
-            },
-        ],
-    }
-
-    def _fake(self):
-        return FakeLoaded(
-            gets={"/1.0/stock/internal/purchase-orders/po-1": self.PO},
-            invoices={},
-        )
-
-    def _data(self):
-        return {
+    def test_the_linked_order_is_fetched_and_projected(self):
+        po = {
+            "createdAt": "2026-07-20",
+            "lines": [
+                {
+                    "itemCode": "BROC",
+                    "itemName": "BROCCOLINI",
+                    "unitName": "Each",
+                    "quantityOrdered": 4,
+                    "unitCost": 2.5,
+                    "itemId": "item-broc",
+                },
+            ],
+        }
+        data = {
             "linked_purchase_order_id": "po-1",
             "lines": [
-                # A substitute: same item id as the ordered GARLIC, DIFFERENT code.
-                {
-                    "id": "ln-g",
-                    "code": "VEGF251",
-                    "linked_item_id": "item-garlic",
-                    "unit_cost": 9.0,
-                },
-                # Matches the PO by code (lower-case + spacing prove normalisation).
                 {
                     "id": "ln-b",
                     "code": " broc ",
@@ -1224,270 +831,14 @@ class TestAttachPoReference:
                 },
             ],
         }
-
-    def test_code_match_populates_ordered_qty_and_reference_cost(self):
-        data = self._data()
-        IF._attach_po_reference(data, self._fake())
-        broc = data["lines"][1]
+        lh = FakeLoaded({"/1.0/stock/internal/purchase-orders/po-1": po}, {})
+        IF._attach_po_reference(data, lh)
+        broc = data["lines"][0]
         assert broc["on_order"] is True
         assert broc["quantity_ordered"] == 4
         assert broc["reference_cost"] == 2.5
         assert data["order_date"] == "2026-07-20"
-
-    def test_coded_line_delivered_under_different_code_is_a_substitute(self):
-        # VEGF251 delivered, code not on the PO, but the SAME item was ordered as
-        # VEGS251 → a substitute: matched, ordered qty borrowed, substitute_for set
-        # to the original ordered line, and VEGS251 NOT listed as not-delivered
-        # (it WAS delivered, under a different code). Mirrors BROCCOLI VEGF0223←165618.
-        data = self._data()
-        IF._attach_po_reference(data, self._fake())
-        g = data["lines"][0]  # VEGF251 delivered
-        assert g["on_order"] is True
-        assert g["quantity_ordered"] == 3
-        assert g["substitute_for"] == {
-            "code": "VEGS251",
-            "description": "GARLIC PEELED",
-            "unit": "1kg",
-            "quantity_ordered": 3,
-            "unit_cost": 8.0,
-        }
         assert data["ordered_not_received"] == []
-
-    def test_substitute_and_not_delivered_coexist(self):
-        # The old bug: pairing a substitute dropped genuinely-not-delivered items.
-        # Here garlic is delivered under a different code (substitute) AND parsley
-        # is never delivered — BOTH must show: garlic as a substitute, parsley as
-        # ordered-not-delivered.
-        po = {
-            "createdAt": "x",
-            "lines": [
-                {
-                    "itemCode": "VEGS251",
-                    "itemName": "GARLIC",
-                    "unitName": "1kg",
-                    "quantityOrdered": 3,
-                    "unitCost": 8.0,
-                    "itemId": "item-garlic",
-                },
-                {
-                    "itemCode": "PARS1",
-                    "itemName": "PARSLEY",
-                    "unitName": "bunch",
-                    "quantityOrdered": 2,
-                    "unitCost": 1.5,
-                    "itemId": "item-parsley",
-                },
-            ],
-        }
-        lh = FakeLoaded({"/1.0/stock/internal/purchase-orders/po-1": po}, {})
-        data = {
-            "linked_purchase_order_id": "po-1",
-            "lines": [
-                {
-                    "id": "ln-g",
-                    "code": "VEGF251",
-                    "linked_item_id": "item-garlic",
-                    "unit_cost": 9.0,
-                }
-            ],
-        }
-        IF._attach_po_reference(data, lh)
-        assert (
-            data["lines"][0]["substitute_for"]["code"] == "VEGS251"
-        )  # substitute shown
-        assert [o["code"] for o in data["ordered_not_received"]] == [
-            "PARS1"
-        ]  # not-delivered survives
-
-    def test_substitute_without_item_match_stays_blank_and_ordered_line_shows(self):
-        # A genuinely different product (no PO line shares its itemId): nothing to
-        # borrow, no link, and the ordered GARLIC still shows as unreceived.
-        data = self._data()
-        data["lines"][0]["linked_item_id"] = "item-unknown"
-        IF._attach_po_reference(data, self._fake())
-        sub = data["lines"][0]
-        assert sub["on_order"] is False
-        assert sub["quantity_ordered"] is None
-        assert sub["reference_cost"] is None
-        assert sub["substitute_for"] is None
-        assert [o["code"] for o in data["ordered_not_received"]] == ["VEGS251"]
-
-    def test_codeless_line_matches_po_by_item_id_and_borrows_the_code(self):
-        # A line with no stock code still matches the PO by itemId (mirroring
-        # Loaded) — ordered qty populated and display_code falls back to the PO
-        # line's itemCode (the item's code Loaded shows).
-        data = self._data()
-        data["lines"][0]["code"] = None
-        IF._attach_po_reference(data, self._fake())
-        g = data["lines"][0]
-        assert g["on_order"] is True
-        assert g["quantity_ordered"] == 3
-        assert g["display_code"] == "VEGS251"  # borrowed from the PO line
-        assert data["ordered_not_received"] == []
-
-    def test_fully_received_order_has_no_unreceived_lines(self):
-        data = self._data()
-        # Make the first line match the ordered GARLIC by code too.
-        data["lines"][0]["code"] = "VEGS251"
-        IF._attach_po_reference(data, self._fake())
-        assert data["ordered_not_received"] == []
-        assert all(ln["on_order"] for ln in data["lines"])
-
-    def test_unlinked_draft_clears_reference_data(self):
-        data = {
-            "linked_purchase_order_id": None,
-            "order_date": "old",
-            "ordered_not_received": [{"code": "X"}],
-            "lines": [{"id": "ln-1", "code": "A", "quantity_ordered": 5}],
-        }
-        IF._attach_po_reference(data, self._fake())
-        assert "ordered_not_received" not in data
-        assert "order_date" not in data
-        ln = data["lines"][0]
-        assert ln["quantity_ordered"] is None
-        assert ln["reference_cost"] is None
-        assert ln["on_order"] is None
-
-    def test_ordered_not_received_lists_all_unmatched_po_lines(self):
-        # Mirror Loaded: every PO item with no matching invoice line shows below
-        # with its FULL ordered qty (Loaded surfaces them as receivable rows,
-        # received 0) — we no longer subtract the PO's cumulative received.
-        po = {
-            "createdAt": "2026-07-20",
-            "lines": [
-                {
-                    "itemCode": "FULL1",
-                    "itemName": "FULLY RECEIVED",
-                    "unitName": "Each",
-                    "quantityOrdered": 3,
-                    "quantityReceived": 3,
-                    "unitCost": 1.0,
-                },
-                {
-                    "itemCode": "PART1",
-                    "itemName": "PARTLY RECEIVED",
-                    "unitName": "Each",
-                    "quantityOrdered": 5,
-                    "quantityReceived": 2,
-                    "unitCost": 2.0,
-                },
-            ],
-        }
-        lh = FakeLoaded(
-            gets={"/1.0/stock/internal/purchase-orders/po-1": po}, invoices={}
-        )
-        data = {
-            "linked_purchase_order_id": "po-1",
-            "lines": [{"id": "ln-x", "code": "OTHER", "unit_cost": 1.0}],
-        }
-        IF._attach_po_reference(data, lh)
-        onr = {o["code"]: o for o in data["ordered_not_received"]}
-        assert onr["FULL1"]["quantity_ordered"] == 3  # full ordered qty, shown
-        assert onr["PART1"]["quantity_ordered"] == 5  # full ordered qty, shown
-
-    def test_attach_runs_from_split_po_id_without_a_link(self):
-        # Split order: no Loaded link on THIS invoice (the sibling holds it),
-        # but the card carries split_po_id — reconcile against that order
-        # (QTY ORDERED / ordered-not-delivered) without touching link fields.
-        po = {
-            "createdAt": "2026-07-20",
-            "lines": [
-                {
-                    "itemCode": "SPLIT1",
-                    "itemName": "OTHER DELIVERY ITEM",
-                    "unitName": "Each",
-                    "quantityOrdered": 4,
-                    "unitCost": 2.5,
-                },
-            ],
-        }
-        lh = FakeLoaded(
-            gets={"/1.0/stock/internal/purchase-orders/po-split": po}, invoices={}
-        )
-        data = {
-            "split_po_id": "po-split",
-            "lines": [{"id": "ln-x", "code": "OTHER", "unit_cost": 1.0}],
-        }
-        IF._attach_po_reference(data, lh)
-        assert [o["code"] for o in data["ordered_not_received"]] == ["SPLIT1"]
-        assert not data.get("linked_purchase_order_id")
-
-    def test_attach_runs_even_before_split_acceptance(self):
-        # Scenario 3 (number found on the copy only): the order's reference
-        # data shows from the FIRST open — the engine already validated
-        # against this order, and waiting for the accept left the card
-        # without QTY ORDERED until a reopen (Bidvest 109827538, 09 Aug).
-        po = {"createdAt": "2026-07-20", "lines": []}
-        data = {
-            "split_po_id": "po-split",
-            "split_po_suggested": True,
-            "lines": [{"id": "ln-x"}],
-        }
-        IF._attach_po_reference(
-            data,
-            FakeLoaded(
-                gets={"/1.0/stock/internal/purchase-orders/po-split": po},
-                invoices={},
-            ),
-        )
-        assert data["ordered_not_received"] == []
-        assert data["order_date"] == "2026-07-20"
-
-    def test_split_sibling_receipts_partition_out_of_not_delivered(self):
-        # Split order: a PO line the SIBLING invoice received is "Ordered,
-        # received on <sibling>", not "not delivered"; a line on neither
-        # invoice stays under "not delivered". Sibling unfetchable → all
-        # stay "not delivered" (best-effort).
-        po = {
-            "createdAt": "2026-07-20",
-            "lines": [
-                {
-                    "itemCode": "VIN1",
-                    "itemName": "CHARDONNAY VINEGAR",
-                    "unitName": "Each",
-                    "quantityOrdered": 3,
-                    "unitCost": 40.0,
-                },
-                {
-                    "itemCode": "MISS1",
-                    "itemName": "NEVER DELIVERED",
-                    "unitName": "Each",
-                    "quantityOrdered": 1,
-                    "unitCost": 5.0,
-                },
-            ],
-        }
-        lh = FakeLoaded(
-            gets={"/1.0/stock/internal/purchase-orders/po-split": po},
-            invoices={
-                "sib-1": {
-                    "id": "sib-1",
-                    "lines": [{"id": "s1", "code": "VIN1", "quantityReceived": 3.0}],
-                }
-            },
-        )
-        data = {
-            "split_po_id": "po-split",
-            "split_sibling_invoice_id": "sib-1",
-            "lines": [{"id": "ln-x", "code": "OTHER", "unit_cost": 1.0}],
-        }
-        IF._attach_po_reference(data, lh)
-        assert [o["code"] for o in data["ordered_received_elsewhere"]] == ["VIN1"]
-        assert data["ordered_received_elsewhere"][0]["quantity_received"] == 3.0
-        assert [o["code"] for o in data["ordered_not_received"]] == ["MISS1"]
-
-        # Sibling fetch failure → everything stays under "not delivered".
-        lh2 = FakeLoaded(
-            gets={"/1.0/stock/internal/purchase-orders/po-split": po}, invoices={}
-        )
-        data2 = {
-            "split_po_id": "po-split",
-            "split_sibling_invoice_id": "sib-missing",
-            "lines": [{"id": "ln-x", "code": "OTHER", "unit_cost": 1.0}],
-        }
-        IF._attach_po_reference(data2, lh2)
-        assert len(data2["ordered_not_received"]) == 2
-        assert data2["ordered_received_elsewhere"] == []
 
 
 class TestResolvePoId:
@@ -1622,7 +973,8 @@ class TestResolvePoId:
 class TestConditionalPoWriteback:
     """do_receive writes the PO link back to Loaded only when the PO isn't
     already linked to a DIFFERENT invoice (Loaded is 1:1 — don't steal a split
-    order's sibling link)."""
+    order's sibling link). The unlinked-PO case is pinned in
+    TestLinkedPoNumberIsWrittenForDisplay."""
 
     def _lh(self, linked_invoice_id):
         inv = {
@@ -1652,288 +1004,21 @@ class TestConditionalPoWriteback:
             invoices={"inv-1": inv},
         )
 
-    def _req(self, **over):
-        base = dict(
-            venue_id="v1",
-            invoice_id="inv-1",
-            linked_purchase_order_id="po-1",
-            po_number=None,
-            lines=[],
-            variant_updates=[],
-            receive=True,
-        )
-        base.update(over)
-        return RI.ReceiveRequest(**base)
-
-    def test_skips_writeback_when_po_linked_to_another_invoice(self):
+    def test_skips_writeback_when_po_linked_to_another_invoice(self, req):
         lh = self._lh("inv-OTHER")
-        out = RI.do_receive(lh, self._req())
+        out = RI.do_receive(lh, req(linked_purchase_order_id="po-1"))
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         assert body.get("linkedPurchaseOrderId") is None  # link NOT written
         assert out["po_link_skipped"] is True
         assert out["linked_purchase_order"] is None
         assert body["isReceived"] is True  # still received
 
-    def test_links_when_po_unlinked(self):
-        lh = self._lh(None)
-        out = RI.do_receive(lh, self._req())
-        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
-        assert body["linkedPurchaseOrderId"] == "po-1"
-        assert body["purchaseOrderNumber"] == "1520272"
-        assert out["po_link_skipped"] is False
-
-    def test_links_when_po_already_points_at_this_invoice(self):
+    def test_links_when_po_already_points_at_this_invoice(self, req):
         lh = self._lh("inv-1")
-        out = RI.do_receive(lh, self._req())
+        out = RI.do_receive(lh, req(linked_purchase_order_id="po-1"))
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         assert body["linkedPurchaseOrderId"] == "po-1"
         assert out["po_link_skipped"] is False
-
-
-class TestApplyLinkPoGuard:
-    """The batch link_po fix applier reuses the resolver and the same 1:1 guard."""
-
-    def test_skips_when_po_already_linked_elsewhere(self):
-        lh = FakeLoaded(
-            gets={
-                "/1.0/stock/internal/purchase-orders?": [
-                    {
-                        "id": "po-1",
-                        "orderNumber": "1520272",
-                        "linkedInvoiceId": "inv-OTHER",
-                    }
-                ]
-            },
-            invoices={},
-        )
-        msg = IF._apply_link_po(
-            lh, {"invoice_id": "inv-1", "po_number": "1520272"}, None
-        )
-        assert "already linked" in msg
-        assert [w for w in lh.writes if w[0] == "PUT"] == []  # no write
-
-    def test_links_when_po_unlinked(self):
-        lh = FakeLoaded(
-            gets={
-                "/1.0/stock/internal/purchase-orders?": [
-                    {"id": "po-1", "orderNumber": "1520272", "linkedInvoiceId": None}
-                ]
-            },
-            invoices={"inv-1": {"id": "inv-1", "lines": []}},
-        )
-        msg = IF._apply_link_po(
-            lh, {"invoice_id": "inv-1", "po_number": "1520272"}, None
-        )
-        assert "Linked purchase order 1520272" in msg
-        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
-        assert body["linkedPurchaseOrderId"] == "po-1"
-
-
-def _ids_in(prompt: str) -> list[str]:
-    """The line_ids the LLM was shown, in order (for scripted-mock replies)."""
-    return re.findall(r"line_id=(\S+?)\]", prompt)
-
-
-class TestItemMatch:
-    """The LLM match-before-create step: classify → department-filtered match →
-    suggest a link (existing item) or a normalized name+group (create)."""
-
-    def test_classify_labels_lines(self, monkeypatch):
-        def fake(**kw):
-            assert "Classify each supplier invoice line" in kw["system_prompt"]
-            ids = _ids_in(kw["user_prompt"])
-            label = {"L1": "food", "L2": "beverage", "L3": "cleaning"}
-            return ({"classes": [{"line_id": i, "class": label[i]} for i in ids]}, None)
-
-        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", fake)
-        lines = [
-            {"id": "L1", "description": "Chicken", "brand": ""},
-            {"id": "L2", "description": "Coke", "brand": ""},
-            {"id": "L3", "description": "Bleach", "brand": ""},
-        ]
-        out = IM._classify_item_lines(lines, db=None)
-        # unknown labels collapse to "other"
-        assert out == {"L1": "food", "L2": "beverage", "L3": "other"}
-
-    def test_classify_empty_on_error(self, monkeypatch):
-        def boom(**kw):
-            raise RuntimeError("breaker open")
-
-        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", boom)
-        assert (
-            IM._classify_item_lines(
-                [{"id": "L1", "description": "x", "brand": ""}], None
-            )
-            == {}
-        )
-
-    def test_match_subset_maps_index_and_suggestion(self, monkeypatch):
-        cands = [
-            {
-                "id": "i0",
-                "name": "SPIANATA PICCANTE",
-                "groupName": "Meats",
-                "orderingUnitId": "u-kilo",
-                "suppliers": [
-                    {
-                        "supplierId": "s",
-                        "unitId": "u-kilo",
-                        "unitCost": 10,
-                        "defaultForSupplier": True,
-                    }
-                ],
-            },
-            {"id": "i1", "name": "OIL CANOLA", "groupName": "Oils"},
-        ]
-        groups = [
-            {"id": "g-meat", "name": "Meats", "category": "Food"},
-            {"id": "g-oil", "name": "Oils", "category": "Food"},
-        ]
-        lines = [
-            {
-                "id": "L1",
-                "description": "Spianata Piccante 2kg C6",
-                "code": "CHS.009",
-                "brand": "",
-                "unit": "KGM",
-            },
-            {
-                "id": "L2",
-                "description": "Mystery Product",
-                "code": "X",
-                "brand": "",
-                "unit": "Each",
-            },
-        ]
-
-        def fake(**kw):
-            return (
-                {
-                    "matches": [
-                        {
-                            "line_id": "L1",
-                            "match_index": 0,
-                            "suggested_name": None,
-                            "suggested_group_index": None,
-                        },
-                        {
-                            "line_id": "L2",
-                            "match_index": None,
-                            "suggested_name": "Mystery Product",
-                            "suggested_group_index": 1,
-                        },
-                    ]
-                },
-                None,
-            )
-
-        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", fake)
-        out = IM._match_subset(lines, groups, cands, db=None)
-        assert out["L1"]["matched_item"]["id"] == "i0"
-        assert out["L1"]["matched_item"]["unit_id"] == "u-kilo"
-        assert out["L1"]["matched_item"]["unit_cost"] == 10
-        assert out["L2"]["matched_item"] is None
-        assert out["L2"]["suggested_name"] == "Mystery Product"
-        assert out["L2"]["suggested_group_id"] == "g-oil"  # index 1
-
-    def test_match_subset_ignores_out_of_range_index(self, monkeypatch):
-        cands = [{"id": "i0", "name": "A", "groupName": "G"}]
-        groups = [{"id": "g", "name": "G", "category": "Food"}]
-        lines = [{"id": "L1", "description": "A", "code": "", "brand": "", "unit": ""}]
-
-        def fake(**kw):
-            return (
-                {
-                    "matches": [
-                        {
-                            "line_id": "L1",
-                            "match_index": 9,
-                            "suggested_name": "A",
-                            "suggested_group_index": 9,
-                        }
-                    ]
-                },
-                None,
-            )
-
-        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", fake)
-        out = IM._match_subset(lines, groups, cands, db=None)
-        assert out["L1"]["matched_item"] is None
-        assert out["L1"]["suggested_group_id"] is None
-
-    def test_consumable_lines_share_all_consumables(self, monkeypatch):
-        # A consumable line (food OR beverage) searches EVERY consumable — food,
-        # beverage and uncategorised — so a food item filed under a beverage group
-        # (limes for the bar) is reachable from a food line. Cleaning stays out.
-        cands = [
-            {
-                "id": "food0",
-                "name": "CHICKEN",
-                "groupId": "g-meat",
-                "groupName": "Meats",
-            },
-            {"id": "bev0", "name": "COKE", "groupId": "g-bot", "groupName": "Bottled"},
-            {
-                "id": "clean0",
-                "name": "BLEACH",
-                "groupId": "g-clean",
-                "groupName": "Cleaning",
-            },
-        ]
-        groups = [
-            {"id": "g-meat", "name": "Meats", "category": "Food"},
-            {"id": "g-bot", "name": "Bottled", "category": "Beverage"},
-            {"id": "g-clean", "name": "Cleaning", "category": "Cleaning"},
-        ]
-        lines = [
-            {
-                "id": "L1",
-                "description": "Chicken Breast",
-                "code": "",
-                "brand": "",
-                "unit": "",
-            },
-            {
-                "id": "L2",
-                "description": "Coca Cola",
-                "code": "",
-                "brand": "",
-                "unit": "",
-            },
-        ]
-        prompts: dict = {}
-
-        def fake(**kw):
-            ids = _ids_in(kw["user_prompt"])
-            if "Classify each supplier invoice line" in kw["system_prompt"]:
-                cls = {"L1": "food", "L2": "beverage"}
-                return (
-                    {"classes": [{"line_id": i, "class": cls[i]} for i in ids]},
-                    None,
-                )
-            # a match call: record the catalogue this slice was handed
-            for i in ids:
-                prompts[i] = kw["user_prompt"]
-            return ({"matches": []}, None)
-
-        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", fake)
-        IM._match_stock_items(lines, groups, cands, db=None)
-        # both the food line and the beverage line are offered food0 AND bev0, and
-        # neither is offered the cleaning item
-        for i in ("L1", "L2"):
-            assert "CHICKEN" in prompts[i] and "COKE" in prompts[i]
-            assert "BLEACH" not in prompts[i]
-
-    def test_match_empty_on_error(self, monkeypatch):
-        def boom(**kw):
-            raise RuntimeError("down")
-
-        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm", boom)
-        cands = [{"id": "i0", "name": "A", "groupId": "g", "groupName": "G"}]
-        groups = [{"id": "g", "name": "G", "category": "Food"}]
-        lines = [{"id": "L1", "description": "A", "code": "", "brand": "", "unit": ""}]
-        # classify fails → all "other" → match fails → {}
-        assert IM._match_stock_items(lines, groups, cands, db=None) == {}
 
 
 class TestListSuppliersEndpoint:
@@ -2062,10 +1147,10 @@ class TestCreateSupplierEndpoint:
         assert r.status_code == 502
 
 
-class TestStruckAndAddedLines:
-    """Accepted remove/add suggestions ride the receive: a struck line is
-    soft-deleted in Loaded (deletedAt) and an added line carries the tax rate
-    the engine stamped on the suggestion."""
+class TestStruckLines:
+    """An accepted remove suggestion rides the receive: the struck line is
+    soft-deleted in Loaded (deletedAt). (The added line's tax rate is pinned in
+    TestReceive::test_an_added_line_carries_an_id_loaded_will_accept.)"""
 
     def _lh(self):
         return FakeLoaded(
@@ -2091,112 +1176,49 @@ class TestStruckAndAddedLines:
             },
         )
 
-    def _req(self, **over):
-
-        base = dict(
-            venue_id="v1",
-            invoice_id="inv-1",
-            linked_purchase_order_id=None,
-            po_number=None,
-            lines=[],
-            variant_updates=[],
-            receive=True,
-        )
-        base.update(over)
-        return RI.ReceiveRequest(**base)
-
-    def test_struck_line_is_soft_deleted(self):
+    def test_struck_line_is_soft_deleted(self, req):
         lh = self._lh()
         out = RI.do_receive(
-            lh, self._req(lines=[{"id": "ln-1", "struck": True}], receive=False)
+            lh, req(lines=[{"id": "ln-1", "struck": True}], receive=False)
         )
         assert out["ok"]
         body = [w for w in lh.writes if w[0] == "PUT"][0][2]
         assert body["lines"][0]["deletedAt"]
 
-    def test_added_line_carries_sale_tax_rate(self):
-        lh = self._lh()
-        RI.do_receive(
-            lh,
-            self._req(
-                lines=[
-                    {
-                        "id": "new-1754424000000",
-                        "code": None,
-                        "description": "Atlanta Bright IPA 4.6% 50L Keg",
-                        "linked_item_id": "item-2",
-                        "linked_unit_id": "u-each",
-                        "unit": "Each",
-                        "unit_ratio": 1,
-                        "quantity_received": 1,
-                        "unit_cost": 340.0,
-                        "total_cost": 340.0,
-                        "sale_tax_rate": 0.15,
-                    }
-                ]
-            ),
-        )
-        body = [w for w in lh.writes if w[0] == "PUT"][0][2]
-        added = body["lines"][1]
-        # Ours to generate — see test_an_added_line_carries_an_id_loaded_will_accept.
-        uuid.UUID(str(added["id"]))
-        assert added["saleTaxRate"] == 0.15
-        assert added["linkedItemId"] == "item-2"
-        assert added["unitCostExclTax"] == 340.0
-
 
 class TestReshapeCarryOver:
-    """_reshape_draft_after_write must preserve local line state: struck flags
-    (accepted remove/strike suggestions) and locally-added 'new-' lines."""
+    """A rebuild of the draft from Loaded must keep local line state:
+    ``carry_local_state`` carries struck flags (accepted remove/strike
+    suggestions), locally-added 'new-' lines and the action log across.
+    (It used to be pinned through the accept route's reshape, which only the
+    retired link_po/unit appliers reached.)"""
 
-    def test_struck_and_added_lines_survive_reshape(self, db_session, admin_user):
-        import uuid
-
-        from app.db.models import Venue, WorkingDocument
-
-        venue = Venue(id=str(uuid.uuid4()), name=f"Venue {uuid.uuid4().hex[:6]}")
-        db_session.add(venue)
-        db_session.flush()
-        doc = WorkingDocument(
-            doc_type="received_invoice",
-            connector_name="loadedhub",
-            venue_id=venue.id,
-            external_ref={"invoice_id": "inv-1"},
-            data={
-                "lines": [
-                    {"id": "ln-1", "description": "OLD", "struck": True},
-                    {
-                        "id": "new-1754424000000",
-                        "description": "LOCAL ADD",
-                        "sale_tax_rate": 0.15,
-                    },
-                ],
-                "actioned_suggestions": [{"key": "remove:ln-1", "summary": "removed"}],
-            },
-        )
-        db_session.add(doc)
-        db_session.flush()
-
-        lh = FakeLoaded(
-            {},
+    def test_struck_and_added_lines_survive_reshape(self):
+        old = {
+            "lines": [
+                {"id": "ln-1", "description": "OLD", "struck": True},
+                {
+                    "id": "new-1754424000000",
+                    "description": "LOCAL ADD",
+                    "sale_tax_rate": 0.15,
+                },
+            ],
+            "actioned_suggestions": [{"key": "remove:ln-1", "summary": "removed"}],
+        }
+        fresh = RI.build_received_invoice_data(
             {
-                "inv-1": {
-                    "id": "inv-1",
-                    "referenceNumber": "R-1",
-                    "linkedSupplierId": "sup-1",
-                    "lines": [
-                        {"id": "ln-1", "description": "FRESH", "linkedItemId": None}
-                    ],
-                }
-            },
+                "id": "inv-1",
+                "referenceNumber": "R-1",
+                "linkedSupplierId": "sup-1",
+                "lines": [{"id": "ln-1", "description": "FRESH", "linkedItemId": None}],
+            }
         )
-        out = IF._reshape_draft_after_write(db_session, lh, venue.id, "inv-1")
-        lines = out["data"]["lines"]
-        by_id = {ln.get("id"): ln for ln in lines}
+        RI.carry_local_state(fresh, old)
+        by_id = {ln.get("id"): ln for ln in fresh["lines"]}
         assert by_id["ln-1"].get("struck") is True
         assert "new-1754424000000" in by_id
         assert by_id["new-1754424000000"]["description"] == "LOCAL ADD"
-        assert out["data"]["actioned_suggestions"] == [
+        assert fresh["actioned_suggestions"] == [
             {"key": "remove:ln-1", "summary": "removed"}
         ]
 
@@ -2225,20 +1247,7 @@ class TestReceiveTimeLinking:
             ],
         }
 
-    def _req(self, **over):
-        base = dict(
-            venue_id="v1",
-            invoice_id="inv-1",
-            linked_purchase_order_id=None,
-            po_number=None,
-            lines=[],
-            variant_updates=[],
-            receive=True,
-        )
-        base.update(over)
-        return RI.ReceiveRequest(**base)
-
-    def test_newly_linked_line_registers_variant_and_links(self):
+    def test_newly_linked_line_registers_variant_and_links(self, req):
         item = {
             "id": "item-2",
             "name": "FEE BROTHERS CHERRY BITTERS",
@@ -2254,7 +1263,7 @@ class TestReceiveTimeLinking:
         )
         out = RI.do_receive(
             lh,
-            self._req(
+            req(
                 lines=[
                     {
                         "id": "ln-1",
@@ -2287,7 +1296,7 @@ class TestReceiveTimeLinking:
         assert ln["linkedUnitId"] == "u-150"
         assert lh.writes.index(item_put) < lh.writes.index(inv_put)
 
-    def test_already_linked_line_registers_nothing(self):
+    def test_already_linked_line_registers_nothing(self, req):
         inv = self._inv()
         inv["lines"][0]["linkedItemId"] = "item-2"
         inv["lines"][0]["linkedUnitId"] = "u-150"
@@ -2296,7 +1305,7 @@ class TestReceiveTimeLinking:
         )
         RI.do_receive(
             lh,
-            self._req(
+            req(
                 lines=[
                     {"id": "ln-1", "linked_item_id": "item-2", "quantity_received": 1}
                 ]
@@ -2304,7 +1313,7 @@ class TestReceiveTimeLinking:
         )
         assert not [w for w in lh.writes if "/items/" in w[1]]
 
-    def test_registration_failure_never_blocks_receive(self):
+    def test_registration_failure_never_blocks_receive(self, req):
         # No canned item route -> FakeLoaded raises inside registration; the
         # receive itself must still succeed (link still lands via the PUT).
         lh = FakeLoaded(
@@ -2312,7 +1321,7 @@ class TestReceiveTimeLinking:
         )
         out = RI.do_receive(
             lh,
-            self._req(
+            req(
                 lines=[
                     {
                         "id": "ln-1",

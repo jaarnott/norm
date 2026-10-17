@@ -122,37 +122,8 @@ class TestEvents:
         got = call(client, "GET", f"/events/{event['id']}", w.staff).json()
         assert got["event"]["version"] == event["version"]
 
-    def test_large_events_cannot_be_entered_directly(self, client, w):
-        r = call(
-            client,
-            "POST",
-            "/events",
-            w.staff,
-            json={
-                "venue_id": w.venue.id,
-                "event_date": DATE,
-                "booking_type": "large_event_exclusive",
-                "contact": {"name": "X", "email": "x@x.com"},
-            },
-        )
-        assert r.status_code == 422
-        assert "minimum-spend" in r.json()["detail"]["message"]
-
-    def test_booking_needs_a_contact(self, client, w):
-        r = call(
-            client,
-            "POST",
-            "/events",
-            w.staff,
-            json={
-                "venue_id": w.venue.id,
-                "event_date": DATE,
-                "booking_type": "seated_dining",
-            },
-        )
-        assert r.status_code == 422
-
     def test_update_with_versions_and_post_confirmation_note(self, client, w):
+        """Also: a contact correction is logged."""
         detail = direct_booking(client, w)
         event_id, version = detail["event"]["id"], detail["event"]["version"]
         r = call(
@@ -179,6 +150,17 @@ class TestEvents:
             json={"version": version, "guests": 1},
         )
         assert stale.status_code == 409
+        # A contact correction is logged on the event.
+        r = call(
+            client,
+            "PATCH",
+            f"/events/{event_id}/contact",
+            w.staff,
+            json={"phone": "021 555"},
+        )
+        assert r.status_code == 200
+        assert r.json()["contact"]["phone"] == "021 555"
+        assert "contact.phone" in r.json()["changes"][-1]["changes"]
 
         for section in ("details", "beverages", "food"):
             r = call(
@@ -200,7 +182,37 @@ class TestEvents:
         last = r.json()["changes"][-1]
         assert last["after_confirmation"] is True and last["note"] == "Client rang"
 
-    def test_unknown_and_bad_values(self, client, w):
+    def test_bad_bookings_and_values_are_refused(self, client, w):
+        """A large event can't be entered directly (it comes from a
+        minimum-spend confirmation), a booking needs a contact, and an edit
+        with unknown fields or bad values is a readable 422."""
+        r = call(
+            client,
+            "POST",
+            "/events",
+            w.staff,
+            json={
+                "venue_id": w.venue.id,
+                "event_date": DATE,
+                "booking_type": "large_event_exclusive",
+                "contact": {"name": "X", "email": "x@x.com"},
+            },
+        )
+        assert r.status_code == 422
+        assert "minimum-spend" in r.json()["detail"]["message"]
+        r = call(
+            client,
+            "POST",
+            "/events",
+            w.staff,
+            json={
+                "venue_id": w.venue.id,
+                "event_date": DATE,
+                "booking_type": "seated_dining",
+            },
+        )
+        assert r.status_code == 422
+
         event_id = direct_booking(client, w)["event"]["id"]
         assert (
             call(
@@ -362,19 +374,6 @@ class TestEvents:
             == 422
         )
 
-    def test_contact_correction_is_logged(self, client, w):
-        event_id = direct_booking(client, w)["event"]["id"]
-        r = call(
-            client,
-            "PATCH",
-            f"/events/{event_id}/contact",
-            w.staff,
-            json={"phone": "021 555"},
-        )
-        assert r.status_code == 200
-        assert r.json()["contact"]["phone"] == "021 555"
-        assert "contact.phone" in r.json()["changes"][-1]["changes"]
-
     def test_cancel_needs_a_reason_and_reinstates(self, client, w):
         enquiry_id, event = booked_large_event(client, w)
         event_id = event["event"]["id"]
@@ -426,6 +425,7 @@ class TestEvents:
         )
 
     def test_list_filters_and_calendar(self, client, w):
+        """Also: rows and calendar days carry the contact's company."""
         a = direct_booking(
             client, w, name="Early", event_date="2026-12-01", bar_tab_cents=10_000
         )
@@ -435,7 +435,7 @@ class TestEvents:
             name="Late",
             event_date="2026-12-20",
             bar_tab_cents=30_000,
-            contact={"name": "Lee", "email": "lee@x.com"},
+            contact={"name": "Lee", "email": "lee@x.com", "company": "Acme"},
         )
         cancelled = direct_booking(
             client,
@@ -457,6 +457,7 @@ class TestEvents:
         ).json()
         assert [r["name"] for r in listed["rows"]] == ["Early", "Late"]
         assert listed["rows"][0]["expected_spend_cents"] == 10_000
+        assert listed["rows"][1]["contact_company"] == "Acme"
         assert (
             len(
                 call(
@@ -488,6 +489,7 @@ class TestEvents:
         days = {d["date"]: d for d in cal["days"]}
         assert days["2026-12-01"]["expected_spend_cents"] == 10_000
         assert [e["name"] for e in days["2026-12-20"]["events"]] == ["Late"]
+        assert days["2026-12-20"]["events"][0]["contact_company"] == "Acme"
         assert cal["expected_spend_cents"] == 40_000 and cal["events"] == 2
         with_cancelled = call(
             client,
@@ -841,6 +843,7 @@ class TestEventIsolation:
             ("POST", f"/events/{event_id}/cancel", {"reason": "x"}),
             ("PATCH", f"/menus/{menu['id']}", {"name": "y"}),
             ("DELETE", f"/menus/{menu['id']}", None),
+            ("POST", f"/events/{event_id}/portal-link", None),
         ):
             r = call(client, method, path, w.staff, json=body)
             assert r.status_code == 409, (path, r.text)
@@ -873,6 +876,7 @@ class TestEventIsolation:
             ("PUT", f"/menus/{menu['id']}/quantities", {"quantities": {}}),
             ("POST", f"/menus/{menu['id']}/distribute", None),
             ("DELETE", f"/menus/{menu['id']}", None),
+            ("POST", f"/events/{event_id}/portal-link", None),
         ):
             r = call(client, method, path, rival, json=body)
             assert r.status_code == 404, (method, path, r.status_code, r.text)
@@ -967,21 +971,6 @@ class TestEventAdditions:
         ).json()["event"]
         assert cleared["table_plan_file_id"] is None
 
-    def test_event_rows_carry_the_contact_company(self, client, w):
-        direct_booking(
-            client,
-            w,
-            name="Corporate do",
-            contact={"name": "Pat", "email": "pat@acme.example", "company": "Acme"},
-        )
-        rows = call(client, "GET", "/events", w.staff).json()["rows"]
-        assert [(r["name"], r["contact_company"]) for r in rows] == [
-            ("Corporate do", "Acme")
-        ]
-        cal = call(client, "GET", "/events/calendar?month=2026-12", w.staff).json()
-        day = next(d for d in cal["days"] if d["date"] == DATE)
-        assert day["events"][0]["contact_company"] == "Acme"
-
     def test_portal_link_for_staff_to_pass_on(self, client, w):
         detail = direct_booking(client, w)
         event_id = detail["event"]["id"]
@@ -1011,12 +1000,6 @@ class TestEventAdditions:
             json={"emails": ["not-an-email"]},
         )
         assert bad.status_code == 422
-        assert (
-            call(
-                client, "POST", f"/events/{event_id}/portal-link", w.other_user
-            ).status_code
-            == 404
-        )
         call(
             client,
             "POST",
@@ -1066,10 +1049,3 @@ class TestEventAdditions:
         gone = call(client, "POST", f"/events/{event_id}/portal-link/revoke", w.staff)
         assert gone.status_code == 200, gone.text
         assert [link["url"] for link in gone.json()["portal_links"]] == [None]
-
-    def test_portal_link_refused_in_shadow(self, client, w):
-        event_id = direct_booking(client, w)["event"]["id"]
-        w.org.functions_mode = "shadow"
-        w.db.flush()
-        r = call(client, "POST", f"/events/{event_id}/portal-link", w.staff)
-        assert r.status_code == 409 and r.json()["detail"]["code"] == "not_live"

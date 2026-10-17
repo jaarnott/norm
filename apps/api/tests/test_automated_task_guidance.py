@@ -19,26 +19,22 @@ TASK = {
 
 class TestInsideATask:
     def test_directs_the_model_to_update_with_the_task_id(self):
+        """...forbids creating another task, tells the model to make lasting
+        instructions durable, and carries the task state it needs."""
         text = automated_tasks_guidance(True, TASK)
         assert 'op="update"' in text
         assert TASK["id"] in text, "the model cannot update without the id"
 
-    def test_forbids_creating_another_task(self):
-        text = automated_tasks_guidance(True, TASK)
         assert 'Do NOT call `manage_task` with `op="create"`' in text
         # The generic "create one" advice must not also appear — that is what
         # produced the duplicate draft.
         assert 'Call `manage_task` with `op="create"` and `intent`' not in text
 
-    def test_tells_the_model_to_make_lasting_instructions_durable(self):
         # Conversation history is summarised as the thread grows, so an
         # instruction left only in chat silently stops applying.
-        text = automated_tasks_guidance(True, TASK)
         assert "FUTURE runs" in text
         assert "summarised" in text
 
-    def test_carries_the_task_state_the_model_needs(self):
-        text = automated_tasks_guidance(True, TASK)
         for expected in (TASK["title"], TASK["status"], TASK["schedule"]):
             assert expected in text
 

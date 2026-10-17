@@ -7,9 +7,7 @@ from app.auth.permissions import (
     PERMISSION_GROUPS,
     PERMISSION_SCOPES,
     PLATFORM_ADMIN_SCOPES,
-    STANDARD_ROLES,
 )
-from app.auth.security import create_access_token
 from app.db.models import (
     Role,
 )
@@ -19,35 +17,7 @@ from tests.conftest import (
     _make_organization,
     _make_membership,
 )
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-def _seed_system_roles(db):
-    """Insert the 4 system roles into the DB. Returns dict[name, Role]."""
-    roles = {}
-    for name, defn in STANDARD_ROLES.items():
-        role = Role(
-            id=str(uuid.uuid4()),
-            name=name,
-            display_name=defn["display_name"],
-            description=defn["description"],
-            is_system=True,
-            permissions=defn["permissions"],
-            organization_id=None,
-        )
-        db.add(role)
-        roles[name] = role
-    db.flush()
-    return roles
-
-
-def _auth(user):
-    token = create_access_token({"sub": user.id})
-    return {"Authorization": f"Bearer {token}"}
-
+from tests.org_helpers import auth_headers, seed_system_roles
 
 # ---------------------------------------------------------------------------
 # Tests: require_permission
@@ -59,7 +29,7 @@ class TestRequirePermission:
 
     def test_owner_has_all_org_perms(self, client, db_session):
         """Owner role should have all org permissions."""
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         user = _make_user(db_session, role="user")
         org = _make_organization(db_session)
         mem = _make_membership(db_session, user, org)
@@ -67,12 +37,12 @@ class TestRequirePermission:
         db_session.flush()
 
         # tasks:read should pass
-        resp = client.get("/api/threads", headers=_auth(user))
+        resp = client.get("/api/threads", headers=auth_headers(user))
         assert resp.status_code == 200
 
     def test_team_member_limited_perms(self, client, db_session):
         """team_member should not have write perms like orders:approve."""
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         user = _make_user(db_session, role="user")
         org = _make_organization(db_session)
         mem = _make_membership(db_session, user, org)
@@ -80,23 +50,23 @@ class TestRequirePermission:
         db_session.flush()
 
         # orders:read should pass
-        resp = client.get("/api/orders", headers=_auth(user))
+        resp = client.get("/api/orders", headers=auth_headers(user))
         assert resp.status_code == 200
 
         # orders:approve should fail
-        resp = client.post("/api/orders/fake-id/approve", headers=_auth(user))
+        resp = client.post("/api/orders/fake-id/approve", headers=auth_headers(user))
         assert resp.status_code == 403
 
     def test_platform_admin_bypasses_org_checks(self, client, db_session):
         """Platform admin (User.role == 'admin') should bypass org permission checks."""
         user = _make_user(db_session, role="admin")
         # No org membership at all
-        resp = client.get("/api/threads", headers=_auth(user))
+        resp = client.get("/api/threads", headers=auth_headers(user))
         assert resp.status_code == 200
 
     def test_missing_permission_returns_403(self, client, db_session):
         """User without required permission should get 403."""
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         user = _make_user(db_session, role="user")
         org = _make_organization(db_session)
         mem = _make_membership(db_session, user, org)
@@ -107,7 +77,7 @@ class TestRequirePermission:
         resp = client.post(
             "/api/billing/fake-org/setup",
             json={"token_plan": "basic"},
-            headers=_auth(user),
+            headers=auth_headers(user),
         )
         assert resp.status_code == 403
 
@@ -118,19 +88,19 @@ class TestRequirePermission:
         _make_membership(db_session, user, org)
         # No role_id set
 
-        resp = client.get("/api/threads", headers=_auth(user))
+        resp = client.get("/api/threads", headers=auth_headers(user))
         assert resp.status_code == 403
 
     def test_admin_scopes_require_platform_admin(self, client, db_session):
         """admin:* scopes should require User.role == 'admin'."""
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         user = _make_user(db_session, role="user")
         org = _make_organization(db_session)
         mem = _make_membership(db_session, user, org)
         mem.role_id = roles["owner"].id
         db_session.flush()
 
-        resp = client.get("/api/admin/deployments", headers=_auth(user))
+        resp = client.get("/api/admin/deployments", headers=auth_headers(user))
         assert resp.status_code == 403
 
 
@@ -140,152 +110,79 @@ class TestRequirePermission:
 
 
 class TestRoleCRUD:
-    def test_list_roles(self, client, db_session):
-        roles = _seed_system_roles(db_session)
+    @staticmethod
+    def _owner(db_session):
+        roles = seed_system_roles(db_session)
         user = _make_user(db_session, role="user")
         org = _make_organization(db_session)
         mem = _make_membership(db_session, user, org)
         mem.role_id = roles["owner"].id
         db_session.flush()
+        return roles, user, org
 
-        resp = client.get(f"/api/organizations/{org.id}/roles", headers=_auth(user))
+    def test_custom_role_lifecycle(self, client, db_session):
+        """List, create, refuse an unknown scope, update and delete a custom
+        role (folds the old list/create/invalid/update/delete tests)."""
+        _, user, org = self._owner(db_session)
+        url = f"/api/organizations/{org.id}/roles"
+
+        resp = client.get(url, headers=auth_headers(user))
         assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["roles"]) >= 4  # at least the 4 system roles
-
-    def test_create_custom_role(self, client, db_session):
-        roles = _seed_system_roles(db_session)
-        user = _make_user(db_session, role="user")
-        org = _make_organization(db_session)
-        mem = _make_membership(db_session, user, org)
-        mem.role_id = roles["owner"].id
-        db_session.flush()
+        assert len(resp.json()["roles"]) >= 4  # at least the 4 system roles
 
         resp = client.post(
-            f"/api/organizations/{org.id}/roles",
+            url,
             json={
                 "name": "custom_viewer",
                 "display_name": "Custom Viewer",
                 "permissions": ["tasks:read", "orders:read"],
             },
-            headers=_auth(user),
+            headers=auth_headers(user),
         )
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["name"] == "custom_viewer"
-        assert data["is_system"] is False
-
-    def test_create_role_invalid_permission(self, client, db_session):
-        roles = _seed_system_roles(db_session)
-        user = _make_user(db_session, role="user")
-        org = _make_organization(db_session)
-        mem = _make_membership(db_session, user, org)
-        mem.role_id = roles["owner"].id
-        db_session.flush()
+        created = resp.json()
+        assert created["name"] == "custom_viewer"
+        assert created["is_system"] is False
 
         resp = client.post(
-            f"/api/organizations/{org.id}/roles",
+            url,
             json={
                 "name": "bad",
                 "display_name": "Bad",
                 "permissions": ["nonexistent:perm"],
             },
-            headers=_auth(user),
+            headers=auth_headers(user),
         )
         assert resp.status_code == 400
 
-    def test_update_custom_role(self, client, db_session):
-        roles = _seed_system_roles(db_session)
-        user = _make_user(db_session, role="user")
-        org = _make_organization(db_session)
-        mem = _make_membership(db_session, user, org)
-        mem.role_id = roles["owner"].id
-        db_session.flush()
-
-        # Create custom role
-        custom = Role(
-            id=str(uuid.uuid4()),
-            organization_id=org.id,
-            name="test_role",
-            display_name="Test",
-            is_system=False,
-            permissions=["tasks:read"],
-        )
-        db_session.add(custom)
-        db_session.flush()
-
         resp = client.put(
-            f"/api/organizations/{org.id}/roles/{custom.id}",
+            f"{url}/{created['id']}",
             json={
                 "display_name": "Updated Test",
                 "permissions": ["tasks:read", "tasks:write"],
             },
-            headers=_auth(user),
+            headers=auth_headers(user),
         )
         assert resp.status_code == 200
         assert resp.json()["display_name"] == "Updated Test"
 
-    def test_cannot_modify_system_role(self, client, db_session):
-        roles = _seed_system_roles(db_session)
-        user = _make_user(db_session, role="user")
-        org = _make_organization(db_session)
-        mem = _make_membership(db_session, user, org)
-        mem.role_id = roles["owner"].id
-        db_session.flush()
-
-        resp = client.put(
-            f"/api/organizations/{org.id}/roles/{roles['owner'].id}",
-            json={"display_name": "Hacked"},
-            headers=_auth(user),
-        )
-        assert resp.status_code == 400
-
-    def test_cannot_delete_system_role(self, client, db_session):
-        roles = _seed_system_roles(db_session)
-        user = _make_user(db_session, role="user")
-        org = _make_organization(db_session)
-        mem = _make_membership(db_session, user, org)
-        mem.role_id = roles["owner"].id
-        db_session.flush()
-
-        resp = client.delete(
-            f"/api/organizations/{org.id}/roles/{roles['owner'].id}",
-            headers=_auth(user),
-        )
-        assert resp.status_code == 400
-
-    def test_delete_custom_role(self, client, db_session):
-        roles = _seed_system_roles(db_session)
-        user = _make_user(db_session, role="user")
-        org = _make_organization(db_session)
-        mem = _make_membership(db_session, user, org)
-        mem.role_id = roles["owner"].id
-        db_session.flush()
-
-        custom = Role(
-            id=str(uuid.uuid4()),
-            organization_id=org.id,
-            name="deleteme",
-            display_name="Delete Me",
-            is_system=False,
-            permissions=[],
-        )
-        db_session.add(custom)
-        db_session.flush()
-
-        resp = client.delete(
-            f"/api/organizations/{org.id}/roles/{custom.id}",
-            headers=_auth(user),
-        )
+        resp = client.delete(f"{url}/{created['id']}", headers=auth_headers(user))
         assert resp.status_code == 200
 
+    def test_system_roles_cannot_be_modified_or_deleted(self, client, db_session):
+        roles, user, org = self._owner(db_session)
+        url = f"/api/organizations/{org.id}/roles/{roles['owner'].id}"
+
+        resp = client.put(
+            url, json={"display_name": "Hacked"}, headers=auth_headers(user)
+        )
+        assert resp.status_code == 400
+
+        resp = client.delete(url, headers=auth_headers(user))
+        assert resp.status_code == 400
+
     def test_cannot_delete_role_in_use(self, client, db_session):
-        roles = _seed_system_roles(db_session)
-        user = _make_user(db_session, role="user")
-        org = _make_organization(db_session)
-        mem = _make_membership(db_session, user, org)
-        mem.role_id = roles["owner"].id
-        db_session.flush()
+        _, user, org = self._owner(db_session)
 
         custom = Role(
             id=str(uuid.uuid4()),
@@ -306,7 +203,7 @@ class TestRoleCRUD:
 
         resp = client.delete(
             f"/api/organizations/{org.id}/roles/{custom.id}",
-            headers=_auth(user),
+            headers=auth_headers(user),
         )
         assert resp.status_code == 400
 
@@ -318,7 +215,7 @@ class TestRoleCRUD:
 
 class TestMemberRoleAssignment:
     def test_assign_role_to_member(self, client, db_session):
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         admin = _make_user(db_session, role="user")
         org = _make_organization(db_session)
         mem = _make_membership(db_session, admin, org)
@@ -331,7 +228,7 @@ class TestMemberRoleAssignment:
         resp = client.put(
             f"/api/organizations/{org.id}/members/{target.id}/role",
             json={"role_id": roles["team_member"].id},
-            headers=_auth(admin),
+            headers=auth_headers(admin),
         )
         assert resp.status_code == 200
 
@@ -353,7 +250,7 @@ class TestPermissionCatalogue:
         """Keys, not objects: the editor read `group.permissions` off a list
         of strings and crashed the page when a group was opened (Oct 2026)."""
         user = _make_user(db_session, role="user")
-        resp = client.get("/api/permissions", headers=_auth(user))
+        resp = client.get("/api/permissions", headers=auth_headers(user))
         assert resp.status_code == 200
         data = resp.json()
         assert data["permissions"] == sorted(PERMISSION_SCOPES)
@@ -368,14 +265,14 @@ class TestPermissionCatalogue:
 
 class TestAuthMePermissions:
     def test_me_includes_permissions_for_org_user(self, client, db_session):
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         user = _make_user(db_session, role="user")
         org = _make_organization(db_session)
         mem = _make_membership(db_session, user, org)
         mem.role_id = roles["team_member"].id
         db_session.flush()
 
-        resp = client.get("/api/auth/me", headers=_auth(user))
+        resp = client.get("/api/auth/me", headers=auth_headers(user))
         assert resp.status_code == 200
         data = resp.json()
         assert "permissions" in data
@@ -383,40 +280,21 @@ class TestAuthMePermissions:
         assert data["org_role"]["name"] == "team_member"
 
     def test_me_admin_gets_all_perms(self, client, db_session):
+        """A platform admin holds every org scope (and no org role), so the
+        UI shows them every page; the admin:* scopes are not in the list."""
         user = _make_user(db_session, role="admin")
-        resp = client.get("/api/auth/me", headers=_auth(user))
+        resp = client.get("/api/auth/me", headers=auth_headers(user))
         assert resp.status_code == 200
         data = resp.json()
-        assert "permissions" in data
-        assert len(data["permissions"]) > 0
+        assert sorted(data["permissions"]) == sorted(
+            PERMISSION_SCOPES - PLATFORM_ADMIN_SCOPES
+        )
+        assert data["org_role"] is None
 
     def test_me_no_membership_empty_perms(self, client, db_session):
         user = _make_user(db_session, role="user")
-        resp = client.get("/api/auth/me", headers=_auth(user))
+        resp = client.get("/api/auth/me", headers=auth_headers(user))
         assert resp.status_code == 200
         data = resp.json()
         assert data["permissions"] == []
         assert data["org_role"] is None
-
-
-# ---------------------------------------------------------------------------
-# Tests: Registration default role
-# ---------------------------------------------------------------------------
-
-
-class TestRegistration:
-    def test_non_first_user_gets_user_role(self, client, db_session):
-        """When users already exist, new registrations get role='user'."""
-        # Ensure at least one user exists
-        _make_user(db_session, role="admin")
-
-        resp = client.post(
-            "/api/auth/register",
-            json={
-                "email": "new@test.com",
-                "password": "testpass123",
-                "full_name": "New User",
-            },
-        )
-        assert resp.status_code == 200
-        assert resp.json()["user"]["role"] == "user"

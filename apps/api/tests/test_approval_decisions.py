@@ -7,6 +7,10 @@ stranded `pending_approval` in production, 2 Oct 2026); a scheduled run's card,
 copied into the task conversation, approved the conversation and ran nothing;
 and a turn that mixed reads with a write could not be resumed at all, because
 the reads' results were dropped at suspension.
+
+Folded in (Oct 2026): test_approval_failure_net (a failed resume still lands),
+test_approval_resume_durability (the approval commits before the
+continuation) and test_mixed_round_resume (the 2–3 Oct mixed-round incident).
 """
 
 import json
@@ -14,8 +18,11 @@ import uuid
 
 import pytest
 
+from sqlalchemy.orm import Session, sessionmaker
+
 from app.agents import tool_loop as TL
-from app.auth.security import create_access_token
+from app.agents.prompt_builder import approval_card_guidance
+from app.db import engine as engine_mod
 from app.db.models import (
     Approval,
     AutomatedTask,
@@ -24,7 +31,9 @@ from app.db.models import (
     ToolCall,
 )
 from app.services import approvals
+from tests.approval_helpers import headers, owner_thread, suspend
 from tests.conftest import (
+    _engine,
     _make_membership,
     _make_organization,
     _make_thread,
@@ -32,56 +41,7 @@ from tests.conftest import (
     _make_venue,
     _make_venue_access,
 )
-
-
-def _headers(user):
-    return {"Authorization": f"Bearer {create_access_token({'sub': user.id})}"}
-
-
-def _suspend(db, thread, calls, done_results=None):
-    """Put ``thread`` in the state the loop leaves it in when it pauses."""
-    ids = []
-    for action, params in calls:
-        tc = ToolCall(
-            id=str(uuid.uuid4()),
-            thread_id=thread.id,
-            iteration=1,
-            tool_name=f"loadedhub__{action}",
-            connector_name="loadedhub",
-            action=action,
-            method="PUT",
-            status="pending_approval",
-            input_params=params,
-        )
-        db.add(tc)
-        ids.append(tc.id)
-    thread.status = approvals.AWAITING
-    thread.pending_tool_call_ids = ids
-    thread.agent_loop_state = {
-        "messages": [],
-        "iteration": 1,
-        "done_results": done_results or [],
-    }
-    db.add(
-        Message(
-            thread_id=thread.id,
-            role="assistant",
-            content="I'd like to:\n\n- Manage Stock Item via loadedhub",
-            display_blocks=[
-                {
-                    "component": "tool_approval",
-                    "data": {
-                        "thread_id": thread.id,
-                        "status": "pending",
-                        "tool_calls": [{"id": i} for i in ids],
-                    },
-                    "props": {},
-                }
-            ],
-        )
-    )
-    db.flush()
-    return ids
+from tests.tool_loop_harness import ScriptedLlm, end_turn, tool, tool_round, tool_use
 
 
 @pytest.fixture()
@@ -103,19 +63,15 @@ def no_llm(monkeypatch):
     return ran
 
 
-def _thread(db, owner, intent="norm.tool_use"):
-    return _make_thread(db, owner, domain="norm", intent=intent, status="in_progress")
-
-
 class TestOnlyTheOwnerDecides:
     def test_someone_elses_thread_is_not_found(self, client, db_session, owner, no_llm):
-        thread = _thread(db_session, owner)
-        (tc_id,) = _suspend(db_session, thread, [("manage_stock_item", {})])
+        thread = owner_thread(db_session, owner)
+        (tc_id,) = suspend(db_session, thread, [("manage_stock_item", {})])
         stranger = _make_user(db_session)
 
         for verb in ("approve", "reject"):
             r = client.post(
-                f"/api/threads/{thread.id}/{verb}", headers=_headers(stranger)
+                f"/api/threads/{thread.id}/{verb}", headers=headers(stranger)
             )
             assert r.status_code == 404
         assert db_session.get(ToolCall, tc_id).status == "pending_approval"
@@ -124,10 +80,10 @@ class TestOnlyTheOwnerDecides:
     def test_the_owner_approves_and_the_write_runs(
         self, client, db_session, owner, no_llm
     ):
-        thread = _thread(db_session, owner)
-        (tc_id,) = _suspend(db_session, thread, [("manage_stock_item", {})])
+        thread = owner_thread(db_session, owner)
+        (tc_id,) = suspend(db_session, thread, [("manage_stock_item", {})])
 
-        r = client.post(f"/api/threads/{thread.id}/approve", headers=_headers(owner))
+        r = client.post(f"/api/threads/{thread.id}/approve", headers=headers(owner))
 
         assert r.status_code == 200, r.text
         assert no_llm == [tc_id]
@@ -138,10 +94,10 @@ class TestOnlyTheOwnerDecides:
     def test_a_platform_admin_may_decide(
         self, client, db_session, owner, admin_user, no_llm
     ):
-        thread = _thread(db_session, owner)
-        _suspend(db_session, thread, [("manage_stock_item", {})])
+        thread = owner_thread(db_session, owner)
+        suspend(db_session, thread, [("manage_stock_item", {})])
         r = client.post(
-            f"/api/threads/{thread.id}/approve", headers=_headers(admin_user)
+            f"/api/threads/{thread.id}/approve", headers=headers(admin_user)
         )
         assert r.status_code == 200, r.text
 
@@ -150,14 +106,12 @@ class TestExactlyOnce:
     def test_a_second_click_is_refused_and_nothing_runs_twice(
         self, client, db_session, owner, no_llm
     ):
-        thread = _thread(db_session, owner)
-        _suspend(db_session, thread, [("manage_stock_item", {})])
+        thread = owner_thread(db_session, owner)
+        suspend(db_session, thread, [("manage_stock_item", {})])
 
-        first = client.post(
-            f"/api/threads/{thread.id}/approve", headers=_headers(owner)
-        )
+        first = client.post(f"/api/threads/{thread.id}/approve", headers=headers(owner))
         second = client.post(
-            f"/api/threads/{thread.id}/approve", headers=_headers(owner)
+            f"/api/threads/{thread.id}/approve", headers=headers(owner)
         )
 
         assert first.status_code == 200
@@ -174,8 +128,8 @@ class TestVenueAccess:
         mine = _make_venue(db_session, name="La Zeppa", organization_id=org.id)
         theirs = _make_venue(db_session, name="The Glass Goose", organization_id=org.id)
         _make_venue_access(db_session, owner, mine)
-        thread = _thread(db_session, owner)
-        ok_id, blocked_id = _suspend(
+        thread = owner_thread(db_session, owner)
+        ok_id, blocked_id = suspend(
             db_session,
             thread,
             [
@@ -184,7 +138,7 @@ class TestVenueAccess:
             ],
         )
 
-        r = client.post(f"/api/threads/{thread.id}/approve", headers=_headers(owner))
+        r = client.post(f"/api/threads/{thread.id}/approve", headers=headers(owner))
 
         assert r.status_code == 200, r.text
         assert no_llm == [ok_id]
@@ -195,11 +149,11 @@ class TestVenueAccess:
 
 class TestRejectKeepsTheReason:
     def test_notes_land_on_the_approval_row(self, client, db_session, owner, no_llm):
-        thread = _thread(db_session, owner)
-        _suspend(db_session, thread, [("manage_stock_item", {})])
+        thread = owner_thread(db_session, owner)
+        suspend(db_session, thread, [("manage_stock_item", {})])
         r = client.post(
             f"/api/threads/{thread.id}/reject",
-            headers=_headers(owner),
+            headers=headers(owner),
             json={"notes": "wrong supplier"},
         )
         assert r.status_code == 200, r.text
@@ -212,8 +166,8 @@ class TestANewMessageSupersedes:
     def test_pending_calls_are_declined_and_the_card_stops_being_live(
         self, db_session, owner
     ):
-        thread = _thread(db_session, owner)
-        (tc_id,) = _suspend(db_session, thread, [("manage_stock_item", {})])
+        thread = owner_thread(db_session, owner)
+        (tc_id,) = suspend(db_session, thread, [("manage_stock_item", {})])
 
         assert approvals.supersede(db_session, thread, owner.id) is True
         db_session.flush()
@@ -227,10 +181,10 @@ class TestANewMessageSupersedes:
         assert approvals.SUPERSEDED_NOTE in msg.content
 
     def test_a_later_approval_leaves_the_superseded_card_alone(self, db_session, owner):
-        thread = _thread(db_session, owner)
-        _suspend(db_session, thread, [("manage_stock_item", {})])
+        thread = owner_thread(db_session, owner)
+        suspend(db_session, thread, [("manage_stock_item", {})])
         approvals.supersede(db_session, thread, owner.id)
-        new_ids = _suspend(db_session, thread, [("manage_menu", {})])
+        new_ids = suspend(db_session, thread, [("manage_menu", {})])
 
         approvals.set_card_status(db_session, thread, new_ids, "approved")
 
@@ -245,8 +199,8 @@ class TestANewMessageSupersedes:
     def test_sending_a_message_supersedes(self, db_session, owner, monkeypatch):
         from app.agents.norm import NormAgent
 
-        thread = _thread(db_session, owner)
-        (tc_id,) = _suspend(db_session, thread, [("manage_stock_item", {})])
+        thread = owner_thread(db_session, owner)
+        (tc_id,) = suspend(db_session, thread, [("manage_stock_item", {})])
         agent = NormAgent()
         monkeypatch.setattr(agent, "get_tool_definitions", lambda *a, **k: ("sys", []))
         monkeypatch.setattr(
@@ -265,7 +219,7 @@ class TestANewMessageSupersedes:
         assert thread.status == "in_progress"
 
     def test_nothing_waiting_is_a_no_op(self, db_session, owner):
-        thread = _thread(db_session, owner)
+        thread = owner_thread(db_session, owner)
         assert approvals.supersede(db_session, thread, owner.id) is False
 
 
@@ -273,13 +227,13 @@ class TestResumeAnswersEveryCall:
     def test_reads_from_the_same_response_survive_the_pause(
         self, db_session, owner, monkeypatch
     ):
-        thread = _thread(db_session, owner)
+        thread = owner_thread(db_session, owner)
         read_result = {
             "type": "tool_result",
             "tool_use_id": "toolu_read",
             "content": json.dumps({"rows": 3}),
         }
-        approved_id, rejected_id = _suspend(
+        approved_id, rejected_id = suspend(
             db_session,
             thread,
             [("manage_stock_item", {}), ("manage_stock_item", {})],
@@ -315,7 +269,9 @@ class TestScheduledRunCards:
     def test_deciding_the_run_updates_the_copy_and_posts_the_outcome(
         self, client, db_session, owner, monkeypatch
     ):
-        conversation = _thread(db_session, owner, intent="norm.automated_conversation")
+        conversation = owner_thread(
+            db_session, owner, intent="norm.automated_conversation"
+        )
         task = AutomatedTask(
             id=str(uuid.uuid4()),
             title="Invoice Reconciliation",
@@ -328,13 +284,13 @@ class TestScheduledRunCards:
             conversation_thread_id=conversation.id,
         )
         db_session.add(task)
-        run_thread = _thread(db_session, owner, intent="norm.automated_task")
+        run_thread = owner_thread(db_session, owner, intent="norm.automated_task")
         db_session.add(
             AutomatedTaskRun(
                 automated_task_id=task.id, thread_id=run_thread.id, status="success"
             )
         )
-        (tc_id,) = _suspend(db_session, run_thread, [("manage_stock_item", {})])
+        (tc_id,) = suspend(db_session, run_thread, [("manage_stock_item", {})])
         # The scheduler copies the run's card into the conversation.
         card = (
             db_session.query(Message).filter(Message.thread_id == run_thread.id).one()
@@ -361,9 +317,7 @@ class TestScheduledRunCards:
 
         monkeypatch.setattr(TL, "_execute_loop", finish)
 
-        r = client.post(
-            f"/api/threads/{run_thread.id}/approve", headers=_headers(owner)
-        )
+        r = client.post(f"/api/threads/{run_thread.id}/approve", headers=headers(owner))
 
         assert r.status_code == 200, r.text
         convo = (
@@ -374,3 +328,363 @@ class TestScheduledRunCards:
         )
         assert convo[0].display_blocks[0]["data"]["status"] == "approved"
         assert convo[-1].content == "Updated 1 item."
+
+
+# ── A decision whose resume fails still lands ────────────────────────────
+
+
+def _last_assistant_text(db, thread_id):
+    m = (
+        db.query(Message)
+        .filter(Message.thread_id == thread_id, Message.role == "assistant")
+        .order_by(Message.created_at.desc())
+        .first()
+    )
+    return m.content if m else None
+
+
+class TestAFailedResumeLands:
+    """A decision whose resume fails still lands, settled, with a message.
+
+    Until Oct 2026 a failure anywhere in ``resume_tool_loop`` surfaced as a 500
+    from /approve or /reject: the card said Approved, the thread stayed
+    in_progress, the client polled "Working..." for half an hour, and nobody
+    was told whether the changes had run. The known cause (a round mixing a
+    write with other calls) is fixed; this is the net for the next one.
+    """
+
+    @pytest.fixture()
+    def db_session(self):
+        """The net rolls the request session back, as production must (its
+        uncommitted claim holds a lock on the thread row). With the default
+        session that rollback would also undo the test's own transaction, so
+        these tests use savepoints and each commits its setup."""
+        connection = _engine.connect()
+        transaction = connection.begin()
+        session = sessionmaker(
+            bind=connection, join_transaction_mode="create_savepoint"
+        )()
+        yield session
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+    @pytest.fixture()
+    def net_session(self, monkeypatch, db_session):
+        """The net opens its own session; bind it to the test transaction."""
+        monkeypatch.setattr(
+            engine_mod, "SessionLocal", lambda: Session(bind=db_session.get_bind())
+        )
+
+    def test_a_crash_before_the_writes_marks_them_failed(
+        self, client, db_session, owner, monkeypatch, net_session
+    ):
+        """Nothing ran: the pending rows are marked failed so a second click
+        cannot run a write whose side effect might already stand, the thread
+        settles, and the message says what to check."""
+        thread = owner_thread(db_session, owner)
+        (tc_id,) = suspend(db_session, thread, [("manage_stock_item", {})])
+        db_session.commit()
+
+        def boom(*a, **k):
+            raise RuntimeError("resume exploded")
+
+        monkeypatch.setattr(TL, "resume_tool_loop", boom)
+
+        r = client.post(f"/api/threads/{thread.id}/approve", headers=headers(owner))
+
+        assert r.status_code == 200, r.text
+        db_session.expire_all()
+        assert db_session.get(ToolCall, tc_id).status == "failed"
+        thread = db_session.get(type(thread), thread.id)
+        assert thread.status == "completed"
+        assert thread.pending_tool_call_ids is None
+        text = _last_assistant_text(db_session, thread.id)
+        assert "0 of 1 changes ran" in text
+        assert "will not run again" in text
+
+    def test_a_crash_part_way_keeps_the_write_that_ran(
+        self, client, db_session, owner, monkeypatch, net_session
+    ):
+        """Two approved writes; the first runs in Loaded, the second blows
+        up. Nothing was committed, so without the pre-rollback read the
+        record of the first would vanish. It stays executed; the second is
+        marked failed, and the message counts them."""
+        thread = owner_thread(db_session, owner)
+        first, second = suspend(
+            db_session,
+            thread,
+            [("manage_stock_item", {"n": 1}), ("manage_stock_item", {"n": 2})],
+        )
+        db_session.commit()
+
+        def execute(tc, db, config_db=None):
+            if tc.id == second:
+                raise RuntimeError("Loaded timed out")
+            tc.status = "executed"
+            tc.result_payload = {"ok": True}
+            db.flush()
+            return {"ok": True}
+
+        monkeypatch.setattr(TL, "_execute_tool_call", execute)
+
+        r = client.post(f"/api/threads/{thread.id}/approve", headers=headers(owner))
+
+        assert r.status_code == 200, r.text
+        db_session.expire_all()
+        assert db_session.get(ToolCall, first).status == "executed"
+        assert db_session.get(ToolCall, second).status == "failed"
+        assert "1 of 2 changes ran" in _last_assistant_text(db_session, thread.id)
+        card = next(
+            b["data"]
+            for m in db_session.query(Message).filter(Message.thread_id == thread.id)
+            for b in (m.display_blocks or [])
+            if b.get("component") == "tool_approval"
+        )
+        outcomes = {row["id"]: row.get("outcome") for row in card["tool_calls"]}
+        assert outcomes == {first: "done", second: "failed"}
+
+    def test_a_crash_after_the_writes_says_they_were_made(
+        self, client, db_session, owner, monkeypatch, net_session
+    ):
+        """The write ran and the resume committed; the continuation died.
+        The changes stand, the thread settles, the message says so."""
+        thread = owner_thread(db_session, owner)
+        (tc_id,) = suspend(db_session, thread, [("manage_stock_item", {})])
+        db_session.commit()
+
+        def execute(tc, db, config_db=None):
+            # as the real one does: the row records that the write ran
+            tc.status = "executed"
+            db.flush()
+            return {"ok": True}
+
+        monkeypatch.setattr(TL, "_execute_tool_call", execute)
+
+        def boom(*a, **k):
+            raise RuntimeError("continuation exploded")
+
+        monkeypatch.setattr(TL, "_execute_loop", boom)
+
+        r = client.post(f"/api/threads/{thread.id}/approve", headers=headers(owner))
+
+        assert r.status_code == 200, r.text
+        db_session.expire_all()
+        assert db_session.get(ToolCall, tc_id).status == "executed"
+        thread = db_session.get(type(thread), thread.id)
+        assert thread.status == "completed"
+        text = _last_assistant_text(db_session, thread.id)
+        assert text == approvals.RESUME_FAILED_AFTER_WRITES
+
+    def test_a_crash_on_reject_also_lands(
+        self, client, db_session, owner, monkeypatch, net_session
+    ):
+        thread = owner_thread(db_session, owner)
+        suspend(db_session, thread, [("manage_stock_item", {})])
+        db_session.commit()
+
+        def boom(*a, **k):
+            raise RuntimeError("resume exploded")
+
+        monkeypatch.setattr(TL, "resume_tool_loop", boom)
+
+        r = client.post(
+            f"/api/threads/{thread.id}/reject",
+            headers=headers(owner),
+            json={"notes": "no"},
+        )
+
+        assert r.status_code == 200, r.text
+        db_session.expire_all()
+        thread = db_session.get(type(thread), thread.id)
+        assert thread.status == "completed"
+        assert "decision was recorded" in _last_assistant_text(db_session, thread.id)
+
+
+def test_the_prompt_asks_for_one_line_above_the_card():
+    text = " ".join(approval_card_guidance().split())
+    assert "shown above the approval card" in text
+    assert "one short sentence" in text
+
+
+# ── The resume commits the approval before its continuation ──────────────
+
+
+class TestTheApprovalCommitsFirst:
+    """The approval resume commits the approval BEFORE its (long) continuation.
+
+    An approved write runs its external side effect, then the loop continues.
+    If the DB commit only happened at the end of that continuation, a request
+    cut would roll the DB back while the side effect already stood — reverting
+    the thread to awaiting-approval and letting a re-approve DOUBLE-EXECUTE
+    the write. So resume_tool_loop must commit the approval boundary first.
+    """
+
+    def test_resume_commits_approval_before_the_continuation(
+        self, db_session, admin_user, monkeypatch
+    ):
+        thread = _make_thread(
+            db_session,
+            admin_user,
+            domain="reports",
+            intent="reports.tool_use",
+            status="awaiting_tool_approval",
+        )
+        thread.agent_loop_state = {"messages": [], "iteration": 1}
+        tc_id = str(uuid.uuid4())
+        thread.pending_tool_call_ids = [tc_id]
+        db_session.add(
+            ToolCall(
+                id=tc_id,
+                thread_id=thread.id,
+                iteration=1,
+                tool_name="loadedhub__update_shift",
+                connector_name="loadedhub",
+                action="update_shift",
+                method="POST",
+                status="approved",
+                input_params={},
+            )
+        )
+        db_session.flush()
+
+        # The approved write "executes" without a real connector call.
+        monkeypatch.setattr(
+            TL, "_execute_tool_call", lambda tc, db, config_db=None: {"ok": True}
+        )
+
+        seen = {"committed": False}
+        real_commit = db_session.commit
+
+        def spy_commit():
+            seen["committed"] = True
+            return real_commit()
+
+        monkeypatch.setattr(db_session, "commit", spy_commit)
+
+        def fake_loop(*a, **k):
+            assert seen["committed"], (
+                "the approval must be committed before the continuation runs"
+            )
+            return {"status": "completed"}
+
+        monkeypatch.setattr(TL, "_execute_loop", fake_loop)
+
+        TL.resume_tool_loop(thread, db_session, "sys", [], config_db=None)
+
+        assert seen["committed"]
+        assert thread.status == "in_progress"
+        assert thread.pending_tool_call_ids is None
+
+
+# ── A round that mixes a write with other calls survives the pause ───────
+
+
+class TestAMixedRoundSurvivesThePause:
+    """A round that mixes an approval-gated write with other calls survives
+    the pause.
+
+    Prod, 2–3 Oct 2026 (threads c6aad2d5 and aad94383 twice): the model put a
+    notebook update and/or a read in the same round as manage_stock_item
+    writes. The loop saved only the pending writes at suspension; after
+    Approve the writes ran, then the first model call was rejected —
+    "tool_use ids were found without tool_result blocks" — /approve returned
+    500, and the card showed Approved with no reply. This drives the REAL loop
+    through that round, approves the write, and checks that the model is
+    answered for every call it made.
+    """
+
+    TOOLS = [
+        tool("loadedhub__get_stock", description="Read stock."),
+        tool("loadedhub__manage_stock_item", "PUT", "Update a stock item."),
+    ]
+
+    def test_a_mixed_round_is_fully_answered_after_approval(
+        self, db_session, admin_user, monkeypatch
+    ):
+        llm = ScriptedLlm(
+            [
+                tool_round(
+                    tool_use(
+                        "toolu_note",
+                        "memory",
+                        {
+                            "command": "str_replace",
+                            "path": "/memories/job.md",
+                            "old_str": "(empty)",
+                            "new_str": "item 1 done",
+                        },
+                    ),
+                    tool_use("toolu_read", "loadedhub__get_stock"),
+                    tool_use(
+                        "toolu_write",
+                        "loadedhub__manage_stock_item",
+                        {"op": "update", "item_id": str(uuid.uuid4())},
+                    ),
+                    text="Noting progress, then the next item.",
+                ),
+                end_turn("Done."),
+            ]
+        ).install(monkeypatch)
+        monkeypatch.setattr(
+            TL, "_execute_tool_call", lambda tc, db, config_db=None: {"ok": 1}
+        )
+        thread = _make_thread(
+            db_session,
+            admin_user,
+            domain="procurement",
+            intent="procurement.tool_use",
+            status="in_progress",
+        )
+        # Give the notebook something to replace, so the memory op succeeds.
+        from app.agents import memory_tool
+
+        memory_tool.handle(
+            {"command": "create", "path": "/memories/job.md", "file_text": "(empty)"},
+            db_session,
+            thread.id,
+        )
+
+        TL.run_tool_loop(
+            "update the stock codes",
+            thread,
+            db_session,
+            "system prompt",
+            self.TOOLS,
+            config_db=db_session,
+        )
+        pending = thread.pending_tool_call_ids or []
+        assert pending == ["toolu_write"], f"expected the write to wait: {pending}"
+
+        # The owner approves, and the loop resumes.
+        tc = db_session.get(ToolCall, "toolu_write")
+        tc.status = "approved"
+        db_session.flush()
+        TL.resume_tool_loop(
+            thread, db_session, "system prompt", self.TOOLS, config_db=db_session
+        )
+
+        assert len(llm.calls) == 2, (
+            f"expected the model to be called again, saw {len(llm.calls)}"
+        )
+        resumed = llm.calls[1]
+        asked = {
+            b["id"]
+            for m in resumed
+            if m["role"] == "assistant" and isinstance(m["content"], list)
+            for b in m["content"]
+            if b.get("type") == "tool_use"
+        }
+        answered = {
+            b["tool_use_id"]
+            for m in resumed
+            if m["role"] == "user" and isinstance(m["content"], list)
+            for b in m["content"]
+            if b.get("type") == "tool_result"
+        }
+        assert asked == {"toolu_note", "toolu_read", "toolu_write"}
+        assert asked - answered == set(), (
+            f"tool_use ids without a tool_result: {sorted(asked - answered)} "
+            "— the API rejects this turn with a 400"
+        )
+        assert thread.status == "completed"

@@ -236,13 +236,21 @@ class TestCallCap:
         assert "max 20" in result["error"]
 
     def test_hard_ceiling_bounds_config(self, monkeypatch, db_session):
-        _wire_fake_connector(monkeypatch, {})
-        code = "def run(params, call_api, log):\n    return {'ok': True}\n"
-        # absurd config value is clamped — just verify execution still works
+        """A config asking for more than the 200-call ceiling is clamped to it:
+        the 201st call is refused and never reaches the connector."""
+        calls = _wire_fake_connector(monkeypatch, {})
+        code = (
+            "def run(params, call_api, log):\n"
+            "    for _ in range(201):\n"
+            "        call_api('fake', 'read_thing', {})\n"
+            "    return {'ok': True}\n"
+        )
         result = execute_function(
             code, {}, db_session, None, options={"max_api_calls": 10_000}
         )
-        assert result["success"]
+        assert not result["success"]
+        assert "max 200" in result["error"]
+        assert len(calls) == 200
 
 
 class TestExtractDocument:
@@ -661,13 +669,14 @@ class TestConsolidatorShapes:
         code = "def run(params, call_api, log):\n    return call_api('fake', 'read_thing', {})\n"
         return execute_function(code, {}, db_session, None, options=options)["data"]
 
-    def test_the_consolidators_shape_is_applied(self, monkeypatch, db_session):
+    def test_it_replaces_the_endpoints_transform(self, monkeypatch, db_session):
+        """Also (was test_the_consolidators_shape_is_applied): with no endpoint
+        transform at all, the consolidator's shape is applied on its own."""
         _wire_fake_connector(monkeypatch, {"read_thing": self.RAW}, tools=self._tools())
         shape = {"enabled": True, "fields": {"a": "alpha"}}
         out = self._run(db_session, {"shapes": {"fake.read_thing": shape}})
         assert out == [{"alpha": 1}]
 
-    def test_it_replaces_the_endpoints_transform(self, monkeypatch, db_session):
         endpoint_transform = {"enabled": True, "fields": {"a": "renamed"}}
         _wire_fake_connector(
             monkeypatch, {"read_thing": self.RAW}, tools=self._tools(endpoint_transform)

@@ -69,12 +69,25 @@ class TestTransientClassifier:
 
 
 class TestBackoff:
-    def test_grows_and_is_bounded(self):
-        assert (
-            _llm_retry_backoff(0) < _llm_retry_backoff(5)
-            or _llm_retry_backoff(5) <= 8.5
-        )
-        assert _llm_retry_backoff(10) <= 8.5  # capped
+    def test_grows_and_is_bounded(self, monkeypatch):
+        """The jitter is pinned to each end of its range, so the assertions
+        hold for every draw (the old `a < b or b <= 8.5` was true whatever the
+        backoff did)."""
+
+        def at(jitter):
+            monkeypatch.setattr("random.uniform", lambda lo, hi: hi if jitter else lo)
+            return [_llm_retry_backoff(n) for n in range(11)]
+
+        low, high = at(jitter=False), at(jitter=True)
+        assert low[0] == pytest.approx(0.6)
+        # Grows: each wait beats the previous one even against the worst jitter,
+        # until it reaches the cap.
+        assert all(high[n] < low[n + 1] for n in range(4))
+        # Bounded: capped at 8s plus at most 0.4s of jitter.
+        assert low[10] == pytest.approx(8.0) and high[10] == pytest.approx(8.4)
+        assert max(high) == pytest.approx(8.4)
+        # Jitter is real: two workflows retrying together don't wait the same.
+        assert all(h > lo for h, lo in zip(high, low))
 
 
 # ── Retry loop ───────────────────────────────────────────────────────────

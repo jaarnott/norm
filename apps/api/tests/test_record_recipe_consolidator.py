@@ -7,28 +7,19 @@ App claims instead. Exec'd under the REAL sandbox namespace against the
 canonical file.
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-CODE = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "record_recipe.py"
-).read_text()
+CODE = harness.source("record_recipe")
 
 
 def _run(params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(CODE, ns)
     calls, logs = [], []
 
     def call_api(connector, action, body):
         calls.append((connector, action, body))
         return {"recipe_id": "r1", "saved": True}
 
-    out = ns["run"](params, call_api, logs.append)
+    out = harness.call(CODE, params, call_api, log=logs.append)
     return out, calls, logs
 
 

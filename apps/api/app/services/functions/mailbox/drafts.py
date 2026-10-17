@@ -69,14 +69,10 @@ _PURPOSE = {
     "forward": "forward",
     "new": "compose",
 }
-#: The column is requested from the coordinator (build-notes); until it is
-#: there the mode is derived from the thread, and a forward can't be saved.
-_HAS_MODE = "mode" in FnEmailDraft.__table__.c
 
 
 def mode_of(draft: FnEmailDraft) -> str:
-    stored = getattr(draft, "mode", None) if _HAS_MODE else None
-    return stored or ("reply" if draft.gmail_thread_id else "new")
+    return draft.mode or ("reply" if draft.gmail_thread_id else "new")
 
 
 def _check_mode(mode: str | None, *, thread_id: str | None, kind: str) -> str:
@@ -89,8 +85,6 @@ def _check_mode(mode: str | None, *, thread_id: str | None, kind: str) -> str:
         raise Invalid("Which conversation does this answer or forward?")
     if mode == "forward" and kind == "proposal":
         raise Invalid("A proposal goes to the customer — it can't be a forward.")
-    if mode == "forward" and not _HAS_MODE:
-        raise Invalid("Forward drafts can't be saved yet — send the forward instead.")
     return mode
 
 
@@ -245,7 +239,7 @@ def create_draft(
         gmail_thread_id=gmail_thread_id,
         in_reply_to_gmail_message_id=in_reply_to_gmail_message_id,
         kind=kind,
-        **({"mode": mode} if _HAS_MODE else {}),
+        mode=mode,
         owner="norm",
         status="open",
         created_by_user_id=ctx.user_id,
@@ -292,9 +286,7 @@ def update_draft(
             thread_id=fields.get("gmail_thread_id", draft.gmail_thread_id),
             kind=draft.kind,
         )
-        fields = {k: v for k, v in fields.items() if k != "mode"}
-        if _HAS_MODE:
-            fields["mode"] = mode
+        fields = {**fields, "mode": mode}
     for key, value in _clean_fields(fields).items():
         setattr(draft, key, value)
     draft.updated_by_user_id = ctx.user_id

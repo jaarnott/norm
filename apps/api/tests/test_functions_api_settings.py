@@ -94,12 +94,6 @@ class TestUploads:
         assert theirs.status_code == 201 and theirs.json()["id"] != f["id"]
         assert w.db.query(FnFile).filter(FnFile.sha256 == f["sha256"]).count() == 2
 
-    def test_shadow_refuses_uploads(self, client, w):
-        w.org.functions_mode = "shadow"
-        w.db.flush()
-        r = upload(client, w.staff, png())
-        assert r.status_code == 409 and r.json()["detail"]["code"] == "not_live"
-
 
 # ===========================================================================
 # Venue profile
@@ -289,6 +283,8 @@ class TestVenueProfile:
         )
 
     def test_settings_and_who_may_change_the_approver(self, client, w):
+        """Also: settings are created for a venue without them, and a venue in
+        the path the caller can't use is not found."""
         p = call(client, "GET", f"/venues/{w.venue.id}/profile", w.staff).json()
         version = p["settings"]["version"]
         r = call(
@@ -399,7 +395,7 @@ class TestVenueProfile:
             == 200
         )
 
-    def test_settings_created_for_a_venue_without_them(self, client, w):
+        # Settings are created for a venue that has none yet.
         r = call(
             client,
             "PUT",
@@ -744,6 +740,7 @@ class TestTemplates:
         )
 
     def test_clone_a_loaded_menu(self, client, w, monkeypatch):
+        """Also: Loaded recipe search through the same gateway."""
         calls = []
 
         def fake(db, config_db, venue, action, params):
@@ -882,7 +879,7 @@ class TestTemplates:
             == 404
         )
 
-    def test_loaded_recipe_search(self, client, w, monkeypatch):
+        # Recipe search through the same gateway; too short a query reads none.
         monkeypatch.setattr(
             reports,
             "loaded_call",
@@ -1268,6 +1265,8 @@ class TestSettingsIsolation:
         assert r.status_code == 404
 
     def test_shadow_mode_refuses_settings_writes(self, client, w):
+        """Reads still work; every settings write, uploads included, is a 409
+        ``not_live``."""
         template = call(
             client,
             "POST",
@@ -1298,9 +1297,10 @@ class TestSettingsIsolation:
             ("POST", "/contacts/x/anonymise", {"confirm": True}),
         ):
             r = call(client, method, path, w.owner, json=body)
-            assert r.status_code in (409, 404), (path, r.text)
-            if r.status_code == 409:
-                assert r.json()["detail"]["code"] == "not_live", path
+            assert r.status_code == 409, (path, r.text)
+            assert r.json()["detail"]["code"] == "not_live", path
+        r = upload(client, w.staff, png())
+        assert r.status_code == 409 and r.json()["detail"]["code"] == "not_live"
 
 
 # ===========================================================================
@@ -1366,7 +1366,11 @@ class TestSizeCaps:
         assert nesting_depth(nested) == 30_000
         assert time.perf_counter() - started < 1.0
 
-    def test_brand_template_caps(self, client, w):
+    def test_settings_text_caps(self, client, w):
+        """Brand templates, reply templates, venue settings, areas and
+        pre-order templates refuse oversized text with a 422 (a reply
+        template's message says "too long"); just under a cap is fine, and a
+        repeated booking type is stored once."""
         url = f"/venues/{w.venue.id}/brand"
         for body in (
             {"template_html": "x" * 500_001},
@@ -1385,7 +1389,6 @@ class TestSizeCaps:
             == 200
         )
 
-    def test_reply_template_caps(self, client, w):
         base = {"venue_id": w.venue.id, "stage": "first_reply", "name": "Hello"}
         for body in (
             {**base, "body_html": "x" * 100_001},
@@ -1405,7 +1408,6 @@ class TestSizeCaps:
             == 201
         )
 
-    def test_venue_settings_and_area_caps(self, client, w):
         settings = f"/venues/{w.venue.id}/settings"
         assert (
             call(
@@ -1444,7 +1446,6 @@ class TestSizeCaps:
         )
         assert r.status_code == 201 and r.json()["booking_types"] == ["seated_dining"]
 
-    def test_preorder_template_caps(self, client, w):
         base = {"venue_id": w.venue.id, "name": "Menu"}
         for body in (
             {**base, "description": "x" * 100_001},

@@ -598,7 +598,10 @@ class TestJobs:
         assert approval["actor_name"] == "Hannah Hiring"
 
     def test_reopen_is_approved_and_unpublished(self, db_session, org, author, hiring):
+        """Only a closed job reopens; a reopened one is approved, unpublished."""
         job, _ = _job(db_session, org, author)
+        out = _run(db_session, hiring, author, op="reopen_job", job_id=job)
+        assert "only a closed job" in out["error"]
         _run(
             db_session,
             hiring,
@@ -627,11 +630,6 @@ class TestJobs:
             is_published=True,
         )
         assert again["job"]["status"] == "open"
-
-    def test_only_a_closed_job_reopens(self, db_session, org, author, hiring):
-        job, _ = _job(db_session, org, author)
-        out = _run(db_session, hiring, author, op="reopen_job", job_id=job)
-        assert "only a closed job" in out["error"]
 
 
 class TestGroupInterviews:

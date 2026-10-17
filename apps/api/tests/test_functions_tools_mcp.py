@@ -277,7 +277,7 @@ class TestWorkflowApprovals:
             mailbox_world,
             sessions,
         )
-        from tests.test_tool_loop_unknown_tool import _Block, _Response
+        from tests.tool_loop_harness import _Block, _Response
 
         fake = FakeGmail()
         install(monkeypatch, fake)
@@ -372,11 +372,11 @@ class TestConsentAndOwnerPowers:
         with caller_scope.use(scope):
             return FT._ctx(db, None)
 
-    def test_a_partial_share_drops_owner_powers(self, db_session, w):
+    def test_a_partial_share_drops_owner_powers_and_a_whole_one_keeps_them(
+        self, db_session, w
+    ):
         ctx = self._ctx_under(db_session, w.owner, w.org, [w.venue.id])
         assert ctx.venue_ids == frozenset({w.venue.id}) and ctx.is_owner is False
-
-    def test_sharing_the_whole_organisation_keeps_them(self, db_session, w):
         ctx = self._ctx_under(db_session, w.owner, w.org, [w.venue.id, w.venue2.id])
         assert ctx.is_owner is True
 

@@ -12,14 +12,13 @@ nobody saw.
 
 import copy
 import pathlib
-import uuid
 
 from app.agents import internal_tools as IT
 from app.agents import tool_loop as TL
 from app.connectors.function_executor import execute_function, fingerprint
-from app.db.config_models import ConnectionSpec
 from app.db.models import AutomatedTask, Message, ToolCall
 from app.services import approvals, previews
+from tests.approval_helpers import ask_turn, card_of, price_previewer, spec
 from tests.conftest import (
     _make_membership,
     _make_organization,
@@ -27,7 +26,6 @@ from tests.conftest import (
     _make_user,
 )
 from tests.test_function_executor_extensions import _wire_fake_connector
-from tests.test_tool_loop_unknown_tool import _Block, _Response
 
 _DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
 STOCK = (_DIR / "manage_stock_item.py").read_text()
@@ -666,83 +664,20 @@ class TestBuiltInPreviews:
 # ------------------------------------------------------------- the loop ----
 
 
-def _spec(db, action, **row):
-    name = f"t{uuid.uuid4().hex[:10]}"
-    db.add(
-        ConnectionSpec(
-            connector_name=name,
-            display_name=name,
-            execution_mode="internal",
-            auth_type="none",
-            tools=[
-                {
-                    "action": action,
-                    "method": "GET",
-                    "effect": "write",
-                    "approval": ASK,
-                    **row,
-                }
-            ],
-        )
+def _write_tool(db, action):
+    """A connector with one GET-declared write that asks first."""
+    return spec(
+        db, {"action": action, "method": "GET", "effect": "write", "approval": ASK}
     )
-    db.flush()
-    return name
-
-
-def _turn(db, user, monkeypatch, connector, action, inputs, said="Fixing the price."):
-    """One model turn that calls the tool (``inputs`` = one dict per call)."""
-    seen = []
-
-    def llm(system_prompt, messages, tools, db, thread_id, call_type):
-        seen.append(messages[-1])
-        if len(seen) == 1:
-            blocks = [_Block("text", text=said)] + [
-                _Block(
-                    "tool_use",
-                    name=f"{connector}__{action}",
-                    id=f"toolu_{uuid.uuid4().hex[:8]}",
-                    input=i,
-                )
-                for i in inputs
-            ]
-            return _Response("tool_use", blocks), None
-        return _Response("end_turn", [_Block("text", text="Done.")]), None
-
-    monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm_with_tools", llm)
-    thread = _make_thread(
-        db, user, domain="norm", intent="norm.tool_use", status="in_progress"
-    )
-    tool = {
-        "name": f"{connector}__{action}",
-        "description": "[GET] test",
-        "input_schema": {"type": "object", "properties": {}},
-    }
-    TL.run_tool_loop("go", thread, db, "sys", [tool], config_db=db)
-    return thread, seen
-
-
-def _price_previewer(before):
-    def previewer(params, db, thread_id):
-        return {
-            "preview": {
-                "title": "Change a price",
-                "target": params.get("dish", "Bavette"),
-                "changes": [
-                    {"field": "Price", "before": before, "after": params.get("price")}
-                ],
-            }
-        }
-
-    return previewer
 
 
 class TestTheCard:
     def test_the_card_shows_the_preview_under_norms_own_words(
         self, db_session, admin_user, monkeypatch
     ):
-        conn = _spec(db_session, "set_price")
-        monkeypatch.setitem(IT._PREVIEWERS, (conn, "set_price"), _price_previewer(34))
-        thread, _ = _turn(
+        conn = _write_tool(db_session, "set_price")
+        monkeypatch.setitem(IT._PREVIEWERS, (conn, "set_price"), price_previewer(34))
+        thread, _ = ask_turn(
             db_session, admin_user, monkeypatch, conn, "set_price", [{"price": 36}]
         )
 
@@ -762,13 +697,13 @@ class TestTheCard:
     def test_a_call_that_would_fail_goes_back_to_norm_not_to_a_card(
         self, db_session, admin_user, monkeypatch
     ):
-        conn = _spec(db_session, "set_price")
+        conn = _write_tool(db_session, "set_price")
         monkeypatch.setitem(
             IT._PREVIEWERS,
             (conn, "set_price"),
             lambda p, d, t: {"error": "no such dish"},
         )
-        thread, seen = _turn(
+        thread, seen = ask_turn(
             db_session, admin_user, monkeypatch, conn, "set_price", [{"price": 36}]
         )
         assert thread.status != approvals.AWAITING
@@ -777,19 +712,10 @@ class TestTheCard:
         assert tc.status == "failed"
 
 
-def _card_of(db, thread):
-    """The approval card block in ``thread``."""
-    for msg in db.query(Message).filter(Message.thread_id == thread.id).all():
-        for block in msg.display_blocks or []:
-            if block.get("component") == "tool_approval":
-                return block
-    raise AssertionError("no approval card")
-
-
 class TestDeciding:
     def _suspended(self, db_session, user, monkeypatch, prices=(36, 30)):
-        conn = _spec(db_session, "set_price")
-        monkeypatch.setitem(IT._PREVIEWERS, (conn, "set_price"), _price_previewer(34))
+        conn = _write_tool(db_session, "set_price")
+        monkeypatch.setitem(IT._PREVIEWERS, (conn, "set_price"), price_previewer(34))
         ran = []
 
         def handler(params, db, thread_id):
@@ -797,7 +723,7 @@ class TestDeciding:
             return {"success": True, "data": {"ok": True}}
 
         monkeypatch.setitem(IT._REGISTRY, (conn, "set_price"), handler)
-        thread, _ = _turn(
+        thread, _ = ask_turn(
             db_session,
             user,
             monkeypatch,
@@ -833,7 +759,7 @@ class TestDeciding:
         self._resume(db_session, thread)
         assert [p["price"] for p in ran] == [36]
 
-        card = _card_of(db_session, thread)
+        card = card_of(db_session, thread)
         rows = {r["id"]: r for r in card["data"]["tool_calls"]}
         assert rows[first.id]["status"] == "approved"
         assert rows[first.id]["outcome"] == "done"
@@ -856,7 +782,7 @@ class TestDeciding:
             db_session, admin_user, monkeypatch
         )
         # Someone changed the price in Loaded after the card was shown.
-        monkeypatch.setitem(IT._PREVIEWERS, (conn, "set_price"), _price_previewer(35))
+        monkeypatch.setitem(IT._PREVIEWERS, (conn, "set_price"), price_previewer(35))
         approvals.claim(db_session, thread)
         approvals.decide(db_session, thread, admin_user, approve=True)
         self._resume(db_session, thread)
@@ -864,7 +790,7 @@ class TestDeciding:
         assert ran == []
         assert first.status == "failed"
         assert "changed after it was approved" in first.error_message
-        card = _card_of(db_session, thread)
+        card = card_of(db_session, thread)
         assert {r["outcome"] for r in card["data"]["tool_calls"]} == {"changed"}
 
     def test_the_route_takes_the_ticked_rows(

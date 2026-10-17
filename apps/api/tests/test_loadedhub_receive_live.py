@@ -159,19 +159,22 @@ class TestLiveContract:
             venue_id = self._venue_id(db)
             before = self._flags(lh)
 
+            # Each invoice is extracted one at a time by review_invoice, through
+            # the name invoice_review imported (the old batch-parallel call
+            # moved to invoice_extraction and no longer runs on this path).
             monkeypatch.setattr(
                 IR,
-                "extract_invoice_copies_parallel",
-                lambda db_, lh_, reqs, **kw: (
-                    [{"error": "stubbed in live transport test"}] * len(reqs)
-                ),
+                "extract_invoice_copy",
+                lambda db_, lh_, file_id, **kw: {
+                    "error": "stubbed in live transport test"
+                },
             )
             out = IR.review_invoices(db, cdb, venue_id, mode="approve_all")
 
             assert out["received"] == [], "approve_all must never receive"
             assert len(out["skipped"]) == len(out["verdicts"])
             for card in out["cards"]:
-                assert card["doc_schema"] == "replica_v1"
+                assert card["doc_schema"] == "replica_v2"
                 assert any(
                     i["code"] in ("copy_unreadable", "no_copy_attached")
                     for i in card["issues"]

@@ -14,16 +14,9 @@ from the tools it absorbs:
   shape, and the shift write path needs every field intact.
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-CODE = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "get_labour.py"
-).read_text(encoding="utf-8")
+CODE = harness.source("get_labour")
 
 START = "2026-08-15T07:00:00+12:00"
 END = "2026-08-16T06:59:59+12:00"
@@ -200,13 +193,8 @@ class Api:
 
 
 def run(api, **params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(CODE, ns)
-    return ns["run"](
-        {"venue": "Bessie & Royals", "period": "saturday", **params},
-        api.call_api,
-        api.log,
-        api.call_api_parallel,
+    return harness.run(
+        CODE, api, **{"venue": "Bessie & Royals", "period": "saturday", **params}
     )
 
 
@@ -214,7 +202,7 @@ class TestAttendanceLeaveSplit:
     """The ghost-shift pins, ported verbatim from get_staff_attendance."""
 
     def test_detail_splits_leave_out_of_clockins(self):
-        out = run(api := Api(), group_by="detail")
+        out = run(Api(), group_by="detail")
         assert out["view"] == "attendance"
         assert [r["name"] for r in out["clockins"]] == ["Zoe Kite", "Evelyn Clarke"]
         assert [r["name"] for r in out["leave"]] == ["Aliana Henderson", "Chloe Ward"]
@@ -247,9 +235,12 @@ class TestAttendanceLeaveSplit:
         assert day["leave_hours"] == 16.0
 
     def test_attendance_is_the_default_view(self):
+        """...with include defaulting to both: everything is answered."""
         out = run(Api())
         assert out["view"] == "attendance"
         assert out["totals"]["actual_hours"] == 9.2
+        assert "include" not in out
+        assert out["totals"]["variance"] == 1.45
 
 
 class TestAttendanceGroup:
@@ -263,6 +254,9 @@ class TestAttendanceGroup:
         assert rows["La Zeppa"]["leave_hours"] == 16.0
         assert out["totals"]["actual_hours"] == 18.4
         assert out["totals"]["variance"] == 2.9
+        # group totals carry leave beside worked time, never inside it
+        # (consolidator review, 1 Oct 2026)
+        assert out["totals"]["leave_hours"] == 32.0
 
     def test_a_failing_venue_is_a_flagged_row(self):
         api = Api()
@@ -351,12 +345,7 @@ class TestStaffView:
 
 class TestGates:
     def test_no_period_is_refused(self):
-        api = Api()
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
-            {"venue": "Bessie & Royals"}, api.call_api, api.log, api.call_api_parallel
-        )
+        out = harness.run(CODE, Api(), venue="Bessie & Royals")
         assert "period" in out["error"]
 
     def test_unaligned_explicit_range_asks_first(self):
@@ -374,17 +363,14 @@ class TestGates:
                 }
             return api._for(connector, action, p)
 
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        out = ns["run"](
+        out = harness.call(
+            CODE,
             {
                 "venue": "Bessie & Royals",
                 "start": "2026-08-10T00:00:00+12:00",
                 "end": "2026-08-17T00:00:00+12:00",
             },
             call,
-            api.log,
-            None,
         )
         assert out.get("needs_confirmation") is True
         assert "confirmed_by_user" in out["question"]
@@ -408,11 +394,6 @@ class TestReviewFixes:
         assert s["leave_entries"] == 2
         assert s["worked_cost"] == 210.0
         assert "INCLUDING leave" in s["_note"]
-
-    def test_group_totals_carry_leave_beside_worked_time(self):
-        out = run(Api(), venues="all")
-        assert out["totals"]["leave_hours"] == 32.0
-        assert out["totals"]["actual_hours"] == 18.4  # leave not inside
 
     def test_staff_name_narrows_every_venue_in_a_group_answer(self):
         """It was dropped on the venues path — answered for everyone."""
@@ -474,10 +455,8 @@ class TestInclude:
         out = run(Api(), include="sometimes")
         assert "include" in out["error"]
 
-    def test_both_is_the_default_and_answers_everything(self):
-        out = run(Api())
-        assert "include" not in out
-        assert out["totals"]["variance"] == 1.45
+    # include='both' is the default: TestAttendanceLeaveSplit::
+    # test_attendance_is_the_default_view.
 
 
 class TestVsActualAcrossVenues:

@@ -31,19 +31,12 @@ invoice needing the user. The tool declares `working_document.items_path:
 document per invoice (keyed per invoice_id + venue — the Invoices page opens
 the SAME drafts) and renders one COMPACT `receive_invoice_editor` block each,
 beneath the LLM's short summary (`suppress_display_early_exit` keeps the
-summary). Accepting a suggested change POSTs it to `/api/invoice-fixes/accept`
-(`app/routers/invoice_fixes.py`), which orchestrates the LoadedHub writes with
-the venue connector token. Contracts (verified live in the test env, 18 Jul
-2026):
-
-- **link_po**: `GET /1.0/stock/internal/purchase-orders` (filter client-side on
-  `orderNumber`, drop a leading `PO`), then `PUT /1.0/stock/internal/invoices/{id}`
-  with `linkedPurchaseOrderId` + `purchaseOrderNumber` set. Does not re-match lines.
-- **unit**: resolve the unit name via `GET /1.0/stock/internal/units`, `PUT` the
-  invoice with the line's `unit`/`linkedUnitId`/`linkedUnitRatio`, then
-  `PATCH /1.0/stock/internal/item-supplier-variant/{id}` `{unitId}` where the
-  variant is `items/{linkedItemId}.suppliers[]` matched by `supplierId` + `stockCode`.
-  If the proposed unit has no matching Loaded unit, the fix fails (create it first).
+summary). The one change still applied server-side is deleting an invoice (a defect: no
+copy, unreadable, not an invoice): the card POSTs `delete_invoice` to
+`/api/invoice-fixes/accept` (`app/routers/invoice_fixes.py`). Every other
+suggestion is applied in the editor and written by the receive itself. (The
+old `link_po` and `unit` appliers were removed on 17 Oct 2026 — nothing sent
+them any more.)
 
 `calculate_template_stock_requirements` also depends on a plain connector
 action, **`get_stock_item_minimums`** (loadedhub → `/1.0/stock/internal/items`),

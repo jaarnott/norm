@@ -134,6 +134,9 @@ class TestObserve:
         assert "practice" in (row.evidence or {})  # kept as evidence
 
     def test_a_later_read_never_overrules_norms_verdict(self, db_session):
+        # The analyser's verdict is the authority — it OUTRANKS a raw read
+        # (28 Aug 2026), both the one it replaced and any read after it. This
+        # is how a poisoned read heals.
         _spec(db_session)
         sc.observe_extraction(db_session, _ext(invoice="A"))
         row = _row(db_session)
@@ -221,79 +224,39 @@ class TestEnrichmentAndArbitration:
         a = sc.catalog_unit_for_line(db_session, "Trents", "SH1")
         assert a and a["unit_name"] == "750ml" and a["provenance"] == "enriched"
 
-    def test_a_resolver_verdict_overrules_a_read(self, db_session):
-        # The analyser's verdict is the authority — it OUTRANKS a raw read
-        # (28 Aug 2026). This is how a poisoned read heals.
-        _spec(db_session)
-        sc.observe_extraction(db_session, _ext(invoice="A"))
-        row = _row(db_session)
-        sc.apply_enrichment(
-            db_session,
-            row,
-            unit_name="1L",
-            pack_type="fixed",
-            unit_type="volume",
-            category="beverage",
-            why="resolver: the cross-supplier line is 1L",
-        )
-        assert row.unit_name == "1L" and row.provenance == "enriched"
-        a = sc.catalog_unit_for_line(db_session, "Trents", "4183758")
-        assert a and a["unit_name"] == "1L"
-
-    def test_a_resolver_verdict_settles_a_conflicting_read(self, db_session):
-        # Two different reads for one code are a conflict (no answer); the
-        # resolver's verdict settles it — and now wins outright as the top
-        # tier, not as a tie-breaker from below.
-        _spec(db_session)
-        sc.observe_extraction(db_session, _ext(invoice="A"))
-        sc.observe_extraction(
-            db_session,
-            _ext(
-                invoice="B",
-                lines=[
-                    {"code": "4183758", "description": "MALFY", "unit_of_measure": "1L"}
-                ],
-            ),
-        )
-        row = _row(db_session)
-        assert row.unit_name is None  # the conflict
-        sc.apply_enrichment(
-            db_session,
-            row,
-            unit_name="700ml",
-            pack_type="fixed",
-            unit_type="volume",
-            category="beverage",
-            why="Malfy gins are 700ml in NZ",
-        )
-        assert row.unit_name == "700ml" and row.provenance == "enriched"
-
     def test_a_resolver_verdict_wins_even_over_conflicting_reads(self, db_session):
-        # The resolver verdict is the top tier: it wins outright, even when it
-        # agrees with NEITHER raw read below it (no longer a tie-breaker that
-        # must match a sighting).
+        # Two different reads for one code are a conflict (no answer); the
+        # resolver's verdict settles it. It is the top tier: it wins outright,
+        # whether it agrees with one read or with NEITHER (no longer a
+        # tie-breaker that must match a sighting).
         _spec(db_session)
-        sc.observe_extraction(db_session, _ext(invoice="A"))
-        sc.observe_extraction(
-            db_session,
-            _ext(
-                invoice="B",
-                lines=[
-                    {"code": "4183758", "description": "MALFY", "unit_of_measure": "1L"}
-                ],
-            ),
-        )
-        row = _row(db_session)
-        sc.apply_enrichment(
-            db_session,
-            row,
-            unit_name="2L",
-            pack_type="fixed",
-            unit_type="volume",
-            category="beverage",
-            why="resolver decides 2L",
-        )
-        assert row.unit_name == "2L" and row.provenance == "enriched"
+        for code, verdict in (("4183758", "700ml"), ("4183759", "2L")):
+            for invoice, size in (("A", "700ml"), ("B", "1L")):
+                sc.observe_extraction(
+                    db_session,
+                    _ext(
+                        invoice=invoice,
+                        lines=[
+                            {
+                                "code": code,
+                                "description": "MALFY",
+                                "unit_of_measure": size,
+                            }
+                        ],
+                    ),
+                )
+            row = _row(db_session, code)
+            assert row.unit_name is None  # the conflict
+            sc.apply_enrichment(
+                db_session,
+                row,
+                unit_name=verdict,
+                pack_type="fixed",
+                unit_type="volume",
+                category="beverage",
+                why=f"resolver decides {verdict}",
+            )
+            assert row.unit_name == verdict and row.provenance == "enriched"
 
 
 class TestPractice:
@@ -312,9 +275,7 @@ class TestPractice:
         assert row.unit_name is None  # a receive never becomes the answer
         assert "practice" in (row.evidence or {})  # but it is kept
         assert sc.catalog_unit_for_line(db_session, "Trents", "P1") is None
-
-    def test_count_words_are_recorded_as_divergence_evidence_only(self, db_session):
-        _spec(db_session)
+        # A count word is recorded as divergence evidence only.
         sc.observe_practice(
             db_session,
             "Trents",

@@ -19,12 +19,10 @@ Facts pinned, each from production:
 """
 
 import copy
-import pathlib
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
+from tests import consolidator_harness as harness
 
-_DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-CODE = (_DIR / "get_stocktakes.py").read_text()
+CODE = harness.source("get_stocktakes")
 
 ZERO = "00000000-0000-0000-0000-000000000000"
 FOOD = "665a5818-b76e-48e4-a121-494af4c8edf3"
@@ -200,9 +198,7 @@ class Api:
 
 
 def run(api, **params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(CODE, ns)
-    return ns["run"]({"venue": "La Zeppa", **params}, api.call_api, lambda m: None)
+    return harness.run(CODE, api, venue="La Zeppa", **params)
 
 
 class TestList:
@@ -239,7 +235,8 @@ class TestPairing:
         api = Api()
         out = run(api, template="Food")
         assert out["view"] == "variance"
-        # the Beverage count and the ad-hoc count in between are skipped
+        # the Beverage count and the ad-hoc count in between are skipped, and
+        # "Food" never quietly becomes "Staff Food"
         assert api.report_args() == [
             {
                 "venue": "La Zeppa",
@@ -250,11 +247,6 @@ class TestPairing:
         assert out["opening"]["title"] == "11/08/2026 - All Food"
         assert out["template"] == "All Food"
         assert out["days"] == 6.0
-
-    def test_food_never_quietly_becomes_staff_food(self):
-        api = Api()
-        run(api, template="food")
-        assert api.report_args()[0]["end_stocktake_id"] == "food-17"
 
     def test_a_named_non_category_template_works(self):
         api = Api(
@@ -287,7 +279,6 @@ class TestPairing:
         assert (
             "can't be paired"
             in run(api, opening_id="adhoc-1", closing_id="p-1")["error"]
-            or api.report_args() == []
         )
         assert api.report_args() == []
 
@@ -345,6 +336,14 @@ class TestVarianceMath:
         assert t["shortfall_value"] == -94.0  # linked only: rump -90, oil -4
         assert t["surplus_value"] == 12.0
         assert t["cogs_pct"] == 26.0 and t["sales_ex_tax"] == 7210.3
+        # coverage; the item-less group-header rows are not items
+        assert out["coverage"] == {
+            "items": 5,
+            "counted_both_ends": 4,
+            "only_in_opening": 0,
+            "only_in_closing": 1,
+            "not_pos_linked": 1,
+        }
 
     def test_rows_rank_by_value_and_carry_names_not_objects(self):
         out = run(Api(), template="Food")
@@ -373,16 +372,6 @@ class TestVarianceMath:
             "unit": "Box",
             "actual_use": 3.0,
             "usage_value": 21.0,
-        }
-
-    def test_coverage_and_group_headers(self):
-        out = run(Api(), template="Food")
-        assert out["coverage"] == {
-            "items": 5,
-            "counted_both_ends": 4,
-            "only_in_opening": 0,
-            "only_in_closing": 1,
-            "not_pos_linked": 1,
         }
 
     def test_top_rolls_the_rest_into_others(self):

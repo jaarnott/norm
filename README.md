@@ -442,7 +442,6 @@ apps/
     alembic/                    Database migrations
     tests/
       test_llm_interpreter.py   LLM response parsing tests
-      test_bamboohr_connector.py BambooHR connector + registry tests
     app/
       main.py                   FastAPI app entry point
       auth/                     Authentication package

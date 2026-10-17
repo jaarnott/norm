@@ -9,26 +9,12 @@
  * the company's time zone, so a laptop in another zone sees the same list.
  */
 import type { BadgeTone } from '../../ui/Badge';
+import { addDays } from '../shared/dates';
 import { money, timeLabel } from '../shared/format';
 import type { EventChange, EventDetail, EventRow, EventStatus, SectionKey } from './types';
 
 // ── plain dates ────────────────────────────────────────────────────────────
-
-/** Today's calendar date in an IANA zone, as "YYYY-MM-DD". */
-export function todayIn(timeZone: string, now: Date = new Date()): string {
-  try {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(now);
-    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
-    return `${get('year')}-${get('month')}-${get('day')}`;
-  } catch {
-    return now.toISOString().slice(0, 10);
-  }
-}
+// (today in a zone and adding days live in ../shared/dates, which Reports uses too)
 
 function parts(iso: string): [number, number, number] {
   const [y, m, d] = iso.slice(0, 10).split('-').map(Number);
@@ -37,12 +23,6 @@ function parts(iso: string): [number, number, number] {
 
 function fromUtc(dt: Date): string {
   return dt.toISOString().slice(0, 10);
-}
-
-/** "2026-10-30" + 3 → "2026-11-02" (calendar days; no zone involved). */
-export function addDays(iso: string, n: number): string {
-  const [y, m, d] = parts(iso);
-  return fromUtc(new Date(Date.UTC(y, m - 1, d + n)));
 }
 
 /** Whole days from `a` to `b` (b − a). */

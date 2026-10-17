@@ -4,22 +4,7 @@
  * days to ask about.
  */
 
-/** Today's date ("2026-10-13") in an IANA zone. */
-export function todayIn(timeZone: string, now: Date = new Date()): string {
-  try {
-    // en-CA formats as YYYY-MM-DD.
-    return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-  } catch {
-    return now.toISOString().slice(0, 10);
-  }
-}
-
-/** A plain date moved by whole days ("2026-10-13", -27 → "2026-09-16"). */
-export function addDays(isoDate: string, days: number): string {
-  const [y, m, d] = isoDate.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d + days));
-  return dt.toISOString().slice(0, 10);
-}
+import { addDays, todayIn } from '../shared/dates';
 
 export type PeriodKey = '7d' | '28d' | '90d' | '365d' | 'custom';
 
@@ -48,12 +33,4 @@ export function periodFor(key: PeriodKey, timeZone: string, custom?: { from: str
   }
   const to = todayIn(timeZone, now);
   return { key, from: addDays(to, -(LENGTHS[key] - 1)), to };
-}
-
-/** Whole days from `from` to `to`, inclusive (0 when the range is backwards). */
-export function daysBetween(from: string, to: string): number {
-  const a = Date.parse(`${from}T00:00:00Z`);
-  const b = Date.parse(`${to}T00:00:00Z`);
-  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return 0;
-  return Math.round((b - a) / 86_400_000) + 1;
 }

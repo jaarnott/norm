@@ -315,24 +315,26 @@ class TestEditing:
         } <= touched
         assert all(c.client_email == "pat@example.com" for c in mine)
 
-    @pytest.mark.parametrize(
-        "field,value",
-        [
-            ("bar_tab_cents", 1),
-            ("payment_method", "invoice"),
-            ("deposit_cents", 0),
-            ("event_date", "2026-12-05"),
-            ("area_id", None),
-            ("name", "Renamed"),
-            ("venue_id", "x"),
-        ],
+    STAFF_FIELDS = (
+        ("bar_tab_cents", 1),
+        ("payment_method", "invoice"),
+        ("deposit_cents", 0),
+        ("event_date", "2026-12-05"),
+        ("area_id", None),
+        ("name", "Renamed"),
+        ("venue_id", "x"),
     )
-    def test_staff_fields_are_refused(self, client, p, field, value):
+
+    def test_staff_fields_are_refused(self, client, p, subtests):
+        """One sign-in, every staff field tried on its own (each a subtest
+        that names the field): refused, and nothing saved."""
         _sign_in(client, p)
-        r = _save(client, p, fields={field: value})
-        assert r.status_code == 403
-        p.db.refresh(p.event)
-        assert p.event.bar_tab_cents == 0 and p.event.name == "Pat's farewell"
+        for field, value in self.STAFF_FIELDS:
+            with subtests.test(field=field):
+                r = _save(client, p, fields={field: value})
+                assert r.status_code == 403
+                p.db.refresh(p.event)
+                assert p.event.bar_tab_cents == 0 and p.event.name == "Pat's farewell"
 
     def test_contact_email_is_not_client_editable(self, client, p):
         _sign_in(client, p)
@@ -535,10 +537,8 @@ class TestPortalAvailability:
         assert _request_code(client, p).status_code == 404
         assert p.codes == []
 
-    def test_a_revoked_link_closes_the_portal(self, client, p):
-        _sign_in(client, p)
-        public_tokens.revoke(p.db, p.w.ctx(p.w.owner), event_id=p.event.id)
-        assert client.get(p.base).status_code == 404
+    # A revoked link closing the portal (and ending its sessions):
+    # test_functions_public_links.py TestRevokingLinks.
 
     def test_a_cancelled_event_closes_its_portal(self, client, p):
         _sign_in(client, p)

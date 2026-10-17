@@ -13,16 +13,9 @@ template "may be empty or unconfigured". The Beverage template actually had 309
 items. An upstream outage was reported as a data problem.
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-FUNCTION_CODE = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "calculate_template_stock_requirements.py"
-).read_text(encoding="utf-8")
+FUNCTION_CODE = harness.source("calculate_template_stock_requirements")
 
 PARAMS = {
     "venue": "The Glass Goose",
@@ -140,14 +133,15 @@ class Api:
         self.logs.append(str(m))
 
 
-def run_fn(api):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(FUNCTION_CODE, ns)
-    return ns["run"](PARAMS, api.call_api, api.log, api.call_api_parallel)
+def run_fn(api, params=PARAMS):
+    return harness.run(FUNCTION_CODE, api, **params)
 
 
 class TestHappyPath:
     def test_calculates_order_quantities(self):
+        """We deliberately do NOT add LoadedHub's 20% forecast buffer. And the
+        result says what it was built from (consolidator review, 1 Oct
+        2026)."""
         api = Api()
         out = run_fn(api)
         assert len(out["items"]) == 1
@@ -156,16 +150,16 @@ class TestHappyPath:
         # used 6 (10 opening - 4 closing); 6 per $100k sales, budget $200k -> 12
         assert row["usageLast4Weeks"] == 6.0
         assert row["forecastUsage"] == 12.0
-        assert row["orderQty"] == 8.0  # 12 forecast - 4 on hand
+        # 12 forecast - 4 on hand; a buffered order would be 1.2 * 12 - 4 = 10.4
+        assert row["orderQty"] == 8.0
         assert row["orderDriver"] == "usage"
         assert row["minimumStock"] == 0
         assert api.retries == 0
 
-    def test_no_20_percent_buffer_is_applied(self):
-        """We deliberately do NOT add LoadedHub's 20% forecast buffer."""
-        out = run_fn(Api())
-        # A buffered order would be 1.2 * 12 - 4 = 10.4; the bare forecast is 8.0.
-        assert out["items"][0]["orderQty"] == 8.0
+        assert out["sales_last_4_weeks"] == 100000.0
+        assert out["budget_for_period"] == 200000.0
+        assert out["order_until"] == PARAMS["order_until_date"]
+        assert out["items_checked"] == 1
 
 
 class TestMinimumEnforcement:
@@ -437,14 +431,6 @@ class TestDegradedInputs:
         assert out["error"] == "No sales data available"
 
 
-class TestSandboxCompatibility:
-    def test_code_runs_under_the_real_sandbox_namespace(self):
-        """No imports / strftime — the sandbox blocks __import__."""
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(FUNCTION_CODE, ns)
-        assert callable(ns["run"])
-
-
 class TestPeriodResolution:
     def test_history_window_comes_from_the_venue_calendar(self):
         api = Api()
@@ -479,9 +465,7 @@ class TestPeriodResolution:
         }
         params = {k: v for k, v in PARAMS.items() if k != "order_until_date"}
         params["order_until"] = "the Monday after next"
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(FUNCTION_CODE, ns)
-        out = ns["run"](params, api.call_api, api.log, api.call_api_parallel)
+        out = run_fn(api, params)
         assert "items" in out
         budg = next(p for a, p in api.seen if a == "get_budgets")
         assert budg["to_date"] == "2026-08-03"
@@ -552,13 +536,6 @@ class TestReviewFixes:
         assert "UNDERSTATED" in joined
         # the resolver is offline in this fake: the history fell back
         assert "midnight to midnight" in joined
-
-    def test_the_result_says_what_it_was_built_from(self):
-        out = run_fn(Api())
-        assert out["sales_last_4_weeks"] == 100000.0
-        assert out["budget_for_period"] == 200000.0
-        assert out["order_until"] == PARAMS["order_until_date"]
-        assert out["items_checked"] == 1
 
     def test_deliveries_of_items_off_this_template_are_not_a_warning(self):
         """198 such lines read as "no usable unit ratio" on La Zeppa's Food

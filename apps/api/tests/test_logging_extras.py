@@ -40,7 +40,10 @@ def _emit(capsys, fmt, event, fields):
 
 
 def test_json_output_carries_every_extra_field(capsys):
-    """This is the one that matters — JSON is what production ships."""
+    """This is the one that matters — JSON is what production ships.
+
+    The prompt-size breakdown is the acceptance criterion for the context
+    work. If it does not reach the logs, none of it can be measured."""
     out = _emit(
         capsys,
         "json",
@@ -52,10 +55,6 @@ def test_json_output_carries_every_extra_field(capsys):
     assert payload["mcp_tool"] == "loadedhub__get_sales"
     assert payload["duration_ms"] == 412
 
-
-def test_context_budget_fields_survive(capsys):
-    """The prompt-size breakdown is the acceptance criterion for the context
-    work. If it does not reach the logs, none of it can be measured."""
     out = _emit(
         capsys,
         "json",

@@ -125,12 +125,6 @@ class TestDisplay:
         assert "<table" in clean and "color:red" in clean
         assert 'href="https://ok.nz"' in clean and 'src="https://img.nz/a.png"' in clean
 
-    def test_html_to_text(self):
-        text = display.html_to_text(
-            "<p>Hi&nbsp;Casey</p><ul><li>One</li><li>Two</li></ul><br>Bye"
-        )
-        assert text == "Hi Casey\n\n- One\n- Two\n\nBye"
-
 
 class TestFlags:
     def flags(self, frm, to, cc=(), labels=(), headers=None, subject="Hi"):
@@ -395,20 +389,15 @@ class TestAdversarialInput:
         self._fast(pricing.contains_price, text)
         assert "<script" not in html.lower()
 
-    def test_a_dotted_email_is_refused_fast(self):
-        evil = "a@" + "b." * 31_000 + "@"
-        assert self._fast(mime.is_email, evil) is False
-        assert self._fast(mime.is_email, "x@" + "b" * 300 + ".nz") is False  # > 254
-        assert mime.is_email("Casey.Client@mail.client-co.co.nz")
-        assert not mime.is_email("a@b")
-        assert not mime.is_email("a@b..nz")
-
     def test_huge_address_headers_are_bounded(self):
         self._fast(mime.parse_address_list, "a@b.co, " * 14_000)
         self._fast(mime.parse_address, "<" * 100_000)
         self._fast(mime.parse_address, "=?a?b?" * 10_000)
 
     def test_behaviour_on_real_mail_is_unchanged(self):
+        # (Also html_to_text's own contract: paragraphs, list bullets, <br>.
+        # The strict email check, mime.is_email = addresses.is_email, is held
+        # in test_functions_mailbox_security.py::TestStrictEmail.)
         assert (
             display.html_to_text(
                 "<p>Hi&nbsp;Casey &amp;lt;b&amp;gt; 2 &lt; 3</p>"

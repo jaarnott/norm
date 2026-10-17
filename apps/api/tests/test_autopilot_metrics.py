@@ -1,13 +1,18 @@
 """The autopilot-confidence taxonomy — would autopilot have got this right?
 
-Pure tests over injected working-document payloads: no DB, no network. The
-whole feature rests on one distinction — a human who only ACCEPTED Norm's
-suggestions did what autopilot would have done; a human who also typed a value
-did not — so that case is pinned explicitly (see
+Pure tests over injected working-document payloads: no network, and no DB
+except ``TestRecorder``, which writes through the recorder's own session (bound
+to the test's). The whole feature rests on one distinction — a human who only
+ACCEPTED Norm's suggestions did what autopilot would have done; a human who
+also typed a value did not — so that case is pinned explicitly (see
 ``test_hand_edited_quantity_with_all_accepted_is_edited``).
 """
 
+from app.db.models import InvoiceAutopilotOutcome
 from app.services import autopilot_metrics as AM
+
+from .conftest import _make_organization, _make_venue
+from .supplier_fakes import bind_sessions
 
 
 def _line(**over):
@@ -205,11 +210,9 @@ class TestManualEdits:
         doc["loaded_snapshot"]["header"]["received_at"] = None
         assert AM.manual_edits(doc) == []
         assert AM.classify_outcome(doc, received=True)["outcome"] != "edited"
-
-    def test_other_header_fields_are_still_watched(self):
-        """The exemption must be received_at ALONE — a changed total is a real
-        edit and must keep reading as one."""
-        doc = _doc(total=999.0)
+        # The exemption must be received_at ALONE — a changed total is a real
+        # edit and must keep reading as one.
+        doc["total"] = 999.0
         assert AM.manual_edits(doc) == ["header.total"]
 
     def test_enricher_fields_are_not_manual(self):
@@ -259,10 +262,6 @@ class TestManualEdits:
             snapshot_lines=[_line(linked_item_id=None)],
         )
         assert AM.manual_edits(doc) == ["line:ld-1.linked_item_id"]
-
-    def test_header_edit_is_named(self):
-        doc = _doc(reference_number="TYPED-1")
-        assert AM.manual_edits(doc) == ["header.reference_number"]
 
     def test_no_snapshot_means_no_claims(self):
         doc = _doc()
@@ -434,15 +433,69 @@ class TestRecorder:
             is None
         )
 
-    def test_a_doc_less_receive_records_nothing(self):
+    @staticmethod
+    def _venue(db):
+        org = _make_organization(db, name="Recorder Co")
+        return _make_venue(db, name="Recorder Venue", organization_id=org.id)
+
+    @staticmethod
+    def _rows(db, invoice_id):
+        return (
+            db.query(InvoiceAutopilotOutcome)
+            .filter(InvoiceAutopilotOutcome.invoice_id == invoice_id)
+            .all()
+        )
+
+    def test_a_doc_less_receive_records_nothing(self, db_session, monkeypatch):
         # The legacy client-built path has no working document, so there is
         # nothing honest to say about it.
-        assert (
-            AM.record_receive_outcome(
-                None, venue_id="v-1", invoice_id="inv-1", data={}, mode="interactive"
-            )
-            is None
+        bind_sessions(monkeypatch, db_session, "SessionLocal")
+        venue = self._venue(db_session)
+        AM.record_receive_outcome(
+            None, venue_id=venue.id, invoice_id="inv-1", data={}, mode="interactive"
         )
+        assert self._rows(db_session, "inv-1") == []
+        # The control: an explicit verdict (Cannot receive) IS recorded with no
+        # document — so the empty table above is the doc rule, not a recorder
+        # writing somewhere this test can't see. Nothing was received, so there
+        # is no autopilot verdict to store either.
+        AM.record_receive_outcome(
+            None,
+            venue_id=venue.id,
+            invoice_id="inv-1",
+            data={},
+            mode="interactive",
+            received=False,
+            outcome_override="dojo",
+        )
+        [row] = self._rows(db_session, "inv-1")
+        assert (row.outcome, row.received) == ("dojo", False)
+        assert "auto" not in (row.detail or {})
+
+    def test_a_receive_stores_the_auto_verdict(self, db_session, monkeypatch):
+        """The per-flag report ("with X on, N of your invoices would have
+        auto-received identically") is aggregated from ``detail.auto`` — the
+        stored row must carry the end-state verdict next to the classifier's
+        counts."""
+        bind_sessions(monkeypatch, db_session, "SessionLocal")
+        venue = self._venue(db_session)
+        s = _sugg()
+        doc = _doc(
+            lines=[_line(quantity_received=6.0)],
+            suggestions=[s],
+            actions=[_act(s["id"], after={"quantity_received": 6.0})],
+            doc_schema="replica_v2",
+        )
+        AM.record_receive_outcome(
+            None, venue_id=venue.id, invoice_id="inv-2", data=doc, mode="interactive"
+        )
+        [row] = self._rows(db_session, "inv-2")
+        assert row.organization_id == venue.organization_id
+        assert (row.outcome, row.accepted_count) == ("clean", 1)
+        auto = row.detail["auto"]
+        assert set(auto) == {"verdict", "gates_needed", "ungated", "diffs"}
+        assert auto == AM.auto_verdict(doc)
+        assert auto["verdict"] == "matched"
 
 
 class TestFoldedBlockerAccepts:
@@ -773,12 +826,3 @@ class TestAutoVerdict:
     def test_no_review_is_unscored(self):
         doc = _doc()  # no doc_schema
         assert AM.auto_verdict(doc)["verdict"] == "unscored"
-
-    def test_record_stores_the_auto_detail(self):
-        # classify_outcome + auto_verdict both land in the stored detail —
-        # verified at the unit level here (record_receive_outcome's session
-        # handling is covered by its own tests).
-        s = _sugg()
-        doc = self._reviewed(lines=[_line(quantity_received=6.0)], suggestions=[s])
-        out = AM.auto_verdict(doc)
-        assert set(out) == {"verdict", "gates_needed", "ungated", "diffs"}

@@ -22,6 +22,7 @@ Gmail.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
@@ -119,15 +120,6 @@ class TestMailboxes:
         }
         staff = call(client, "GET", "/inbox/mailboxes", w.staff).json()
         assert {v["venue_name"] for v in staff["venues"]} == {"Brew Bar"}
-
-    def test_sync_now_is_allowed_in_shadow_and_skips_fresh_mailboxes(
-        self, client, db_session, w
-    ):
-        w.org.functions_mode = "shadow"
-        db_session.flush()
-        r = call(client, "POST", "/inbox/sync", w.staff, json={})
-        assert r.status_code == 200
-        assert r.json()["results"][0]["skipped"] == "fresh"
 
     def test_sync_now_runs_a_stale_mailbox_and_never_waits_for_a_busy_one(
         self, client, db_session, w, fake
@@ -278,7 +270,12 @@ class TestComposer:
         assert body["subject"] == "Re: Wedding in March"
         assert "Can we book the deck?" in body["quoted_html"]
 
-    def test_send_pricing_warning_and_override(self, client, db_session, w, fake):
+    def test_send_pricing_warning_and_override(
+        self, client, db_session, w, fake, caplog
+    ):
+        """A price in a reply before any proposal is a 409 ``pricing_warning``;
+        the person's reason overrides it, and the override is audited: logged,
+        and the reason stored on the outbox row."""
         contact = add_contact(db_session, w.org.id, email=CUSTOMER)
         enquiry = add_enquiry(db_session, w.org.id, contact.id, w.venue.id)
         db_session.add(
@@ -299,15 +296,20 @@ class TestComposer:
         }
         r = call(client, "POST", "/inbox/compose/send", w.staff, json=body)
         assert r.status_code == 409 and r.json()["detail"]["code"] == "pricing_warning"
-        r = call(
-            client,
-            "POST",
-            "/inbox/compose/send",
-            w.staff,
-            json={**body, "price_override_reason": "They asked for a rough figure"},
-        )
+        assert fake.sent == []
+        with caplog.at_level(logging.WARNING):
+            r = call(
+                client,
+                "POST",
+                "/inbox/compose/send",
+                w.staff,
+                json={**body, "price_override_reason": "They asked for a rough figure"},
+            )
         assert r.status_code == 200, r.text
         assert r.json()["status"] == "sent" and len(fake.sent) == 1
+        assert any("pricing_override" in rec.getMessage() for rec in caplog.records)
+        row = db_session.query(FnOutbox).filter_by(id=r.json()["outbox_id"]).one()
+        assert row.price_override_reason.startswith("They asked")
         status = call(client, "GET", f"/inbox/outbox/{r.json()['outbox_id']}", w.staff)
         assert status.status_code == 200 and status.json()["status"] == "sent"
 
@@ -354,6 +356,20 @@ class TestComposer:
             json={"expected_version": draft["version"], "body_html": "Draft two"},
         )
         assert r.status_code == 200 and "Draft two" in r.json()["body_html"]
+        # a subject-only edit leaves the body as it was
+        r = call(
+            client,
+            "PATCH",
+            f"/inbox/drafts/{draft['id']}",
+            w.staff,
+            json={
+                "expected_version": r.json()["version"],
+                "subject": "Re: March dates",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["subject"] == "Re: March dates"
+        assert "Draft two" in r.json()["body_html"]
         stale = call(
             client,
             "PATCH",
@@ -437,9 +453,15 @@ class TestComposer:
 
 
 class TestGates:
-    def test_shadow_mode_reads_but_refuses_writes(self, client, db_session, w):
+    def test_shadow_mode_reads_but_refuses_writes(self, client, db_session, w, fake):
+        """Shadow mode reads — lists, live threads, "sync now" (which skips a
+        fresh mailbox), attachment downloads — and refuses every write."""
+        mid = _with_attachments(fake)
         w.org.functions_mode = "shadow"
         db_session.flush()
+        r = call(client, "POST", "/inbox/sync", w.staff, json={})
+        assert r.status_code == 200
+        assert r.json()["results"][0]["skipped"] == "fresh"
         assert call(client, "GET", "/inbox/threads", w.staff).status_code == 200
         assert (
             call(
@@ -447,6 +469,9 @@ class TestGates:
             ).status_code
             == 200
         )
+        part = _part(fake, mid, "Floor plan – deck.pdf")
+        r = call(client, "GET", _att_url(w, mid, part["partId"]), w.staff)
+        assert r.status_code == 200 and r.content == PDF
         writes = [
             (
                 "PUT",
@@ -485,7 +510,11 @@ class TestGates:
 
 
 class TestTenancy:
-    def test_another_organisation_gets_404_for_every_id(self, client, db_session, w):
+    def test_another_organisation_gets_404_for_every_id(
+        self, client, db_session, w, fake
+    ):
+        mid = _with_attachments(fake)
+        part = _part(fake, mid, "Floor plan – deck.pdf")
         contact = add_contact(db_session, w.org.id, email=CUSTOMER)
         enquiry = add_enquiry(db_session, w.org.id, contact.id, w.venue.id)
         event = events_svc.create_event(
@@ -558,6 +587,7 @@ class TestTenancy:
                 {"mode": "email", "body_html": "x", "idempotency_key": "r3"},
             ),
             ("POST", f"/events/{event.id}/send-to-client", {"idempotency_key": "r4"}),
+            ("GET", _att_url(w, mid, part["partId"]), None),
         ]
         for method, path, body in attempts:
             kw = {"json": body} if body is not None else {}
@@ -571,12 +601,18 @@ class TestTenancy:
             == 404
         )
 
-    def test_staff_see_only_their_venues_mailboxes(self, client, db_session, w):
+    def test_staff_see_only_their_venues_mailboxes(self, client, db_session, w, fake):
+        """Garden Bar's mailbox — its threads and its attachments — is out of
+        reach for Brew Bar staff; the owner sees every venue's."""
+        mid = _with_attachments(fake)
+        part = _part(fake, mid, "Floor plan – deck.pdf")
         conn = Connection(
             connector_name="venue_mailbox",
             venue_id=w.venue2.id,
             config={},
             enabled="true",
+            access_token="t",
+            refresh_token="r",
         )
         db_session.add(conn)
         db_session.flush()
@@ -602,6 +638,13 @@ class TestTenancy:
         )
         owner = call(client, "GET", "/inbox/mailboxes", w.owner).json()["mailboxes"]
         assert garden.id in {m["id"] for m in owner}
+        attachment = (
+            f"/inbox/threads/{garden.id}/t-att/messages/{mid}"
+            f"/attachments/{part['partId']}"
+        )
+        assert call(client, "GET", attachment, w.staff).status_code == 404
+        fake.address = "garden@cookbros.co.nz"  # the fake answers as Garden Bar's
+        assert call(client, "GET", attachment, w.owner).status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -1027,6 +1070,9 @@ def _att_url(w, mid, ref, thread="t-att"):
 
 class TestAttachments:
     def test_the_thread_lists_attachments_and_one_downloads(self, client, w, fake):
+        """Listed with their facts and downloaded with safe headers; active
+        types served as bytes; part ids survive Gmail rotating attachment
+        ids."""
         mid = _with_attachments(fake)
         detail = call(
             client, "GET", f"/inbox/threads/{w.account.id}/t-att", w.staff
@@ -1048,17 +1094,13 @@ class TestAttachments:
             'attachment; filename="Floor plan _ deck.pdf"; '
             "filename*=UTF-8''Floor%20plan%20%E2%80%93%20deck.pdf"
         )
-
-    def test_active_types_are_served_as_bytes(self, client, w, fake):
-        mid = _with_attachments(fake)
+        # Active types (the HTML one) are served as bytes, never rendered.
         part = _part(fake, mid, "menu.html")
         r = call(client, "GET", _att_url(w, mid, part["body"]["attachmentId"]), w.staff)
         assert r.status_code == 200
         assert r.headers["content-type"] == "application/octet-stream"
         assert r.headers["content-disposition"].startswith("attachment;")
-
-    def test_part_ids_survive_gmail_changing_attachment_ids(self, client, w, fake):
-        mid = _with_attachments(fake)
+        # Part ids survive Gmail changing the attachment ids.
         fake.rotate_attachment_ids = True
         detail = call(
             client, "GET", f"/inbox/threads/{w.account.id}/t-att", w.staff
@@ -1067,7 +1109,9 @@ class TestAttachments:
         r = call(client, "GET", _att_url(w, mid, pdf["part_id"]), w.staff)
         assert r.status_code == 200 and r.content == PDF
 
-    def test_too_big_and_wrong_thread_and_gone(self, client, w, fake):
+    def test_too_big_wrong_thread_gone_and_unconnected(
+        self, client, db_session, w, fake
+    ):
         mid = fake.add_message(
             frm=f"Casey <{CUSTOMER}>",
             to=[MAILBOX],
@@ -1092,50 +1136,7 @@ class TestAttachments:
         assert (
             call(client, "GET", _att_url(w, "m9999", aid), w.staff).status_code == 404
         )
-
-    def test_shadow_mode_may_download(self, client, db_session, w, fake):
-        mid = _with_attachments(fake)
-        w.org.functions_mode = "shadow"
-        db_session.flush()
-        part = _part(fake, mid, "Floor plan – deck.pdf")
-        r = call(client, "GET", _att_url(w, mid, part["partId"]), w.staff)
-        assert r.status_code == 200 and r.content == PDF
-
-    def test_other_organisations_and_venues_get_404(self, client, db_session, w, fake):
-        mid = _with_attachments(fake)
-        part = _part(fake, mid, "Floor plan – deck.pdf")
-        url = _att_url(w, mid, part["partId"])
-        assert call(client, "GET", url, w.other_user).status_code == 404
-        # Garden Bar's mailbox is out of reach for Brew Bar staff.
-        conn = Connection(
-            connector_name="venue_mailbox",
-            venue_id=w.venue2.id,
-            config={},
-            enabled="true",
-            access_token="t",
-            refresh_token="r",
-        )
-        db_session.add(conn)
-        db_session.flush()
-        garden = FnMailboxAccount(
-            organization_id=w.org.id,
-            venue_id=w.venue2.id,
-            google_email="garden@x.nz",
-            connection_id=conn.id,
-            status="active",
-            history_id=1,
-        )
-        db_session.add(garden)
-        db_session.flush()
-        other = f"/inbox/threads/{garden.id}/t-att/messages/{mid}/attachments/{part['partId']}"
-        assert call(client, "GET", other, w.staff).status_code == 404
-        fake.address = "garden@x.nz"  # the fake now answers as Garden Bar's mailbox
-        assert (
-            call(client, "GET", other, w.owner).status_code == 200
-        )  # owner sees all venues
-
-    def test_an_unconnected_mailbox_cannot_fetch(self, client, db_session, w, fake):
-        mid = _with_attachments(fake)
+        # An unconnected mailbox can't fetch at all.
         w.account.connection_id = None
         w.account.status = "needs_reconnect"
         db_session.flush()

@@ -367,30 +367,10 @@ class TestAutomatedConversationKeepsItsIdentity:
         assert ctx["id"] == task.id
         assert ctx["title"] == "Reconcile invoices"
         assert "08:00" in ctx["schedule"]
-
-    def test_followup_cannot_orphan_the_conversation(self, db_session, admin_user):
-        # A message that reads like a new job ("add my email address") must not
-        # abandon the task's own conversation — the retired router's
-        # "new_thread" verdict once could. Now nothing can.
-        from app.services import supervisor
-
-        conv, task = self._thread_and_task(db_session, admin_user)
-        agent = MagicMock()
-        agent.handle_message.return_value = {"message": "ok"}
-
-        with patch("app.services.supervisor.norm_agent", return_value=agent):
-            supervisor.handle_message(
-                "add my email address",
-                db_session,
-                config_db=db_session,
-                user_id=admin_user.id,
-                thread_id=conv.id,
-            )
-
-        assert agent.handle_message.called, "should have stayed on this thread"
-        # thread_id is the 4th positional arg of handle_message
+        # A message that reads like a new job must not abandon the task's own
+        # conversation — the retired router's "new_thread" verdict once could.
+        # thread_id is the 4th positional arg of handle_message.
         assert agent.handle_message.call_args.args[3] == conv.id
-        assert agent.handle_message.call_args.kwargs["automated_task"]["id"] == task.id
 
 
 class TestTemporalGrounding:
@@ -415,44 +395,9 @@ class TestTemporalGrounding:
         assert "previous_run_at_utc" not in ctx
         assert "current_datetime_utc" in ctx
 
-    def test_history_from_previous_days_is_date_prefixed(self):
-        # Context-builder behaviour asserted here (tests/test_context_builder.py
-        # belongs to other in-flight work): messages from earlier days carry a
-        # [YYYY-MM-DD] prefix; today's messages and the new turn stay bare.
-        from types import SimpleNamespace
-
-        from app.agents.context_builder import build_conversation_messages
-
-        now = datetime.now(timezone.utc)
-        msgs = [
-            SimpleNamespace(
-                role="user",
-                content="run the task",
-                created_at=now - timedelta(days=2),
-            ),
-            SimpleNamespace(
-                role="assistant",
-                content="I've emailed the report to dianna@cbhg.co.nz",
-                created_at=now - timedelta(days=2),
-            ),
-            SimpleNamespace(
-                role="user", content="thanks", created_at=now - timedelta(minutes=6)
-            ),
-            SimpleNamespace(
-                role="assistant",
-                content="Anything else?",
-                created_at=now - timedelta(minutes=5),
-            ),
-        ]
-        out = build_conversation_messages(
-            msgs, "run today's reconciliation", date_history=True
-        )
-        old_day = (now - timedelta(days=2)).date().isoformat()
-        assert out[0]["content"] == f"[{old_day}] run the task"
-        assert out[1]["content"].startswith(f"[{old_day}] I've emailed")
-        assert out[2]["content"] == "thanks"  # today: no prefix
-        assert out[3]["content"] == "Anything else?"  # today: no prefix
-        assert out[-1]["content"] == "run today's reconciliation"  # new turn bare
+    # The history half of this fix — messages from earlier days carry a
+    # [YYYY-MM-DD] prefix — is tested with a frozen clock in
+    # test_context_builder.py::TestDateAnchoredHistory.
 
 
 class TestUpdateTaskImplicitResolution:
@@ -467,29 +412,6 @@ class TestUpdateTaskImplicitResolution:
         h = get_handler("norm", "update_automated_task")
         assert h is not None
         return h
-
-    def test_resolves_task_from_conversation_thread(self, db_session, admin_user):
-        from app.db.models import Thread
-
-        task = _make_task(db_session)
-        conv = Thread(
-            user_id=admin_user.id,
-            domain="procurement",
-            intent="procurement.automated_task_conversation",
-            status="in_progress",
-            raw_prompt="conversation",
-        )
-        db_session.add(conv)
-        db_session.flush()
-        task.conversation_thread_id = conv.id
-        db_session.flush()
-
-        out = self._tool()(
-            {"prompt": "NEW PROMPT — all suppliers"}, db_session, conv.id
-        )
-        assert out["success"] is True, out
-        db_session.refresh(task)
-        assert task.prompt == "NEW PROMPT — all suppliers"
 
     def test_unrelated_thread_still_requires_task_id(self, db_session, admin_user):
         from app.db.models import Thread

@@ -249,7 +249,7 @@ class TestUserBuiltAppsCannotReachIt:
                     },
                 },
             )
-        assert "reserved" in e.value.detail
+        assert "reserved for Norm's own apps" in e.value.detail
 
     def test_a_legacy_claim_is_refused_at_run_time(self, db_session):
         # An app saved before the reservation existed still cannot read it.
@@ -360,8 +360,12 @@ class TestVenues:
         db_session.add(UserVenueAccess(user_id=user.id, venue_id=theirs.id))
         db_session.flush()
         app, version = load_for_user(db_session, db_session, "training", user)
+        # Through the app's own logic: a direct write to a built-in is refused
+        # earlier ("changes to … go through the app itself"), which would make
+        # this test pass without ever reaching the venue check.
         with pytest.raises(HTTPException) as e:
-            AR.store_put(
+            AR._run_in_logic(
+                AR.store_put,
                 db_session,
                 app=app,
                 version=version,
@@ -371,6 +375,7 @@ class TestVenues:
                 venue_id=theirs.id,
             )
         assert e.value.status_code == 403
+        assert "isn't in this organization" in e.value.detail
 
     def test_publishing_a_builtin_is_refused(self, client, db_session):
         from app.db.models import OrganizationMembership, Role

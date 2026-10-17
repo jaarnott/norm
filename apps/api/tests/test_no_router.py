@@ -27,7 +27,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.db.config_models import ConnectionSpec, MarketplaceApp
+from app.db.config_models import AgentConnectionBinding, ConnectionSpec, MarketplaceApp
 from app.db.models import LlmCall, Thread, ToolCall
 from app.services import agent_catalog
 from tests.conftest import _make_thread, _make_venue, _make_venue_access
@@ -235,15 +235,12 @@ class TestFollowUps:
 
 class TestRegistry:
     def test_one_agent_answers_for_norm_and_every_member(self):
+        """...and files its new threads under Norm."""
         from app.agents.registry import MEMBERS, get_agent, norm_agent
 
         assert get_agent("norm") is norm_agent()
         assert all(get_agent(m) is norm_agent() for m in MEMBERS)
         assert get_agent("meta") is None and get_agent("inventory") is None
-
-    def test_new_threads_are_filed_under_norm(self):
-        from app.agents.registry import norm_agent
-
         assert norm_agent().domain == "norm"
 
 
@@ -377,3 +374,66 @@ class TestThreadsAreLabelledByTheirApps:
         _catalog(db_session)
         t = _make_thread(db_session, admin_user, domain="norm", intent="norm.tool_use")
         assert _apps_by_thread([t.id], db_session, db_session) == {}
+
+
+class TestUnattendedRunsStayScoped:
+    """One capable interactive agent, but unattended runs stay scoped (moved
+    from test_one_agent_scoping.py).
+
+    In an INTERACTIVE chat the single agent sees the full entitled tool union
+    (a human is present to approve any write). An UNATTENDED run (a scheduled
+    task, a "Run Now") whose task carries no explicit tool_filter falls back
+    to its agent's OWN scope, never the union — otherwise a report task could
+    reach the GET-method writes (`create_purchase_order`, `send_report_email`)
+    that auto-fire without an approval card. `default_tool_filter` is that
+    fallback; these pin its binding-based (pre-Apps-v3) path, beside
+    TestUnattendedScope's App-based one.
+    """
+
+    def test_default_tool_filter_is_the_agents_own_scope_not_the_union(
+        self, db_session
+    ):
+        from app.services.agent_config_service import default_tool_filter
+
+        db_session.add(
+            AgentConnectionBinding(
+                agent_slug="reports",
+                connector_name="norm",
+                capabilities=[
+                    {"action": "get_sales", "enabled": True},
+                    {"action": "get_labour", "enabled": True},
+                ],
+                enabled=True,
+            )
+        )
+        db_session.flush()
+
+        # Scoped to reports' own bound actions, sorted — NOT every agent's tools.
+        assert default_tool_filter("reports", db_session) == ["get_labour", "get_sales"]
+
+    def test_default_tool_filter_is_none_for_an_unbound_agent(self, db_session):
+        from app.services.agent_config_service import default_tool_filter
+
+        # No curated bindings → None, which leaves the union in place (matching
+        # the old no-narrowing behaviour for an agent the binding layer isn't
+        # curating).
+        assert default_tool_filter("no_such_agent", db_session) is None
+
+    def test_a_disabled_capability_is_not_in_the_fallback_scope(self, db_session):
+        from app.services.agent_config_service import default_tool_filter
+
+        db_session.add(
+            AgentConnectionBinding(
+                agent_slug="marketing",
+                connector_name="norm",
+                capabilities=[
+                    {"action": "get_marketing", "enabled": True},
+                    {"action": "create_purchase_order", "enabled": False},
+                ],
+                enabled=True,
+            )
+        )
+        db_session.flush()
+        tf = default_tool_filter("marketing", db_session)
+        assert tf == ["get_marketing"]
+        assert "create_purchase_order" not in tf

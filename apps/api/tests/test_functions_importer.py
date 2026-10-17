@@ -137,12 +137,65 @@ def _snapshot(w) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# One full import, read by domain. Every _check_* below was a test of its own
+# that ran the same whole import for a single read; now one import feeds each
+# domain's checks, and each check is a subtest, so a failure names it and the
+# other checks still run.
+# ---------------------------------------------------------------------------
+
+
+def _read_one_import(w, subtests, *checks):
+    result, _ = _run(w)
+    for check in checks:
+        with subtests.test(check.__name__.removeprefix("_check_")):
+            check(w, result)
+
+
+def test_the_run_its_report_and_the_derived_state(w, subtests):
+    _read_one_import(
+        w,
+        subtests,
+        _check_ids_are_deterministic_uuid5,
+        _check_skipped_venue_rows_are_reported,
+        _check_every_row_read_is_accounted_for,
+        _check_derived_state_matches_orbit,
+    )
+
+
+def test_contacts_enquiries_and_mail(w, subtests):
+    _read_one_import(
+        w,
+        subtests,
+        _check_contacts_and_shared_emails,
+        _check_enquiries,
+        _check_unbooked_confirmed_enquiries_follow_the_rule,
+        _check_mail,
+    )
+
+
+def test_bookings(w, subtests):
+    _read_one_import(w, subtests, _check_events, _check_min_spends, _check_menus)
+
+
+def test_proposals_files_venue_setup_and_forms(w, subtests):
+    _read_one_import(
+        w,
+        subtests,
+        _check_images_are_copied_once_and_proposal_urls_rewritten,
+        _check_stored_html_is_sanitised,
+        _check_proposals_and_their_facts,
+        _check_venue_profile_and_templates,
+        _check_web_forms,
+        _check_imported_forms_pass_f5s_own_rules,
+    )
+
+
+# ---------------------------------------------------------------------------
 # The run itself
 # ---------------------------------------------------------------------------
 
 
-def test_ids_are_deterministic_uuid5(w):
-    result, _ = _run(w)
+def _check_ids_are_deterministic_uuid5(w, result):
     assert result.ok and result.committed
     enquiry = _one(w, fm.FnEnquiry, _id(w, "enquiries", E1))
     assert is_import_id(enquiry.id)
@@ -166,6 +219,8 @@ def test_reload_is_identical(w):
     # The second run really did wipe and reload, not skip.
     assert second.report.deleted["fn_enquiries"] == first.report.written["fn_enquiries"]
     assert "fn_files" not in second.report.written  # files are only ever added once
+    assert len(_rows(w, fm.FnFile)) == 4
+    assert second.report.tallies["files"]["already in Norm (brand logo)"] == 1
 
 
 def test_dry_run_writes_nothing(w):
@@ -290,8 +345,7 @@ def test_norm_venue_without_timezone_stops_the_run(w):
         _run(w)
 
 
-def test_skipped_venue_rows_are_reported(w):
-    result, _ = _run(w)
+def _check_skipped_venue_rows_are_reported(w, result):
     src = result.report.sources
     assert src["enquiries"]["dropped"] == {"venue skipped (--skip-venue)": 1}
     assert src["function_reply_templates"]["dropped"] == {
@@ -301,8 +355,7 @@ def test_skipped_venue_rows_are_reported(w):
     assert _rows(w, fm.FnEnquiry, id=_id(w, "enquiries", E6)) == []
 
 
-def test_every_row_read_is_accounted_for(w):
-    result, _ = _run(w)
+def _check_every_row_read_is_accounted_for(w, result):
     assert result.report.gate["passed"]
     assert not [
         c for c in result.report.gate["checks"] if c["check"].startswith("accounted")
@@ -425,8 +478,10 @@ def test_submission_received_by_norm_survives_a_reload(w):
 # ---------------------------------------------------------------------------
 
 
-def test_images_are_copied_once_and_proposal_urls_rewritten(w):
-    result, _ = _run(w)
+def _check_images_are_copied_once_and_proposal_urls_rewritten(w, result):
+    """Images are copied in (content-addressed) and proposal HTML and CSS
+    point at Norm's public file path. That a reload copies nothing again is
+    checked in test_reload_is_identical."""
     files = {f.source_ref: f for f in _rows(w, fm.FnFile)}
     assert set(files) == {
         IMG_LOGO,
@@ -461,10 +516,6 @@ def test_images_are_copied_once_and_proposal_urls_rewritten(w):
         ["deck"],
     )
     assert image.created_by_user_id == w.approver.id
-
-    again, _ = _run(w)
-    assert len(_rows(w, fm.FnFile)) == 4
-    assert again.report.tallies["files"]["already in Norm (brand logo)"] == 1
 
 
 def test_files_already_present_by_bytes_are_reused(w):
@@ -548,11 +599,10 @@ def test_rewrite_storage_urls_handles_entities_and_queries():
 # ---------------------------------------------------------------------------
 
 
-def test_stored_html_is_sanitised(w):
+def _check_stored_html_is_sanitised(w, result):
     """Rich text is stored clean, through each owner's own cleaner, after the
     image rewrite — copied images stay, everything unsafe goes, and the
     report says what was removed."""
-    result, _ = _run(w)
     picture = next(f for f in _rows(w, fm.FnFile) if f.source_ref == IMG_PROPOSAL)
     for row in (_rows(w, fm.FnProposal)[0], _rows(w, fm.FnProposalVersion)[0]):
         assert f'src="/api/public/files/{picture.id}"' in row.html
@@ -580,8 +630,7 @@ def test_stored_html_is_sanitised(w):
     assert removed["proposals with something removed"] == 1
 
 
-def test_contacts_and_shared_emails(w):
-    result, _ = _run(w)
+def _check_contacts_and_shared_emails(w, result):
     casey = _one(w, fm.FnContact, _id(w, "contacts", C1))
     assert (casey.name, casey.company, casey.phone) == (
         "Casey Client",
@@ -608,8 +657,7 @@ def test_contacts_and_shared_emails(w):
     assert _one(w, fm.FnContact, _id(w, "contacts", C4)).name == "Acme Ltd"
 
 
-def test_enquiries(w):
-    result, _ = _run(w)
+def _check_enquiries(w, result):
     e2 = _one(w, fm.FnEnquiry, _id(w, "enquiries", E2))
     assert e2.booking_type == "group_booking"  # 'cocktail' → its booked event's type
     assert e2.owner_user_id == w.approver.id  # contact's assignee, matched by email
@@ -645,8 +693,7 @@ def test_enquiries(w):
     assert tallies["enquiry 'cocktail' → group_booking (booked event's type)"] == 1
 
 
-def test_events(w):
-    result, _ = _run(w)
+def _check_events(w, result):
     f1 = _one(w, fm.FnEvent, _id(w, "venue_functions", F1))
     assert f1.enquiry_id == _id(w, "enquiries", E2)  # via Orbit's won_function_id
     assert (f1.name, f1.booking_type, f1.area_id) == (
@@ -753,8 +800,7 @@ def test_events(w):
     )
 
 
-def test_min_spends(w):
-    result, _ = _run(w)
+def _check_min_spends(w, result):
     booked = _one(w, fm.FnMinSpend, _id(w, "contact_proposal_spend_lines", L1))
     assert (booked.event_id, booked.enquiry_id) == (
         _id(w, "venue_functions", F1),
@@ -822,8 +868,7 @@ def test_min_spends(w):
     assert states[booked.id] == "confirmed" and states[sibling.id] == "withdrawn"
 
 
-def test_menus(w):
-    result, _ = _run(w)
+def _check_menus(w, result):
     merged = _one(
         w, fm.FnPreorderMenu, _id(w, "venue_function_preorder_menus", oid("vm1"))
     )
@@ -885,8 +930,7 @@ def test_menus(w):
     )
 
 
-def test_proposals_and_their_facts(w):
-    result, _ = _run(w)
+def _check_proposals_and_their_facts(w, result):
     proposal = _rows(w, fm.FnProposal)[0]
     assert proposal.enquiry_id == _id(w, "enquiries", E3)
     assert proposal.updated_by_user_id == w.approver.id
@@ -907,8 +951,7 @@ def test_proposals_and_their_facts(w):
     }
 
 
-def test_venue_profile_and_templates(w):
-    _run(w)
+def _check_venue_profile_and_templates(w, result):
     deck, snug = sorted(
         _rows(w, fm.FnVenueArea, venue_id=w.venue.id), key=lambda a: a.sort_order
     )
@@ -1012,8 +1055,7 @@ def test_brand_colours_must_be_hex_and_readable(w):
     assert "panel" in colours  # the 7% grey still reads
 
 
-def test_web_forms(w):
-    result, _ = _run(w)
+def _check_web_forms(w, result):
     form = _one(w, fm.FnWebForm, _id(w, "web_forms", WF1))
     assert (form.venue_id, form.slug, form.honeypot_field, form.submit_label) == (
         w.venue2.id,
@@ -1063,12 +1105,11 @@ def test_web_forms(w):
     assert sub.enquiry_id == _id(w, "enquiries", E3)
 
 
-def test_imported_forms_pass_f5s_own_rules(w):
+def _check_imported_forms_pass_f5s_own_rules(w, result):
     """What F9 found live: F5's builder must re-save an imported form as it
     is, and a submission with several dates must make a lead, not a 500."""
     from app.services.functions import forms
 
-    _run(w)
     form = _one(w, fm.FnWebForm, _id(w, "web_forms", WF1))
     fields = sorted(
         _rows(w, fm.FnWebFormField, form_id=form.id), key=lambda f: f.sort_order
@@ -1107,23 +1148,6 @@ def test_imported_forms_pass_f5s_own_rules(w):
     )
 
 
-def test_theme_keys_match_forms_js():
-    """The importer keeps only the theme settings forms.js applies; the two
-    lists must not drift."""
-    import pathlib
-    import re as _re
-
-    from app.services.functions.importer import FORM_THEME_KEYS
-
-    js = (
-        pathlib.Path(__file__).resolve().parents[2] / "web/public/embed/forms.js"
-    ).read_text()
-    tables = _re.findall(r"var THEME_(?:ALIASES|KEYS) = \{(.*?)\n  \};", js, _re.S)
-    keys = [k for body in tables for k in _re.findall(r"^\s+([a-z_]+):", body, _re.M)]
-    assert len(keys) > 40
-    assert sorted(FORM_THEME_KEYS) == sorted(keys)
-
-
 def test_a_large_theme_keeps_every_known_setting(w):
     fake = _fake(w)
     form = fake.tables["web_forms"][0]
@@ -1152,10 +1176,15 @@ def test_a_large_theme_keeps_every_known_setting(w):
     assert not [
         k for k in result.report.tallies.get("form themes", {}) if "dropped" in k
     ]
+    # The importer keeps exactly the settings F5 accepts — the set that
+    # test_functions_forms.py checks against forms.js.
+    from app.services.functions import forms as forms_svc
+    from app.services.functions.importer import FORM_THEME_KEYS
+
+    assert FORM_THEME_KEYS == forms_svc.THEME_KEYS
 
 
-def test_mail(w):
-    result, _ = _run(w)
+def _check_mail(w, result):
     accounts = {a.google_email: a for a in _rows(w, fm.FnMailboxAccount)}
     brew = accounts["events@brewbar.example"]
     assert (brew.id, brew.status, brew.connection_id, brew.signature_html) == (
@@ -1210,8 +1239,7 @@ def test_mail(w):
     }  # Orbit's precedence for two labels
 
 
-def test_derived_state_matches_orbit(w):
-    result, _ = _run(w)
+def _check_derived_state_matches_orbit(w, result):
     stages = {
         r.enquiry_id: r.stage
         for r in w.db.execute(
@@ -1252,11 +1280,10 @@ def test_derived_state_matches_orbit(w):
     }
 
 
-def test_unbooked_confirmed_enquiries_follow_the_rule(w):
+def _check_unbooked_confirmed_enquiries_follow_the_rule(w, result):
     """Orbit says confirmed, nothing is booked: no event is invented. Recent
     ones get a follow-up dated today (the run's clock, venue-local) so they
     surface; historic ones are archived with a note."""
-    result, _ = _run(w)
     recent = _one(w, fm.FnEnquiry, _id(w, "enquiries", E7))  # preferred date ahead
     assert (recent.follow_up_date, recent.follow_up_reason, recent.archived_at) == (
         dt.date(2026, 10, 12),  # NOW is 15:00 on 12 Oct in Auckland

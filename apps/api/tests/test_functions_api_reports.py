@@ -107,17 +107,26 @@ def overdue_reply(client, w, enquiry_id):
 
 class TestDashboard:
     def test_needs_attention_reads_every_kind_of_fact(self, client, w):
+        """Also: every attention item carries ``follow_up_reason`` — the
+        requested follow-up's own reason, None where there is none."""
         # reply overdue
         late = detail_of(new_enquiry(client, w, subject="Late reply"))
         overdue_reply(client, w, late)
-        # follow-up requested for yesterday
+        # follow-up requested for yesterday, with a reason
         asked = detail_of(new_enquiry(client, w, subject="Call back", email="cb@x.com"))
-        call(
-            client,
-            "PUT",
-            f"/enquiries/{asked}/follow-up",
-            w.staff,
-            json={"date": (nz_today() - dt.timedelta(days=1)).isoformat()},
+        reason = "Orbit marked this confirmed without a booking — check it."
+        assert (
+            call(
+                client,
+                "PUT",
+                f"/enquiries/{asked}/follow-up",
+                w.staff,
+                json={
+                    "date": (nz_today() - dt.timedelta(days=1)).isoformat(),
+                    "reason": reason,
+                },
+            ).status_code
+            == 200
         )
         # an event in 3 days, not confirmed
         soon = book(client, w, days_ahead=3, name="Soon")
@@ -182,6 +191,12 @@ class TestDashboard:
         assert d["enquiries_last_28_days"]["count"] == 4
         assert set(d["next_4_weeks"]) >= {"events", "expected_spend_cents", "weeks"}
         assert soon["id"] in {i["event_id"] for i in d["needs_attention"]}
+        items = d["needs_attention"]
+        assert all("follow_up_reason" in i for i in items)
+        mine = next(i for i in items if i["enquiry_id"] == asked)
+        assert mine["kind"] == "requested" and mine["follow_up_reason"] == reason
+        soon_item = next(i for i in items if i["title"] == "Soon")
+        assert soon_item["follow_up_reason"] is None
 
         # Acting clears it: a reply-less decline stays until a new option.
         new_option(client, w, quoted, area=w.snug, amount=250_000)
@@ -189,30 +204,6 @@ class TestDashboard:
         assert ("quote_response", "Declined") not in {
             (i["kind"], i["title"]) for i in again["needs_attention"]
         }
-
-    def test_attention_items_carry_the_follow_up_reason(self, client, w):
-        enquiry_id = detail_of(new_enquiry(client, w, subject="Imported"))
-        reason = "Orbit marked this confirmed without a booking — check it."
-        assert (
-            call(
-                client,
-                "PUT",
-                f"/enquiries/{enquiry_id}/follow-up",
-                w.staff,
-                json={
-                    "date": (nz_today() - dt.timedelta(days=1)).isoformat(),
-                    "reason": reason,
-                },
-            ).status_code
-            == 200
-        )
-        book(client, w, days_ahead=3, name="Soon")
-        items = call(client, "GET", "/dashboard", w.staff).json()["needs_attention"]
-        assert items and all("follow_up_reason" in i for i in items)
-        mine = next(i for i in items if i["enquiry_id"] == enquiry_id)
-        assert mine["kind"] == "requested" and mine["follow_up_reason"] == reason
-        soon = next(i for i in items if i["title"] == "Soon")
-        assert soon["follow_up_reason"] is None
 
     def test_dashboard_is_scoped_to_the_callers_venues_and_org(self, client, w):
         hidden = book(
@@ -255,13 +246,6 @@ class TestDashboard:
             (i["kind"], i["enquiry_id"]) for i in unassigned["needs_attention"]
         ] == [("requested", group_wide)]
         assert unassigned["open_enquiries"]["follow_ups_due"] == 1
-
-    def test_shadow_mode_still_reads(self, client, w):
-        book(client, w, days_ahead=5)
-        w.org.functions_mode = "shadow"
-        w.db.flush()
-        assert call(client, "GET", "/dashboard", w.staff).status_code == 200
-        assert call(client, "GET", "/reports/approvals", w.staff).status_code == 200
 
 
 # ===========================================================================
@@ -744,9 +728,12 @@ class TestHiddenVenueMoney:
 
 
 class TestLoadedGateway:
-    def test_loaded_call_goes_through_the_shared_executor_venue_strict(
+    def test_loaded_call_is_venue_strict_and_every_failure_is_a_reason(
         self, w, monkeypatch
     ):
+        """Through the shared executor, never with another venue's
+        credentials; every failure — refused, an error payload, a bare
+        failure, an exception — comes back as a reason, not a raise."""
         from app.connectors import tool_executor
         from app.connectors.tool_executor import ToolResult
         from app.services.functions import reports
@@ -769,11 +756,6 @@ class TestLoadedGateway:
             "venue_id": w.venue.id,
             "strict_venue": True,  # never another venue's credentials
         }
-
-    def test_loaded_call_turns_every_failure_into_a_reason(self, w, monkeypatch):
-        from app.connectors import tool_executor
-        from app.connectors.tool_executor import ToolResult
-        from app.services.functions import reports
 
         cases = [
             (

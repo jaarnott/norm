@@ -25,14 +25,13 @@ def _tools():
 
 class TestEnsureSearchTool:
     def test_adds_the_search_tool_when_absent(self):
+        """...last, after the existing tools in their order, with its tool_meta
+        entry registered — without that entry the loop cannot resolve the call
+        to a connector/action and the tool would fail when used."""
         tools, meta, available = _ensure_search_tool(_tools(), {})
         assert available is True
         assert [t["name"] for t in tools][-1] == SEARCH
-
-    def test_registers_its_metadata_so_the_call_can_be_routed(self):
-        """Without the tool_meta entry the loop cannot resolve the call to a
-        connector/action and the tool would fail when used."""
-        _tools_out, meta, _ = _ensure_search_tool(_tools(), {})
+        assert tools[0]["name"] == "loadedhub__get_sales_data"
         assert meta[SEARCH] == {
             "method": "GET",
             "connector": "norm",
@@ -46,25 +45,19 @@ class TestEnsureSearchTool:
         assert [t["name"] for t in tools].count(SEARCH) == 1
 
     def test_does_not_mutate_the_callers_list(self):
-        """The tool list is built once per turn, reused across every iteration,
-        and is now the basis of the prompt-cache key. Mutating it in place
-        would leak across calls and shift the cached prefix mid-turn."""
+        """...or the caller's meta. The tool list is built once per turn,
+        reused across every iteration, and is now the basis of the prompt-cache
+        key. Mutating it in place would leak across calls and shift the cached
+        prefix mid-turn."""
         original = _tools()
         snapshot = [dict(t) for t in original]
-        _ensure_search_tool(original, {})
+        meta = {"existing": {"method": "GET"}}
+        meta_snapshot = dict(meta)
+        _ensure_search_tool(original, meta)
         assert original == snapshot
         assert len(original) == 1
-
-    def test_does_not_mutate_the_callers_meta(self):
-        meta = {"existing": {"method": "GET"}}
-        snapshot = dict(meta)
-        _ensure_search_tool(_tools(), meta)
-        assert meta == snapshot
+        assert meta == meta_snapshot
         assert SEARCH not in meta
-
-    def test_existing_tools_are_preserved_in_order(self):
-        tools, _meta, _ = _ensure_search_tool(_tools(), {})
-        assert tools[0]["name"] == "loadedhub__get_sales_data"
 
 
 class TestCompactMessages:
@@ -97,34 +90,19 @@ class TestCompactMessages:
         ]
 
     def test_tool_results_are_replaced_by_a_stub(self):
+        """The stub keeps the id needed to get the data back — without it,
+        compaction is data loss rather than a round trip. Plain text turns are
+        untouched, and tool_use blocks survive: dropping one would break the
+        tool_use/tool_result pairing the API requires."""
         from app.agents.tool_loop import _compact_messages
 
         out = _compact_messages(self._msgs())
         body = out[2]["content"][0]["content"]
         assert len(body) < 500
         assert "x" * 100 not in body
-
-    def test_the_stub_keeps_the_id_needed_to_get_the_data_back(self):
-        """Without the id, compaction is data loss rather than a round trip."""
-        from app.agents.tool_loop import _compact_messages
-
-        out = _compact_messages(self._msgs())
-        body = out[2]["content"][0]["content"]
         assert "tu_1" in body
         assert "norm__search_tool_result" in body
-
-    def test_plain_text_turns_are_untouched(self):
-        from app.agents.tool_loop import _compact_messages
-
-        out = _compact_messages(self._msgs())
         assert out[0] == {"role": "user", "content": "sales?"}
-
-    def test_tool_use_blocks_survive(self):
-        """Dropping the tool_use block would break the tool_use/tool_result
-        pairing the API requires."""
-        from app.agents.tool_loop import _compact_messages
-
-        out = _compact_messages(self._msgs())
         assert out[1]["content"][0]["type"] == "tool_use"
         assert out[1]["content"][0]["id"] == "tu_1"
 

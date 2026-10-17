@@ -13,6 +13,7 @@ import pytest
 
 from app.db.models import Venue
 from app.services.invoice_po_reference import (
+    attach_po_reference,
     candidates_for_code,
     claim_row_by_item,
     enrich_loaded_snapshot,
@@ -109,7 +110,10 @@ class TestProjection:
         project_po_reference(data)
         assert _not_delivered(data) == []
         assert data["lines"][1]["quantity_ordered"] == 2
+        assert data["lines"][1]["on_order"] is True
         assert data["lines"][1]["display_code"] == "RICK#-DEEKB"  # borrowed
+        # every ordered row delivered: nothing outstanding, every line on order
+        assert all(ln["on_order"] for ln in data["lines"])
 
     def test_undoing_the_link_brings_the_row_back(self):
         # The exact regression: undo restores only the line, and the list must
@@ -132,11 +136,21 @@ class TestProjection:
         assert data["ordered_not_received"] == first  # idempotent
 
     def test_coded_line_delivered_under_another_code_is_a_substitute(self):
+        # The same item ordered under one code and delivered under another
+        # (live: BROCCOLI VEGF0223←165618) is matched, borrows the ordered
+        # quantity and points at the original ordered line.
         data = _doc()
         data["lines"][1].update({"code": "GINGER-ALT", "linked_item_id": "item-ginger"})
         project_po_reference(data)
-        sub = data["lines"][1]["substitute_for"]
-        assert sub["code"] == "RICK#-DEEKB" and sub["quantity_ordered"] == 2
+        assert data["lines"][1]["on_order"] is True
+        assert data["lines"][1]["quantity_ordered"] == 2
+        assert data["lines"][1]["substitute_for"] == {
+            "code": "RICK#-DEEKB",
+            "description": "Rick# Ginger Beer",
+            "unit": "50 L",
+            "quantity_ordered": 2,
+            "unit_cost": 380.0,
+        }
         # delivered under another code — NOT also listed as not-delivered
         assert _not_delivered(data) == []
 
@@ -161,6 +175,7 @@ class TestProjection:
         project_po_reference(data)
         assert "VEGF50" in _not_delivered(data)
         assert data["lines"][2]["quantity_ordered"] is None
+        assert data["lines"][2]["reference_cost"] is None
         assert data["lines"][2]["on_order"] is False
         assert data["lines"][2]["substitute_for"] is None
 
@@ -176,10 +191,15 @@ class TestProjection:
     def test_no_order_clears_everything(self):
         data = _doc(linked_purchase_order_id=None)
         data.pop("po_reference")
+        data.update(order_date="old", ordered_not_received=[{"code": "X"}])
+        data["lines"][0].update(quantity_ordered=5, reference_cost=1.0, on_order=True)
         project_po_reference(data)
         assert "ordered_not_received" not in data
         assert "order_date" not in data
-        assert all(ln["quantity_ordered"] is None for ln in data["lines"])
+        for ln in data["lines"]:
+            assert ln["quantity_ordered"] is None
+            assert ln["reference_cost"] is None
+            assert ln["on_order"] is None
 
     def test_switching_orders_clears_rather_than_lying(self):
         # The PO picker changed the link; the cached rows are another order's.
@@ -198,6 +218,81 @@ class TestProjection:
         data.pop("po_reference")
         project_po_reference(data)
         assert _not_delivered(data) == ["RICK#-DEEKB"]
+
+    def test_substitute_and_not_delivered_coexist(self):
+        # The old bug: pairing a substitute dropped genuinely-not-delivered
+        # items. Garlic is delivered under a different code (a substitute) AND
+        # parsley never arrives — BOTH must show: garlic as the substitute,
+        # parsley as ordered-not-delivered.
+        po = {
+            "createdAt": "x",
+            "lines": [
+                {
+                    "itemCode": "VEGS251",
+                    "itemName": "GARLIC",
+                    "unitName": "1kg",
+                    "quantityOrdered": 3,
+                    "unitCost": 8.0,
+                    "itemId": "item-garlic",
+                },
+                {
+                    "itemCode": "PARS1",
+                    "itemName": "PARSLEY",
+                    "unitName": "bunch",
+                    "quantityOrdered": 2,
+                    "unitCost": 1.5,
+                    "itemId": "item-parsley",
+                },
+            ],
+        }
+        data = {
+            "linked_purchase_order_id": "po-1",
+            "lines": [
+                {
+                    "id": "ln-g",
+                    "code": "VEGF251",
+                    "linked_item_id": "item-garlic",
+                    "unit_cost": 9.0,
+                }
+            ],
+        }
+        attach_po_reference(data, _FakeLoaded(po))
+        assert data["lines"][0]["substitute_for"]["code"] == "VEGS251"
+        assert _not_delivered(data) == ["PARS1"]  # not-delivered survives
+
+    def test_ordered_not_received_lists_all_unmatched_po_lines(self):
+        # Mirror Loaded: every PO item with no matching invoice line shows
+        # below with its FULL ordered qty (Loaded surfaces them as receivable
+        # rows, received 0) — the PO's cumulative received is not subtracted.
+        po = {
+            "createdAt": "2026-07-20",
+            "lines": [
+                {
+                    "itemCode": "FULL1",
+                    "itemName": "FULLY RECEIVED",
+                    "unitName": "Each",
+                    "quantityOrdered": 3,
+                    "quantityReceived": 3,
+                    "unitCost": 1.0,
+                },
+                {
+                    "itemCode": "PART1",
+                    "itemName": "PARTLY RECEIVED",
+                    "unitName": "Each",
+                    "quantityOrdered": 5,
+                    "quantityReceived": 2,
+                    "unitCost": 2.0,
+                },
+            ],
+        }
+        data = {
+            "linked_purchase_order_id": "po-1",
+            "lines": [{"id": "ln-x", "code": "OTHER", "unit_cost": 1.0}],
+        }
+        attach_po_reference(data, _FakeLoaded(po))
+        onr = {o["code"]: o for o in data["ordered_not_received"]}
+        assert onr["FULL1"]["quantity_ordered"] == 3  # full ordered qty, shown
+        assert onr["PART1"]["quantity_ordered"] == 5  # full ordered qty, shown
 
 
 class _FakeLoaded:
@@ -240,18 +335,45 @@ class TestFetch:
             split_sibling_invoice_id="sib-1",
         )
         data.pop("po_reference")
+        never = {
+            "itemId": "item-never",
+            "itemCode": "MISS1",
+            "itemName": "Never Delivered",
+            "unitName": "Each",
+            "quantityOrdered": 1,
+            "unitCost": 5.0,
+        }
         lh = _FakeLoaded(
-            {"createdAt": "2026-08-07", "lines": PO_LINES},
+            {"createdAt": "2026-08-07", "lines": [*PO_LINES, never]},
             sibling={
                 "lines": [{"code": "RICK#-DEEKB", "quantityReceived": 2}],
             },
         )
         fetch_po_reference(data, lh)
         project_po_reference(data)
-        assert _not_delivered(data) == []
+        # a line on neither invoice stays "not delivered"
+        assert _not_delivered(data) == ["MISS1"]
         elsewhere = data["ordered_received_elsewhere"]
         assert [o["code"] for o in elsewhere] == ["RICK#-DEEKB"]
         assert elsewhere[0]["quantity_received"] == 2
+        # reconciled against split_po_id; the link fields are never touched
+        assert data["linked_purchase_order_id"] is None
+
+    def test_attach_runs_even_before_split_acceptance(self):
+        # Scenario 3 (number found on the copy only): the order's reference
+        # data shows from the FIRST open — the engine already validated
+        # against this order, and waiting for the accept left the card
+        # without QTY ORDERED until a reopen (Bidvest 109827538, 09 Aug).
+        data = {
+            "split_po_id": "po-split",
+            "split_po_suggested": True,
+            "lines": [{"id": "ln-x"}],
+        }
+        lh = _FakeLoaded({"createdAt": "2026-07-20", "lines": []})
+        attach_po_reference(data, lh)
+        assert lh.gets == ["/1.0/stock/internal/purchase-orders/po-split"]
+        assert data["ordered_not_received"] == []
+        assert data["order_date"] == "2026-07-20"
 
     def test_a_suggested_split_pre_caches_the_siblings_receipts(self):
         # The doc carries NO split fields yet — the reference is still only a
@@ -289,6 +411,7 @@ class TestFetch:
         fetch_po_reference(data, _FakeLoaded({"createdAt": "x", "lines": PO_LINES}))
         project_po_reference(data)
         assert _not_delivered(data) == ["RICK#-DEEKB"]  # nothing partitioned
+        assert data["ordered_received_elsewhere"] == []
 
 
 class TestPatchRecomputes:

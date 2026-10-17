@@ -74,6 +74,11 @@ class TestInvalidateConflictingDrafts:
         assert not dup.data.get("is_received")
 
     def test_po_overlap_sibling_cleared(self, db_session, venue):
+        """A sibling whose review SUGGESTS linking the order just invoiced is
+        cleared, in the shape the replica review writes today
+        (``apply.linked_purchase_order_id``) as well as the legacy top-level
+        ``purchase_order_id`` older drafts may still carry. Only the legacy
+        shape used to be read, so a current suggestion never matched."""
         _doc(
             db_session,
             venue,
@@ -81,16 +86,65 @@ class TestInvalidateConflictingDrafts:
             reference_number="R-1",
             linked_purchase_order_id="po-9",
         )
-        overlap = _doc(
+        legacy = _doc(
             db_session,
             venue,
             "inv-2",
             reference_number="R-2",
             suggestions=[{"type": "link_po", "purchase_order_id": "po-9"}],
         )
+        current = _doc(
+            db_session,
+            venue,
+            "inv-3",
+            reference_number="R-3",
+            suggestions=[
+                {
+                    "id": "link_po:linked_purchase_order_id",
+                    "kind": "link_po",
+                    "field": "linked_purchase_order_id",
+                    "proposed": "1520999",
+                    "apply": {
+                        "linked_purchase_order_id": "po-9",
+                        "purchase_order_number": "1520999",
+                    },
+                }
+            ],
+        )
         invalidate_conflicting_drafts(db_session, venue.id, "inv-1")
-        db_session.refresh(overlap)
-        assert overlap.data["reviewed_at"] is None
+        for d in (legacy, current):
+            db_session.refresh(d)
+            assert d.data["reviewed_at"] is None, d.data["invoice_id"]
+            assert d.data["suggestions"] == []
+
+    def test_the_acted_invoices_own_link_suggestion_counts_too(self, db_session, venue):
+        """The received invoice's own (current-shape) link suggestion names
+        the order it took, so a sibling already linked to it is cleared."""
+        _doc(
+            db_session,
+            venue,
+            "inv-1",
+            reference_number="R-1",
+            suggestions=[
+                {
+                    "kind": "link_po",
+                    "apply": {
+                        "linked_purchase_order_id": "po-9",
+                        "purchase_order_number": "1520999",
+                    },
+                }
+            ],
+        )
+        sibling = _doc(
+            db_session,
+            venue,
+            "inv-2",
+            reference_number="R-2",
+            purchase_order_number="1520999",
+        )
+        invalidate_conflicting_drafts(db_session, venue.id, "inv-1")
+        db_session.refresh(sibling)
+        assert sibling.data["reviewed_at"] is None
 
     def test_unrelated_sibling_untouched(self, db_session, venue):
         _doc(db_session, venue, "inv-1", reference_number="R-1")
@@ -500,7 +554,7 @@ class TestReviewTwinHealing:
 
 
 class TestLineIdAddressedOps:
-    def test_update_line_prefers_line_id_over_stale_index(self, db_session):
+    def test_update_line_prefers_line_id_over_stale_index(self):
         from app.routers.working_documents import _apply_op
 
         data = {
@@ -522,7 +576,7 @@ class TestLineIdAddressedOps:
         assert out["lines"][0]["unit_cost"] == 1
         assert out["lines"][1]["unit_cost"] == 9
 
-    def test_update_line_index_fallback(self, db_session):
+    def test_update_line_index_fallback(self):
         from app.routers.working_documents import _apply_op
 
         data = {"lines": [{"id": "l-1", "unit_cost": 1}]}

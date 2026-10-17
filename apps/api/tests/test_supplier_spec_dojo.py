@@ -1,4 +1,5 @@
-"""Supplier Spec Dojo: comparator, sample lifecycle, run endpoints, permissions.
+"""Supplier Spec Dojo: comparator, sample lifecycle, run endpoints, permissions
+— and the one home for analysis_view and the ground-truth arithmetic.
 
 The dojo re-extracts stored sample invoices under the CURRENT prompts and
 diffs against an admin-accepted baseline (services/spec_dojo.py). The LLM
@@ -8,6 +9,8 @@ lifecycle (new → save expected → pass → drifted run → fail) without netw
 
 from app.db.config_models import SupplierInvoiceSpec, SupplierSpecSample
 from app.services import spec_dojo
+
+from .supplier_fakes import bind_sessions, install_fake_loaded
 
 
 def _extraction(**over):
@@ -160,6 +163,25 @@ class TestSampleLifecycle:
             files={"file": ("x.csv", b"a,b", "text/csv")},
         )
         assert bad.status_code == 400
+        assert "only PDF" in bad.json()["detail"]
+        # One byte over the 5 MB cap: refused before anything is stored.
+        big = client.post(
+            f"/api/supplier-invoice-specs/{spec.id}/samples",
+            headers=admin_headers,
+            files={
+                "file": (
+                    "big.pdf",
+                    b"%PDF-" + b"0" * (5 * 1024 * 1024 - 4),
+                    "application/pdf",
+                )
+            },
+        )
+        assert big.status_code == 400
+        assert "too large" in big.json()["detail"]
+        listed = client.get(
+            f"/api/supplier-invoice-specs/{spec.id}/samples", headers=admin_headers
+        )
+        assert listed.json()["samples"] == []
 
     def test_run_baseline_pass_fail_lifecycle(
         self, client, admin_headers, db_session, monkeypatch
@@ -283,7 +305,6 @@ class TestDojoRunAll:
     def test_run_all_groups_by_supplier(
         self, client, admin_headers, db_session, monkeypatch
     ):
-        from app.db import engine as engine_mod
         from app.routers import supplier_spec_dojo as dojo_router
 
         spec_a = _make_spec(db_session, "Alpha Foods")
@@ -316,9 +337,7 @@ class TestDojoRunAll:
                 return [fn(i) for i in items]
 
         monkeypatch.setattr(dojo_router, "ThreadPoolExecutor", SerialPool)
-        monkeypatch.setattr(engine_mod, "SessionLocal", lambda: db_session)
-        monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", lambda: db_session)
-        monkeypatch.setattr(db_session, "close", lambda: None)
+        bind_sessions(monkeypatch, db_session)
 
         res = client.post(
             "/api/supplier-invoice-specs/dojo/run", headers=admin_headers, json={}
@@ -1236,34 +1255,12 @@ class TestCannotReceiveIntake:
     """
 
     def _fake_loaded(self, monkeypatch):
-        # Patched at the SOURCE module: the staging helper (and the overview
-        # endpoint) import LoadedInvoiceClient inside the call.
-        import app.services.received_invoice as RI
-
-        class FakeLoadedClient:
-            def __init__(self, db, config_db, venue_id):
-                pass
-
-            def invoice(self, invoice_id):
-                return {
-                    "id": invoice_id,
-                    "supplierName": "Tamar Farming Company",
-                    "referenceNumber": "INV-9",
-                    "fileId": "file-1",
-                }
-
-            def file_base64(self, file_id):
-                import base64
-
-                return base64.b64encode(b"%PDF-tamar").decode(), "application/pdf"
-
-        monkeypatch.setattr(RI, "LoadedInvoiceClient", FakeLoadedClient)
+        install_fake_loaded(monkeypatch, pdf=b"%PDF-tamar")
         # The verdict recorder is test_autopilot_report's subject, not ours —
         # and it opens its own session, which can't see this test's rows.
         monkeypatch.setattr(
             "app.routers.invoice_fixes.record_receive_outcome", lambda *a, **k: None
         )
-        return FakeLoadedClient
 
     def test_creates_spec_and_sample_with_source_refs(
         self, client, manager_user, manager_headers, db_session, monkeypatch
@@ -1281,12 +1278,8 @@ class TestCannotReceiveIntake:
         db_session.add(venue)
         db_session.flush()
         _make_venue_access(db_session, manager_user, venue)
-        # the request handler opens its own RW config session — point the
-        # factory at the shared test session (and don't let it be closed)
-        from app.db import engine as engine_mod
-
-        monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", lambda: db_session)
-        monkeypatch.setattr(db_session, "close", lambda: None)
+        # the request handler opens its own RW config session
+        bind_sessions(monkeypatch, db_session, "_ConfigSessionLocal")
 
         # The press must hand the sample to the sensei QUEUE (the worker
         # executes it; nothing runs in this request).
@@ -1342,33 +1335,8 @@ class TestDojoTriage:
     one-fetch overview (outstanding + awaiting-review)."""
 
     def _fake(self, monkeypatch, db_session, rows=None):
-        import app.services.received_invoice as RI
-        from app.db import engine as engine_mod
-
-        class FakeLoadedClient:
-            def __init__(self, db, config_db, venue_id):
-                pass
-
-            def get(self, path):
-                assert "status=NotReceived" in path
-                return rows or []
-
-            def invoice(self, invoice_id):
-                return {
-                    "id": invoice_id,
-                    "supplierName": "Tamar Farming Company",
-                    "referenceNumber": "INV-9",
-                    "fileId": "file-1",
-                }
-
-            def file_base64(self, file_id):
-                import base64
-
-                return base64.b64encode(b"%PDF-t").decode(), "application/pdf"
-
-        monkeypatch.setattr(RI, "LoadedInvoiceClient", FakeLoadedClient)
-        monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", lambda: db_session)
-        monkeypatch.setattr(db_session, "close", lambda: None)
+        install_fake_loaded(monkeypatch, outstanding=rows or [])
+        bind_sessions(monkeypatch, db_session, "_ConfigSessionLocal")
 
     def test_stage_draft_hidden_from_regression(
         self, client, admin_headers, db_session, monkeypatch
@@ -1543,10 +1511,20 @@ class TestDojoTriage:
         assert body["errors"] == []
 
 
+def _totals(subtotal, tax, total, discount=None, lines=None):
+    d = {"subtotal_ex_tax": subtotal, "tax_amount": tax, "total_incl_tax": total}
+    if discount is not None:
+        d["discount_amount"] = discount
+    d["lines"] = lines or []
+    return d
+
+
 class TestGroundTruthArithmetic:
     """The document's own arithmetic, enforced on the agent's ground truth —
     the pink-ling net (09 Aug 2026): a truth that mis-reads a line usually
-    breaks qty × price = line_total, and must never go green."""
+    breaks qty × price = line_total, and must never go green. The header
+    chain is discount-aware, mirroring the receive flow's identity
+    subtotal + tax - discount = total."""
 
     def test_pink_ling_shape_flags(self):
         gt = _extraction()
@@ -1574,6 +1552,27 @@ class TestGroundTruthArithmetic:
         gt2 = _extraction(total_incl_tax=200.0)  # 100 + 15 ≠ 200
         out2 = spec_dojo._ground_truth_violations(gt2)
         assert any("total_incl_tax is 200.0" in v for v in out2)
+        # Lion 94793550: lines 1217.29 against a printed subtotal of 1212.35.
+        lion = _totals(1212.35, 182.59, 1399.88, lines=[{"line_total_ex_tax": 1217.29}])
+        assert any(
+            "subtotal_ex_tax" in v for v in spec_dojo._ground_truth_violations(lion)
+        )
+
+    def test_discount_is_subtracted_from_the_total_identity(self):
+        # subtotal 1000 + tax 150 - discount 100 == total 1050 → reconciles.
+        # (Without discount-awareness this would falsely flag 1150 != 1050.)
+        assert (
+            spec_dojo._ground_truth_violations(
+                _totals(1000.0, 150.0, 1050.0, discount=100.0)
+            )
+            == []
+        )
+
+    def test_a_discount_does_not_excuse_a_total_that_does_not_reconcile(self):
+        out = spec_dojo._ground_truth_violations(
+            _totals(1212.35, 182.59, 1399.88, discount=156.38)
+        )
+        assert any("total_incl_tax" in v for v in out)
 
     def test_none_operands_skip(self):
         gt = _extraction()
@@ -1628,26 +1627,53 @@ class TestGroundTruthArithmetic:
         assert (spec.instructions or "") == ""  # nothing written
 
 
+class TestSampleStatus:
+    """The dojo verdict folds in the document's own arithmetic. A sample that
+    matches its stored baseline but whose totals don't add up is not a clean
+    pass — that is how a broken invoice (Lion 94793550: lines 1217.29 vs a
+    subtotal of 1212.35) used to slip through as "PASS"."""
+
+    def test_no_baseline_is_new(self):
+        assert spec_dojo._sample_status(None, [], _totals(1000.0, 150.0, 1150.0)) == (
+            "new"
+        )
+
+    def test_baseline_mismatch_fails(self):
+        assert (
+            spec_dojo._sample_status(
+                {}, [{"field": "x"}], _totals(1000.0, 150.0, 1150.0)
+            )
+            == "fail"
+        )
+
+    def test_clean_and_reconciling_passes(self):
+        assert spec_dojo._sample_status({}, [], _totals(1000.0, 150.0, 1150.0)) == (
+            "pass"
+        )
+
+    def test_clean_but_not_reconciling_fails(self):
+        # Matches the baseline yet the arithmetic is broken → not a pass.
+        assert (
+            spec_dojo._sample_status({}, [], _totals(1212.35, 182.59, 1399.88))
+            == "fail"
+        )
+
+
 class TestSenseiHandler:
     """spec_dojo.train_supplier (the sensei; was the engine tool
     norm.sensei_train_supplier until Oct 2026): the once-per-supplier guard and
     the analysis-outcome mapping (trained / no_spec_needed / pending_review)."""
 
     def _call(self, db_session, monkeypatch, supplier="Sensei Foods"):
-        from app.db import engine as engine_mod
-
-        monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", lambda: db_session)
-        monkeypatch.setattr(db_session, "close", lambda: None)
+        bind_sessions(monkeypatch, db_session, "_ConfigSessionLocal")
         return spec_dojo.train_supplier(db_session, "v1", "inv-s1", supplier)
 
-    def test_skips_when_spec_has_instructions(self, db_session, monkeypatch):
-        _make_spec(db_session, "Sensei Foods")  # instructions "notes"
+    def test_skips_a_spec_with_instructions_or_a_sample(self, db_session, monkeypatch):
+        spec = _make_spec(db_session, "Sensei Foods")  # instructions "notes"
         out = self._call(db_session, monkeypatch)
         assert out["status"] == "skipped"
         assert "instructions" in out["reason"]
-
-    def test_skips_when_spec_already_has_a_sample(self, db_session, monkeypatch):
-        spec = _make_spec(db_session, "Sensei Foods")
+        # No instructions, but a sample already filed: also done.
         spec.instructions = ""
         db_session.add(
             SupplierSpecSample(spec_id=spec.id, label="s.pdf", pdf_bytes=b"%P")
@@ -1845,24 +1871,19 @@ class TestReplicaStage:
         run2 = db_session.get(type(s), s.id).last_run
         assert run2.get("replica") == {"replica": True, "lines": []}
 
-    def test_errored_replica_not_counted_as_scored(self, db_session):
+    def test_meta_scores_only_a_built_replica_and_counts_its_warnings(self, db_session):
         from app.routers.supplier_spec_dojo import _sample_meta
 
         spec = _make_spec(db_session, name="Errored Foods")
         s = self._sample_with_venue(db_session, spec)
+        # An errored replica is not counted as scored.
         s.last_run = {
             "replica": {"replica": True, "error": "boom", "lines": []},
             "replica_diffs": [],
         }
         db_session.flush()
-        meta = _sample_meta(s)
-        assert meta["has_replica"] is False
-
-    def test_replica_warning_count_in_meta(self, db_session):
-        from app.routers.supplier_spec_dojo import _sample_meta
-
-        spec = _make_spec(db_session, name="Warned Foods")
-        s = self._sample_with_venue(db_session, spec)
+        assert _sample_meta(s)["has_replica"] is False
+        # A built one is, with its warnings counted.
         s.last_run = {
             "replica": {"replica": True, "warnings": ["dup", "credit"], "lines": []},
             "replica_diffs": [],
@@ -1930,8 +1951,6 @@ class TestEnvVenueResolution:
     def test_staging_stamps_the_company_id(self, db_session, monkeypatch):
         """stage_invoice_sample must record the venue's Loaded company at
         filing time — without it the sample is forever env-locked."""
-        import app.db.engine as engine_mod
-        import app.services.received_invoice as RI
         from app.db.models import Connection
         from tests.conftest import _make_venue
 
@@ -1946,26 +1965,8 @@ class TestEnvVenueResolution:
         )
         db_session.flush()
 
-        class FakeLoadedClient:
-            def __init__(self, db, config_db, venue_id):
-                pass
-
-            def invoice(self, invoice_id):
-                return {
-                    "id": invoice_id,
-                    "supplierName": "Stamp Foods",
-                    "referenceNumber": "INV-77",
-                    "fileId": "file-1",
-                }
-
-            def file_base64(self, file_id):
-                import base64
-
-                return base64.b64encode(b"%PDF-stamp").decode(), "application/pdf"
-
-        monkeypatch.setattr(RI, "LoadedInvoiceClient", FakeLoadedClient)
-        monkeypatch.setattr(engine_mod, "_ConfigSessionLocal", lambda: db_session)
-        monkeypatch.setattr(db_session, "close", lambda: None)
+        install_fake_loaded(monkeypatch, supplier="Stamp Foods", reference="INV-77")
+        bind_sessions(monkeypatch, db_session, "_ConfigSessionLocal")
         staged = spec_dojo.stage_invoice_sample(db_session, v.id, "inv-77", draft=False)
         s = db_session.get(SupplierSpecSample, staged["sample_id"])
         assert s.source_company_id == "co-stamp"
@@ -2096,6 +2097,53 @@ class TestInterruptedAnalysis:
         assert _sample_meta(sample)["analysis_status"] == "failed"
 
 
+def _iso_ago(seconds: float) -> str:
+    import datetime as dt
+
+    return (
+        dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=seconds)
+    ).isoformat()
+
+
+class TestAnalysisViewOfTheQueue:
+    """analysis_view never lies about the durable sensei queue's states
+    (queued, heartbeat) — the legacy ``at`` rule is TestInterruptedAnalysis."""
+
+    def test_fresh_queued_passes_through(self):
+        v = spec_dojo.analysis_view({"status": "queued", "queued_at": _iso_ago(10)})
+        assert v["status"] == "queued"
+
+    def test_abandoned_queued_reports_the_real_problem(self):
+        from app.services import sensei_runner
+
+        v = spec_dojo.analysis_view(
+            {
+                "status": "queued",
+                "queued_at": _iso_ago(sensei_runner.QUEUED_ABANDONED_SECONDS + 60),
+                "queued_env": "production",
+            }
+        )
+        assert v["status"] == "failed"
+        assert "production" in v["error"]
+
+    def test_running_with_live_heartbeat_is_running(self):
+        v = spec_dojo.analysis_view(
+            {"status": "running", "heartbeat_at": _iso_ago(5), "phase": "asking"}
+        )
+        assert v["status"] == "running" and not v.get("stale")
+
+    def test_running_with_dead_heartbeat_is_marked_stale(self):
+        from app.services import sensei_runner
+
+        v = spec_dojo.analysis_view(
+            {
+                "status": "running",
+                "heartbeat_at": _iso_ago(sensei_runner.HEARTBEAT_STALE_SECONDS + 30),
+            }
+        )
+        assert v["status"] == "running" and v["stale"] is True
+
+
 class TestAutostudyTrigger:
     """The Receive Invoice screen's auto-spec trigger
     (``spec_dojo.autostudy_if_spec_less``): study a supplier that has no
@@ -2144,16 +2192,13 @@ class TestAutostudyTrigger:
         assert calls["staged"] == [("v1", "inv-9")]
         assert calls["enqueued"] == ["sample-inv-9"]
         assert review["sensei_studying"] is True
-
-    def test_an_empty_holder_spec_is_still_studied(self, db_session, monkeypatch):
         # A spec ROW with no instructions (a study still in flight, or a failed
         # one) is NOT "done": the gate checks content, not row existence, so a
         # missing/empty spec always studies again.
         self._spec(db_session, "Holder", instructions="")
-        calls = self._record(monkeypatch)
         review = {"supplier_name": "Holder"}
         spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-2", review)
-        assert calls["staged"] == [("v1", "inv-2")]
+        assert calls["staged"][-1] == ("v1", "inv-2")
         assert review["sensei_studying"] is True
 
     def test_no_supplier_name_is_a_noop(self, db_session, monkeypatch):

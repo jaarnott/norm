@@ -11,14 +11,9 @@ fix_invoices passthrough that drives the working-document fan-out.
 
 import pathlib
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
+from tests import consolidator_harness as harness
 
-FUNCTION_CODE = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "review_and_receive_invoices.py"
-).read_text(encoding="utf-8")
+FUNCTION_CODE = harness.source("review_and_receive_invoices")
 
 
 class Api:
@@ -45,11 +40,9 @@ class Api:
 
 
 def run_consolidator(api: Api, **params):
-    namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(FUNCTION_CODE, namespace)  # noqa: S102 — the real sandbox namespace
     defaults = {"today": "2026-08-10", "venue": "Bessie", "mode": "approve_fixes"}
     defaults.update(params)
-    return namespace["run"](defaults, api.call_api, lambda m: None)
+    return harness.call(FUNCTION_CODE, defaults, api.call_api)
 
 
 def _verdict(**over):
@@ -69,28 +62,29 @@ def _verdict(**over):
 
 class TestRequestPlumbing:
     def test_one_call_with_window_and_policy(self):
+        """Folded in: with no period there is no resolve_dates call (the one
+        call is the review), and autopilot sets auto_submit."""
         api = Api()
-        run_consolidator(api, mode="autopilot")
+        out = run_consolidator(api, mode="autopilot")
         assert len(api.calls) == 1
         req = api.calls[0][2]
         assert req["venue"] == "Bessie"
         assert req["mode"] == "autopilot"
-        assert req["from_date"] == "2026-06-11"  # today - 60d
+        assert req["from_date"] == "2026-06-11"  # today (10 Aug) - 60 days
         assert req["to_date"] == "2026-08-10"
         assert "max_sensei" not in req  # every new supplier is studied
         assert req["require_valid_po"] is True
+        assert out["auto_submit"] is True
 
-    def test_explicit_window_wins(self):
+    def test_explicit_window_and_po_policy_pass_through(self):
         api = Api()
-        run_consolidator(api, from_date="2026-08-01", to_date="2026-08-05")
+        run_consolidator(
+            api, from_date="2026-08-01", to_date="2026-08-05", require_valid_po=False
+        )
         req = api.calls[0][2]
         assert req["from_date"] == "2026-08-01"
         assert req["to_date"] == "2026-08-05"
-
-    def test_require_valid_po_false_passes_through(self):
-        api = Api()
-        run_consolidator(api, require_valid_po=False)
-        assert api.calls[0][2]["require_valid_po"] is False
+        assert req["require_valid_po"] is False
 
     def test_an_unset_personal_mode_lets_the_venue_decide(self):
         """Receiving is the venue's setting now. Substituting approve_all here
@@ -123,11 +117,6 @@ class TestRequestPlumbing:
         out = run_consolidator(api, mode="autopilot")
         assert out["dry_run"] is False
 
-    def test_autopilot_sets_auto_submit(self):
-        api = Api()
-        out = run_consolidator(api, mode="autopilot")
-        assert out["auto_submit"] is True
-
 
 class TestSingleInvoiceMode:
     def test_reviews_one_invoice_present_only(self):
@@ -152,16 +141,6 @@ class TestReportsTheAppliedMode:
         assert out["auto_submit"] is True and out["mode_unset"] is False
         # The person's own setting since Oct 2026 (it was the venue's).
         assert "person's own setting" in out["mode_source"]
-
-    def test_a_missing_total_reads_as_a_dash(self):
-        api = Api(
-            response={
-                "cards": [],
-                "skipped": [_verdict(total=None, outcome="review failed")],
-            }
-        )
-        out = run_consolidator(api)
-        assert out["skipped"][0]["total"] == "—"
 
 
 class TestReporting:
@@ -241,16 +220,19 @@ class TestReporting:
         assert row["checks"] == "1 blocking ✗ 3 suggested"
         assert row["reasons"] == "unit can't be determined"
 
-    def test_missing_reference_number_labelled(self):
+    def test_missing_fields_are_labelled(self):
+        # A missing reference number and a missing total (consolidator review,
+        # 1 Oct 2026) each read as something, never a blank or "None".
         api = Api(
             {
                 "cards": [],
                 "received": [_verdict(reference_number=None, outcome="received")],
-                "skipped": [],
+                "skipped": [_verdict(total=None, outcome="review failed")],
             }
         )
         out = run_consolidator(api)
         assert out["received"][0]["reference_number"] == "(no number)"
+        assert out["skipped"][0]["total"] == "—"
 
     def test_sensei_runs_logged(self):
         api = Api(
@@ -262,12 +244,11 @@ class TestReporting:
             }
         )
         logs = []
-        namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(FUNCTION_CODE, namespace)  # noqa: S102
-        namespace["run"](
+        harness.call(
+            FUNCTION_CODE,
             {"today": "2026-08-10", "venue": "Bessie", "mode": "approve_fixes"},
             api.call_api,
-            logs.append,
+            log=logs.append,
         )
         assert any("sensei" in m and "Harbour Fish" in m for m in logs)
 
@@ -348,6 +329,9 @@ class TestSyncConfigContract:
             "fix_invoices"
         )
         assert "receive_invoice" in mod.RETIRED_ACTIONS
+        # The batch tool declares invoice_id (TestReceiveOneFoldedIn).
+        assert "invoice_id" in mod.CONSOLIDATOR_TOOL["optional_fields"]
+        assert "never received" in mod.CONSOLIDATOR_TOOL["description"]
 
 
 class TestPeriodResolution:
@@ -367,13 +351,6 @@ class TestPeriodResolution:
         # (it used to be included: consolidator review, 1 Oct 2026)
         assert req["to_date"] == "2026-07-31"
 
-    def test_no_period_keeps_the_sixty_day_default(self):
-        api = Api()
-        run_consolidator(api)
-        req = next(p for (_c, a, p) in api.calls if a == "review_invoices")
-        assert req["from_date"] == "2026-06-11"  # today (10 Aug) - 60 days
-        assert not [c for c in api.calls if c[1] == "resolve_dates"]
-
 
 class TestReceiveOneFoldedIn:
     """receive_loadedhub_invoice folded into review_and_receive_invoices
@@ -390,12 +367,6 @@ class TestReceiveOneFoldedIn:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
-
-    def test_the_batch_tool_declares_invoice_id(self):
-        cfg = self._script("sync_invoice_receiving_config")
-        tool = cfg.CONSOLIDATOR_TOOL
-        assert "invoice_id" in tool["optional_fields"]
-        assert "never received" in tool["description"]
 
     def test_no_installer_re_adds_or_claims_the_old_tool(self):
         cfg = self._script("sync_invoice_receiving_config")

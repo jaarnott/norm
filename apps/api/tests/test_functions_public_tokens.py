@@ -8,7 +8,7 @@ import datetime as dt
 import pytest
 
 from app.config import settings
-from app.db.functions_models import FnPortalAccess, FnPortalSession, FnPublicToken
+from app.db.functions_models import FnPortalAccess, FnPublicToken
 from app.db.models import _now
 from app.services.functions import NotFound, NotLive, enquiries, events, public_tokens
 from app.services.functions.ctx import for_quote
@@ -147,21 +147,8 @@ class TestResolving:
         assert new != old
         assert public_tokens.resolve(w.db, new, "quote") is not None
 
-    def test_revoking_a_portal_link_ends_its_sessions(self, w):
-        event = _event(w)
-        public_tokens.mint_portal_link(w.db, w.ctx(), event.id, ["pat@example.com"])
-        session = FnPortalSession(
-            organization_id=w.org.id,
-            session_hash="h" * 64,
-            event_id=event.id,
-            email="pat@example.com",
-            expires_at=_now() + dt.timedelta(days=1),
-        )
-        w.db.add(session)
-        w.db.flush()
-        public_tokens.revoke(w.db, w.ctx(), event_id=event.id)
-        w.db.refresh(session)
-        assert session.revoked_at is not None
+    # Revoking a portal link ends its sessions: test_functions_public_links.py
+    # TestRevokingLinks (a real signed-in session, through the staff route).
 
     def test_a_rotated_key_issues_a_new_link_and_keeps_the_old_one(
         self, w, monkeypatch

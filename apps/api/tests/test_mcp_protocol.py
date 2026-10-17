@@ -1,12 +1,21 @@
-"""MCP wire format and JSON-RPC dispatch.
+"""MCP wire format, JSON-RPC dispatch, and the HTTP transport (POST /mcp).
 
-Pure tests — no DB, no HTTP. The round-trip tests are the load-bearing ones:
-Norm is about to sit on both ends of the MCP wire, and the single most valuable
-guarantee is that what our server emits, our own client can parse.
+The wire-format and dispatch tests are pure — no DB, no HTTP. The round-trip
+tests are the load-bearing ones: Norm is about to sit on both ends of the MCP
+wire, and the single most valuable guarantee is that what our server emits,
+our own client can parse.
+
+The transport tests at the end cover what the pure dispatch tests can't:
+raw-body parsing, status codes, the MCP_ENABLED gate, the root mount, and the
+401 challenge. The 401 tests are load-bearing. `WWW-Authenticate: ...
+resource_metadata=...` is how claude.ai discovers the authorization server;
+without it the connector cannot be added at all, and nothing else would
+notice.
 """
 
 import pytest
 
+from app.config import settings
 from app.connectors.mcp_executor import _parse_mcp_response
 from app.connectors.mcp_protocol import (
     INTERNAL_ERROR,
@@ -22,6 +31,7 @@ from app.connectors.mcp_protocol import (
     text_content,
     tools_call_result,
 )
+from app.mcp.principal import McpPrincipal
 from app.mcp.server import (
     LATEST_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -139,18 +149,6 @@ class TestDispatchInitialize:
         assert "io.modelcontextprotocol/ui" in caps["extensions"]
         assert "prompts" not in caps
 
-    def test_instructions_carry_the_date_authority(self):
-        from app.config import settings
-        from app.services.business_calendar import humanize_hhmm
-
-        r = handle_jsonrpc(jsonrpc_request("initialize"), McpContext())
-        instructions = r["result"]["instructions"]
-        # Derived from config, not pinned to a literal — the old test asserted
-        # "7:00am Monday", which would keep passing while the configured start
-        # moved and the text quietly lied to the client.
-        assert humanize_hhmm(settings.BUSINESS_DAY_START) in instructions
-        assert "Monday" in instructions
-
     def test_instructions_name_the_tool_as_it_actually_projects(self):
         """It used to say `resolve_dates`; the tool is `norm__resolve_dates`.
         Guidance pointing at a name absent from tools/list is guidance the
@@ -164,8 +162,20 @@ class TestDispatchInitialize:
         )
 
     def test_instructions_follow_the_configured_day_start(self, monkeypatch):
-        """The regression the literal pin could not catch."""
+        """The instructions carry the date authority, derived from config — and
+        follow it when it moves: the regression the literal pin could not
+        catch."""
         from app.config import settings
+        from app.services.business_calendar import humanize_hhmm
+
+        instructions = handle_jsonrpc(jsonrpc_request("initialize"), McpContext())[
+            "result"
+        ]["instructions"]
+        # Derived from config, not pinned to a literal — the old test asserted
+        # "7:00am Monday", which would keep passing while the configured start
+        # moved and the text quietly lied to the client.
+        assert humanize_hhmm(settings.BUSINESS_DAY_START) in instructions
+        assert "Monday" in instructions
 
         monkeypatch.setattr(settings, "BUSINESS_DAY_START", "05:30")
         instructions = handle_jsonrpc(jsonrpc_request("initialize"), McpContext())[
@@ -209,6 +219,11 @@ class TestDispatchErrors:
         assert r["id"] == 42
 
     def test_unhandled_exception_leaks_nothing(self):
+        """Dispatch never raises, and the error it returns leaks nothing.
+
+        An exception escaping here would surface as a 500 with an HTML body,
+        which no MCP client can parse."""
+
         class Exploding(McpContext):
             def list_tools(self):
                 raise RuntimeError("connection string: postgres://user:hunter2@host")
@@ -217,15 +232,6 @@ class TestDispatchErrors:
         assert r["error"]["code"] == INTERNAL_ERROR
         assert "hunter2" not in str(r)
         assert "postgres" not in str(r)
-
-    def test_dispatch_never_raises(self):
-        class Exploding(McpContext):
-            def list_tools(self):
-                raise RuntimeError("boom")
-
-        # An exception escaping here would surface as a 500 with an HTML body,
-        # which no MCP client can parse.
-        assert handle_jsonrpc(jsonrpc_request("tools/list"), Exploding()) is not None
 
 
 class TestDispatchNotifications:
@@ -306,3 +312,167 @@ class TestErrorCodes:
             -32601,
         )
         assert (INVALID_PARAMS, INTERNAL_ERROR) == (-32602, -32603)
+
+
+# ── HTTP transport — POST /mcp ───────────────────────────────────────────
+
+AUTH = {"Authorization": "Bearer test-token"}
+
+
+@pytest.fixture()
+def mcp_on(monkeypatch):
+    """Enable the MCP surface and stub auth for one test.
+
+    settings is an lru_cache'd singleton, so mutate and restore rather than
+    rebuilding it. Auth is stubbed at resolve_principal so these tests stay
+    about transport; the real resolution is covered elsewhere.
+    """
+    previous = settings.MCP_ENABLED
+    settings.MCP_ENABLED = True
+
+    principal = McpPrincipal(
+        user_id="u1",
+        organization_id="org1",
+        venue_ids=(),
+        scopes=frozenset(),
+        client_id="test",
+    )
+    monkeypatch.setattr(
+        "app.routers.mcp.resolve_principal", lambda token, db: principal
+    )
+    # No tools — transport tests must not depend on config rows.
+    monkeypatch.setattr("app.mcp.execution.project_tools", lambda *a, **k: [])
+    yield principal
+    settings.MCP_ENABLED = previous
+
+
+@pytest.fixture()
+def mcp_no_auth(monkeypatch):
+    """MCP enabled, auth left real, so the 401 path is exercised."""
+    previous = settings.MCP_ENABLED
+    settings.MCP_ENABLED = True
+    yield
+    settings.MCP_ENABLED = previous
+
+
+def _rpc(client, method, params=None, rpc_id=1):
+    body = {"jsonrpc": "2.0", "id": rpc_id, "method": method}
+    if params is not None:
+        body["params"] = params
+    return client.post("/mcp", json=body, headers=AUTH)
+
+
+class TestEnabledGate:
+    def test_disabled_by_default(self, client):
+        """Off unless deliberately switched on — it must not appear by accident."""
+        assert settings.MCP_ENABLED is False
+        assert _rpc(client, "ping").status_code == 404
+
+    def test_disabled_gate_precedes_auth(self, client):
+        """404, not 401 — a disabled surface must not advertise that it exists."""
+        assert (
+            client.post("/mcp", json={"jsonrpc": "2.0", "method": "ping"}).status_code
+            == 404
+        )
+
+
+class TestAuthChallenge:
+    def test_401_carries_the_header_claude_needs_to_find_the_as(
+        self, client, mcp_no_auth
+    ):
+        """Without resource_metadata, claude.ai cannot discover the
+        authorization server and the connector cannot be added."""
+        r = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        challenge = r.headers["WWW-Authenticate"]
+        assert challenge.startswith("Bearer ")
+        assert "resource_metadata=" in challenge
+        assert "/.well-known/oauth-protected-resource" in challenge
+
+    def test_bad_token_is_401(self, client, mcp_no_auth):
+        r = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={"Authorization": "Bearer nope"},
+        )
+        assert r.status_code == 401
+
+    def test_malformed_authorization_header_is_401(self, client, mcp_no_auth):
+        r = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={"Authorization": "Basic abc123"},
+        )
+        assert r.status_code == 401
+
+    def test_auth_failure_is_http_not_jsonrpc(self, client, mcp_no_auth):
+        """No token: a transport-level auth failure must be a real 401 so the
+        client re-authenticates. Wrapped in a 200 JSON-RPC error it would look like a
+        tool problem and the client would never re-auth."""
+        r = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        assert r.status_code == 401
+        assert "jsonrpc" not in r.json()
+
+
+class TestTransport:
+    def test_mounted_at_root_not_under_api(self, client, mcp_on):
+        assert _rpc(client, "ping").status_code == 200
+        assert client.post("/api/mcp", json={}).status_code == 404
+
+    def test_malformed_body_is_a_jsonrpc_parse_error(self, client, mcp_on):
+        """Not FastAPI's 422 — a client that can't parse the error can't recover."""
+        r = client.post(
+            "/mcp",
+            content=b"{",
+            headers={"Content-Type": "application/json", **AUTH},
+        )
+        assert r.status_code == 200
+        assert r.json()["error"]["code"] == PARSE_ERROR
+
+    def test_notification_gets_202_and_empty_body(self, client, mcp_on):
+        r = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers=AUTH,
+        )
+        assert r.status_code == 202
+        assert r.content == b""
+
+    @pytest.mark.parametrize("verb", ["get", "delete"])
+    def test_no_sse_or_sessions(self, client, mcp_on, verb):
+        """405 so clients skip the SSE/session probes cleanly rather than
+        interpreting a 404 as 'server missing'."""
+        r = getattr(client, verb)("/mcp")
+        assert r.status_code == 405
+        assert r.headers["Allow"] == "POST"
+
+
+class TestHandshake:
+    def test_full_handshake(self, client, mcp_on):
+        init = _rpc(
+            client,
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "pytest", "version": "0"},
+            },
+        ).json()["result"]
+
+        assert init["protocolVersion"] == "2025-06-18"
+        assert init["capabilities"]["tools"] == {"listChanged": False}
+        assert init["capabilities"]["resources"] == {"listChanged": False}
+        assert init["serverInfo"]["name"] == "norm"
+        assert "resolve_dates" in init["instructions"]
+
+        assert (
+            client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                headers=AUTH,
+            ).status_code
+            == 202
+        )
+
+        tools = _rpc(client, "tools/list").json()["result"]
+        assert tools["tools"] == []
+        assert "nextCursor" not in tools

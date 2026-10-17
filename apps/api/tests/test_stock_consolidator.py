@@ -20,12 +20,9 @@ verified Loaded fact:
   counted in Each is 24x understated without it).
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-_DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-CODE = (_DIR / "get_stock.py").read_text()
+CODE = harness.source("get_stock")
 
 BEV = "a134765a-0000-4000-8000-000000000001"
 FOOD = "665a5818-0000-4000-8000-000000000002"
@@ -377,25 +374,21 @@ class Api:
 
 
 def run(api, **params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(CODE, ns)
-    return ns["run"](
-        {
+    return harness.run(
+        CODE,
+        api,
+        **{
             "venue": "La Zeppa",
             "today": "2026-09-24",
             "today_iso": "2026-09-24T00:00:00%2B12:00",
             **params,
         },
-        api.call_api,
-        lambda m: None,
-        api.call_api_parallel,
     )
 
 
 class TestViews:
-    def test_default_view_is_items(self):
-        out = run(Api(), query="jim beam")
-        assert out["total_matches"] == 2
+    # The default view (items) is what TestItems::
+    # test_query_returns_slim_matches_only runs on.
 
     def test_unknown_view_is_refused_without_fetching(self):
         api = Api()
@@ -406,6 +399,10 @@ class TestViews:
 
 class TestItems:
     def test_query_returns_slim_matches_only(self):
+        """No view given: items is the default. A filtered list keeps the
+        group name — 'Eggs -> Dairy' was a real decision in the bulk-tender
+        thread (TestABulkJobReadsInTwoCalls), so group has to be available
+        when asked."""
         out = run(Api(), query="jim beam")
         assert out["total_matches"] == 2 and out["shown"] == 2
         assert [m["name"] for m in out["matches"]] == [
@@ -413,6 +410,7 @@ class TestItems:
             "JIM BEAM WHITE 37%",
         ]
         assert "item" not in out
+        assert all(r.get("group") == "Spirits" for r in out["matches"])
 
     def test_unambiguous_query_carries_the_summary_in_four_calls(self):
         api = Api()
@@ -432,6 +430,10 @@ class TestItems:
         out = run(Api(), item_id="i-jbb")
         assert out["item"]["minimum_stock_unit"] == "Litre"
         assert out["item"]["minimum_stock_on_hand"] == 1.2
+        # item_id still wins for a single edit: the bulk path (item_ids) must
+        # not hijack the single-item path every one-off edit uses
+        assert out["item"]["name"] == "JIM BEAM BLACK"
+        assert "items" not in out
 
     def test_item_id_summary_carries_names_never_uuids(self):
         out = run(Api(), item_id="i-asahi")
@@ -461,9 +463,13 @@ class TestItems:
         assert "error" in out
 
     def test_bare_list_carries_the_steering_note_and_limit(self):
+        """A truncated list says so: silent truncation would have the model
+        match names against a partial catalogue and call the rest missing."""
         out = run(Api(), limit=2)
         assert out["shown"] == 2 and out["total_matches"] == 5
         assert "query" in out["note"]
+        assert "truncated" in out
+        assert "groups=" in out["truncated"]
 
 
 class TestOnHandByItem:
@@ -474,12 +480,11 @@ class TestOnHandByItem:
         assert out["quantity_on_hand"] == 2.8 and out["counting_unit"] == "Litre"
         assert out["value_on_hand"] == 117.712
         assert out["template"] == "Beverage" and out["as_of"] == "2026-09-24"
+        # only the category template: the area template "BEVERAGE - CELLAR"
+        # (listed first, so a substring match would take it) is never read
         assert [p["template_id"] for p in api.soh_calls()] == [BEV]
-
-    def test_area_templates_are_never_taken(self):
-        api = Api()
-        run(api, view="on_hand", item_id="i-jbb")
-        assert "t-cellar" not in [p["template_id"] for p in api.soh_calls()]
+        # the default as-of is the engine's today_iso
+        assert api.soh_calls()[0]["report_datetime"] == "2026-09-24T00:00:00%2B12:00"
 
     def test_food_is_not_staff_food(self):
         api = Api()
@@ -491,11 +496,6 @@ class TestOnHandByItem:
         out = run(Api(), view="on_hand", item_id="i-nap")
         assert out["quantity_on_hand"] == 0 and out["template"] == "Other Stock"
 
-    def test_default_as_of_is_the_engines_today_iso(self):
-        api = Api()
-        run(api, view="on_hand", item_id="i-jbb")
-        assert api.soh_calls()[0]["report_datetime"] == "2026-09-24T00:00:00%2B12:00"
-
     def test_a_bare_as_of_date_keeps_the_venues_offset(self):
         api = Api()
         out = run(api, view="on_hand", item_id="i-jbb", as_of="2026-09-01")
@@ -503,10 +503,12 @@ class TestOnHandByItem:
         assert out["as_of"] == "2026-09-01"
 
     def test_a_slow_report_is_retried_once(self):
+        """...and that, the heaviest path, still fits the budget."""
         api = Api(soh_failures=1)
         out = run(api, view="on_hand", item_id="i-jbb")
         assert out["quantity_on_hand"] == 2.8
         assert len(api.soh_calls()) == 2
+        assert len(api.calls) == 5  # item + groups + templates + report + retry
 
     def test_a_loaded_failure_is_never_reported_as_not_counted(self):
         api = Api(soh_failures=2)
@@ -526,11 +528,6 @@ class TestOnHandByItem:
             SOH[OTHER].pop()
             SOH[OTHER].insert(0, removed)
         assert "isn't counted" in out["error"]
-
-    def test_heaviest_path_fits_the_budget(self):
-        api = Api(soh_failures=1)
-        run(api, view="on_hand", item_id="i-jbb")
-        assert len(api.calls) == 5  # item + groups + templates + report + retry
 
 
 class TestOnHandByTemplate:
@@ -679,7 +676,10 @@ class TestABulkJobReadsInTwoCalls:
 
     def test_many_ids_come_back_in_one_call(self):
         """Fails if item_ids is dropped and the model is pushed back to one
-        detail call per item."""
+        detail call per item.
+
+        Also fails if the model is told to keep paging after the last page —
+        it would loop asking for an empty list."""
         api = Api()
         out = run(api, item_ids=["i-jbb", "i-asahi"])
         assert [i["name"] for i in out["items"]] == [
@@ -688,6 +688,7 @@ class TestABulkJobReadsInTwoCalls:
         ]
         assert out["shown"] == 2
         assert api.actions().count("get_stock_item_full") == 2
+        assert "remaining" not in out
 
     def test_a_page_stays_inside_the_sandbox_api_budget(self):
         """Fails if a bulk read can exceed max_api_calls (8) and abort.
@@ -733,12 +734,6 @@ class TestABulkJobReadsInTwoCalls:
         assert out["remaining"] == ids[5:]
         assert "remaining" in out["note"]
 
-    def test_a_page_that_finishes_the_list_says_nothing_about_remaining(self):
-        """Fails if the model is told to keep paging after the last page —
-        it would loop asking for an empty list."""
-        out = run(Api(), item_ids=["i-jbb", "i-asahi"])
-        assert "remaining" not in out
-
     def test_full_detail_is_available_in_bulk(self):
         out = run(Api(), item_ids=["i-jbb"], detail="full")
         assert out["detail"] == "full"
@@ -778,13 +773,6 @@ class TestABulkJobReadsInTwoCalls:
         assert "502" in out["failed"]["i-asahi"]
         assert "never treat one as absent" in out["failed_note"]
 
-    def test_item_id_still_wins_for_a_single_edit(self):
-        """Fails if the bulk path hijacks the single-item path that every
-        one-off edit uses."""
-        out = run(Api(), item_id="i-jbb")
-        assert out["item"]["name"] == "JIM BEAM BLACK"
-        assert "items" not in out
-
 
 class TestTheCatalogueFitsInOneCall:
     def test_an_unfiltered_list_drops_the_group_ids(self):
@@ -794,12 +782,18 @@ class TestTheCatalogueFitsInOneCall:
         the list is 121,087 chars and blows max_result_chars (80,000), so it is
         stashed and the only way to find an id is a name search. Without them
         the same list is 61,219 chars and fits.
+
+        Also fails if the scan note still tells a bulk job to look up one item
+        at a time — the instruction that produced 18 searches for 60 names.
         """
         out = run(Api(), limit=500)
         assert out["matches"], "no rows returned"
         for row in out["matches"]:
             assert set(row) <= {"id", "name", "group"}
             assert "groupId" not in row
+        note = out["note"]
+        assert "item_ids" in note
+        assert "misses" in note
 
     def test_a_big_catalogue_sheds_the_group_names_too(self):
         """Fails if the size branch never fires.
@@ -830,12 +824,6 @@ class TestTheCatalogueFitsInOneCall:
         for row in out["matches"]:
             assert set(row) == {"id", "name"}, f"group rode along on {row}"
 
-    def test_a_filtered_list_keeps_the_group_name(self):
-        """Fails if narrowing loses the group — 'Eggs -> Dairy' was a real
-        decision in that thread, so group has to be available when asked."""
-        out = run(Api(), query="jim beam")
-        assert all(r.get("group") == "Spirits" for r in out["matches"])
-
     def test_groups_narrows_the_catalogue(self):
         """Fails if the only way to scan a venue too big for one call
         disappears."""
@@ -845,23 +833,6 @@ class TestTheCatalogueFitsInOneCall:
             "JIM BEAM BLACK",
             "JIM BEAM WHITE 37%",
         }
-
-    def test_a_truncated_list_says_so(self):
-        """Fails if truncation is silent: the model would match names against
-        a partial catalogue and call the rest missing."""
-        out = run(Api(), limit=2)
-        assert out["shown"] == 2
-        assert out["total_matches"] > 2
-        assert "truncated" in out
-        assert "groups=" in out["truncated"]
-
-    def test_the_scan_note_forbids_searching_name_by_name(self):
-        """Fails if the guidance still tells a bulk job to look up one item at
-        a time — the instruction that produced 18 searches for 60 names."""
-        out = run(Api(), limit=500)
-        note = out["note"]
-        assert "item_ids" in note
-        assert "misses" in note
 
 
 class TestReviewFixes:

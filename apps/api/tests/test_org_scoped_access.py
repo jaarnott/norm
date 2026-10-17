@@ -13,38 +13,19 @@ import uuid
 
 import pytest
 
-from app.auth.permissions import STANDARD_ROLES
-from app.auth.security import create_access_token
-from app.db.models import OrganizationMembership, Role, UserVenueAccess, Venue
+from app.db.models import OrganizationMembership, UserVenueAccess, Venue
 from tests.conftest import (
     _make_organization,
     _make_user,
     _make_venue,
     _make_venue_access,
 )
-
-
-def _auth(user):
-    return {"Authorization": f"Bearer {create_access_token({'sub': user.id})}"}
+from tests.org_helpers import auth_headers, seed_system_roles
 
 
 @pytest.fixture()
 def roles(db_session):
-    out = {}
-    for name, defn in STANDARD_ROLES.items():
-        role = Role(
-            id=str(uuid.uuid4()),
-            name=name,
-            display_name=defn["display_name"],
-            description=defn["description"],
-            is_system=True,
-            permissions=defn["permissions"],
-            organization_id=None,
-        )
-        db_session.add(role)
-        out[name] = role
-    db_session.flush()
-    return out
+    return seed_system_roles(db_session)
 
 
 def _member(db, user, org, role):
@@ -100,7 +81,7 @@ class TestEditingAVenue:
         r = client.put(
             f"/api/venues/{v.id}",
             json={"name": "Renamed", "timezone": "Europe/London"},
-            headers=_auth(two_orgs["member_a"]),
+            headers=auth_headers(two_orgs["member_a"]),
         )
         assert r.status_code == 403
         db_session.refresh(v)
@@ -113,7 +94,7 @@ class TestEditingAVenue:
         r = client.put(
             f"/api/venues/{v.id}",
             json={"name": "Hijacked"},
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 403
         db_session.refresh(v)
@@ -123,7 +104,7 @@ class TestEditingAVenue:
         r = client.put(
             f"/api/venues/{two_orgs['venue_a'].id}",
             json={"name": "A venue (new)", "timezone": "Pacific/Auckland"},
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 200, r.text
         assert r.json()["name"] == "A venue (new)"
@@ -138,7 +119,7 @@ class TestEditingAVenue:
         r = client.put(
             f"/api/venues/{two_orgs['venue_b'].id}",
             json={"name": "Nope"},
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 403
 
@@ -147,15 +128,18 @@ class TestEditingAVenue:
         r = client.put(
             f"/api/venues/{two_orgs['venue_b'].id}",
             json={"location": "Christchurch"},
-            headers=_auth(admin),
+            headers=auth_headers(admin),
         )
         assert r.status_code == 200
+        assert r.json()["location"] == "Christchurch"
 
 
 class TestTheOtherOrgScopedWrites:
     def test_cannot_delete_another_orgs_venue(self, client, db_session, two_orgs):
         v = two_orgs["venue_b"]
-        r = client.delete(f"/api/venues/{v.id}", headers=_auth(two_orgs["manager_a"]))
+        r = client.delete(
+            f"/api/venues/{v.id}", headers=auth_headers(two_orgs["manager_a"])
+        )
         assert r.status_code == 403
         assert db_session.get(Venue, v.id) is not None
 
@@ -163,7 +147,7 @@ class TestTheOtherOrgScopedWrites:
         r = client.post(
             f"/api/organizations/{two_orgs['b'].id}/venues",
             json={"name": "Planted"},
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 403
 
@@ -171,7 +155,7 @@ class TestTheOtherOrgScopedWrites:
         r = client.post(
             f"/api/organizations/{two_orgs['b'].id}/members",
             json={"user_id": two_orgs["manager_a"].id, "role": "owner"},
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 403
         assert (
@@ -186,7 +170,7 @@ class TestTheOtherOrgScopedWrites:
     def test_cannot_remove_another_orgs_member(self, client, two_orgs):
         r = client.delete(
             f"/api/organizations/{two_orgs['b'].id}/members/{two_orgs['manager_b'].id}",
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 403
 
@@ -194,7 +178,7 @@ class TestTheOtherOrgScopedWrites:
         r = client.put(
             f"/api/organizations/{two_orgs['b'].id}",
             json={"name": "Taken over"},
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 403
 
@@ -207,7 +191,7 @@ class TestVenueAccessGrants:
         r = client.put(
             f"/api/users/{me.id}/venues",
             json={"venue_ids": [two_orgs["venue_b"].id]},
-            headers=_auth(me),
+            headers=auth_headers(me),
         )
         assert r.status_code == 403
         assert db_session.query(UserVenueAccess).filter_by(user_id=me.id).count() == 0
@@ -216,7 +200,7 @@ class TestVenueAccessGrants:
         r = client.put(
             f"/api/users/{two_orgs['staff_b'].id}/venues",
             json={"venue_ids": []},
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 403
 
@@ -230,7 +214,7 @@ class TestVenueAccessGrants:
         r = client.put(
             f"/api/users/{both.id}/venues",
             json={"venue_ids": [two_orgs["venue_a"].id]},
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 200, r.text
         held = {
@@ -243,7 +227,7 @@ class TestVenueAccessGrants:
         r = client.put(
             f"/api/users/{two_orgs['member_a'].id}/venues",
             json={"venue_ids": [str(uuid.uuid4())]},
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 404
 
@@ -252,19 +236,21 @@ class TestReadsAcrossOrgs:
     def test_cannot_read_another_orgs_venue_connectors(self, client, two_orgs):
         r = client.get(
             f"/api/venues/{two_orgs['venue_b'].id}/connectors",
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 403
 
     def test_cannot_list_another_orgs_users_venues(self, client, two_orgs):
         r = client.get(
             f"/api/users/{two_orgs['staff_b'].id}/venues",
-            headers=_auth(two_orgs["manager_a"]),
+            headers=auth_headers(two_orgs["manager_a"]),
         )
         assert r.status_code == 403
 
     def test_own_org_member_and_self_still_work(self, client, two_orgs):
         manager = two_orgs["manager_a"]
         for target in (two_orgs["member_a"], manager):
-            r = client.get(f"/api/users/{target.id}/venues", headers=_auth(manager))
+            r = client.get(
+                f"/api/users/{target.id}/venues", headers=auth_headers(manager)
+            )
             assert r.status_code == 200

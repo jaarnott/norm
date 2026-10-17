@@ -17,60 +17,23 @@ from types import SimpleNamespace
 import pytest
 
 from app.auth.security import create_access_token
-from app.db.models import (
-    Connection,
-    Organization,
-    User,
-    UserVenueAccess,
-    Venue,
-    WorkingDocument,
-)
+from app.db.models import Connection, WorkingDocument
 from tests.conftest import _make_membership, _make_thread
-
-
-def _org(db, name):
-    o = Organization(id=str(uuid.uuid4()), name=name, slug=f"o-{uuid.uuid4().hex[:8]}")
-    db.add(o)
-    db.flush()
-    return o
-
-
-def _venue(db, name, org):
-    v = Venue(id=str(uuid.uuid4()), name=name, organization_id=org.id)
-    db.add(v)
-    db.flush()
-    return v
-
-
-def _user(db, role="user"):
-    u = User(
-        id=str(uuid.uuid4()),
-        email=f"u-{uuid.uuid4().hex[:8]}@x.com",
-        hashed_password="x",
-        full_name="U",
-        role=role,
-        is_active=True,
-    )
-    db.add(u)
-    db.flush()
-    return u
+from tests.org_helpers import grant_venue, make_org, make_user, make_venue
 
 
 @pytest.fixture()
 def world(db_session):
-    ours, rival = _org(db_session, "Ours"), _org(db_session, "Rival")
+    ours, rival = make_org(db_session, "Ours"), make_org(db_session, "Rival")
     w = SimpleNamespace(
         ours=ours,
         rival=rival,
-        mine=_venue(db_session, "Mine", ours),
-        theirs=_venue(db_session, "Theirs", rival),
-        user=_user(db_session),
+        mine=make_venue(db_session, "Mine", ours),
+        theirs=make_venue(db_session, "Theirs", rival),
+        user=make_user(db_session),
     )
     _make_membership(db_session, w.user, ours)
-    db_session.add(
-        UserVenueAccess(id=str(uuid.uuid4()), user_id=w.user.id, venue_id=w.mine.id)
-    )
-    db_session.flush()
+    grant_venue(db_session, w.user, w.mine)
     w.headers = {"Authorization": f"Bearer {create_access_token({'sub': w.user.id})}"}
     return w
 
@@ -303,7 +266,7 @@ class TestFromConnector:
         r = post(_make_thread(db_session, world.user))
         assert r.status_code == 200, r.text
         assert r.json()["thread_id"]
-        assert post(_make_thread(db_session, _user(db_session))).status_code == 404
+        assert post(_make_thread(db_session, make_user(db_session))).status_code == 404
 
 
 class TestDocumentAccess:
@@ -330,7 +293,9 @@ class TestDocumentAccess:
 
     def test_a_document_without_a_venue_is_its_threads(self, client, world, db_session):
         mine = _doc(db_session, thread=_make_thread(db_session, world.user))
-        theirs = _doc(db_session, thread=_make_thread(db_session, _user(db_session)))
+        theirs = _doc(
+            db_session, thread=_make_thread(db_session, make_user(db_session))
+        )
         assert (
             client.get(f"/api/working-documents/{mine.id}", headers=world.headers)
         ).status_code == 200
@@ -339,7 +304,7 @@ class TestDocumentAccess:
         ).status_code == 404
 
     def test_another_users_thread_lists_nothing(self, client, world, db_session):
-        thread = _make_thread(db_session, _user(db_session))
+        thread = _make_thread(db_session, make_user(db_session))
         r = client.get(
             f"/api/threads/{thread.id}/working-documents", headers=world.headers
         )
@@ -396,13 +361,8 @@ class TestMcpVenues:
         assert out.get("isError") and not ctx.seen
 
     def test_an_html_escaped_name_is_read_as_meant(self, db_session, world):
-        amp = _venue(db_session, "Freeman & Grey", world.ours)
-        db_session.add(
-            UserVenueAccess(
-                id=str(uuid.uuid4()), user_id=world.user.id, venue_id=amp.id
-            )
-        )
-        db_session.flush()
+        amp = make_venue(db_session, "Freeman & Grey", world.ours)
+        grant_venue(db_session, world.user, amp)
         ctx = self._ctx(db_session, world, [world.mine, amp])
         ctx.call_tool(
             "loadedhub__get_sales", {"venue": "Freeman &amp; Grey", "period": "today"}

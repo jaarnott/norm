@@ -37,6 +37,9 @@ cd apps/api && uv run ruff check app/ && uv run pytest tests/ -q
 cd apps/web && pnpm lint && pnpm exec tsc --noEmit && pnpm test
 ```
 
+Locally, point the API suite at its own database (`DATABASE_URL=…/norm_test`, see
+*Testing*) — by default it runs inside the dev database.
+
 **Run the API suite even for a web-only change.** `apps/api/app/mcp/ui/display-block.html`
 is a committed build artifact bundled from web components — the list is `SOURCES`
 in `apps/mcp-ui/scripts/emit.mjs` (the roster components, `lib/datetime.ts`,
@@ -341,7 +344,7 @@ All environments share a single config database for system-level configuration:
 cd apps/api
 uv run ruff check app/           # lint
 uv run ruff format --check app/  # format check
-uv run pytest tests/ -q          # ~2,660 tests, ~4 min
+uv run pytest tests/ -q          # ~4,300 tests, ~7 min
 
 cd apps/web
 pnpm lint                        # ESLint (0 errors expected)
@@ -361,25 +364,42 @@ single smoke test. Do not read a green pipeline as "E2E passed". Worth making a
 real gate (drop the flag, add a few deterministic smoke tests) once Norm has
 real users.
 
-**A red CI just after midnight UTC is probably not your change.**
-`test_task_scheduler.py::TestTemporalGrounding::test_history_from_previous_days_is_date_prefixed`
-builds a message `now - 6 minutes` and asserts it counts as "today". It does not
-freeze the clock, so **any CI run in the first ~6 minutes after UTC midnight
-fails it** — the message really did land yesterday. That is mid-evening NZ time,
-a plausible moment to push. It blocked a deploy on 27 Sep 2026.
+**Give the tests their own database.** `tests/conftest.py` uses `settings.DATABASE_URL`,
+which locally defaults to the dev database `norm`. Two runs there at once collide (8
+setup errors on 16 Oct 2026), and leftover dev rows can break counts. Make a test
+database once — running migrations on it is fine, it isn't the dev database — and
+point each run at it; parallel runs each get their own copy:
 
-Before assuming you broke something: check the run's timestamp, and check
-whether your diff touches Python at all. Re-running works, but only once the
-clock is past the window — re-running inside it fails identically and looks
-like a real failure. The fix is to freeze the clock in that test.
+```bash
+docker exec norm-postgres-1 createdb -U norm norm_test
+cd apps/api
+DATABASE_URL=postgresql://norm:norm@localhost:5432/norm_test uv run alembic upgrade head
+DATABASE_URL=postgresql://norm:norm@localhost:5432/norm_test uv run pytest tests/ -q
+# a second, parallel run:
+docker exec norm-postgres-1 psql -U norm -d postgres -c "CREATE DATABASE norm_test_2 TEMPLATE norm_test"
+```
+
+**The midnight-UTC flake is fixed** (17 Oct 2026). The date-prefix test froze no clock and
+failed any CI run in the first ~6 minutes after UTC midnight (it blocked a deploy on 27 Sep
+2026). It now freezes time and also runs at 00:03 UTC:
+`test_context_builder.py::TestDateAnchoredHistory`.
 
 **What the tests are for.** Much of this suite exists because of specific
 production incidents, and those tests carry docstrings saying so — an empty
 `Bearer ` token reaching the wire, sales reading `$0` for a Saturday, venues
 becoming undeletable. The two largest files exec the **real** consolidator code
 from `config/consolidators/` under the real sandbox namespace, and are the only
-thing standing between a config edit and a sandbox failure in production. Before
-deleting a test, check whether it names an incident.
+thing standing between a config edit and a sandbox failure in production
+(`test_consolidator_sandbox_guard.py` also runs the production safety check over every
+consolidator source). Before deleting a test, check whether it names an incident.
+
+**Keep it lean** (the suite was cut by ~460 duplicate or no-value tests on 17 Oct 2026 —
+`docs/plans/test-suite-reduction.md`). Before adding a test, find the one that already
+builds that setup and add your assertion there; test a rule thoroughly at one layer
+(the service), and only wiring elsewhere (HTTP: routing, status codes, serialisation).
+Use the shared helpers rather than copying them: `consolidator_harness.py`,
+`tool_loop_harness.py`, `approval_helpers.py`, `org_helpers.py`, `supplier_fakes.py`,
+`functions_world.py`. A test must be able to fail — break the behaviour once and watch it.
 
 ## Browser Access (Playwright MCP)
 

@@ -64,6 +64,11 @@ class TestDispatch:
         assert task.overrides_next_run == {"instruction": "skip Bidfood next run"}
 
     def test_update_reaches_the_task_without_an_explicit_id(self, db_session):
+        """The task is resolved from the conversation it owns. The prompt path
+        once could not do this, so a live task got an updated config and a
+        permanently stale prompt (see test_task_scheduler.py::
+        TestUpdateTaskImplicitResolution for the refusal on an unrelated
+        thread)."""
         thread, task = _thread_with_task(db_session)
         out = it.get_handler("norm", "manage_task")(
             {"op": "update", "prompt": "Reconcile, and email me the summary"},
@@ -114,78 +119,3 @@ class TestRefusal:
     def test_every_op_maps_to_a_real_handler(self):
         assert set(it._TASK_OPS) == {"create", "update", "set_config", "set_override"}
         assert all(callable(fn) for fn in it._TASK_OPS.values())
-
-
-def _sync_module():
-    import importlib.util
-    import pathlib
-
-    path = (
-        pathlib.Path(__file__).resolve().parent.parent
-        / "scripts"
-        / "sync_manage_task_config.py"
-    )
-    spec = importlib.util.spec_from_file_location("sync_manage_task", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-class TestBindingMerge:
-    """Five capability entries collapse to one — without losing a capability."""
-
-    def test_merged_entry_is_enabled_if_any_replaced_entry_was(self):
-        """Marketing lists update_task_config (disabled) BEFORE
-        create_automated_task (enabled). Inheriting the first entry's flag
-        hands it a DISABLED manage_task and silently removes the ability to
-        create a task at all."""
-        m = _sync_module()
-        caps = [
-            {"action": "update_task_config", "enabled": False},
-            {"action": "update_automated_task", "enabled": True},
-            {"action": "set_override", "enabled": False},
-            {"action": "create_automated_task", "enabled": True},
-            {"action": "remember", "enabled": True},
-        ]
-        new_caps, changed = m.merge_caps(caps)
-        assert changed
-        task = [c for c in new_caps if c["action"] == "manage_task"]
-        assert len(task) == 1, "exactly one merged entry"
-        assert task[0]["enabled"] is True
-        # Unrelated capabilities are untouched and keep their order.
-        assert {"action": "remember", "enabled": True} in new_caps
-
-    def test_all_disabled_stays_disabled(self):
-        m = _sync_module()
-        caps = [
-            {"action": "set_override", "enabled": False},
-            {"action": "create_automated_task", "enabled": False},
-        ]
-        new_caps, _ = m.merge_caps(caps)
-        assert [c["enabled"] for c in new_caps if c["action"] == "manage_task"] == [
-            False
-        ]
-
-    def test_get_workflow_mode_is_dropped_with_no_replacement(self):
-        """Its answer is context now — replacing it with anything would put
-        the per-conversation round-trip straight back."""
-        m = _sync_module()
-        new_caps, changed = m.merge_caps(
-            [{"action": "get_workflow_mode", "enabled": True}]
-        )
-        assert changed
-        assert new_caps == []
-
-    def test_set_workflow_mode_survives(self):
-        """The writer stays: it is how the user's choice is saved."""
-        m = _sync_module()
-        caps = [{"action": "set_workflow_mode", "enabled": True}]
-        new_caps, changed = m.merge_caps(caps)
-        assert not changed
-        assert new_caps == caps
-
-    def test_a_binding_with_nothing_to_merge_is_left_alone(self):
-        m = _sync_module()
-        caps = [{"action": "remember", "enabled": True}]
-        new_caps, changed = m.merge_caps(caps)
-        assert not changed and new_caps == caps

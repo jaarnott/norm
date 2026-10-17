@@ -116,7 +116,20 @@ class TestDeclaredCollections:
 
 class TestRoundTrip:
     def test_put_get_list_delete(self, db_session, org, author):
+        """The round trip, plus the record's shape: data must be an object, and
+        a record carries its own metadata."""
         app, v = _app_with(db_session, org, author, STORAGE_SPEC)
+        with pytest.raises(HTTPException) as e:
+            AR.store_put(
+                db_session,
+                app=app,
+                version=v,
+                user=author,
+                collection="people",
+                data=["not", "an", "object"],
+            )
+        assert "must be an object" in str(e.value.detail)
+
         row = AR.store_put(
             db_session,
             app=app,
@@ -126,6 +139,7 @@ class TestRoundTrip:
             data={"name": "Sam", "loadedhub_id": "lh-1"},
         )
         assert row["name"] == "Sam" and row["id"]
+        assert set(row) >= {"id", "venue_id", "created_at", "updated_at", "name"}
 
         got = AR.store_get(
             db_session,
@@ -431,27 +445,11 @@ class TestNamespaceClaim:
         assert "belongs to" in str(e.value.detail)
         assert "shared_with" in str(e.value.detail)
 
-    def test_an_invited_app_may_join(self, db_session, org, author):
-        _app_with(db_session, org, author, STORAGE_SPEC)  # shared_with: ["coaching"]
-        out = AR.save_app(
-            db_session,
-            author,
-            {
-                "name": "Coaching",
-                "slug": "coaching",
-                "spec": {
-                    "actions": [],
-                    "scopes": [],
-                    "storage": {"namespace": "team_suite", "collections": ["programs"]},
-                },
-                "ui_source": "<div/>",
-            },
-        )
-        assert out["slug"] == "coaching"
-
     def test_the_two_apps_then_see_the_same_rows(self, db_session, org, author):
+        """An invited app (shared_with: ["coaching"]) may join the namespace,
+        and the two apps then see the same rows."""
         hiring, hv = _app_with(db_session, org, author, STORAGE_SPEC)
-        AR.save_app(
+        out = AR.save_app(
             db_session,
             author,
             {
@@ -465,6 +463,7 @@ class TestNamespaceClaim:
                 "ui_source": "<div/>",
             },
         )
+        assert out["slug"] == "coaching"
         training = (
             db_session.query(App)
             .filter(App.organization_id == org.id, App.slug == "coaching")
@@ -539,33 +538,6 @@ class TestAudit:
         methods = {c.action: c.method for c in calls}
         assert methods["list:people"] == "GET"
         assert methods["put:people"] == "POST"
-
-
-class TestRecordShape:
-    def test_records_carry_their_own_metadata(self, db_session, org, author):
-        app, v = _app_with(db_session, org, author, STORAGE_SPEC)
-        row = AR.store_put(
-            db_session,
-            app=app,
-            version=v,
-            user=author,
-            collection="people",
-            data={"name": "Sam"},
-        )
-        assert set(row) >= {"id", "venue_id", "created_at", "updated_at", "name"}
-
-    def test_data_must_be_an_object(self, db_session, org, author):
-        app, v = _app_with(db_session, org, author, STORAGE_SPEC)
-        with pytest.raises(HTTPException) as e:
-            AR.store_put(
-                db_session,
-                app=app,
-                version=v,
-                user=author,
-                collection="people",
-                data=["not", "an", "object"],
-            )
-        assert "must be an object" in str(e.value.detail)
 
 
 def test_the_table_is_indexed_for_the_queries_it_serves(db_session):
@@ -673,10 +645,11 @@ class TestStorageEndpoints:
             == []
         )
 
-    def test_an_undeclared_collection_is_refused_over_http(
-        self, client, db_session, org, author
-    ):
+    def test_the_refusals_survive_over_http(self, client, db_session, org, author):
+        """An undeclared collection is refused by name (403); a stranger gets
+        nothing (404)."""
         _app_with(db_session, org, author, STORAGE_SPEC, slug="hr-hiring2")
+        stranger = _member(db_session, org, ["hr:read"])
         db_session.commit()
         r = client.post(
             "/api/apps/hr-hiring2/records/salaries/query",
@@ -686,12 +659,8 @@ class TestStorageEndpoints:
         assert r.status_code == 403
         assert "salaries" in r.json()["detail"]
 
-    def test_a_stranger_gets_nothing_over_http(self, client, db_session, org, author):
-        _app_with(db_session, org, author, STORAGE_SPEC, slug="hr-hiring3")
-        stranger = _member(db_session, org, ["hr:read"])
-        db_session.commit()
         r = client.post(
-            "/api/apps/hr-hiring3/records/people/query",
+            "/api/apps/hr-hiring2/records/people/query",
             json={},
             headers=self._headers(stranger),
         )
@@ -731,6 +700,7 @@ class TestVenueReachIsNotOptIn:
     def test_omitting_the_venue_does_not_return_other_venues(
         self, db_session, org, author
     ):
+        """Reading group-wide must not become reading everything."""
         peer = _member(db_session, org, ["hr:read"])
         mine, theirs = self._two_venues(db_session, org, author, peer)
         app, v = self._shared_app(db_session, org, author, peer)
@@ -1004,6 +974,9 @@ class TestNoSilentTruncation:
     """
 
     def test_logic_reading_a_collection_gets_all_of_it(self, db_session, org, author):
+        """One 1,250-row seed for the three halves of the rule: logic reading a
+        collection gets all of it; an explicit limit is still honoured; and the
+        direct door still bounds a single query."""
         app, v = _app_with(db_session, org, author, STORAGE_SPEC)
         for i in range(1250):  # comfortably past the 1,000-row query bound
             db_session.add(
@@ -1031,21 +1004,7 @@ class TestNoSilentTruncation:
         # All of them, once each — paging must not repeat or drop a page.
         assert out["data"] == {"n": 1250, "unique": 1250}
 
-    def test_an_explicit_limit_is_still_honoured(self, db_session, org, author):
-        app, v = _app_with(db_session, org, author, STORAGE_SPEC)
-        for i in range(50):
-            db_session.add(
-                AppRecord(
-                    id=str(uuid.uuid4()),
-                    namespace="team_suite",
-                    organization_id=org.id,
-                    collection="people",
-                    data={"name": f"P{i}"},
-                    created_by=author.id,
-                    updated_by=author.id,
-                )
-            )
-        db_session.flush()
+        # An explicit limit is still honoured.
         v.logic_source = (
             "def run(params, call_api, log):\n"
             "    return {'n': len(store.list('people', limit=10))}\n"
@@ -1056,23 +1015,8 @@ class TestNoSilentTruncation:
         )
         assert out["data"] == {"n": 10}
 
-    def test_the_direct_door_still_bounds_a_single_query(self, db_session, org, author):
-        """The per-query bound itself stays — one call must never be able to
-        scan a whole table."""
-        app, v = _app_with(db_session, org, author, STORAGE_SPEC)
-        for i in range(1100):
-            db_session.add(
-                AppRecord(
-                    id=str(uuid.uuid4()),
-                    namespace="team_suite",
-                    organization_id=org.id,
-                    collection="people",
-                    data={"name": f"P{i}"},
-                    created_by=author.id,
-                    updated_by=author.id,
-                )
-            )
-        db_session.flush()
+        # The per-query bound itself stays — one call must never be able to
+        # scan a whole table.
         rows = AR.store_list(
             db_session,
             app=app,
@@ -1156,39 +1100,6 @@ class TestVenueIsNotAssumed:
             db_session, None, app=app, version=v, user=author, venue_id=here.id
         )
         assert out["data"]["names"] == ["here"]
-
-    def test_a_venue_the_viewer_cannot_reach_is_still_excluded(
-        self, db_session, org, author
-    ):
-        """Reading group-wide must not become reading everything."""
-        mine = _make_venue(db_session, organization_id=org.id, name="Mine")
-        theirs = _make_venue(db_session, organization_id=org.id, name="Theirs")
-        _make_venue_access(db_session, author, mine)
-        _make_venue_access(db_session, author, theirs)  # author sets the scene
-        app, v = _app_with(db_session, org, author, STORAGE_SPEC)
-        peer = _member(db_session, org, ["hr:read"])
-        _make_venue_access(db_session, peer, mine)
-        db_session.add(
-            AppShare(app_id=app.id, principal_type="user", principal_id=peer.id)
-        )
-        db_session.flush()
-        for venue, name in ((mine, "mine"), (theirs, "theirs")):
-            AR.store_put(
-                db_session,
-                app=app,
-                version=v,
-                user=author,
-                collection="people",
-                data={"name": name},
-                venue_id=venue.id,
-            )
-        names = {
-            r["name"]
-            for r in AR.store_list(
-                db_session, app=app, version=v, user=peer, collection="people"
-            )
-        }
-        assert names == {"mine"}
 
 
 class TestQuerySurface:

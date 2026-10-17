@@ -69,7 +69,11 @@ def _manager(db, org):
 
 
 class TestReading:
-    def test_a_member_reads_the_defaults(self, client, w):
+    def test_members_read_the_defaults_and_only_owners_and_admins_may_edit(
+        self, client, db_session, w, admin_headers
+    ):
+        """A member reads the defaults; a manager reads too but may not edit;
+        owners and platform admins may."""
         r = client.get(_url(w.org), headers=_auth(w.staff))
         assert r.status_code == 200
         body = r.json()
@@ -80,20 +84,16 @@ class TestReading:
         assert body["can_edit"] is False
         assert "NZD" in body["currencies"] and "XAU" not in body["currencies"]
 
-    def test_owners_and_platform_admins_may_edit(self, client, w, admin_headers):
-        assert client.get(_url(w.org), headers=_auth(w.owner)).json()["can_edit"]
-        assert client.get(_url(w.org), headers=admin_headers).json()["can_edit"]
-
-    def test_a_manager_may_read_but_not_edit(self, client, db_session, w):
         manager = _manager(db_session, w.org)
         r = client.get(_url(w.org), headers=_auth(manager))
         assert r.status_code == 200 and r.json()["can_edit"] is False
 
-    def test_another_orgs_owner_cannot_read(self, client, w):
+        assert client.get(_url(w.org), headers=_auth(w.owner)).json()["can_edit"]
+        assert client.get(_url(w.org), headers=admin_headers).json()["can_edit"]
+
+    def test_another_orgs_owner_cannot_read_and_an_unknown_org_is_404(self, client, w):
         r = client.get(_url(w.org), headers=_auth(w.other_user))
         assert r.status_code == 403
-
-    def test_unknown_org(self, client, w):
         r = client.get(
             f"/api/organizations/{uuid.uuid4()}/company-settings",
             headers=_auth(w.owner),
@@ -126,9 +126,10 @@ class TestChanging:
         org = db_session.get(Organization, w.org.id)
         assert (org.currency, org.default_timezone) == ("AUD", "Australia/Sydney")
 
-    @pytest.mark.parametrize(
-        "body",
-        [
+    def test_invalid_values_are_refused(self, client, w):
+        # One world for every case (a world per case cost ~1 s each); the
+        # failing value is named in the assertion message.
+        for body in (
             {"currency": "ABC"},  # three letters, but no such currency
             {"currency": "NZDD"},
             {"currency": "XAU"},  # gold is ISO 4217, but nobody trades in it
@@ -137,12 +138,10 @@ class TestChanging:
             {"tax_label": "x" * 41},
             {"tax_label": "   "},
             {"functions_mode": "on"},
-        ],
-    )
-    def test_invalid_values_are_refused(self, client, w, body):
-        r = client.put(_url(w.org), headers=_auth(w.owner), json=body)
-        assert r.status_code == 422, (body, r.text)
-        assert isinstance(r.json()["detail"], str)
+        ):
+            r = client.put(_url(w.org), headers=_auth(w.owner), json=body)
+            assert r.status_code == 422, (body, r.text)
+            assert isinstance(r.json()["detail"], str), body
 
     def test_all_or_nothing(self, client, db_session, w):
         r = client.put(
@@ -158,11 +157,15 @@ class TestChanging:
         assert db_session.get(Organization, w.org.id).currency == "NZD"
 
     def test_staff_and_managers_are_refused(self, client, db_session, w):
+        """Neither can change a setting — the Functions mode included."""
         manager = _manager(db_session, w.org)
         for user in (w.staff, manager):
-            r = client.put(_url(w.org), headers=_auth(user), json={"currency": "AUD"})
-            assert r.status_code == 403, r.text
-        assert db_session.get(Organization, w.org.id).currency == "NZD"
+            for body in ({"currency": "AUD"}, {"functions_mode": "live"}):
+                r = client.put(_url(w.org), headers=_auth(user), json=body)
+                assert r.status_code == 403, (body, r.text)
+        db_session.expire_all()
+        org = db_session.get(Organization, w.org.id)
+        assert (org.currency, org.functions_mode) == ("NZD", "off")
 
     def test_another_orgs_owner_is_refused(self, client, db_session, w):
         r = client.put(
@@ -183,15 +186,27 @@ class TestChanging:
 
 
 class TestFunctionsMode:
-    def test_an_owner_switches_it_and_the_change_is_logged(self, client, w, caplog):
+    def test_an_owner_switches_it_and_only_a_change_is_logged(self, client, w, caplog):
+        """Saving the same mode logs nothing; a switch logs who, from what, to
+        what. (Staff and managers can't switch it: TestChanging.)"""
+
+        def logged():
+            return [
+                x for x in caplog.records if x.getMessage() == "functions_mode_changed"
+            ]
+
+        with caplog.at_level(logging.INFO, logger="app.routers.organizations"):
+            r = client.put(
+                _url(w.org), headers=_auth(w.owner), json={"functions_mode": "off"}
+            )
+        assert r.status_code == 200
+        assert not logged()
         with caplog.at_level(logging.INFO, logger="app.routers.organizations"):
             r = client.put(
                 _url(w.org), headers=_auth(w.owner), json={"functions_mode": "shadow"}
             )
         assert r.status_code == 200 and r.json()["functions_mode"] == "shadow"
-        (record,) = [
-            x for x in caplog.records if x.getMessage() == "functions_mode_changed"
-        ]
+        (record,) = logged()
         assert (record.org_id, record.previous_mode, record.mode, record.by) == (
             w.org.id,
             "off",
@@ -199,28 +214,16 @@ class TestFunctionsMode:
             w.owner.id,
         )
 
-    def test_saving_the_same_mode_logs_nothing(self, client, w, caplog):
-        with caplog.at_level(logging.INFO, logger="app.routers.organizations"):
-            r = client.put(
-                _url(w.org), headers=_auth(w.owner), json={"functions_mode": "off"}
-            )
-        assert r.status_code == 200
-        assert not [
-            x for x in caplog.records if x.getMessage() == "functions_mode_changed"
-        ]
-
-    def test_staff_cannot_switch_it(self, client, db_session, w):
-        r = client.put(
-            _url(w.org), headers=_auth(w.staff), json={"functions_mode": "live"}
-        )
-        assert r.status_code == 403
-        db_session.expire_all()
-        assert db_session.get(Organization, w.org.id).functions_mode == "off"
-
     def test_going_live_needs_every_functions_venue_to_have_a_timezone(
         self, client, db_session, w
     ):
         nowhere = _make_venue(db_session, name="No Zone Bar", organization_id=w.org.id)
+        # A venue Functions hasn't used yet is nothing to check: going live is fine.
+        for mode in ("live", "off"):
+            r = client.put(
+                _url(w.org), headers=_auth(w.owner), json={"functions_mode": mode}
+            )
+            assert r.status_code == 200 and r.json()["functions_mode"] == mode
         add_enquiry(
             db_session, w.org.id, add_contact(db_session, w.org.id).id, nowhere.id
         )

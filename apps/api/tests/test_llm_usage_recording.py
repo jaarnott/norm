@@ -29,6 +29,7 @@ from app.services.llm_cost import (
     price_for,
     usage_fields,
 )
+from app.services.usage_service import record_usage
 from tests.conftest import (
     _make_membership,
     _make_organization,
@@ -203,6 +204,77 @@ class TestRecording:
         )
         assert recorded[0]["call_type"] == "unit_guess"
         assert recorded[0]["usage"].output == 500 and recorded[0]["status"] == "success"
+
+
+class TestRecordUsage:
+    """The day's usage row (moved from test_message_persistence.py).
+
+    Born from a production incident (05 Aug 2026): the day's first TokenUsage
+    row stayed uncommitted, and row-locked, for a 4½-minute turn; a concurrent
+    turn's insert died with UniqueViolation and its rollback took the user's
+    message with it. record_usage now writes through its own short
+    transaction, and a broken usage write never breaks the turn.
+    """
+
+    def test_accumulates_into_one_row(self, db_session):
+        org, user = _org_user(db_session)
+        record_usage(db_session, user.id, 100, 50)
+        record_usage(db_session, user.id, 10, 5)
+
+        rows = (
+            db_session.query(TokenUsage)
+            .filter(TokenUsage.organization_id == org.id)
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].input_tokens == 110
+        assert rows[0].output_tokens == 55
+        assert rows[0].llm_call_count == 2
+
+    def test_updates_existing_row_with_null_counters(self, db_session):
+        """Legacy rows may hold NULLs; the increment must coalesce, not NULL out."""
+        org, user = _org_user(db_session)
+        db_session.add(
+            TokenUsage(
+                organization_id=org.id,
+                user_id=user.id,
+                date=dt.date.today().isoformat(),
+                input_tokens=None,
+                output_tokens=None,
+                llm_call_count=None,
+            )
+        )
+        db_session.flush()
+
+        record_usage(db_session, user.id, 7, 3)
+
+        row = (
+            db_session.query(TokenUsage)
+            .filter(TokenUsage.organization_id == org.id)
+            .one()
+        )
+        assert row.input_tokens == 7
+        assert row.output_tokens == 3
+        assert row.llm_call_count == 1
+
+    def test_no_org_is_a_noop(self, db_session):
+        loner = _make_user(db_session)
+        record_usage(db_session, loner.id, 100, 50)
+        assert (
+            db_session.query(TokenUsage).filter(TokenUsage.user_id == loner.id).count()
+            == 0
+        )
+
+    def test_failure_never_raises(self, db_session, monkeypatch):
+        """A broken usage write must not break the turn that reported it."""
+        _, user = _org_user(db_session)
+        import app.services.usage_service as usage_mod
+
+        def boom(*a, **k):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(usage_mod, "_upsert", boom)
+        record_usage(db_session, user.id, 100, 50)  # must not raise
 
 
 class TestPlanLimits:
@@ -400,54 +472,3 @@ class TestTheCachedPrefixHolds:
         kw = client.beta.messages.stream.call_args.kwargs
         assert kw["tool_choice"] == {"type": "none"}
         assert [t["name"] for t in kw["tools"]] == ["get_sales"]
-
-
-class TestBackfill:
-    LINES = [
-        "2026-10-07T04:42:37.326800Z\t\x1b[1mprompt_size  \x1b[0m call_type=tool_use "
-        "ctx_actual=2 ctx_cache_read=108666 ctx_cache_write=490 model=claude-opus-5-5 "
-        "thread_id=t-1",
-        "2026-10-06T20:00:09.169Z\tprompt_size_on_error call_type=tool_use "
-        "ctx_total=23287 model=claude-opus-4-8 thread_id=t-1",
-        "2026-10-07T04:42:20.972Z\tprompt_size call_type=extraction thread_id=t-1",
-    ]
-
-    def test_only_successful_agent_calls_are_read(self):
-        import scripts.backfill_llm_usage as bf
-
-        logs = bf.parse_log_lines(self.LINES)
-        assert len(logs) == 1
-        assert logs[0]["cache_read"] == 108_666 and logs[0]["input"] == 2
-
-    def test_a_log_line_matches_its_call_by_thread_input_and_time(self):
-        import scripts.backfill_llm_usage as bf
-
-        logs = bf.parse_log_lines(self.LINES)
-        at = logs[0]["at"]
-        calls = [
-            {
-                "id": "right",
-                "thread_id": "t-1",
-                "created_at": at + dt.timedelta(seconds=1),
-                "input_tokens": 2,
-            },
-            {
-                "id": "other-thread",
-                "thread_id": "t-2",
-                "created_at": at,
-                "input_tokens": 2,
-            },
-            {
-                "id": "other-input",
-                "thread_id": "t-1",
-                "created_at": at,
-                "input_tokens": 9,
-            },
-            {
-                "id": "too-late",
-                "thread_id": "t-1",
-                "created_at": at + dt.timedelta(minutes=5),
-                "input_tokens": 2,
-            },
-        ]
-        assert set(bf.match(calls, logs)) == {"right"}

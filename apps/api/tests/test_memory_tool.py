@@ -12,26 +12,25 @@ What is pinned, and the failure each test is for:
   notebook op toward the fan-out cap;
 - a write to the notebook announces itself to the browser;
 - an approved write that already ran in this conversation is NOT run again;
-- the prompt says what the directory is for and that facts go to `remember`;
-- `update_thread_summary` is gone.
+- the prompt says what the directory is for and that facts go to `remember`.
 """
 
 import json
 
 from app.agents import memory_tool, tool_loop
 from app.db.models import ThreadMemoryFile, ToolCall
-from tests.conftest import _make_thread
-from tests.test_tool_loop_unknown_tool import _Block, _Response
+from tests.tool_loop_harness import (
+    ScriptedLlm,
+    end_turn,
+    loop_thread,
+    tool,
+    tool_round,
+    tool_use,
+)
 
 
 def _thread(db_session, admin_user):
-    return _make_thread(
-        db_session,
-        admin_user,
-        domain="procurement",
-        intent="procurement.tool_use",
-        status="processing",
-    )
+    return loop_thread(db_session, admin_user)
 
 
 def mem(db, thread_id, **cmd):
@@ -48,6 +47,7 @@ class TestTheSixCommands:
         assert out["data"]["text"].startswith("Here're the files and directories")
 
     def test_create_then_view_with_line_numbers(self, db_session, admin_user):
+        """...and view_range pages a file."""
         t = _thread(db_session, admin_user)
         out = mem(
             db_session,
@@ -64,8 +64,7 @@ class TestTheSixCommands:
         )
         assert "     1\t# Job" in text and "     3\t- two" in text
 
-    def test_view_range_pages_a_file(self, db_session, admin_user):
-        t = _thread(db_session, admin_user)
+        # view_range pages a file
         mem(
             db_session,
             t.id,
@@ -213,7 +212,7 @@ class TestItCannotLeaveTheDirectory:
             out = mem(db_session, t.id, command="create", path=bad, file_text="x")
             assert not out["success"], bad
             assert out["data"]["text"].startswith("Error"), bad
-        assert db_session.query(ThreadMemoryFile).count() == 0
+        assert db_session.query(ThreadMemoryFile).filter_by(thread_id=t.id).count() == 0
 
     def test_one_conversation_cannot_see_another(self, db_session, admin_user):
         a, b = _thread(db_session, admin_user), _thread(db_session, admin_user)
@@ -279,27 +278,14 @@ class TestItCannotLeaveTheDirectory:
 
 class TestTheLoopWiresItIn:
     def _run(self, db_session, admin_user, monkeypatch, blocks, tools=None):
-        results: list[list] = []
-        calls = {"n": 0}
         events: list[dict] = []
         monkeypatch.setattr(tool_loop, "_emit_event", lambda e: events.append(e))
-
-        def llm(*args, **kwargs):
-            calls["n"] += 1
-            msgs = kwargs.get("messages", args[1] if len(args) > 1 else [])
-            last = msgs[-1]["content"] if msgs else None
-            if isinstance(last, list) and last and last[0].get("type") == "tool_result":
-                results.append(last)
-            if calls["n"] == 1:
-                return (_Response("tool_use", blocks), None)
-            return (_Response("end_turn", [_Block("text", text="done")]), None)
-
-        monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm_with_tools", llm)
+        llm = ScriptedLlm([tool_round(*blocks), end_turn("done")]).install(monkeypatch)
         thread = _thread(db_session, admin_user)
         tool_loop.run_tool_loop(
             "go", thread, db_session, "system", tools or [], config_db=db_session
         )
-        return thread, results, events
+        return thread, llm.tool_results(), events
 
     def test_the_memory_tool_is_offered_first_and_meta_knows_it(self, db_session):
         tools, meta = tool_loop._ensure_memory_tool(
@@ -312,19 +298,22 @@ class TestTheLoopWiresItIn:
         )
         again, _ = tool_loop._ensure_memory_tool(tools, meta)
         assert again.count(memory_tool.MEMORY_TOOL) == 1, "never added twice"
+        from app.agents.internal_tools import get_handler
+
+        assert get_handler("norm", "memory") is not None
 
     def test_a_memory_call_runs_and_the_model_gets_plain_text(
         self, db_session, admin_user, monkeypatch
     ):
         """Fails if the result is wrapped in JSON: the view format's line
         numbers and the docs' confirmation strings are what Claude is
-        trained on, not {"success": true, "data": ...}."""
+        trained on, not {"success": true, "data": ...}. The write also
+        announces the notebook to the browser."""
         blocks = [
-            _Block(
-                "tool_use",
-                id="toolu_m1",
-                name="memory",
-                input={
+            tool_use(
+                "toolu_m1",
+                "memory",
+                {
                     "command": "create",
                     "path": "/memories/job.md",
                     "file_text": "# Job\n",
@@ -345,37 +334,17 @@ class TestTheLoopWiresItIn:
             db_session.query(ThreadMemoryFile).filter_by(thread_id=thread.id).count()
             == 1
         )
-
-    def test_a_write_announces_the_notebook_to_the_browser(
-        self, db_session, admin_user, monkeypatch
-    ):
-        blocks = [
-            _Block(
-                "tool_use",
-                id="toolu_m2",
-                name="memory",
-                input={
-                    "command": "create",
-                    "path": "/memories/job.md",
-                    "file_text": "notes",
-                },
-            )
-        ]
-        _, _, events = self._run(db_session, admin_user, monkeypatch, blocks)
+        # A write to the notebook announces itself to the browser.
         nb = [e for e in events if e.get("type") == "notebook"]
         assert nb and nb[-1]["files"][0]["path"] == "/memories/job.md"
-        assert nb[-1]["files"][0]["content"] == "notes"
+        assert nb[-1]["files"][0]["content"] == "# Job\n"
 
     def test_a_notebook_op_does_not_count_toward_the_fan_out_cap(
         self, db_session, admin_user, monkeypatch
     ):
         """Fails if a memory view at the start of a wide round pushes a real
         call over the cap — the model views memory first on every turn."""
-        read = {
-            "name": "loadedhub__get_stock",
-            "description": "[GET] x",
-            "input_schema": {"type": "object", "properties": {}},
-        }
+        read = tool("loadedhub__get_stock", description="x")
         monkeypatch.setattr(
             tool_loop, "_execute_tool_call", lambda tc, db, config_db=None: {"rows": []}
         )
@@ -385,14 +354,9 @@ class TestTheLoopWiresItIn:
             lambda tc_id, cb: (tc_id, {"rows": []}),
         )
         blocks = [
-            _Block(
-                "tool_use",
-                id="toolu_v",
-                name="memory",
-                input={"command": "view", "path": "/memories"},
-            )
+            tool_use("toolu_v", "memory", {"command": "view", "path": "/memories"})
         ] + [
-            _Block("tool_use", id=f"toolu_r{i}", name="loadedhub__get_stock", input={})
+            tool_use(f"toolu_r{i}", "loadedhub__get_stock")
             for i in range(tool_loop.TOOL_FANOUT_CAP)
         ]
         _, results, _ = self._run(
@@ -516,13 +480,7 @@ class TestAnApprovedWriteNeverRunsTwice:
             "_execute_tool_call",
             lambda tc, db, config_db=None: executed.append(tc.id) or {"ok": True},
         )
-        monkeypatch.setattr(
-            "app.interpreter.llm_interpreter.call_llm_with_tools",
-            lambda *a, **k: (
-                _Response("end_turn", [_Block("text", text="done")]),
-                None,
-            ),
-        )
+        ScriptedLlm([end_turn("done")]).install(monkeypatch)
         tool_loop.resume_tool_loop(
             thread, db_session, "system", [], config_db=db_session
         )
@@ -531,11 +489,3 @@ class TestAnApprovedWriteNeverRunsTwice:
             again.status == "executed"
             and again.result_payload["duplicate_of"] == "toolu_r1"
         )
-
-
-class TestTheDeadToolIsGone:
-    def test_update_thread_summary_is_not_registered(self):
-        from app.agents.internal_tools import get_handler
-
-        assert get_handler("norm", "update_thread_summary") is None
-        assert get_handler("norm", "memory") is not None

@@ -12,6 +12,8 @@ from app.agents.prompt_builder import build_input_schema, build_venue_property
 
 class TestFieldProjection:
     def test_empty_tool(self):
+        """additionalProperties must stay False — it's what makes strict tool
+        use and MCP argument validation meaningful."""
         assert build_input_schema(
             {"required_fields": [], "optional_fields": [], "field_mapping": {}}
         ) == {
@@ -80,16 +82,6 @@ class TestFieldProjection:
         )
         assert schema["properties"]["a"]["description"] == (
             "The A field. Maps to API field: apiA"
-        )
-
-    def test_always_closed(self):
-        """additionalProperties must stay False — it's what makes strict tool
-        use and MCP argument validation meaningful."""
-        assert (
-            build_input_schema(
-                {"required_fields": ["a"], "optional_fields": [], "field_mapping": {}}
-            )["additionalProperties"]
-            is False
         )
 
     def test_required_is_a_copy_not_an_alias(self):
@@ -171,18 +163,14 @@ class TestFieldSchemaPassthrough:
 
 class TestExtraProperties:
     def test_merged_after_fields(self):
+        """...and never required."""
         schema = build_input_schema(
             {"required_fields": ["a"], "optional_fields": [], "field_mapping": {}},
             {"venue": build_venue_property(["La Zeppa", "Little High"])},
         )
         assert set(schema["properties"]) == {"a", "venue"}
         assert schema["properties"]["venue"]["enum"] == ["La Zeppa", "Little High"]
-
-    def test_extra_properties_are_not_required(self):
-        schema = build_input_schema(
-            {"required_fields": ["a"], "optional_fields": [], "field_mapping": {}},
-            {"venue": build_venue_property(["X"])},
-        )
+        # ...and extra properties are not required
         assert schema["required"] == ["a"]
 
     def test_none_extra_is_a_no_op(self):
@@ -194,10 +182,9 @@ class TestMissingKeysAreTolerated:
     """Config rows are hand-edited; a missing optional key must not 500."""
 
     def test_minimal_row(self):
+        """...down to a totally empty row."""
         assert build_input_schema({"required_fields": ["a"]})["properties"]["a"] == {
             "type": "string",
             "description": "a",
         }
-
-    def test_totally_empty_row(self):
         assert build_input_schema({})["properties"] == {}

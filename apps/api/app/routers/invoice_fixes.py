@@ -13,18 +13,20 @@ single suggestion engine); this router wires it to the web editor:
 - ``/draft`` opens (or heals) the working document; ``/review`` runs the
   replica review and squashes the payload onto every twin; ``/receive``
   builds the receive request server-side from the doc's working values.
-- ``/accept`` applies the few suggestions that are LOADED WRITES rather than
-  local doc edits (delete a duplicate/statement draft; the legacy link_po
-  path). Everything else is a local working-document patch until receive.
+- ``/accept`` applies the one suggestion that is a LOADED WRITE rather than a
+  local doc edit: deleting a draft that shouldn't be received (a duplicate, a
+  statement, no copy, an unreadable one). Everything else is a local
+  working-document patch until receive.
 - ``/create-item``, ``/create-unit``, ``/create-brand``, ``/create-supplier``
   create catalogue entries so blocked lines become receivable; the
   reference-data GETs feed the editor's pickers. Both live in
   ``services/invoice_catalog``, shared with the claude.ai card and autopilot.
 
-Loaded write contracts verified live in the LoadedHub test env (18 Jul 2026):
-link_po = PUT the invoice with linkedPurchaseOrderId + purchaseOrderNumber
-(no line re-matching); unit changes PUT the invoice line then PATCH the
-supplier variant so future invoices match.
+Loaded write contracts verified live in the LoadedHub test env (18 Jul 2026),
+written today by ``do_receive`` at receive time: a PO link is a PUT of the
+invoice with linkedPurchaseOrderId + purchaseOrderNumber (no line
+re-matching); a unit change PUTs the invoice line then PATCHes the supplier
+variant so future invoices match.
 """
 
 from __future__ import annotations
@@ -54,8 +56,6 @@ from app.services.invoice_po_reference import (
 )
 from app.services.received_invoice import (
     LoadedInvoiceClient as _Loaded,
-    _norm,
-    _po_key,
     attach_item_names,
     build_received_invoice_data,
     open_drafts as _open_docs_for,
@@ -78,31 +78,6 @@ class DraftRequest(BaseModel):
     invoice_id: str
 
 
-def _apply_link_po(lh: _Loaded, fix: dict, db: Session) -> str:  # noqa: ARG001 — db unused; uniform applier signature
-    from app.services.received_invoice import resolve_po_id
-
-    if not _po_key(fix.get("po_number")):
-        raise RuntimeError("no PO number to link")
-    resolved = resolve_po_id(lh, fix.get("po_number"))
-    if not resolved:
-        raise RuntimeError(
-            f"purchase order {fix.get('po_number')} not found or ambiguous in Loaded"
-        )
-    other = resolved.get("linked_invoice_id")
-    if other and other != fix["invoice_id"]:
-        # Split order: the PO is already linked to another invoice. Loaded is
-        # 1:1, so don't steal the link — leave this invoice unlinked.
-        return (
-            f"Purchase order {resolved.get('order_number')} is already linked to "
-            "another invoice — left unlinked"
-        )
-    inv = lh.invoice(fix["invoice_id"])
-    inv["linkedPurchaseOrderId"] = resolved["id"]
-    inv["purchaseOrderNumber"] = resolved.get("order_number")
-    lh.request("PUT", f"/1.0/stock/internal/invoices/{fix['invoice_id']}", inv)
-    return f"Linked purchase order {resolved.get('order_number')}"
-
-
 def _apply_delete_invoice(lh: _Loaded, fix: dict, db: Session) -> str:  # noqa: ARG001 — db unused; uniform applier signature
     """Delete a draft invoice from Loaded — the accept for the engine's
     ``delete_invoice`` suggestion (a supplier STATEMENT uploaded as a draft).
@@ -116,49 +91,7 @@ def _apply_delete_invoice(lh: _Loaded, fix: dict, db: Session) -> str:  # noqa: 
     return "Draft deleted from Loaded"
 
 
-def _apply_unit(lh: _Loaded, fix: dict, db: Session) -> str:
-    proposed = fix.get("proposed_unit", "")
-    unit, created = catalog.get_or_create_unit(lh, proposed, db)
-    inv = lh.invoice(fix["invoice_id"])
-    line = next(
-        (ln for ln in inv.get("lines") or [] if ln.get("id") == fix.get("line_id")),
-        None,
-    )
-    if not line:
-        raise RuntimeError("invoice line no longer present")
-    line["unit"] = unit.get("name")
-    line["linkedUnitId"] = unit.get("id")
-    line["linkedUnitRatio"] = unit.get("ratio")
-    lh.request("PUT", f"/1.0/stock/internal/invoices/{fix['invoice_id']}", inv)
-
-    # Update the matched supplier variant (Loaded's "update variant?" step).
-    variant_note = ""
-    item = lh.get(f"/1.0/stock/internal/items/{fix['linked_item_id']}")
-    variants = (item or {}).get("suppliers") or []
-    supplier = fix.get("linked_supplier_id")
-    code = _norm(fix.get("line_code"))
-    variant = next(
-        (
-            v
-            for v in variants
-            if v.get("supplierId") == supplier and _norm(v.get("stockCode")) == code
-        ),
-        None,
-    )
-    if variant:
-        lh.request(
-            "PATCH",
-            f"/1.0/stock/internal/item-supplier-variant/{variant['id']}",
-            {"unitId": unit.get("id")},
-        )
-        variant_note = " and updated the variant"
-    verb = "Created and set" if created else "Set"
-    return f"{verb} unit to {unit.get('name')}{variant_note}"
-
-
 _APPLIERS = {
-    "link_po": _apply_link_po,
-    "unit": _apply_unit,
     "delete_invoice": _apply_delete_invoice,
 }
 
@@ -176,10 +109,10 @@ def accept_invoice_fix(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Apply ONE suggested change to Loaded WITHOUT receiving the invoice, then
-    refresh the draft so the change reads as real: the accepted suggestion is a
-    normal PUT of the invoice (never sets ``isReceived``), then the draft is
-    re-synced from the now-updated Loaded invoice and the review re-runs.
+    """Apply the one suggestion that writes to Loaded without receiving:
+    ``delete_invoice`` (the web editor's Accept on a draft that shouldn't be
+    received). Every other suggestion is a local working-document edit that
+    rides the receive; an unknown fix type is a 400.
     """
     card_actions.venue_for(db, user, body.venue_id)
     fix = body.fix or {}
@@ -188,9 +121,6 @@ def accept_invoice_fix(
         raise HTTPException(400, f"unknown fix type: {fix.get('type')}")
 
     lh = _Loaded(db, config_db, body.venue_id)
-    # Write the change to Loaded (link a PO / correct a unit; a missing unit is
-    # created first). The appliers PUT the invoice with only the change set —
-    # they never set isReceived, so the invoice stays unreceived.
     message = _catalog(applier, lh, fix, db)
     card_actions.record(
         db,
@@ -201,47 +131,43 @@ def accept_invoice_fix(
     )
     db.commit()
 
-    if fix.get("type") == "delete_invoice":
-        # The invoice no longer exists in Loaded. The draft docs stay as
-        # TOMBSTONES (is_deleted) rather than being removed — old chat threads
-        # still hold cards pointing at them, and a card must be able to say
-        # "deleted" instead of hanging on a 404 forever.
-        from sqlalchemy.orm.attributes import flag_modified
+    # The invoice no longer exists in Loaded. The draft docs stay as
+    # TOMBSTONES (is_deleted) rather than being removed — old chat threads
+    # still hold cards pointing at them, and a card must be able to say
+    # "deleted" instead of hanging on a 404 forever.
+    from sqlalchemy.orm.attributes import flag_modified
 
-        from app.db.models import WorkingDocument
-        from app.services.received_invoice import invalidate_conflicting_drafts
+    from app.db.models import WorkingDocument
+    from app.services.received_invoice import invalidate_conflicting_drafts
 
-        ref_number = supplier = None
-        for doc in (
-            db.query(WorkingDocument)
-            .filter(
-                WorkingDocument.doc_type == "received_invoice",
-                WorkingDocument.venue_id == body.venue_id,
-            )
-            .all()
-        ):
-            if (doc.external_ref or {}).get("invoice_id") == body.invoice_id:
-                data = doc.data or {}
-                ref_number = ref_number or data.get("reference_number")
-                supplier = supplier or data.get("supplier_name")
-                data["is_deleted"] = True
-                data["status"] = "deleted"
-                data["deleted_reason"] = fix.get("summary") or message
-                doc.data = data
-                flag_modified(doc, "data")
-        db.commit()
-        invalidate_conflicting_drafts(
-            db,
-            body.venue_id,
-            body.invoice_id,
-            reference_number=ref_number,
-            supplier_name=supplier,
-            received=False,
+    ref_number = supplier = None
+    for doc in (
+        db.query(WorkingDocument)
+        .filter(
+            WorkingDocument.doc_type == "received_invoice",
+            WorkingDocument.venue_id == body.venue_id,
         )
-        return {"message": message, "document": None, "deleted": True}
-
-    document = _reshape_draft_after_write(db, lh, body.venue_id, body.invoice_id)
-    return {"message": message, "document": document}
+        .all()
+    ):
+        if (doc.external_ref or {}).get("invoice_id") == body.invoice_id:
+            data = doc.data or {}
+            ref_number = ref_number or data.get("reference_number")
+            supplier = supplier or data.get("supplier_name")
+            data["is_deleted"] = True
+            data["status"] = "deleted"
+            data["deleted_reason"] = fix.get("summary") or message
+            doc.data = data
+            flag_modified(doc, "data")
+    db.commit()
+    invalidate_conflicting_drafts(
+        db,
+        body.venue_id,
+        body.invoice_id,
+        reference_number=ref_number,
+        supplier_name=supplier,
+        received=False,
+    )
+    return {"message": message, "document": None, "deleted": True}
 
 
 # The Loaded mirror resolves stock items the way Loaded's own screen does —
@@ -267,51 +193,6 @@ def enrich_loaded_snapshot(
     if seed_working:
         _seed_working(data, catalogue=catalogue, units=units)
     _enrich_snapshot(data, catalogue=catalogue, units=units)
-
-
-def _reshape_draft_after_write(
-    db: Session, lh, venue_id: str, invoice_id: str
-) -> dict | None:
-    """Re-pull + re-SHAPE the venue's open drafts for an invoice from the fresh
-    Loaded invoice, clearing the cached review so it re-runs. Used after any
-    non-receiving write (accept a fix, create/link a stock item) — a write can
-    change the invoice server-side (e.g. linking a PO re-matches lines), so the
-    draft's lines/flags must come from Loaded. Applies to ALL open twin docs so
-    every bound card converges. Best-effort; returns the canonical doc dict or
-    None if there's no draft.
-    """
-    from sqlalchemy.orm.attributes import flag_modified
-
-    from app.routers.working_documents import _doc_to_dict
-    from app.services.received_invoice import carry_local_state
-
-    docs = _open_docs_for(db, venue_id, invoice_id)
-    if not docs:
-        return None
-    try:
-        detail = lh.invoice(invoice_id)
-        for doc in docs:
-            fresh = build_received_invoice_data(detail)
-            for k in ("working_document_id", "thread_id", "venue_id"):
-                if k in (doc.data or {}):
-                    fresh[k] = doc.data[k]
-            # Local editor state (action log, struck flags, local item links,
-            # locally-added lines) survives the rebuild.
-            carry_local_state(fresh, doc.data or {})
-            # PO resolution from the copy is the consolidator's job (runs in
-            # /review); the draft only mirrors Loaded's own linked PO.
-            _attach_po_reference(fresh, lh)
-            attach_item_names(fresh, lh)
-            enrich_loaded_snapshot(fresh, lh, venue_id, db, seed_working=True)
-            fresh["suggestions"] = []
-            doc.data = fresh
-            doc.version += 1
-            flag_modified(doc, "data")
-        db.commit()
-        db.refresh(docs[0])
-    except Exception as exc:  # noqa: BLE001 — refresh is best-effort
-        logger.info("reshape draft failed: %s", exc)
-    return _doc_to_dict(docs[0])
 
 
 class CreateItemRequest(BaseModel):

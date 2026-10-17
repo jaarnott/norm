@@ -19,56 +19,26 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.db.models import Organization, User, UserVenueAccess, Venue
 from app.services import caller_scope
 from tests.conftest import _make_membership, _make_thread
-
-
-def _org(db, name):
-    o = Organization(id=str(uuid.uuid4()), name=name, slug=f"o-{uuid.uuid4().hex[:8]}")
-    db.add(o)
-    db.flush()
-    return o
-
-
-def _venue(db, name, org):
-    v = Venue(id=str(uuid.uuid4()), name=name, organization_id=org.id)
-    db.add(v)
-    db.flush()
-    return v
-
-
-def _user(db, role="user"):
-    u = User(
-        id=str(uuid.uuid4()),
-        email=f"u-{uuid.uuid4().hex[:8]}@x.com",
-        hashed_password="x",
-        full_name="U",
-        role=role,
-        is_active=True,
-    )
-    db.add(u)
-    db.flush()
-    return u
-
-
-def _grant(db, user, venue):
-    db.add(UserVenueAccess(id=str(uuid.uuid4()), user_id=user.id, venue_id=venue.id))
-    db.flush()
+from tests.org_helpers import grant_venue, make_org, make_user, make_venue
 
 
 @pytest.fixture()
 def world(db_session):
     """Cook Brothers (ours) and Rival Co, each with a 'Glass Goose'."""
-    ours, rival = _org(db_session, "Cook Brothers"), _org(db_session, "Rival Co")
+    ours, rival = (
+        make_org(db_session, "Cook Brothers"),
+        make_org(db_session, "Rival Co"),
+    )
     w = SimpleNamespace(
         ours=ours,
         rival=rival,
-        goose=_venue(db_session, "The Glass Goose", ours),
-        murdochs=_venue(db_session, "Mr Murdochs", ours),
-        rival_goose=_venue(db_session, "Glass Goose Rival", rival),
-        rival_zeppa=_venue(db_session, "La Zeppa", rival),
-        user=_user(db_session),
+        goose=make_venue(db_session, "The Glass Goose", ours),
+        murdochs=make_venue(db_session, "Mr Murdochs", ours),
+        rival_goose=make_venue(db_session, "Glass Goose Rival", rival),
+        rival_zeppa=make_venue(db_session, "La Zeppa", rival),
+        user=make_user(db_session),
     )
     _make_membership(db_session, w.user, ours)
     return w
@@ -84,14 +54,14 @@ class TestDerivingTheScope:
         assert caller_scope.for_thread(db_session, thread.id).org_id == world.ours.id
 
     def test_no_membership_falls_back_to_the_users_venues(self, db_session, world):
-        u = _user(db_session)
-        _grant(db_session, u, world.rival_zeppa)
+        u = make_user(db_session)
+        grant_venue(db_session, u, world.rival_zeppa)
         assert caller_scope.for_user(db_session, u).org_id == world.rival.id
 
     def test_a_platform_admin_with_no_organisation_sees_everything(
         self, db_session, world
     ):
-        scope = caller_scope.for_user(db_session, _user(db_session, role="admin"))
+        scope = caller_scope.for_user(db_session, make_user(db_session, role="admin"))
         assert scope.unrestricted
 
     def test_a_venue_scopes_to_its_organisation(self, db_session, world):
@@ -131,7 +101,7 @@ class TestFindVenue:
     def test_with_no_scope_a_name_never_picks_between_organisations(
         self, db_session, world
     ):
-        _venue(db_session, "Mr Murdochs", world.rival)
+        make_venue(db_session, "Mr Murdochs", world.rival)
         v, err = caller_scope.find_venue(db_session, name="Mr Murdochs")
         assert v is None and "more than one venue" in err
 
@@ -232,7 +202,7 @@ class TestHandlers:
             db_session.add(t)
             db_session.flush()
 
-        rival_user = _user(db_session)
+        rival_user = make_user(db_session)
         _make_membership(db_session, rival_user, world.rival)
         task("ours by venue", world.goose, None)
         task("ours by creator", None, world.user)

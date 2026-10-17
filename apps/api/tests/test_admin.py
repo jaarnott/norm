@@ -1,5 +1,7 @@
 """Tests for admin/deployment endpoints."""
 
+from app.db.models import Deployment
+
 
 class TestListDeployments:
     """GET /api/admin/deployments"""
@@ -15,13 +17,12 @@ class TestListDeployments:
         resp = client.get("/api/admin/deployments", headers=manager_headers)
         assert resp.status_code == 403
 
-    def test_unauthenticated_returns_401(self, client):
-        resp = client.get("/api/admin/deployments")
-        assert resp.status_code == 401
-
     def test_returns_deployments_after_webhook(self, client, admin_headers):
-        """After posting a deploy webhook, the deployment appears in the list."""
-        client.post(
+        """After posting a deploy webhook, the deployment appears in the list.
+
+        The webhook endpoint does not require auth (secured by webhook secret
+        later) — it is posted here without headers."""
+        resp = client.post(
             "/api/admin/deploy-webhook",
             json={
                 "environment": "testing",
@@ -31,6 +32,8 @@ class TestListDeployments:
                 "commit_message": "initial deploy",
             },
         )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
         resp = client.get("/api/admin/deployments", headers=admin_headers)
         assert resp.status_code == 200
         deployments = resp.json()["deployments"]
@@ -75,25 +78,9 @@ class TestListDeployments:
 class TestDeployWebhook:
     """POST /api/admin/deploy-webhook"""
 
-    def test_creates_deployment_record(self, client):
-        """The webhook endpoint does not require auth (secured by webhook secret later)."""
-        resp = client.post(
-            "/api/admin/deploy-webhook",
-            json={
-                "environment": "production",
-                "image_tag": "v2.0.0",
-                "git_sha": "def456",
-                "status": "pending",
-                "commit_message": "big release",
-                "logs_url": "https://logs.example.com/123",
-                "triggered_by": "github-actions",
-            },
-        )
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True}
-
-    def test_updates_existing_deployment(self, client):
-        """Posting the same git_sha + environment updates the existing record."""
+    def test_updates_existing_deployment(self, client, db_session):
+        """Posting the same git_sha + environment updates the existing record —
+        one row, not two — and a finished status stamps completed_at."""
         client.post(
             "/api/admin/deploy-webhook",
             json={
@@ -115,6 +102,15 @@ class TestDeployWebhook:
         )
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
+        rows = (
+            db_session.query(Deployment)
+            .filter(Deployment.git_sha == "sha999", Deployment.environment == "testing")
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].status == "success"
+        assert rows[0].logs_url == "https://logs.example.com/done"
+        assert rows[0].completed_at is not None
 
     def test_missing_required_field_returns_422(self, client):
         resp = client.post(

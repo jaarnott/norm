@@ -9,18 +9,15 @@ write, an ``approval`` policy (scripts/sync_approval_labels.py).
 
 import json
 import sys
-import uuid
 from pathlib import Path
 
 import pytest
 
 from app.agents import tool_loop as TL
-from app.db.config_models import ConnectionSpec
 from app.db.models import ToolCall
 from app.services import approvals
 from app.services.config_validator import check_approval_labels
-from tests.conftest import _make_thread
-from tests.test_tool_loop_unknown_tool import _Block, _Response
+from tests.approval_helpers import ask_turn, spec
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.sync_approval_labels import labels  # noqa: E402
@@ -72,74 +69,26 @@ class TestGate:
         assert approvals.gate({}, method, connector, action) == expected
 
 
-def _spec(db, row: dict) -> str:
-    """A connector holding one tool row; returns the connector name."""
-    name = f"t{uuid.uuid4().hex[:10]}"
-    db.add(
-        ConnectionSpec(
-            connector_name=name,
-            display_name=name,
-            execution_mode="internal",
-            auth_type="none",
-            tools=[row],
-        )
-    )
-    db.flush()
-    return name
-
-
-def _tool(connector, action, method="GET"):
-    return {
-        "name": f"{connector}__{action}",
-        "description": f"[{method}] test tool",
-        "input_schema": {"type": "object", "properties": {}},
-    }
-
-
 def _run(db, user, monkeypatch, connector, action, params=None, test_mode=False):
     """One model turn that calls the tool, then a second that ends."""
-    calls = []
-
-    def llm(system_prompt, messages, tools, db, thread_id, call_type):
-        calls.append(1)
-        if len(calls) == 1:
-            return (
-                _Response(
-                    "tool_use",
-                    [
-                        _Block(
-                            "tool_use",
-                            name=f"{connector}__{action}",
-                            id=f"toolu_{uuid.uuid4().hex[:8]}",
-                            input=params or {"to": "dianna@cbhg.co.nz"},
-                        )
-                    ],
-                ),
-                None,  # no llm_calls row to point at
-            )
-        return (_Response("end_turn", [_Block("text", text="Done.")]), None)
-
     ran = []
 
     def fake_execute(tc, db, config_db=None):
         ran.append(dict(tc.input_params or {}))
         return {"ok": True}
 
-    monkeypatch.setattr("app.interpreter.llm_interpreter.call_llm_with_tools", llm)
     monkeypatch.setattr(TL, "_execute_tool_call", fake_execute)
     monkeypatch.setattr(
         TL, "_execute_tool_call_in_thread", lambda tc_id, cb: (tc_id, {"ok": True})
     )
-    thread = _make_thread(
-        db, user, domain="norm", intent="norm.tool_use", status="in_progress"
-    )
-    TL.run_tool_loop(
-        "go",
-        thread,
+    thread, _ = ask_turn(
         db,
-        "sys",
-        [_tool(connector, action)],
-        config_db=db,
+        user,
+        monkeypatch,
+        connector,
+        action,
+        [params or {"to": "dianna@cbhg.co.nz"}],
+        said=None,
         test_mode=test_mode,
     )
     tcs = db.query(ToolCall).filter(ToolCall.thread_id == thread.id).all()
@@ -148,7 +97,7 @@ def _run(db, user, monkeypatch, connector, action, params=None, test_mode=False)
 
 class TestTheLoopFollowsTheLabel:
     def test_a_get_declared_write_now_asks(self, db_session, admin_user, monkeypatch):
-        conn = _spec(
+        conn = spec(
             db_session,
             {
                 "action": "send_report_email",
@@ -167,7 +116,7 @@ class TestTheLoopFollowsTheLabel:
     def test_an_auto_write_runs_without_a_card(
         self, db_session, admin_user, monkeypatch
     ):
-        conn = _spec(
+        conn = spec(
             db_session,
             {
                 "action": "remember",
@@ -185,7 +134,7 @@ class TestTheLoopFollowsTheLabel:
         self, db_session, admin_user, monkeypatch
     ):
         """A "Test" run of a task used to send the report email for real."""
-        conn = _spec(
+        conn = spec(
             db_session,
             {
                 "action": "send_report_email",
@@ -209,7 +158,7 @@ class TestTheLoopFollowsTheLabel:
     def test_a_test_run_runs_a_tiered_tool_at_its_level_that_writes_nothing(
         self, db_session, admin_user, monkeypatch
     ):
-        conn = _spec(
+        conn = spec(
             db_session,
             {
                 "action": "review_and_receive_invoices",
@@ -312,12 +261,12 @@ class TestEveryReaderUsesTheLabel:
     def test_an_app_calling_a_get_declared_write_needs_write_approval(self, db_session):
         from app.services.app_runtime import _tool_writes
 
-        conn = _spec(
+        conn = spec(
             db_session,
             {"action": "w", "method": "GET", "effect": "write", "approval": ASK},
         )
         assert _tool_writes(db_session, conn, "w", "GET") is True
-        draft = _spec(db_session, {"action": "d", "method": "GET", "effect": "draft"})
+        draft = spec(db_session, {"action": "d", "method": "GET", "effect": "draft"})
         assert _tool_writes(db_session, draft, "d", "GET") is False
 
     def test_the_app_map_badge_follows_the_label(self, db_session):
@@ -325,7 +274,7 @@ class TestEveryReaderUsesTheLabel:
         GET-declared writer."""
         from app.services.agent_catalog import _CapabilityContext
 
-        conn = _spec(
+        conn = spec(
             db_session,
             {"action": "w", "method": "GET", "effect": "write", "approval": ASK},
         )

@@ -101,13 +101,11 @@ class TestPlaybookCapability:
         assert any("disabled" in i.problem for i in issues)
 
     def test_missing_playbook_is_caught(self):
+        """Also (was TestIssueShape::test_where_and_fix_populated): the issue
+        names where it is, is an error, and says how to fix it."""
         issues = _check("playbook", "nope", "", ["mcp:reports:read"], None, None)
         assert any("does not exist" in i.problem for i in issues)
-
-
-class TestIssueShape:
-    def test_where_and_fix_populated(self):
-        issue = _check("playbook", "nope", "", ["mcp:reports:read"], None, None)[0]
+        issue = issues[0]
         assert issue.where.startswith("mcp.")
         assert issue.severity == "error"
         assert issue.fix  # every issue must be actionable

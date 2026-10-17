@@ -9,20 +9,17 @@ ordinary write, a level and switches for the invoice tools. Anyone sets their
 own — in Settings, from an approval card, or by asking Norm (which asks first).
 """
 
-import importlib.util
-import pathlib
 import uuid
 
 import pytest
 
 from app.agents import internal_tools as IT
 from app.agents import tool_loop as TL
-from app.auth.security import create_access_token
 from app.db.config_models import ConnectionSpec, MarketplaceApp
 from app.db.models import Approval, AutomatedTask, Thread
 from app.services import approvals
+from tests.approval_helpers import ask_turn, card_of, headers, price_previewer, spec
 from tests.conftest import _make_thread, _make_user
-from tests.test_approval_previews import _card_of, _price_previewer, _turn
 
 STOCK = {
     "action": "manage_stock_item",
@@ -76,85 +73,6 @@ def _person(db, prefs=None):
     user.approval_preferences = prefs
     db.flush()
     return user
-
-
-def _headers(user):
-    return {"Authorization": f"Bearer {create_access_token({'sub': user.id})}"}
-
-
-# --------------------------------------------------------------- migration ----
-
-
-def _migration():
-    path = next(
-        pathlib.Path(__file__)
-        .resolve()
-        .parents[1]
-        .glob("alembic/versions/w8x9y0z1a2b3_*.py")
-    )
-    spec = importlib.util.spec_from_file_location("stage4_migration", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.preferences_for
-
-
-ON = {
-    "mode": "autopilot",
-    "auto_strike_phantom_lines": True,
-    "auto_delete_duplicates": True,
-}
-
-
-class TestTheMigrationKeepsWhatEachPersonHad:
-    """Production, 3 Oct 2026: all six venues on autopilot with the same three
-    switches; Felipe had chosen approve_fixes for receiving and the platform
-    admin approve_all — both ignored while receiving was the venue's."""
-
-    def test_venues_on_autopilot_carry_over_with_their_switches(self):
-        prefs = _migration()({}, [ON, ON], False)
-        assert prefs == {
-            approvals.RECEIVE_KEY: {
-                "level": "autopilot",
-                "options": {
-                    "auto_delete_duplicates": True,
-                    "auto_strike_phantom_lines": True,
-                },
-            }
-        }
-
-    def test_the_lowest_venue_wins_and_a_switch_needs_every_venue(self):
-        fixes = {"mode": "approve_fixes", "auto_strike_phantom_lines": True}
-        prefs = _migration()({}, [ON, fixes], False)
-        assert prefs[approvals.RECEIVE_KEY] == {
-            "level": "approve_fixes",
-            "options": {"auto_strike_phantom_lines": True},
-        }
-
-    def test_a_lower_personal_choice_wins(self):
-        felipe = {"review_and_receive_invoices": "approve_fixes"}
-        assert _migration()(felipe, [ON], False)[approvals.RECEIVE_KEY]["level"] == (
-            "approve_fixes"
-        )
-        admin = {"review_and_receive_invoices": "approve_all"}
-        assert approvals.RECEIVE_KEY not in _migration()(admin, [ON], False)
-
-    def test_reconciling_keeps_the_personal_mode(self):
-        dianna = {"reconcile_received_invoices": "approve_fixes"}
-        prefs = _migration()(dianna, [], False)
-        assert prefs == {approvals.RECONCILE_KEY: {"level": "approve_fixes"}}
-
-    def test_a_task_owner_keeps_their_report_email_running(self):
-        """The report email ran unasked until it was labelled a write; a daily
-        report must not stop at a card nobody is watching."""
-        assert _migration()({}, [], True) == {
-            "norm_email.send_report_email": {"always": True}
-        }
-
-    def test_nobody_gets_more_than_they_had(self):
-        assert _migration()({}, [], False) == {}
-        assert (
-            _migration()({"reconcile_received_invoices": "nonsense"}, [{}], False) == {}
-        )
 
 
 # -------------------------------------------------------------------- gate ----
@@ -346,25 +264,10 @@ class TestTheInvoiceToolsRunAtThePersonsLevel:
 # -------------------------------------------------------------- the loop ----
 
 
-def _spec(db, row):
-    name = f"t{uuid.uuid4().hex[:10]}"
-    db.add(
-        ConnectionSpec(
-            connector_name=name,
-            display_name=name,
-            execution_mode="internal",
-            auth_type="none",
-            tools=[row],
-        )
-    )
-    db.flush()
-    return name
-
-
 class TestTheLoop:
     def _wire(self, db_session, monkeypatch, row):
-        conn = _spec(db_session, {**row, "action": "set_price"})
-        monkeypatch.setitem(IT._PREVIEWERS, (conn, "set_price"), _price_previewer(34))
+        conn = spec(db_session, {**row, "action": "set_price"})
+        monkeypatch.setitem(IT._PREVIEWERS, (conn, "set_price"), price_previewer(34))
         ran = []
         monkeypatch.setitem(
             IT._REGISTRY,
@@ -378,7 +281,7 @@ class TestTheLoop:
     ):
         conn, ran = self._wire(db_session, monkeypatch, STOCK)
         user = _person(db_session, {f"{conn}.set_price": {"always": True}})
-        thread, seen = _turn(
+        thread, seen = ask_turn(
             db_session, user, monkeypatch, conn, "set_price", [{"price": 36}]
         )
 
@@ -394,7 +297,7 @@ class TestTheLoop:
         conn, ran = self._wire(db_session, monkeypatch, STOCK)
         _person(db_session, {f"{conn}.set_price": {"always": True}})
         stranger = _person(db_session)
-        thread, _ = _turn(
+        thread, _ = ask_turn(
             db_session, stranger, monkeypatch, conn, "set_price", [{"price": 36}]
         )
         assert thread.status == approvals.AWAITING
@@ -407,10 +310,10 @@ class TestAlwaysAllowFromTheCard:
     ):
         conn, ran = TestTheLoop()._wire(db_session, monkeypatch, STOCK)
         user = _person(db_session)
-        thread, _ = _turn(
+        thread, _ = ask_turn(
             db_session, user, monkeypatch, conn, "set_price", [{"price": 36}]
         )
-        row = _card_of(db_session, thread)["data"]["tool_calls"][0]
+        row = card_of(db_session, thread)["data"]["tool_calls"][0]
         assert row["approval"] == {
             "key": f"{conn}.set_price",
             "label": "update stock items",
@@ -423,7 +326,7 @@ class TestAlwaysAllowFromTheCard:
         r = client.post(
             f"/api/threads/{thread.id}/approve",
             json={"always_allow": [f"{conn}.set_price", "loadedhub.manage_menu"]},
-            headers=_headers(user),
+            headers=headers(user),
         )
 
         assert r.status_code == 200, r.text
@@ -439,9 +342,9 @@ class TestAlwaysAllowFromTheCard:
 @pytest.fixture()
 def catalog(db_session, monkeypatch):
     """A connector with each kind of write, claimed by an App."""
-    conn = _spec(db_session, STOCK)
-    spec = db_session.query(ConnectionSpec).filter_by(connector_name=conn).one()
-    spec.tools = [STOCK, LOCKED, AUTO, RECEIVE]
+    conn = spec(db_session, STOCK)
+    row = db_session.query(ConnectionSpec).filter_by(connector_name=conn).one()
+    row.tools = [STOCK, LOCKED, AUTO, RECEIVE]
     db_session.add(
         MarketplaceApp(
             slug=f"app-{conn}",
@@ -466,7 +369,7 @@ def catalog(db_session, monkeypatch):
 class TestTheSettingsPage:
     def test_it_lists_every_write_with_its_kind(self, client, db_session, catalog):
         user = _person(db_session)
-        r = client.get("/api/approval-preferences", headers=_headers(user))
+        r = client.get("/api/approval-preferences", headers=headers(user))
         assert r.status_code == 200, r.text
         mine = [t for t in r.json()["tools"] if t["key"].startswith(catalog)]
         assert [(t["label"], t["kind"]) for t in mine] == [
@@ -485,7 +388,7 @@ class TestTheSettingsPage:
         key = f"{catalog}.review_and_receive_invoices"
         on = {"auto_create_units": True, "receive_unreconciled_totals": True}
         user = _person(db_session, {key: {"level": "autopilot", "options": on}})
-        r = client.get("/api/approval-preferences", headers=_headers(user))
+        r = client.get("/api/approval-preferences", headers=headers(user))
         [tool] = [t for t in r.json()["tools"] if t["key"] == key]
         assert tool["options"] == {"auto_create_units": True}
         assert "reconcile" not in tool["summary"]
@@ -495,7 +398,7 @@ class TestTheSettingsPage:
                 "key": key,
                 "value": {"level": "autopilot", "options": tool["options"]},
             },
-            headers=_headers(user),
+            headers=headers(user),
         )
         assert r.status_code == 200, r.text
 
@@ -504,7 +407,7 @@ class TestTheSettingsPage:
         r = client.put(
             "/api/approval-preferences",
             json={"key": f"{catalog}.manage_stock_item", "value": "always"},
-            headers=_headers(user),
+            headers=headers(user),
         )
         assert r.status_code == 200, r.text
         assert r.json()["value"] == "always"
@@ -519,26 +422,15 @@ class TestTheSettingsPage:
         locked = client.put(
             "/api/approval-preferences",
             json={"key": f"{catalog}.set_approval_preference", "value": "always"},
-            headers=_headers(user),
+            headers=headers(user),
         )
         assert locked.status_code == 400
         unknown = client.put(
             "/api/approval-preferences",
             json={"key": "nope.nothing", "value": "always"},
-            headers=_headers(user),
+            headers=headers(user),
         )
         assert unknown.status_code == 404
-
-    def test_the_old_endpoints_are_gone(self, client, admin_headers):
-        assert (
-            client.get("/api/workflow-modes", headers=admin_headers).status_code == 404
-        )
-        assert (
-            client.get(
-                "/api/venues/x/invoice-autopilot", headers=admin_headers
-            ).status_code
-            == 404
-        )
 
 
 # ------------------------------------------------------------ chat + prompt ----
@@ -616,6 +508,7 @@ class TestAskingNorm:
 
 class TestThePromptSaysWhatRunsUnasked:
     def test_levels_and_always_allowed_writes_are_stated(self, db_session, entries):
+        """...and writes that ask need no mention."""
         from app.agents.prompt_builder import approval_preferences_guidance
 
         user = _person(
@@ -646,12 +539,10 @@ class TestThePromptSaysWhatRunsUnasked:
         )
         assert "set_approval_preference" in text
 
-    def test_writes_that_ask_need_no_mention(self, db_session, entries):
-        from app.agents.prompt_builder import approval_preferences_guidance
-
-        user = _person(db_session)
+        # Writes that ask need no mention: someone who allows nothing gets none.
+        nobody = _person(db_session)
         text = approval_preferences_guidance(
-            {"manage_stock_item"}, db_session, user.id, None
+            {"manage_stock_item"}, db_session, nobody.id, None
         )
         assert text == ""
 

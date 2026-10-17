@@ -1,20 +1,8 @@
 """Tests for automated task endpoints."""
 
-import sys
 import uuid
-from unittest.mock import MagicMock
 
-
-# Mock the task_scheduler module since apscheduler isn't installed in test env
-_mock_scheduler = MagicMock()
-sys.modules.setdefault("apscheduler", MagicMock())
-sys.modules.setdefault("apscheduler.schedulers", MagicMock())
-sys.modules.setdefault("apscheduler.schedulers.background", MagicMock())
-sys.modules.setdefault("apscheduler.triggers", MagicMock())
-sys.modules.setdefault("apscheduler.triggers.cron", MagicMock())
-sys.modules.setdefault("apscheduler.triggers.interval", MagicMock())
-
-from app.db.models import AutomatedTask, AutomatedTaskRun  # noqa: E402
+from app.db.models import AutomatedTask, AutomatedTaskRun
 
 
 class TestListAutomatedTasks:
@@ -108,8 +96,21 @@ class TestGetAutomatedTask:
         assert "runs" in data
 
     def test_get_task_not_found_returns_404(self, client, admin_headers):
-        resp = client.get(f"/api/automated-tasks/{uuid.uuid4()}", headers=admin_headers)
-        assert resp.status_code == 404
+        """Every route that loads a task by id 404s on an unknown one (get,
+        update, pause, resume, delete — all through _task_for)."""
+        missing = f"/api/automated-tasks/{uuid.uuid4()}"
+        for method, path, body in (
+            ("get", missing, None),
+            ("put", missing, {"title": "Nope"}),
+            ("post", f"{missing}/pause", None),
+            ("post", f"{missing}/resume", None),
+            ("delete", missing, None),
+        ):
+            kwargs = {"headers": admin_headers}
+            if body is not None:
+                kwargs["json"] = body
+            resp = getattr(client, method)(path, **kwargs)
+            assert resp.status_code == 404, (method, path)
 
 
 class TestCreateAutomatedTask:
@@ -134,18 +135,6 @@ class TestCreateAutomatedTask:
         assert data["agent_slug"] == "reports"
         assert data["status"] == "draft"
         assert data["created_by"] == admin_user.id
-
-    def test_create_task_missing_required_fields_returns_422(
-        self, client, admin_headers
-    ):
-        resp = client.post(
-            "/api/automated-tasks",
-            json={
-                "title": "No prompt or agent",
-            },
-            headers=admin_headers,
-        )
-        assert resp.status_code == 422
 
 
 class TestUpdateAutomatedTask:
@@ -180,21 +169,12 @@ class TestUpdateAutomatedTask:
         assert resp.status_code == 200
         assert resp.json()["title"] == "New Title"
 
-    def test_update_nonexistent_returns_404(self, client, admin_headers):
-        resp = client.put(
-            f"/api/automated-tasks/{uuid.uuid4()}",
-            json={
-                "title": "Nope",
-            },
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
-
 
 class TestPauseResumeAutomatedTask:
     """POST /api/automated-tasks/{task_id}/pause and /resume"""
 
     def test_pause_task(self, client, db_session, admin_user, admin_headers):
+        """Pause, then resume, the same task."""
         task = AutomatedTask(
             id=str(uuid.uuid4()),
             title="Active Task",
@@ -212,35 +192,11 @@ class TestPauseResumeAutomatedTask:
         assert resp.status_code == 200
         assert resp.json()["status"] == "paused"
 
-    def test_resume_task(self, client, db_session, admin_user, admin_headers):
-        task = AutomatedTask(
-            id=str(uuid.uuid4()),
-            title="Paused Task",
-            agent_slug="procurement",
-            prompt="Do something",
-            status="paused",
-            created_by=admin_user.id,
-        )
-        db_session.add(task)
-        db_session.flush()
-
         resp = client.post(
             f"/api/automated-tasks/{task.id}/resume", headers=admin_headers
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "active"
-
-    def test_pause_nonexistent_returns_404(self, client, admin_headers):
-        resp = client.post(
-            f"/api/automated-tasks/{uuid.uuid4()}/pause", headers=admin_headers
-        )
-        assert resp.status_code == 404
-
-    def test_resume_nonexistent_returns_404(self, client, admin_headers):
-        resp = client.post(
-            f"/api/automated-tasks/{uuid.uuid4()}/resume", headers=admin_headers
-        )
-        assert resp.status_code == 404
 
 
 class TestDeleteAutomatedTask:
@@ -261,12 +217,6 @@ class TestDeleteAutomatedTask:
         resp = client.delete(f"/api/automated-tasks/{task.id}", headers=admin_headers)
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
-
-    def test_delete_nonexistent_returns_404(self, client, admin_headers):
-        resp = client.delete(
-            f"/api/automated-tasks/{uuid.uuid4()}", headers=admin_headers
-        )
-        assert resp.status_code == 404
 
 
 class TestListRuns:

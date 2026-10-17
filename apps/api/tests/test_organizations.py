@@ -6,35 +6,6 @@ import uuid
 class TestListOrganizations:
     """GET /api/organizations"""
 
-    def test_list_organizations_returns_user_orgs(
-        self,
-        client,
-        db_session,
-        admin_user,
-        admin_headers,
-        organization,
-        admin_org_membership,
-    ):
-        resp = client.get("/api/organizations", headers=admin_headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "organizations" in data
-        # Platform admins see every org (not just ones they're a member of),
-        # so assert the member's org is present rather than an exact count.
-        ids = {o["id"] for o in data["organizations"]}
-        assert organization.id in ids
-
-    def test_list_organizations_empty_for_no_membership(
-        self,
-        client,
-        db_session,
-        manager_user,
-        manager_headers,
-    ):
-        resp = client.get("/api/organizations", headers=manager_headers)
-        assert resp.status_code == 200
-        assert len(resp.json()["organizations"]) == 0
-
     def test_platform_admin_sees_all_orgs_without_membership(
         self,
         client,
@@ -60,11 +31,13 @@ class TestListOrganizations:
         manager_headers,
         organization,
     ):
-        """A non-admin with no membership must not see other orgs."""
+        """A non-admin with no membership must not see other orgs — the list
+        is empty."""
         resp = client.get("/api/organizations", headers=manager_headers)
         assert resp.status_code == 200
         ids = {o["id"] for o in resp.json()["organizations"]}
         assert organization.id not in ids
+        assert len(resp.json()["organizations"]) == 0
 
     def test_admins_own_org_is_listed_first(
         self,

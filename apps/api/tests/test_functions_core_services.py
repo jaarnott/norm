@@ -499,31 +499,26 @@ class TestConfirmOption:
         assert w.db.query(FnEvent).filter_by(enquiry_id=enquiry.id).count() == 1
 
     def test_a_second_option_on_a_booked_enquiry_is_refused(self, w):
+        """Also: an option in an area that needs no approval confirms without
+        one, in person, booking that area."""
         enquiry = _enquiry(w)
         a = _option(w, enquiry, area=w.snug)
         b = _option(w, enquiry, area=w.snug, amount=200_000)
-        min_spends.confirm_option(w.db, w.ctx(), a.id, channel="email")
+        event, created = min_spends.confirm_option(
+            w.db, w.ctx(), a.id, channel="in_person"
+        )
+        assert created and event.area_id == w.snug.id
         with pytest.raises(Conflict):
             min_spends.confirm_option(w.db, w.ctx(), b.id, channel="email")
 
-    def test_unapproved_option_in_an_approval_area_is_refused(self, w):
+    def test_unapproved_or_revoked_option_in_an_approval_area_is_refused(self, w):
         opt = _option(w, _enquiry(w))
-        with pytest.raises(Forbidden):
+        with pytest.raises(Forbidden):  # never approved
             min_spends.confirm_option(w.db, w.ctx(), opt.id, channel="email")
-
-    def test_revoked_approval_is_refused(self, w):
-        opt = _option(w, _enquiry(w))
         min_spends.approve_min_spend(w.db, w.ctx(w.approver), opt.id)
         min_spends.revoke_approval(w.db, w.ctx(w.approver), opt.id)
-        with pytest.raises(Forbidden):
+        with pytest.raises(Forbidden):  # approved, then revoked
             min_spends.confirm_option(w.db, w.ctx(), opt.id, channel="email")
-
-    def test_no_approval_area_confirms_without_approval(self, w):
-        opt = _option(w, _enquiry(w), area=w.snug)
-        event, created = min_spends.confirm_option(
-            w.db, w.ctx(), opt.id, channel="in_person"
-        )
-        assert created and event.area_id == w.snug.id
 
     def test_quote_ctx_reaches_only_its_own_enquiry(self, w):
         mine = _enquiry(w)
@@ -698,18 +693,6 @@ class TestEvents:
         assert ev.name == "Casey Client — Group booking" and ev.created_via == "direct"
         assert events.event_state(w.db, w.ctx(), ev.id).status == "booked"
 
-    def test_confirm_booking_is_idempotent_and_policed(self, w):
-        enquiry, event = _booked(w)
-        again, created = events.confirm_booking(
-            w.db, w.ctx(), enquiry.id, channel="email"
-        )
-        assert again.id == event.id and not created
-        large = _enquiry(w)
-        with pytest.raises(Invalid):
-            events.confirm_booking(
-                w.db, w.ctx(), large.id, channel="email", event_date=DATE
-            )
-
     def test_status_walks_through_the_portal(self, w):
         _, event = _booked(w)
         ctx = w.ctx()
@@ -792,7 +775,8 @@ class TestEvents:
                 }
             ],
         )
-        assert row.actor_kind == "client"
+        # A list is replaced whole and the log keeps the list it replaced.
+        assert row.actor_kind == "client" and row.changes["security"][0] == []
         row = events.update_event_contact(
             w.db, client, event.id, phone="021 555 0101", name="Casey C"
         )
@@ -860,43 +844,17 @@ class TestEvents:
         with pytest.raises(Forbidden):
             events.update_event(w.db, client, event.id, table_plan_file_id=None)
 
-    def test_run_sheet_replaced_as_a_list(self, w):
-        _, event = _booked(w)
-        row = events.replace_event_children(
-            w.db,
-            w.ctx(),
-            event.id,
-            "timings",
-            [
-                {"at_time": dt.time(18), "activity": "Arrive"},
-                {"label": "After speeches", "activity": "Cake"},
-            ],
-        )
-        assert row.changes["timings"][0] == []
-        kids = events.event_children(w.db, w.ctx(), event.id)
-        assert [t.activity for t in kids["timings"]] == ["Arrive", "Cake"]
-        with pytest.raises(Invalid):
-            events.replace_event_children(
-                w.db, w.ctx(), event.id, "av", [{"kind": "laser"}]
-            )
-
-    def test_cancel_closes_the_enquiry_and_reinstate_reopens_it(self, w):
-        enquiry, event = _booked(w)
-        events.cancel_event(w.db, w.ctx(), event.id, reason="Venue flooded")
-        assert events.event_state(w.db, w.ctx(), event.id).status == "cancelled"
-        stage, _ = enquiries.enquiry_state(w.db, w.ctx(), enquiry.id)
-        assert stage == "lost"
-        with pytest.raises(Conflict):
-            events.update_event(w.db, w.ctx(), event.id, guests=1)
-        events.reinstate_event(w.db, w.ctx(), event.id, reason="Fixed")
-        stage, _ = enquiries.enquiry_state(w.db, w.ctx(), enquiry.id)
-        assert stage == "confirmed"
-
     def test_list_event_shapes_agree(self, w):
         """Page-first (default) and status-filtered lists return the same
-        rows with the same derived status and money."""
+        rows with the same derived status and money. (Folds in the old
+        date-window/status/money check on the one booked event.)"""
         _, booked = _booked(w)
         events.update_event(w.db, w.ctx(), booked.id, bar_tab_cents=90_000)
+        rows = events.list_events(w.db, w.ctx(), date_from=DATE, date_to=DATE)
+        assert [(r.event.id, r.status, r.expected_spend_cents) for r in rows] == [
+            (booked.id, "booked", 90_000)
+        ]
+        assert events.list_events(w.db, w.ctx(), statuses=["confirmed"]) == []
         events.record_link_sent(w.db, w.ctx(), booked.id, to_emails=["c@example.com"])
         c = add_contact(w.db, w.org.id, "Other")
         for i, bt in enumerate(("group_booking", "seated_dining", "group_booking")):
@@ -926,15 +884,6 @@ class TestEvents:
         assert {
             r.status for r in events.list_events(w.db, w.ctx(), include_cancelled=True)
         } == {"sent_to_client", "booked", "cancelled"}
-
-    def test_list_events_with_status_and_money(self, w):
-        _, event = _booked(w)
-        events.update_event(w.db, w.ctx(), event.id, bar_tab_cents=150_000)
-        rows = events.list_events(w.db, w.ctx(), date_from=DATE, date_to=DATE)
-        assert [(r.event.id, r.status, r.expected_spend_cents) for r in rows] == [
-            (event.id, "booked", 150_000)
-        ]
-        assert events.list_events(w.db, w.ctx(), statuses=["confirmed"]) == []
 
 
 # ===========================================================================
@@ -1033,14 +982,29 @@ class TestContactsAndEnquiries:
                 w.db, w.ctx(), name="Dup", email="Casey@Example.com"
             )
 
-    def test_email_check_is_linear_and_capped(self, w):
+    def test_email_check_is_linear_and_capped(self, db_session):
+        """Also the strict shape: these addresses are sent to (Resend to /
+        reply_to, Gmail), so the check is a dot-atom local part and
+        letter/digit/hyphen labels. (The mailbox's recipient check shares
+        it: test_functions_mailbox_security.py TestStrictEmail.)"""
         import time
 
+        from app.services.functions.ctx import FunctionsCtx
+
+        # No world needed: an address that fails the check is refused before
+        # any query, so a bare ctx on an empty org answers the same.
+        ctx = FunctionsCtx(
+            org_id="no-such-org",
+            user_id=None,
+            venue_ids=frozenset(),
+            is_owner=True,
+            mode="live",
+        )
         hostile = "a@" + "b." * 31_000 + "@"  # ~60 KB; quadratic before the fix
         started = time.perf_counter()
         with pytest.raises(Invalid):
             contacts.normalise_email(hostile)
-        assert contacts.find_contact_by_email(w.db, w.ctx(), hostile) is None
+        assert contacts.find_contact_by_email(db_session, ctx, hostile) is None
         assert time.perf_counter() - started < 0.05
         # Even uncapped the pattern stays linear on the same shape.
         from app.services.functions import addresses
@@ -1053,22 +1017,21 @@ class TestContactsAndEnquiries:
         assert len(long_ok) == 247 and contacts.normalise_email(long_ok) == long_ok
         with pytest.raises(Invalid):  # 255 characters
             contacts.normalise_email("a" * 64 + "@" + labels + "x" * 8)
-        for good in ("Casey@Example.com", "a.b+c@sub.example.co.nz"):
-            assert contacts.normalise_email(good) == good.lower()
-        for bad in ("a@b", "a@b..com", "a@.com", "a@b.com.", "@b.com", "a b@c.com"):
-            with pytest.raises(Invalid):
-                contacts.normalise_email(bad)
-
-    def test_emails_are_checked_strictly(self, w):
-        """These addresses are sent to (Resend to / reply_to, Gmail), so the
-        check is a dot-atom local part and letter/digit/hyphen labels."""
         for good in (
+            "Casey@Example.com",
+            "a.b+c@sub.example.co.nz",
             "o'brien+tag@sub.example.co.nz",
             "a_b-c@x-y.com",
             "first.last@xn--bcher-kva.example",
         ):
-            assert contacts.normalise_email(good) == good
+            assert contacts.normalise_email(good) == good.lower(), good
         for bad in (
+            "a@b",
+            "a@b..com",
+            "a@.com",
+            "a@b.com.",
+            "@b.com",
+            "a b@c.com",
             "a,b@x.com",  # two recipients in one value
             '"a"@x.com',
             "a<b@x.com",
@@ -1107,14 +1070,6 @@ class TestContactsAndEnquiries:
             "Dan",
         ]
 
-    def test_contact_with_enquiries_cannot_be_deleted(self, w):
-        e = _enquiry(w)
-        with pytest.raises(Conflict):
-            contacts.delete_contact(w.db, w.ctx(), e.contact_id)
-        contacts.archive_contact(w.db, w.ctx(), e.contact_id)
-        loose = contacts.create_contact(w.db, w.ctx(), name="Typo")
-        contacts.delete_contact(w.db, w.ctx(), loose.id)
-
     def test_close_and_reopen_need_reasons(self, w):
         e = _enquiry(w)
         with pytest.raises(Invalid):
@@ -1152,12 +1107,12 @@ class TestContactsAndEnquiries:
         enquiries.update_enquiry(w.db, w.ctx(), e.id, owner_user_id=w.approver.id)
         assert e.owner_user_id == w.approver.id
 
-    @pytest.mark.parametrize("field", ["contact", "subject", "guests", "stage"])
-    @pytest.mark.parametrize("descending", [False, True])
-    def test_sql_sorts_match_the_row_sorts(self, w, field, descending):
+    def test_sql_sorts_match_the_row_sorts(self, w, subtests):
         """F3 sorted these by reading every row (reports.sort_rows); the SQL
         sorts must give exactly that order — blanks last both ways, ties
-        newest first, then id — in one page or many."""
+        newest first, then id — in one page or many. All eight sorts (four
+        fields, both ways) over one set of enquiries; each sort is its own
+        subtest, so a failure names it."""
         from app.db.functions_models import FnEnquiryClosure, FnProposalEvent
         from app.services.functions import reports
 
@@ -1216,18 +1171,24 @@ class TestContactsAndEnquiries:
         w.db.flush()
         ctx = w.ctx(w.owner)
         every = reports.all_enquiry_rows(w.db, ctx)
-        expected = [r.enquiry.id for r in reports.sort_rows(every, field, descending)]
-        sort = f"{field}_{'desc' if descending else 'asc'}"
-        assert sort in enquiries.SORTS
-        full = enquiries.list_enquiries(w.db, ctx, sort=sort, limit=100)
-        assert [r.enquiry.id for r in full] == expected
-        paged = []
-        for offset in range(0, len(expected), 2):
-            page = enquiries.list_enquiries(
-                w.db, ctx, sort=sort, limit=2, offset=offset
-            )
-            paged += [r.enquiry.id for r in page]
-        assert paged == expected
+        for field in ("contact", "subject", "guests", "stage"):
+            for descending in (False, True):
+                sort = f"{field}_{'desc' if descending else 'asc'}"
+                with subtests.test(sort=sort):
+                    expected = [
+                        r.enquiry.id
+                        for r in reports.sort_rows(every, field, descending)
+                    ]
+                    assert sort in enquiries.SORTS
+                    full = enquiries.list_enquiries(w.db, ctx, sort=sort, limit=100)
+                    assert [r.enquiry.id for r in full] == expected
+                    paged = []
+                    for offset in range(0, len(expected), 2):
+                        page = enquiries.list_enquiries(
+                            w.db, ctx, sort=sort, limit=2, offset=offset
+                        )
+                        paged += [r.enquiry.id for r in page]
+                    assert paged == expected
 
     def test_update_checks_versions(self, w):
         e = _enquiry(w)

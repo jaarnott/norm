@@ -8,16 +8,9 @@ Fixtures mirror the live LoadedHub shapes captured 16-17 Jul 2026 (statement
 create/update contract exercised in the test env).
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-FUNCTION_CODE = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "reconcile_received_invoices.py"
-).read_text(encoding="utf-8")
+FUNCTION_CODE = harness.source("reconcile_received_invoices")
 
 
 class Api:
@@ -126,12 +119,6 @@ class Api:
 
 
 def run_consolidator(api, **params):
-    namespace = {
-        "__builtins__": _SAFE_BUILTINS,
-        **_SAFE_MODULES,
-        "extract_document": api.extract_document,
-    }
-    exec(FUNCTION_CODE, namespace)
     # Default to approve_fixes (the pre-modes behaviour) so existing assertions
     # about auto-reconciling hold; mode-specific tests override this.
     defaults = {
@@ -140,7 +127,12 @@ def run_consolidator(api, **params):
         "mode": "approve_fixes",
         **params,
     }
-    return namespace["run"](defaults, api.call_api, lambda m: None)
+    return harness.call(
+        FUNCTION_CODE,
+        defaults,
+        api.call_api,
+        extract_document=api.extract_document,
+    )
 
 
 SUPPLIER = "8fa8e731-23d0-4cb9-be56-9fa7010e0d50"
@@ -220,6 +212,8 @@ def sole_fail(result):
 
 class TestReconciles:
     def test_perfect_invoice_is_reconciled(self):
+        """Also: the verdict carries the ACTUAL values read from each side, so
+        the report can prove what the checks compared."""
         api = api_for(make_received())
         result = run_consolidator(api)
         assert result["summary"] == {
@@ -227,7 +221,8 @@ class TestReconciles:
             "not_reconciled": 0,
             "needs_statement": 0,
         }
-        assert result["reconciled"][0]["outcome"] == "reconciled"
+        verdict = result["reconciled"][0]
+        assert verdict["outcome"] == "reconciled"
         assert len(api.updated) == 1
         stmt_id, body = api.updated[0]
         assert stmt_id == STMT_ID
@@ -236,11 +231,25 @@ class TestReconciles:
         assert items[0]["reconciled"] is True
         assert items[0]["id"] == "recv-1"
 
-    def test_approve_all_never_writes(self):
-        api = api_for(make_received())
-        result = run_consolidator(api, mode="approve_all")
-        assert result["reconciled"][0]["outcome"] == "awaiting your approval"
-        assert api.updated == [] and api.created == []
+        assert verdict["checks"]["invoice_number_match"] == "pass"
+        c = verdict["comparison"]
+        assert c["po_number"] == {
+            "loaded": "1521021",
+            "document": "PO#1521021",
+            "match": True,
+        }
+        assert c["invoice_date"] == {
+            "loaded": "2026-07-13",
+            "document": "2026-07-13",
+            "match": True,
+        }
+        assert c["total_incl_tax"] == {
+            "loaded": "$182.09",
+            "document": "$182.09",
+            "match": True,
+        }
+        assert c["invoice_number"]["document"] == "1008102"
+        assert c["invoice_number"]["match"] is True
 
     def test_existing_statement_items_are_preserved(self):
         existing_item = {"id": "old-1", "reconciled": True}
@@ -285,11 +294,28 @@ class TestReconciles:
 
 
 class TestFailures:
+    """Each failure names its reason. Every verdict also carries the ACTUAL
+    values read from each side (`comparison`, and the ✓/✗ display row), so
+    the report can prove what the checks compared — those checks ride on the
+    failure case with the same inputs."""
+
     def test_missing_file_fails_check_1(self):
         api = api_for(make_received(fileId=None))
-        verdict = sole_fail(run_consolidator(api))
+        result = run_consolidator(api)
+        verdict = sole_fail(result)
         assert any("No invoice copy attached" in r for r in verdict["reasons"])
         assert api.updated == []
+        # the field checks never ran: nothing is claimed either way
+        assert all(f["match"] is None for f in verdict["comparison"].values()), verdict[
+            "comparison"
+        ]
+        assert (
+            verdict["comparison"]["total_incl_tax"]["document"] == "(no copy attached)"
+        )
+        # ...and the display row shows the sentinel with no ✓/✗
+        row = result["results"][0]
+        assert row["total_doc"] == "(no copy attached)"
+        assert row["po_doc"] == "(no copy attached)"
 
     def test_unreadable_pdf_fails(self):
         api = api_for(make_received(), pdf={"error": "corrupt"})
@@ -297,6 +323,7 @@ class TestFailures:
         assert any(
             "Could not read the attached invoice copy" in r for r in verdict["reasons"]
         )
+        assert verdict["comparison"]["po_number"]["document"] == "(unreadable)"
 
     def test_wrong_attachment_fails_sanity(self):
         api = api_for(make_received(), pdf=make_pdf(invoice_number="9999"))
@@ -333,8 +360,13 @@ class TestFailures:
         api = api_for(
             make_received(), pdf=make_pdf(customer_purchase_order_number=None)
         )
-        verdict = sole_fail(run_consolidator(api))
+        result = run_consolidator(api)
+        verdict = sole_fail(result)
         assert any("PO number mismatch" in r for r in verdict["reasons"])
+        # the missing document value renders as a dash with a cross
+        row = result["results"][0]
+        assert row["po_doc"] == "— ✗"
+        assert row["po_loaded"] == "1521021"
 
     def test_the_suppliers_own_order_number_is_not_a_mismatch(self):
         """Service Foods, 17 Aug 2026 — 27 of 67 failures. The copy prints the
@@ -385,8 +417,21 @@ class TestFailures:
 
     def test_three_cent_total_difference_fails_with_both_totals(self):
         api = api_for(make_received(), pdf=make_pdf(total_incl_tax=182.12))
-        verdict = sole_fail(run_consolidator(api))
+        result = run_consolidator(api)
+        verdict = sole_fail(result)
         assert any("$182.09" in r and "$182.12" in r for r in verdict["reasons"])
+        # the mismatched field is marked false; the other checks are unaffected
+        assert verdict["comparison"]["total_incl_tax"]["match"] is False
+        assert verdict["comparison"]["po_number"]["match"] is True
+        # display row: side-by-side values with ticks
+        row = result["results"][0]
+        assert row["invno_doc"] == "1008102 ✓"
+        assert row["po_loaded"] == "1521021"
+        assert row["po_doc"] == "PO#1521021 ✓"
+        assert row["date_loaded"] == "2026-07-13"
+        assert row["date_doc"] == "2026-07-13 ✓"
+        assert row["total_loaded"] == "$182.09"
+        assert row["total_doc"] == "$182.12 ✗"
 
     def test_unreadable_total_fails(self):
         api = api_for(make_received(), pdf=make_pdf(total_incl_tax=None))
@@ -461,11 +506,16 @@ class TestStatementMatching:
         assert outcomes["B-1"] == "needs statement (fails checks)"
 
     def test_create_missing_statements_only_when_asked(self):
+        # A supplier with a PASSING received invoice but NO covering
+        # statement: in approve_fixes we must NOT auto-create a statement
+        # (autopilot would — TestRunModes).
         orphan = make_received(supplierId="other", supplierName="Orphan Foods")
         api = Api(statements=[], received=[orphan], pdfs={FILE_ID: make_pdf()})
-        result = run_consolidator(api)
+        result = run_consolidator(api, mode="approve_fixes")
         assert api.created == []
         assert result["summary"]["needs_statement"] == 1
+        outcome = result["results"][0]["outcome"]
+        assert outcome == "needs statement (all checks pass)"
 
     def test_create_missing_statements_creates_and_reconciles(self):
         orphan = make_received(supplierId="other", supplierName="Orphan Foods")
@@ -480,6 +530,8 @@ class TestStatementMatching:
         assert result["summary"]["needs_statement"] == 0
 
     def test_create_missing_is_a_noop_in_dry_run(self):
+        """...and the report says no statement was made (consolidator review,
+        1 Oct 2026)."""
         orphan = make_received(supplierId="other", supplierName="Orphan Foods")
         api = Api(statements=[], received=[orphan], pdfs={FILE_ID: make_pdf()})
         result = run_consolidator(
@@ -487,6 +539,7 @@ class TestStatementMatching:
         )
         assert api.created == []
         assert result["summary"]["needs_statement"] == 1
+        assert "no statement was created" in result["report"]["statements_not_created"]
 
     def test_failing_invoices_never_join_a_created_statement(self):
         good = make_received(
@@ -508,93 +561,6 @@ class TestStatementMatching:
         assert len(api.created) == 1
         ids = [i["id"] for i in api.created[0]["reconciledStockReceivedItems"]]
         assert ids == ["a"]
-
-
-class TestComparisonEvidence:
-    """Every verdict must carry the ACTUAL values read from each side, so the
-    report can prove what the checks compared."""
-
-    def test_comparison_holds_both_sides_values(self):
-        api = api_for(make_received())
-        verdict = run_consolidator(api)["reconciled"][0]
-        c = verdict["comparison"]
-        assert c["po_number"] == {
-            "loaded": "1521021",
-            "document": "PO#1521021",
-            "match": True,
-        }
-        assert c["invoice_date"] == {
-            "loaded": "2026-07-13",
-            "document": "2026-07-13",
-            "match": True,
-        }
-        assert c["total_incl_tax"] == {
-            "loaded": "$182.09",
-            "document": "$182.09",
-            "match": True,
-        }
-        assert c["invoice_number"]["document"] == "1008102"
-        assert c["invoice_number"]["match"] is True
-
-    def test_mismatch_fields_are_marked_false(self):
-        api = api_for(make_received(), pdf=make_pdf(total_incl_tax=99.0))
-        verdict = run_consolidator(api)["not_reconciled"][0]
-        c = verdict["comparison"]
-        assert c["total_incl_tax"]["match"] is False
-        assert c["po_number"]["match"] is True  # other checks unaffected
-
-    def test_unrun_checks_are_marked_none(self):
-        api = api_for(make_received(fileId=None))
-        verdict = run_consolidator(api)["not_reconciled"][0]
-        assert all(f["match"] is None for f in verdict["comparison"].values()), verdict[
-            "comparison"
-        ]
-
-    def test_invoice_number_check_passes_and_is_reported(self):
-        api = api_for(make_received())
-        verdict = run_consolidator(api)["reconciled"][0]
-        assert verdict["checks"]["invoice_number_match"] == "pass"
-
-    def test_display_rows_show_side_by_side_values_with_ticks(self):
-        api = api_for(make_received(), pdf=make_pdf(total_incl_tax=182.12))
-        row = run_consolidator(api)["results"][0]
-        assert row["invno_doc"] == "1008102 ✓"
-        assert row["po_loaded"] == "1521021"
-        assert row["po_doc"] == "PO#1521021 ✓"
-        assert row["date_loaded"] == "2026-07-13"
-        assert row["date_doc"] == "2026-07-13 ✓"
-        assert row["total_loaded"] == "$182.09"
-        assert row["total_doc"] == "$182.12 ✗"
-
-    def test_missing_copy_marks_document_side(self):
-        api = api_for(make_received(fileId=None))
-        verdict = run_consolidator(api)["not_reconciled"][0]
-        assert (
-            verdict["comparison"]["total_incl_tax"]["document"] == "(no copy attached)"
-        )
-        row = run_consolidator(api_for(make_received(fileId=None)))["results"][0]
-        assert row["total_doc"] == "(no copy attached)"
-
-    def test_unreadable_copy_marks_document_side(self):
-        api = api_for(make_received(), pdf={"error": "corrupt"})
-        verdict = run_consolidator(api)["not_reconciled"][0]
-        assert verdict["comparison"]["po_number"]["document"] == "(unreadable)"
-
-    def test_missing_document_value_renders_dash_with_cross(self):
-        # Strict PO policy: PDF showing no PO number is a failed check.
-        api = api_for(
-            make_received(), pdf=make_pdf(customer_purchase_order_number=None)
-        )
-        row = run_consolidator(api)["results"][0]
-        assert row["po_doc"] == "— ✗"
-        assert row["po_loaded"] == "1521021"
-
-    def test_unverifiable_copy_gets_no_symbols(self):
-        # No copy attached — the field checks never ran, so no ✓/✗ is claimed.
-        api = api_for(make_received(fileId=None))
-        row = run_consolidator(api)["results"][0]
-        assert row["total_doc"] == "(no copy attached)"
-        assert row["po_doc"] == "(no copy attached)"
 
 
 class TestReport:
@@ -627,6 +593,7 @@ class TestRunModes:
         result = run_consolidator(api, mode="approve_all")
         assert result["dry_run"] is True
         assert result["mode"] == "approve_all"
+        assert result["reconciled"][0]["outcome"] == "awaiting your approval"
         assert api.updated == [] and api.created == []
 
     def test_unset_is_dry_run_and_flagged(self):
@@ -636,16 +603,11 @@ class TestRunModes:
         assert result["mode_unset"] is True
         assert api.updated == []
 
-    def test_approve_fixes_reconciles_but_no_auto_create(self):
-        # A supplier with a received invoice but NO covering statement: in
-        # approve_fixes we must NOT auto-create a statement.
-        inv = make_received(invoiceNumber="NOPE", purchaseOrderNumber="9999")
-        api = Api(statements=[], received=[inv], pdfs={FILE_ID: make_pdf()})
-        run_consolidator(api, mode="approve_fixes")
-        assert api.created == []
-
     def test_autopilot_auto_creates_missing_statements(self):
-        # Same setup, autopilot → statements auto-created for the passing invoice.
+        # The setup of TestStatementMatching::
+        # test_create_missing_statements_only_when_asked (approve_fixes: no
+        # auto-create); autopilot → statements auto-created for the passing
+        # invoice.
         inv = make_received()
         api = Api(statements=[], received=[inv], pdfs={FILE_ID: make_pdf()})
         run_consolidator(api, mode="autopilot")
@@ -805,6 +767,19 @@ class TestTheReportTheEmailIsWrittenFrom:
         assert ex["invoices"][0]["detail"] == "copy shows 3459273"
         assert ex["invoices"][0]["invoice"] == "1008102"
 
+        # A failing invoice carries its comparison: what shows WHICH field
+        # disagreed. Stripping every comparison left the report long and
+        # useless at once — per-venue sections rebuilt from the exception
+        # list, with none of the detail that justified them.
+        comp = ex["invoices"][0]["comparison"]
+        assert comp["po_number"]["loaded"] in (None, "")
+        assert comp["po_number"]["document"] == "3459273"
+        assert comp["po_number"]["match"] is False
+        # and the fields that DID agree still say so, so a reader can see the
+        # failure is isolated to one field
+        assert comp["total_incl_tax"]["match"] is True
+        assert comp["invoice_number"]["match"] is True
+
     def test_two_real_po_numbers_are_a_disagreement_not_a_gap(self):
         out = run_consolidator(
             api_for(
@@ -836,11 +811,13 @@ class TestTheReportTheEmailIsWrittenFrom:
             "detail",
             "comparison",
         }
-
-    def test_a_reconciled_invoice_raises_no_exception(self):
-        out = run_consolidator(api_for(make_received()))
-        assert out["report"]["counts"]["reconciled"] == 1
-        assert out["report"]["exceptions"] == []
+        # Even when every copy-side cell is a sentinel, the comparison ships —
+        # the reader needs to see that Loaded's side exists and the copy's
+        # does not. Loaded's side per field; the copy's side once, because it
+        # is the same sentinel on every field.
+        comp = entry["comparison"]
+        assert comp["loaded"]["total_incl_tax"]
+        assert "no copy" in str(comp["document"]).lower()
 
     def test_a_statement_not_yet_issued_is_counted_not_listed(self):
         """A month in progress reads as "$0.00 vs reconciled", which is not a
@@ -874,39 +851,18 @@ class TestTheReportTheEmailIsWrittenFrom:
         assert out["report"]["statement_differences"] == []
         assert out["report"]["statements_not_yet_issued"] == 0
 
-    def test_a_failing_invoice_carries_its_comparison(self):
-        """What shows WHICH field disagreed. Stripping every comparison left
-        the report long and useless at once — per-venue sections rebuilt from
-        the exception list, with none of the detail that justified them."""
-        inv = make_received(purchaseOrderNumber=None)
-        out = run_consolidator(
-            api_for(inv, make_pdf(customer_purchase_order_number="3459273"))
-        )
-        comp = out["report"]["exceptions"][0]["invoices"][0]["comparison"]
-        assert comp["po_number"]["loaded"] in (None, "")
-        assert comp["po_number"]["document"] == "3459273"
-        assert comp["po_number"]["match"] is False
-        # and the fields that DID agree still say so, so a reader can see the
-        # failure is isolated to one field
-        assert comp["total_incl_tax"]["match"] is True
-        assert comp["invoice_number"]["match"] is True
-
     def test_a_reconciled_invoice_never_reaches_the_report(self):
         """Four ticks under an invoice that is already fine is exactly what
-        buried the ones that were not — eight of them on the 29 Aug run."""
+        buried the ones that were not — eight of them on the 29 Aug run.
+
+        But the report is a projection, never a replacement — the comparisons
+        still ship for the card and for anyone checking one invoice."""
         out = run_consolidator(api_for(make_received()))
         assert out["report"]["exceptions"] == []
         assert out["report"]["counts"]["reconciled"] == 1
-
-    def test_a_no_copy_failure_still_carries_its_comparison(self):
-        """Even when every copy-side cell is a sentinel — the reader needs to
-        see that Loaded's side exists and the copy's does not."""
-        out = run_consolidator(api_for(make_received(fileId=None), pdf=None))
-        comp = out["report"]["exceptions"][0]["invoices"][0]["comparison"]
-        # Loaded's side per field; the copy's side once, because it is the
-        # same sentinel on every field.
-        assert comp["loaded"]["total_incl_tax"]
-        assert "no copy" in str(comp["document"]).lower()
+        # the card keeps the detail the report leaves out
+        assert out["reconciled"][0]["comparison"]["po_number"]["match"] is True
+        assert out["results"] and out["statements"]
 
     def test_a_rounding_difference_is_counted_not_listed(self):
         """A cent across a month of invoices is rounding. The old report put
@@ -936,13 +892,6 @@ class TestTheReportTheEmailIsWrittenFrom:
         diffs = out["report"]["statement_differences"]
         assert len(diffs) == 1 and diffs[0]["difference"] == "$4,045.00"
         assert out["report"]["statements_off_by_rounding"] == 0
-
-    def test_the_card_keeps_the_detail_the_report_leaves_out(self):
-        """The report is a projection, never a replacement — the comparisons
-        still ship for the card and for anyone checking one invoice."""
-        out = run_consolidator(api_for(make_received()))
-        assert out["reconciled"][0]["comparison"]["po_number"]["match"] is True
-        assert out["results"] and out["statements"]
 
 
 class TestReviewFixes:
@@ -989,15 +938,6 @@ class TestReviewFixes:
         verdict = sole_fail(run_consolidator(api))
         assert any("Credit" in r for r in verdict["reasons"])
         assert not any("Total mismatch" in r for r in verdict["reasons"])
-
-    def test_statements_asked_for_under_approve_all_say_none_were_made(self):
-        orphan = make_received(supplierId="other", supplierName="Orphan Foods")
-        api = Api(statements=[], received=[orphan], pdfs={FILE_ID: make_pdf()})
-        result = run_consolidator(
-            api, create_missing_statements=True, mode="approve_all"
-        )
-        assert api.created == []
-        assert "no statement was created" in result["report"]["statements_not_created"]
 
 
 class TestARepeatedCauseIsSaidOnce:

@@ -11,18 +11,14 @@ than a bad window. One implementation fronts every date-taking action, so the
 behaviour is pinned once here rather than per tool.
 """
 
+import importlib.util
 import pathlib
 
 import pytest
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
+from tests import consolidator_harness as harness
 
-FUNCTION_CODE = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "for_period.py"
-).read_text(encoding="utf-8")
+FUNCTION_CODE = harness.source("for_period")
 
 TRADING = {
     "start": "2026-07-18T07:00:00+12:00",
@@ -83,15 +79,25 @@ class Api:
 
 
 def run_consolidator(api, options=None, **params):
-    namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(FUNCTION_CODE, namespace)
-    return namespace["run"](
+    return harness.call(
+        FUNCTION_CODE,
         {"venue": "La Zeppa", **params},
         api.call_api,
-        lambda m: None,
-        None,
-        {**SALES_OPTS, **(options or {})},
+        options={**SALES_OPTS, **(options or {})},
     )
+
+
+def sync_script():
+    """scripts/sync_for_period_config.py, loaded without running it."""
+    path = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "sync_for_period_config.py"
+    )
+    spec = importlib.util.spec_from_file_location("sync_for_period", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class TestPeriodPath:
@@ -101,6 +107,10 @@ class TestPeriodPath:
         sent = api.params_for("resolve_dates")
         assert sent["query"] == "yesterday"
         assert sent["venue_id"] == "v1"  # so the venue's own day start applies
+        # ...and what the wrapper consumed is not forwarded to the action
+        forwarded = api.params_for("get_sales_data")
+        for key in ("period", "venue_id", "confirmed_by_user"):
+            assert key not in forwarded
 
     def test_result_always_states_the_window_used(self):
         """The echo. A $0 venue is only diagnosable if you can see the window."""
@@ -116,18 +126,16 @@ class TestPeriodPath:
 
 
 class TestParamMapping:
-    """The wrapped actions name their window seven different ways. One config
-    entry per tool maps it, so a caller learns one shape."""
+    """The wrapped actions name their window in different ways. One config
+    entry per tool maps it, so a caller learns one shape. The one wrapper
+    still installed (sync_for_period_config.WRAPPED) fronts get_cogs_detail;
+    get_sales_data's spelling is the one this file's other tests run on."""
 
     @pytest.mark.parametrize(
         "wraps,sp,ep",
         [
+            ("get_cogs_detail", "start", "end"),
             ("get_sales_data", "start_datetime", "end_datetime"),
-            ("get_pos_orders", "start", "end"),
-            ("get_pos_item_sales", "start_time", "end_time"),
-            ("get_timeclock_entries", "start_time", "end_time"),
-            ("get_roster", "start_datetime", "end_datetime"),
-            ("get_completed_stocktakes", "start_date", "end_date"),
         ],
     )
     def test_window_lands_on_the_wrapped_actions_param_names(self, wraps, sp, ep):
@@ -144,7 +152,10 @@ class TestParamMapping:
 
     def test_other_arguments_are_forwarded(self):
         """Wrapped actions have their own required params (interval,
-        posIdentifier, flags) — fronting must not swallow them."""
+        posIdentifier, flags) — fronting must not swallow them. Schema
+        exposure (TestWrappedArgumentsAreReachable) is only half of it: the
+        consolidator must forward the value through, which is what _CONSUMED
+        governs."""
         api = Api()
         run_consolidator(
             api, period="yesterday", interval="1.00:00:00", posIdentifier="pos-7"
@@ -153,13 +164,6 @@ class TestParamMapping:
         assert sent["interval"] == "1.00:00:00"
         assert sent["posIdentifier"] == "pos-7"
         assert sent["venue"] == "La Zeppa"
-
-    def test_consumed_params_are_not_forwarded(self):
-        api = Api()
-        run_consolidator(api, period="yesterday", venue_id="v1")
-        sent = api.params_for("get_sales_data")
-        for key in ("period", "venue_id", "confirmed_by_user"):
-            assert key not in sent
 
     def test_misconfiguration_is_reported_not_guessed(self):
         api = Api()
@@ -170,21 +174,15 @@ class TestParamMapping:
 
 class TestDeviation:
     def test_deviating_range_asks_before_fetching(self):
+        """And the question is answerable from fact: asking 'is this right?'
+        invites agreement and would launder a mistake as confirmed. Ask what
+        the user actually said instead."""
         api = Api(window=CIVIL)
         result = run_consolidator(
             api, start="2026-07-18T00:00:00+12:00", end="2026-07-19T00:00:00+12:00"
         )
         assert result["needs_confirmation"] is True
         assert "get_sales_data" not in api.actions()
-
-    def test_the_question_is_answerable_from_fact(self):
-        """Asking 'is this right?' invites agreement and would launder a mistake
-        as confirmed. Ask what the user actually said instead."""
-        result = run_consolidator(
-            Api(window=CIVIL),
-            start="2026-07-18T00:00:00+12:00",
-            end="2026-07-19T00:00:00+12:00",
-        )
         assert "explicitly ask" in result["question"]
         assert "confirmed_by_user=true" in result["question"]
 
@@ -228,23 +226,13 @@ class TestFailures:
 
 
 class TestSandboxSafety:
-    def test_runs_without_imports(self):
-        assert "\nimport " not in FUNCTION_CODE
-        assert "\nfrom " not in FUNCTION_CODE
+    # No-imports is the production guard's job, run over every consolidator
+    # in tests/test_consolidator_sandbox_guard.py.
 
     def test_every_registered_tool_declares_no_writes(self):
         """These are declared GET and so bypass the approval gate. Wrapping a
         write with this pattern would route around it."""
-        import importlib.util
-
-        spec_path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "scripts"
-            / "sync_for_period_config.py"
-        )
-        spec = importlib.util.spec_from_file_location("sync_for_period", spec_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = sync_script()
         for action, wraps, sp, ep, returns in module.WRAPPED:
             tool = module.tool_for(action, wraps, sp, ep, returns, "")
             assert tool["method"] == "GET"
@@ -261,20 +249,6 @@ class TestWrappedArgumentsAreReachable:
     bug and isn't. Five of the thirteen tools were affected.
     """
 
-    def _module(self):
-        import importlib.util
-        import pathlib
-
-        path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "scripts"
-            / "sync_for_period_config.py"
-        )
-        spec = importlib.util.spec_from_file_location("sync_for_period", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
     def _wrapped(self):
         return {
             "action": "get_sales_data",
@@ -289,7 +263,11 @@ class TestWrappedArgumentsAreReachable:
         }
 
     def test_required_fields_of_the_wrapped_action_are_required_here(self):
-        m = self._module()
+        """...its optional fields and their descriptions carry over, and the
+        date params it replaces are NOT inherited: they are the whole point of
+        the wrapper — re-exposing them would put the caller back in the
+        business of computing timestamps."""
+        m = sync_script()
         tool = m.tool_for(
             "get_pos_orders_for_period",
             "get_sales_data",
@@ -301,54 +279,23 @@ class TestWrappedArgumentsAreReachable:
         )
         assert "interval" in tool["required_fields"]
 
-    def test_the_date_params_it_replaces_are_not_inherited(self):
-        """They are the whole point of the wrapper — re-exposing them would put
-        the caller back in the business of computing timestamps."""
-        m = self._module()
-        tool = m.tool_for(
-            "get_pos_orders_for_period",
-            "get_sales_data",
-            "start_datetime",
-            "end_datetime",
-            "Sales",
-            "",
-            wrapped=self._wrapped(),
-        )
         fields = set(tool["required_fields"]) | set(tool["optional_fields"])
         assert "start_datetime" not in fields
         assert "end_datetime" not in fields
         assert {"period", "start", "end", "confirmed_by_user"} <= fields
 
-    def test_optional_fields_and_their_descriptions_carry_over(self):
-        m = self._module()
-        tool = m.tool_for(
-            "get_pos_orders_for_period",
-            "get_sales_data",
-            "start_datetime",
-            "end_datetime",
-            "Sales",
-            "",
-            wrapped=self._wrapped(),
-        )
         assert "posIdentifier" in tool["optional_fields"]
         assert tool["field_descriptions"]["posIdentifier"] == "POS id"
         assert tool["field_schema"]["interval"] == {"type": "string"}
         # Our own descriptions still win for the fields we define.
         assert tool["field_descriptions"]["period"] == m.PERIOD_DESC
 
-    def test_inherited_fields_reach_the_wrapped_call(self):
-        """Schema exposure is only half of it — the consolidator must forward
-        the value through, which is what _CONSUMED governs."""
-        api = Api()
-        run_consolidator(api, period="yesterday", interval="1.00:00:00")
-        assert api.params_for("get_sales_data")["interval"] == "1.00:00:00"
-
     def test_a_field_the_template_defaults_becomes_optional_and_is_filled(self):
         """get_sales_data renders `interval | default('1.00:00:00')`, so the
         request always had a value — only the required-field check refused it.
         Filling it here means a caller working from a stale copy of the schema
         still succeeds, which is otherwise unfixable from the server side."""
-        m = self._module()
+        m = sync_script()
         wrapped = dict(
             self._wrapped(),
             path_template="/pos/sales?interval={{ interval | default('1.00:00:00') }}",
@@ -387,7 +334,7 @@ class TestWrappedArgumentsAreReachable:
     def test_fields_without_a_declared_default_stay_required(self):
         """We must not invent a posIdentifier — an invented id would query the
         wrong POS rather than fail."""
-        m = self._module()
+        m = sync_script()
         wrapped = {
             "action": "get_staff_item_orders",
             "required_fields": ["posIdentifier", "start", "end"],
@@ -414,7 +361,7 @@ class TestWrappedArgumentsAreReachable:
         that was never run before shipping: the window resolved fine and the
         call died one layer further in.
         """
-        m = self._module()
+        m = sync_script()
         wrapped_row = self._wrapped()
         tool = m.tool_for(
             "get_pos_orders_for_period",
@@ -453,22 +400,8 @@ class TestSummaryFieldsAreInherited:
     summary_fields while get_received_invoices_for_period did not.
     """
 
-    def _module(self):
-        import importlib.util
-        import pathlib
-
-        path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "scripts"
-            / "sync_for_period_config.py"
-        )
-        spec = importlib.util.spec_from_file_location("sync_fp", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-
     def test_summary_fields_carry_over_from_the_wrapped_action(self):
-        m = self._module()
+        m = sync_script()
         tool = m.tool_for(
             "get_received_invoices_for_period",
             "get_received_invoices",
@@ -484,7 +417,7 @@ class TestSummaryFieldsAreInherited:
         assert tool["summary_fields"] == ["invoiceNumber", "supplierName", "total"]
 
     def test_max_result_chars_carries_over_too(self):
-        m = self._module()
+        m = sync_script()
         tool = m.tool_for(
             "x_for_period",
             "x",
@@ -497,7 +430,7 @@ class TestSummaryFieldsAreInherited:
         assert tool["max_result_chars"] == 100_000
 
     def test_absent_slimming_config_is_not_invented(self):
-        m = self._module()
+        m = sync_script()
         tool = m.tool_for("x_for_period", "x", "a", "b", "R", "", wrapped={})
         assert "summary_fields" not in tool
         assert "max_result_chars" not in tool
@@ -519,25 +452,20 @@ class TestAggregation:
         ]
 
     def test_summary_carries_the_row_count_and_column_sums(self):
+        """The sums are labelled as column sums, not totals: summing a rate or
+        a unit price is meaningless, and naming them honestly is what stops
+        the model reporting sum(hourly_rate) as a cost. And the summary is
+        additive — the UI component and any follow-up question still need the
+        rows."""
         result = run_consolidator(Api(payload=self._rows()), period="yesterday")
         summary = result["summary"]
         assert summary["row_count"] == 2
         assert summary["column_sums"]["revenue"] == 639.62
         assert summary["column_sums"]["quantity"] == 56
-
-    def test_the_rows_are_still_returned(self):
-        """The summary is additive. The UI component and any follow-up question
-        still need the detail."""
-        result = run_consolidator(Api(payload=self._rows()), period="yesterday")
+        assert "not meaningful" in summary["_note"]
+        # the rows are still returned
         assert len(result["data"]) == 2
         assert result["window"]["trading_aligned"] is True
-
-    def test_sums_are_labelled_as_column_sums_not_totals(self):
-        """Summing a rate or a unit price is meaningless. Naming them honestly
-        is what stops the model reporting sum(hourly_rate) as a cost."""
-        result = run_consolidator(Api(payload=self._rows()), period="yesterday")
-        assert "column_sums" in result["summary"]
-        assert "not meaningful" in result["summary"]["_note"]
 
     def test_booleans_are_not_summed(self):
         """bool is an int in Python; adding up flags would be nonsense."""

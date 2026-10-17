@@ -6,7 +6,6 @@ exactly this and for dojo batch caching. The LLM matcher is a stub.
 
 import pytest
 
-from app.services.supplier_identity import resolve_supplier
 from app.services.invoice_replica import (
     _resolve_unit_record,
     build_replica,
@@ -202,11 +201,6 @@ class TestDeterministicResolution:
         assert _resolve_unit_record("1 kg", UNITS)["id"] == "u-kilo"
         assert _resolve_unit_record("nonsense-unit", UNITS) is None
 
-    def test_supplier_ambiguity_returns_none(self):
-        sups = SUPPLIERS + [{"id": "sup-b", "name": "Akaroa Salmon South"}]
-        s, by = resolve_supplier(["Akaroa"], sups)
-        assert s is None  # two containment hits → ambiguous
-
     def test_invoice_date_carried_as_issued_at(self):
         # The extraction keeps dates as printed; the replica stores ISO.
         # Every format here was observed on a real supplier invoice.
@@ -383,63 +377,6 @@ class TestPoSplitValidator:
         sib["lines"][0]["unitCostExclTax"] = 99.99
         doc = _build(self.EXT, lh=_PoLh("inv-sib", sib), own_invoice_id="inv-own")
         assert doc["purchase_order_number"] is not None
-
-
-class TestCopyUnitPrecedence:
-    """The unit-fix doctrine, replica-side: the copy's confidently-delivered
-    unit overrides a variant default naming a DIFFERENT pack; equivalent
-    names keep the variant's unit; unreadable units are never guessed."""
-
-    def _line(self, **over):
-        line = dict(EXTRACTION["lines"][0])
-        line.update(over)
-        return dict(EXTRACTION, lines=[line])
-
-    def test_confident_copy_unit_overrides_variant_default(self):
-        # Variant default is Kilo; the copy prints a 6x750mL pack.
-        doc = _build(self._line(unit_of_measure="6x 750ml"))
-        ln = doc["lines"][0]
-        assert ln["linked_unit_id"] == "u-6x750"
-        assert ln["unit_ratio"] == 4.5
-        assert any("per the copy" in e for e in doc["resolution_log"])
-
-    def test_equivalent_copy_unit_keeps_variant(self):
-        # 'Kilo' ≡ '1 kg' — id-stable against Loaded.
-        doc = _build(self._line(unit_of_measure="1 kg"))
-        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
-        assert not any("per the copy" in e for e in doc["resolution_log"])
-
-    def test_unreadable_unit_uses_the_variant_unit_and_warns(self):
-        # The variant's registered unit fills the gap, but an unreadable copy
-        # unit still needs a human eye — the warning stays.
-        doc = _build(self._line(unit_of_measure=None, unit_unrecognisable=True))
-        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"  # variant's unit
-        assert any("can't be read from the copy" in w for w in doc["warnings"])
-
-    def test_unreadable_unit_with_no_variant_warns(self):
-        # Nothing authoritative to fall back on → the unit-confirm warning.
-        doc = _build(
-            self._line(
-                code=None,
-                description="Mystery Product Nobody Stocks",
-                unit=None,
-                unit_of_measure=None,
-                unit_unrecognisable=True,
-            )
-        )
-        assert doc["lines"][0]["linked_unit_id"] is None
-        assert any("can't be read from the copy" in w for w in doc["warnings"])
-
-    def test_unknown_copy_unit_keeps_variant_and_logs(self):
-        # The copy names a pack the venue has no unit record for.
-        doc = _build(self._line(unit_of_measure="9x 123ml"))
-        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
-        assert any("unit would need creating" in e for e in doc["resolution_log"])
-
-    def test_vague_packaging_word_never_overrides(self):
-        # 'ctn' is not a delivered unit (the engine's _delivered_unit rule).
-        doc = _build(self._line(unit_of_measure="ctn"))
-        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
 
 
 class TestPackagingWordNeverLinks:
@@ -684,11 +621,20 @@ class TestCatalogueTierAndResolver:
         assert "unit_resolved" not in doc["lines"][0]
 
     def test_a_real_measure_in_the_unit_column_never_consults_the_resolver(self):
+        # Recorded, not raised: build_replica swallows any exception from the
+        # resolver (it degrades to unit_missing), so an `ask` that raised
+        # could never fail this test.
+        asked = []
+
         def ask(prompt):
-            raise AssertionError("a sized printed unit needs no resolver")
+            asked.append(prompt)
+            return {"size": "6x750mL", "confidence": "high", "why": "x"}
 
         doc = _build(self._sizeless_line(unit="Kilo"), unit_resolver_ask=ask)
-        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] == "u-kilo"
+        assert asked == [], "a sized printed unit needs no resolver"
+        assert "unit_asked" not in ln and "unit_resolved" not in ln
 
     def test_an_unreadable_unit_line_consults_the_resolver(self):
         # The 4366904 pin: 'HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7' —
@@ -800,16 +746,6 @@ class TestCatalogueTierAndResolver:
             },
         )
         assert doc["lines"][0]["unit_create_name"] == "750 mL"
-
-    def test_unreadable_units_stay_a_humans_call(self):
-        def ask(prompt):
-            raise AssertionError("resolver must not run for unreadable units")
-
-        doc = _build(
-            self._sizeless_line(unit_unrecognisable=True),
-            unit_resolver_ask=ask,
-        )
-        assert "unit_resolved" not in doc["lines"][0]
 
 
 class TestAGuessIsCheckedAgain:
@@ -944,11 +880,9 @@ class TestAGuessIsCheckedAgain:
 
 
 class TestDocumentFlags:
-    """The engine's credit-note/statement gates, mirrored as warnings."""
-
-    def test_statement_flagged(self):
-        doc = _build(dict(EXTRACTION, document_type="statement"))
-        assert any("STATEMENT" in w for w in doc["warnings"])
+    """The engine's credit-note/statement gates, mirrored as warnings. (The
+    statement and credit-note warnings are pinned beside their issues, in
+    TestReplicaIssues and TestCreditNoteSigns.)"""
 
     def test_letter_with_no_lines_flagged(self):
         doc = _build(dict(EXTRACTION, document_type="other", lines=[]))
@@ -957,13 +891,6 @@ class TestDocumentFlags:
     def test_other_with_lines_not_flagged(self):
         doc = _build(dict(EXTRACTION, document_type="other"))
         assert not any("letter/notice" in w for w in doc["warnings"])
-
-    def test_credit_note_flagged(self):
-        # A credit note is RECEIVABLE (it reverses stock and cost) — flagged
-        # loudly, never gated. See TestCreditNoteSigns for the sign contract.
-        doc = _build(dict(EXTRACTION, total_incl_tax=-252.75))
-        assert any("CREDIT NOTE" in w for w in doc["warnings"])
-        assert doc["is_credit_note"] is True
 
     def test_inconsistent_line_logged(self):
         line = dict(EXTRACTION["lines"][0], quantity=3, line_total_ex_tax=219.78)
@@ -996,6 +923,10 @@ class TestDuplicateCheck:
         assert doc["duplicate_of_file_id"] == "file-9"
         assert doc["duplicate_of_purchase_order_id"] is None
         assert any("already received on 2026-07-30" in w for w in doc["warnings"])
+        # the duplicate_invoice issue carries the same registry ids
+        issue = next(i for i in doc["issues"] if i["code"] == "duplicate_invoice")
+        assert issue["data"]["duplicate_of_invoice_id"] == "inv-old"
+        assert issue["data"]["duplicate_of_file_id"] == "file-9"
 
     def test_receipted_against_the_order_is_flagged_as_po_kind(self):
         # Feed "PurchaseOrder" rows: goods receipted straight against the
@@ -1030,6 +961,7 @@ class TestReplicaIssues:
         return {i["code"] for i in doc["issues"]}
 
     def test_clean_invoice_has_no_issues(self):
+        # ...so the variant's unit prevents unit_missing, among the rest.
         doc = _build(received_feed=[])
         assert doc["issues"] == []
 
@@ -1058,19 +990,6 @@ class TestReplicaIssues:
         assert by_code["unit_missing"]["blocking"] is True
         assert by_code["item_unmatched"]["id"] == "item_unmatched:rep-0"
 
-    def test_variant_unit_prevents_unit_missing(self):
-        doc = _build(received_feed=[])
-        assert "unit_missing" not in self._codes(doc)
-
-    def test_unreadable_unit_asks_for_confirmation(self):
-        line = dict(
-            EXTRACTION["lines"][0], unit_of_measure=None, unit_unrecognisable=True
-        )
-        doc = _build(dict(EXTRACTION, lines=[line]), received_feed=[])
-        assert "unit_unconfirmed" in self._codes(doc)
-        # The variant still supplied a unit, so unit_missing must NOT fire.
-        assert "unit_missing" not in self._codes(doc)
-
     def test_supplier_unresolved_is_blocking(self):
         doc = _build(
             dict(EXTRACTION, supplier_name="Totally Unknown Vendor"),
@@ -1084,6 +1003,7 @@ class TestReplicaIssues:
         # A statement is not a receivable document; a credit note IS one.
         doc = _build(dict(EXTRACTION, document_type="statement"), received_feed=[])
         assert "not_an_invoice" in self._codes(doc)
+        assert any("STATEMENT" in w for w in doc["warnings"])  # and warned
         doc = _build(dict(EXTRACTION, total_incl_tax=-252.75), received_feed=[])
         assert "not_an_invoice" not in self._codes(doc)
         issue = next(i for i in doc["issues"] if i["code"] == "credit_note")
@@ -1105,22 +1025,6 @@ class TestReplicaIssues:
         doc = _build(ext, received_feed=[])
         assert "totals_inconsistent" not in self._codes(doc)
 
-    def test_duplicate_issue_carries_registry_ids(self):
-        feed = [
-            {
-                "id": "inv-old",
-                "type": "Invoice",
-                "invoiceNumber": "F55755100",
-                "supplierName": "Akaroa Salmon",
-                "receivedAt": "2026-07-30T00:00:00",
-                "fileId": "file-9",
-            }
-        ]
-        doc = _build(received_feed=feed)
-        issue = next(i for i in doc["issues"] if i["code"] == "duplicate_invoice")
-        assert issue["data"]["duplicate_of_invoice_id"] == "inv-old"
-        assert issue["data"]["duplicate_of_file_id"] == "file-9"
-
     def test_unresolvable_po_reference_is_flagged(self):
         # lh=object() cannot serve the PO lookup → the reference cannot be
         # checked → po_unresolved (never a silent log line).
@@ -1133,17 +1037,6 @@ class TestReplicaIssues:
         ext = dict(EXTRACTION, discount_amount=5.5)
         doc = _build(ext, received_feed=[])
         assert doc["discount_amount"] == 5.5
-
-    def test_copy_unit_not_in_loaded_marks_line_for_create(self):
-        # The copy confidently names a pack the venue has no unit for: the
-        # variant default is kept (receivable), and the replica line carries the
-        # copy's unit name so the review layer can raise a create_unit SUGGESTION
-        # (no longer a non-blocking "note" issue).
-        line = dict(EXTRACTION["lines"][0], unit_of_measure="9x123ml")
-        doc = _build(dict(EXTRACTION, lines=[line]), received_feed=[])
-        assert doc["lines"][0]["unit_create_name"] == "9x123ml"
-        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"  # variant kept
-        assert not any(i["code"] == "unit_not_in_loaded" for i in doc["issues"])
 
     def test_unit_missing_carries_confident_copy_name(self):
         ext = dict(
@@ -1216,10 +1109,13 @@ class TestCreditNoteSigns:
         assert doc["total"] == -252.75
 
     def test_recognised_by_printed_negative_total_alone(self):
-        # document_type still says "invoice" — the printed total decides.
+        # document_type still says "invoice" — the printed total decides. A
+        # credit note is RECEIVABLE (it reverses stock and cost) — flagged
+        # loudly, never gated.
         doc = _build(dict(EXTRACTION, total_incl_tax=-252.75))
         assert doc["is_credit_note"] is True
         assert self._line(doc)["quantity_received"] == -4.95
+        assert any("CREDIT NOTE" in w for w in doc["warnings"])
 
     def test_recognised_by_loaded_total_alone(self):
         # Neither the classification nor the print says credit — but Loaded
@@ -1298,14 +1194,12 @@ class TestCreditNoteSigns:
         assert doc["lines"][1]["quantity_received"] == 1
 
     def test_the_credit_issue_is_informational(self):
+        # ...and the totals still reconcile after negation.
         doc = _build(self.PRINTED, received_feed=[])
         issue = next(i for i in doc["issues"] if i["code"] == "credit_note")
         assert issue["blocking"] is False
         assert "REVERSES" in issue["message"]
         assert "document_type" in issue["data"]["signals"]
-
-    def test_totals_still_reconcile_after_negation(self):
-        doc = _build(self.PRINTED, received_feed=[])
         assert not any(i["code"] == "totals_inconsistent" for i in doc["issues"])
 
     def test_copy_tax_rate_survives_a_negative_subtotal(self):
@@ -1372,7 +1266,8 @@ class TestCreditNoteSigns:
 
 
 class TestTheInvoicesUnitIsTheUnit:
-    """The copy is the delivery; a variant default is user-entered data in
+    """The unit-fix doctrine, replica-side (TestCopyUnitPrecedence folded in):
+    the copy is the delivery; a variant default is user-entered data in
     Loaded. Receiving accurately means booking what the paper says — a venue
     counting wine bottles as 'Each' is the venue's business, not a reason to
     book 'Each' against a copy that says 750 mL.
@@ -1415,16 +1310,20 @@ class TestTheInvoicesUnitIsTheUnit:
 
     def test_a_sized_multipack_beats_a_bare_count(self):
         """Hancocks 4362108, still true — now by the general rule rather than
-        by an exception written for it."""
-        doc = _build(
-            self._line(unit_of_measure="6x 750ml"), catalogue=self.EACH_CATALOGUE
-        )
-        assert doc["lines"][0]["linked_unit_id"] == "u-6x750"
+        by an exception written for it. The copy's confidently-delivered pack
+        overrides a variant default naming a different one, whether that
+        default is a bare count (Each) or another measure (Kilo)."""
+        for catalogue in (self.EACH_CATALOGUE, CATALOGUE):
+            doc = _build(self._line(unit_of_measure="6x 750ml"), catalogue=catalogue)
+            ln = doc["lines"][0]
+            assert ln["linked_unit_id"] == "u-6x750"
+            assert ln["unit_ratio"] == 4.5
+            assert any("per the copy" in e for e in doc["resolution_log"])
 
     def test_the_same_pack_spelled_differently_moves_nothing(self):
         """What the equivalence check was protecting, done by the resolution
         itself: '1 kg' and 'Kilo' land on the one record, so there is nothing
-        to change and no suggestion to raise."""
+        to change and no suggestion to raise — id-stable against Loaded."""
         doc = _build(self._line(unit_of_measure="1 kg"))
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
         assert not any("per the copy" in e for e in doc["resolution_log"])
@@ -1432,15 +1331,50 @@ class TestTheInvoicesUnitIsTheUnit:
     def test_a_unit_the_venue_lacks_is_flagged_to_create(self):
         """The copy still wins — it just has to exist first. The variant's unit
         stays on the line so there is something to receive against once it
-        does."""
-        doc = _build(self._line(unit_of_measure="12x375ml"))
-        assert doc["lines"][0]["unit_create_name"] == "12x375ml"
-        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
+        does, and the replica line carries the copy's unit name so the review
+        raises a create_unit SUGGESTION (no longer a non-blocking "note"
+        issue)."""
+        for printed in ("12x375ml", "9x123ml", "9x 123ml"):
+            doc = _build(self._line(unit_of_measure=printed), received_feed=[])
+            ln = doc["lines"][0]
+            assert ln["unit_create_name"] == printed, printed
+            assert ln["linked_unit_id"] == "u-kilo", printed  # variant kept
+            assert any("unit would need creating" in e for e in doc["resolution_log"])
+            assert not any(i["code"] == "unit_not_in_loaded" for i in doc["issues"])
 
     def test_an_unreadable_copy_unit_displaces_nothing(self):
         """`confident` is the only guard left on the override, so it has to
-        stay load-bearing."""
-        doc = _build(self._line(unit_of_measure=None, unit_unrecognisable=True))
+        stay load-bearing. The variant's registered unit fills the gap, but an
+        unreadable copy unit still needs a human eye: the warning stays, and
+        the review asks for confirmation (unit_unconfirmed) rather than
+        reporting no unit (unit_missing)."""
+        doc = _build(
+            self._line(unit_of_measure=None, unit_unrecognisable=True),
+            received_feed=[],
+        )
+        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"  # variant's unit
+        assert any("can't be read from the copy" in w for w in doc["warnings"])
+        codes = {i["code"] for i in doc["issues"]}
+        assert "unit_unconfirmed" in codes
+        assert "unit_missing" not in codes
+
+    def test_an_unreadable_unit_with_no_variant_warns(self):
+        # Nothing authoritative to fall back on → the unit-confirm warning.
+        doc = _build(
+            self._line(
+                code=None,
+                description="Mystery Product Nobody Stocks",
+                unit=None,
+                unit_of_measure=None,
+                unit_unrecognisable=True,
+            )
+        )
+        assert doc["lines"][0]["linked_unit_id"] is None
+        assert any("can't be read from the copy" in w for w in doc["warnings"])
+
+    def test_a_vague_packaging_word_never_overrides(self):
+        # 'ctn' is not a delivered unit (the engine's _delivered_unit rule).
+        doc = _build(self._line(unit_of_measure="ctn"))
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
 
 
@@ -1449,7 +1383,9 @@ class TestSupplierPlaceholder:
     '[Unnamed Supplier]' record exact-matched the DRAFT's placeholder name
     hint, and the low-authority exact beat the printed name's correct
     containment match to Bidfood. Placeholders are never identities, and
-    every tier runs for a hint before the next hint is consulted."""
+    every tier runs for a hint before the next hint is consulted. The pure
+    resolve_supplier pins live in test_supplier_identity.py
+    (TestSupplierPlaceholder); this one runs it through build_replica."""
 
     PLACEHOLDER = {"id": "sup-junk", "name": "[Unnamed Supplier]"}
     POOL = [
@@ -1457,44 +1393,6 @@ class TestSupplierPlaceholder:
         {"id": "sup-bidfood", "name": "Bidfood"},
         {"id": "sup-bff", "name": "Bidfoods fresh produce"},
     ]
-
-    def test_placeholder_names_are_recognised(self):
-        from app.services.supplier_identity import is_placeholder_supplier_name
-
-        assert is_placeholder_supplier_name("[Unnamed Supplier]")
-        assert is_placeholder_supplier_name("unnamed supplier")
-        assert is_placeholder_supplier_name("")
-        assert is_placeholder_supplier_name("   ")
-        assert not is_placeholder_supplier_name("Bidfood")
-        assert not is_placeholder_supplier_name("Unnamed Brewing Co")
-
-    def test_the_110016259_pin(self):
-        s, by = resolve_supplier(
-            ["BIDFOOD FSV DUNEDIN", "[Unnamed Supplier]"], self.POOL
-        )
-        assert s["id"] == "sup-bidfood"
-        assert by == "containment"
-
-    def test_a_lower_authority_exact_never_beats_the_copys_containment(self):
-        pool = [
-            {"id": "sup-a", "name": "Bidfood"},
-            {"id": "sup-b", "name": "Totally Other Ltd"},
-        ]
-        s, by = resolve_supplier(["BIDFOOD FSV DUNEDIN", "Totally Other Ltd"], pool)
-        assert s["id"] == "sup-a" and by == "containment"
-
-    def test_placeholder_only_hints_resolve_nothing(self):
-        assert resolve_supplier(["[Unnamed Supplier]"], self.POOL) == (None, None)
-
-    def test_ambiguity_on_the_copy_defers_to_loadeds_human_choice(self):
-        pool = [
-            {"id": "sup-a", "name": "Bidfood North"},
-            {"id": "sup-b", "name": "Bidfood South"},
-        ]
-        # the copy is ambiguous; Loaded's supplier (chosen at order time)
-        # breaks the tie via its own exact match
-        s, by = resolve_supplier(["Bidfood", "Bidfood South"], pool)
-        assert s["id"] == "sup-b" and by == "exact"
 
     def test_replica_regression_pin(self):
         ext = dict(

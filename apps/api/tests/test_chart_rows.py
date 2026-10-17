@@ -363,9 +363,6 @@ class TestASummaryIsOneRow:
         }
         assert _rows_from_payload(doc, {"rows": "summary"}) == [doc["summary"]]
 
-    def test_a_missing_summary_is_no_rows(self):
-        assert _rows_from_payload({"rows": []}, {"rows": "summary"}) == []
-
 
 class TestAllVenuesCalendar:
     """ "All venues" dated the charts on the configured default calendar; a

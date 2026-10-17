@@ -243,19 +243,16 @@ def _ctx(wired):
 
 
 class TestForPeriodEndToEnd:
-    def test_the_tool_is_published(self, wired):
-        names = {t["name"] for t in _ctx(wired).list_tools()}
-        assert "loadedhub__get_pos_orders_for_period" in names
-
     def test_the_schema_lets_the_caller_supply_what_the_wrapped_action_needs(
         self, wired
     ):
-        """Bug 2: the window resolved, then the call died on a field the caller
-        was never offered."""
+        """The tool is published, and — bug 2: the window resolved, then the
+        call died on a field the caller was never offered."""
+        tools = _ctx(wired).list_tools()
+        names = {t["name"] for t in tools}
+        assert "loadedhub__get_pos_orders_for_period" in names
         tool = next(
-            t
-            for t in _ctx(wired).list_tools()
-            if t["name"] == "loadedhub__get_pos_orders_for_period"
+            t for t in tools if t["name"] == "loadedhub__get_pos_orders_for_period"
         )
         props = tool["inputSchema"]["properties"]
         assert "interval" in props
@@ -266,8 +263,11 @@ class TestForPeriodEndToEnd:
     def test_a_period_call_resolves_the_trading_day_and_returns_data(
         self, wired, monkeypatch
     ):
-        """The whole seam, in one assertion: internal-handler dispatch (bug 1),
-        param forwarding (bug 2), and the trading-day window itself."""
+        """The whole seam, in one test: internal-handler dispatch (bug 1),
+        param forwarding (bug 2), the trading-day window itself — and the
+        result states the window it used."""
+        import json
+
         sent: list[dict] = []
         _stub_upstream(monkeypatch, sent)
         ctx = _ctx(wired)
@@ -294,14 +294,6 @@ class TestForPeriodEndToEnd:
         assert "T07:00" in forwarded["start_datetime"]
         assert "period" not in forwarded
 
-    def test_the_result_states_the_window_it_used(self, wired, monkeypatch):
-        import json
-
-        _stub_upstream(monkeypatch, [])
-        out = _ctx(wired).call_tool(
-            "loadedhub__get_pos_orders_for_period",
-            {"period": "yesterday", "interval": "1.00:00:00"},
-        )
         body = json.loads(out["content"][0]["text"])
         assert "window" in body
         assert body["window"]["day_start"] == "07:00"

@@ -8,15 +8,12 @@ reconciliation stopped at its report email every day from 17 Jul to 8 Aug —
 not one email sent.
 """
 
-import importlib.util
-import pathlib
 import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.agents import tool_loop as TL
-from app.auth.security import create_access_token
 from app.db.models import (
     AutomatedTask,
     AutomatedTaskRun,
@@ -25,16 +22,13 @@ from app.db.models import (
     ToolCall,
 )
 from app.services import approvals, task_scheduler
+from tests.approval_helpers import headers
 from tests.conftest import (
     _make_membership,
     _make_organization,
     _make_thread,
     _make_user,
 )
-
-
-def _headers(user):
-    return {"Authorization": f"Bearer {create_access_token({'sub': user.id})}"}
 
 
 def _task(db, owner):
@@ -140,8 +134,9 @@ def owner(db_session):
 
 class TestARunThatAsksSaysSo:
     def test_it_is_recorded_as_waiting_not_success(self, db_session, owner):
+        """...and its owner is emailed what is waiting."""
         task = _task(db_session, owner)
-        run, _ = _run(db_session, task, _asks)
+        run, sent = _run(db_session, task, _asks)
         assert run.status == approvals.WAITING
         posted = (
             db_session.query(Message)
@@ -150,9 +145,6 @@ class TestARunThatAsksSaysSo:
         )
         assert "⏸ waiting for your approval" in posted.content
 
-    def test_its_owner_is_emailed_what_is_waiting(self, db_session, owner):
-        task = _task(db_session, owner)
-        _, sent = _run(db_session, task, _asks)
         ((name, to, ctx),) = sent
         assert name == "task_waiting"
         assert to == [owner.email]
@@ -224,9 +216,7 @@ class TestDecidingSettlesTheRun:
     def test_approved_is_success(self, client, db_session, owner, no_llm):
         task = _task(db_session, owner)
         run, _ = _run(db_session, task, _asks)
-        r = client.post(
-            f"/api/threads/{run.thread_id}/approve", headers=_headers(owner)
-        )
+        r = client.post(f"/api/threads/{run.thread_id}/approve", headers=headers(owner))
         assert r.status_code == 200, r.text
         db_session.refresh(run)
         assert run.status == "success" and run.completed_at is not None
@@ -234,7 +224,7 @@ class TestDecidingSettlesTheRun:
     def test_declined_is_declined(self, client, db_session, owner, no_llm):
         task = _task(db_session, owner)
         run, _ = _run(db_session, task, _asks)
-        r = client.post(f"/api/threads/{run.thread_id}/reject", headers=_headers(owner))
+        r = client.post(f"/api/threads/{run.thread_id}/reject", headers=headers(owner))
         assert r.status_code == 200, r.text
         db_session.refresh(run)
         assert run.status == "declined"
@@ -244,7 +234,7 @@ class TestTheBoardShowsIt:
     def test_the_task_list_counts_waiting_runs(self, client, db_session, owner):
         task = _task(db_session, owner)
         _run(db_session, task, _asks)
-        r = client.get("/api/automated-tasks", headers=_headers(owner))
+        r = client.get("/api/automated-tasks", headers=headers(owner))
         (row,) = [t for t in r.json()["tasks"] if t["id"] == task.id]
         assert row["waiting_for_approval"] == 1
 
@@ -254,7 +244,7 @@ class TestTheBoardShowsIt:
         task = _task(db_session, admin_user)
         _run(db_session, task, _asks)
         r = client.get(
-            f"/api/threads/{task.conversation_thread_id}", headers=_headers(admin_user)
+            f"/api/threads/{task.conversation_thread_id}", headers=headers(admin_user)
         )
         assert r.status_code == 200, r.text
         assert r.json()["automated_task"]["waiting_for_approval"] == 1
@@ -274,7 +264,7 @@ class TestATaskIsItsOrganisations:
 
     def test_a_stranger_cannot_see_or_touch_it(self, client, db_session):
         task, _, stranger = self._setup(db_session)
-        h = _headers(stranger)
+        h = headers(stranger)
         assert task.id not in [
             t["id"]
             for t in client.get("/api/automated-tasks", headers=h).json()["tasks"]
@@ -294,7 +284,7 @@ class TestATaskIsItsOrganisations:
         task, colleague, _ = self._setup(db_session)
         assert (
             client.get(
-                f"/api/automated-tasks/{task.id}", headers=_headers(colleague)
+                f"/api/automated-tasks/{task.id}", headers=headers(colleague)
             ).status_code
             == 200
         )
@@ -303,36 +293,4 @@ class TestATaskIsItsOrganisations:
                 f"/api/automated-tasks/{task.id}", headers=admin_headers
             ).status_code
             == 200
-        )
-
-
-class TestClearingTheStuckOnes:
-    def _script(self):
-        path = (
-            pathlib.Path(__file__).resolve().parents[1]
-            / "scripts"
-            / "settle_stuck_task_runs.py"
-        )
-        spec = importlib.util.spec_from_file_location("settle_stuck", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
-    def test_old_waiting_runs_are_found_and_recent_ones_left(self, db_session, owner):
-        import datetime as dt
-
-        task = _task(db_session, owner)
-        run, _ = _run(db_session, task, _asks)
-        thread = db_session.get(Thread, run.thread_id)
-        module = self._script()
-        assert module.stuck(db_session, older_than_days=2) == []
-        thread.created_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
-        db_session.flush()
-        ((found_thread, found_run, found_task),) = module.stuck(
-            db_session, older_than_days=2
-        )
-        assert (found_thread.id, found_run.id, found_task.id) == (
-            thread.id,
-            run.id,
-            task.id,
         )

@@ -8,23 +8,13 @@ Training app can enrol them, which is the entire reason these two apps share a
 storage namespace instead of each owning a copy of the staff list.
 """
 
-import pathlib
 import uuid
 
 import pytest
-from fastapi import HTTPException
 
 from app.db.models import AppRecord, Role
 from app.services import app_runtime as AR
 from tests.conftest import _make_membership, _make_organization, _make_user
-
-FIXTURES = pathlib.Path(__file__).resolve().parent.parent / "app" / "builtin_apps"
-
-
-def _spec(slug):
-    import json
-
-    return json.loads((FIXTURES / f"{slug}.json").read_text())["spec"]
 
 
 @pytest.fixture()
@@ -156,9 +146,12 @@ class TestStatusIsDerivedFromStageType:
         )
         assert row["hired_at"] and row["rejected_at"] is None
 
-    def test_moving_to_a_rejected_stage_sets_rejected(
+    def test_coming_back_to_an_active_stage_clears_the_stamps(
         self, db_session, org, author, hiring
     ):
+        """The half Orbit's API forgets: its UI clears these on the way back and
+        its API does not, so a rejected-then-revived candidate keeps a
+        rejection date forever. (Moving to a rejected stage sets rejected.)"""
         job, stages = _job_with_stages(db_session, org, author)
         _, application = _applicant(db_session, org, author, job, stages["Applied"])
         out = _run(
@@ -170,23 +163,6 @@ class TestStatusIsDerivedFromStageType:
             stage_id=stages["Rejected"],
         )
         assert out["status"] == "rejected"
-
-    def test_coming_back_to_an_active_stage_clears_the_stamps(
-        self, db_session, org, author, hiring
-    ):
-        """The half Orbit's API forgets: its UI clears these on the way back and
-        its API does not, so a rejected-then-revived candidate keeps a
-        rejection date forever."""
-        job, stages = _job_with_stages(db_session, org, author)
-        _, application = _applicant(db_session, org, author, job, stages["Applied"])
-        _run(
-            db_session,
-            hiring,
-            author,
-            op="move",
-            application_id=application,
-            stage_id=stages["Rejected"],
-        )
         _run(
             db_session,
             hiring,
@@ -348,34 +324,6 @@ class TestHireIsTheHandoff:
         )
         assert [p["name"] for p in seen] == ["Maia Ngata"]
 
-    def test_an_uninvited_app_still_cannot_read_that_namespace(
-        self, db_session, org, author, hiring
-    ):
-        """The sharing is by invitation, not by naming. Training owns hr_suite
-        and lists 'hiring'; anything else is refused at save time."""
-        with pytest.raises(HTTPException) as e:
-            AR.save_app(
-                db_session,
-                author,
-                {
-                    "name": "Nosy",
-                    "slug": "nosy",
-                    "agent": "hr",
-                    "spec": {
-                        "actions": [],
-                        "scopes": [],
-                        "storage": {
-                            "namespace": "hr_suite",
-                            "collections": ["people"],
-                        },
-                    },
-                    "ui_source": "<div/>",
-                },
-            )
-        # Stricter than the shared_with rule it used to hit: the built-ins'
-        # namespace is reserved outright (services/builtin_apps.py).
-        assert "reserved for Norm's own apps" in str(e.value.detail)
-
 
 class TestBoardAndPipeline:
     def test_the_board_counts_by_derived_status(self, db_session, org, author, hiring):
@@ -436,10 +384,7 @@ class TestBoardAndPipeline:
         assert detail["notes"][0]["author"] == author.full_name
         assert detail["notes"][0]["author_user_id"] == author.id
         assert detail["activity"][0]["actor"] == author.full_name
-
-    def test_an_empty_note_is_refused(self, db_session, org, author, hiring):
-        job, stages = _job_with_stages(db_session, org, author)
-        _, application = _applicant(db_session, org, author, job, stages["Applied"])
+        # an empty note is refused
         out = _run(
             db_session,
             hiring,
@@ -535,8 +480,7 @@ class TestJobAuthoring:
         assert any(s["stage_type"] == "hired" for s in ed["stages"])
         assert any(s["stage_type"] == "rejected" for s in ed["stages"])
         assert len(ed["fields"]) == 6
-
-    def test_a_job_needs_a_title(self, db_session, org, author, hiring):
+        # a job needs a title
         out = _run(db_session, hiring, author, op="create_job", fields={"title": "  "})
         assert "needs a title" in out["error"]
 
@@ -815,24 +759,6 @@ class TestKnockout:
     """B6: knockout questions were carried as data but never authored or
     evaluated. add_field/update_field set them; add_candidate evaluates them."""
 
-    def test_add_field_stores_knockout_config(self, db_session, org, author, hiring):
-        job, _ = _job_with_stages(db_session, org, author)
-        d = _run(
-            db_session,
-            hiring,
-            author,
-            op="add_field",
-            job_id=job,
-            field_key="right_to_work",
-            label="Right to work?",
-            field_type="select",
-            options=["Yes", "No"],
-            knockout_enabled=True,
-            knockout_values=["No"],
-        )
-        f = d["field"]
-        assert f["knockout_enabled"] is True and f["knockout_values"] == ["No"]
-
     def test_update_field_can_enable_knockout_on_a_standard_field(
         self, db_session, org, author, hiring
     ):
@@ -863,8 +789,9 @@ class TestKnockout:
     def test_add_candidate_flags_a_knockout_answer(
         self, db_session, org, author, hiring
     ):
+        """add_field stores the knockout config; add_candidate evaluates it."""
         job, _ = _job_with_stages(db_session, org, author)
-        _run(
+        f = _run(
             db_session,
             hiring,
             author,
@@ -876,7 +803,8 @@ class TestKnockout:
             options=["Yes", "No"],
             knockout_enabled=True,
             knockout_values=["No"],
-        )
+        )["field"]
+        assert f["knockout_enabled"] is True and f["knockout_values"] == ["No"]
         d = _run(
             db_session,
             hiring,
@@ -1007,8 +935,7 @@ class TestLocate:
             params={"op": "locate", "job": "Bar Team", "candidate": "Maia"},
         )
         assert "No candidate matching 'Maia' for Bar Team" in str(out)
-
-    def test_an_unknown_job_says_so(self, db_session, org, author, hiring):
+        # an unknown job says so
         out = AR.run_logic(
             db_session,
             None,

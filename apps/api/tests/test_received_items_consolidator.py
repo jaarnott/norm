@@ -10,16 +10,9 @@ response_transform renames `itemId` to `StockItemId` and `itemCategory.name` to
 `Category`, drops `unitId` entirely, and keeps `unitName` / `unitRatio`.
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-FUNCTION_CODE = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "received_items_for_period.py"
-).read_text(encoding="utf-8")
+FUNCTION_CODE = harness.source("received_items_for_period")
 
 MILK = "item-milk"
 GIN = "item-gin"
@@ -115,10 +108,8 @@ def invoice(inv_id, supplier, date, lines, credit=False, number=None):
 
 
 def run_consolidator(api, **params):
-    namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(FUNCTION_CODE, namespace)
     defaults = {"venue": "Glass Goose", "period": "this month", **params}
-    return namespace["run"](defaults, api.call_api, lambda m: None)
+    return harness.run(FUNCTION_CODE, api, **defaults)
 
 
 class TestQuantitiesAreMadeComparable:
@@ -161,7 +152,11 @@ class TestPriceMovementIsPerBaseUnit:
     """
 
     def test_same_price_in_a_bigger_box_is_not_a_price_change(self):
-        api = Api(
+        """Folded in: a real rise is reported, and the price movers table's
+        move — last receipt against the first in the window, per base unit —
+        is 0 for the bigger box, 25% for the rise, and absent for a single
+        receipt."""
+        box = Api(
             [
                 invoice(
                     "i1",
@@ -174,12 +169,13 @@ class TestPriceMovementIsPerBaseUnit:
                 ),
             ]
         )
-        row = run_consolidator(api, group_by="item_supplier")["rows"][0]
+        row = run_consolidator(box, group_by="item_supplier")["rows"][0]
         assert (row["unit_cost_min"], row["unit_cost_max"]) == (4.6, 4.6)
         assert row["unit_cost_last"] == 4.6
+        assert row["unit_cost_change_pct"] == 0.0
 
-    def test_a_real_rise_is_reported(self):
-        api = Api(
+        # a real rise is reported
+        rise = Api(
             [
                 invoice(
                     "i1",
@@ -195,9 +191,23 @@ class TestPriceMovementIsPerBaseUnit:
                 ),
             ]
         )
-        row = run_consolidator(api, group_by="item_supplier")["rows"][0]
+        row = run_consolidator(rise, group_by="item_supplier")["rows"][0]
         assert (row["unit_cost_min"], row["unit_cost_max"]) == (4.0, 5.0)
         assert row["unit_cost_last"] == 5.0
+        assert row["unit_cost_change_pct"] == 0.25
+
+        once = Api(
+            [
+                invoice(
+                    "i1",
+                    "Bidfood",
+                    "2026-08-02",
+                    [line(MILK, "1 Litre", 1.0, 10, 4.00)],
+                )
+            ]
+        )
+        row = run_consolidator(once, group_by="item_supplier")["rows"][0]
+        assert row["unit_cost_change_pct"] is None
 
     def test_first_and_last_follow_date_not_arrival_order(self):
         api = Api(
@@ -318,26 +328,8 @@ class TestItemNamesAreResolved:
 
 
 class TestGrouping:
-    def test_item_supplier_keeps_the_split(self):
-        api = Api(
-            [
-                invoice(
-                    "i1",
-                    "Bidfood",
-                    "2026-08-02",
-                    [line(MILK, "1 Litre", 1.0, 10, 4.00)],
-                ),
-                invoice(
-                    "i2",
-                    "Service Foods",
-                    "2026-08-03",
-                    [line(MILK, "1 Litre", 1.0, 10, 4.50)],
-                ),
-            ]
-        )
-        rows = run_consolidator(api, group_by="item_supplier")["rows"]
-        assert len(rows) == 2
-        assert {r["supplier_name"] for r in rows} == {"Bidfood", "Service Foods"}
+    # item_supplier keeping the split per supplier: TestModesReturnPurposeFitShapes::
+    # test_item_supplier_is_the_price_comparison.
 
     def test_line_grouping_does_not_aggregate(self):
         api = Api(
@@ -402,10 +394,7 @@ class TestFailuresAreNotEmptyPeriods:
         assert "date range" in run_consolidator(api)["error"]
 
     def test_no_period_at_all_is_refused(self):
-        api = Api([])
-        namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(FUNCTION_CODE, namespace)
-        out = namespace["run"]({"venue": "Glass Goose"}, api.call_api, lambda m: None)
+        out = harness.run(FUNCTION_CODE, Api([]), venue="Glass Goose")
         assert "plain English" in out["error"]
 
 
@@ -510,23 +499,14 @@ class TestSummary:
                 ),
             ]
         )
-        summary = run_consolidator(api)["summary"]
+        out = run_consolidator(api)
+        summary = out["summary"]
         assert summary["rows"] == 2
         assert summary["net_spend"] == 220.0
         assert summary["invoices"] == 2
-
-    def test_rows_lead_with_the_biggest_spend(self):
-        api = Api(
-            [
-                invoice(
-                    "i1", "Bidfood", "2026-08-02", [line(MILK, "1 Litre", 1.0, 1, 4.00)]
-                ),
-                invoice(
-                    "i2", "Bidfood", "2026-08-09", [line(GIN, "750 mL", 0.75, 6, 30.00)]
-                ),
-            ]
-        )
-        assert run_consolidator(api)["rows"][0]["item_name"] == "MALFY GIN ROSA"
+        # rows lead with the biggest spend ($180 of gin before $40 of milk),
+        # not with the first one received
+        assert out["rows"][0]["item_name"] == "MALFY GIN ROSA"
 
 
 class TestModesReturnPurposeFitShapes:
@@ -611,7 +591,10 @@ class TestModesReturnPurposeFitShapes:
         assert out["group_by"] == "history" and len(out["rows"]) == 2
 
     def test_item_supplier_is_the_price_comparison(self):
+        """One item from two suppliers stays two rows — the split IS the
+        comparison."""
         rows = run_consolidator(self._api(), group_by="item_supplier")["rows"]
+        assert len(rows) == 2
         assert {r["supplier_name"] for r in rows} == {"Bidfood", "Service Foods"}
         assert {
             "unit_cost_avg",
@@ -620,55 +603,6 @@ class TestModesReturnPurposeFitShapes:
             "unit_cost_last",
             "unit_cost_change_pct",
         } <= set(rows[0])
-
-    def test_item_supplier_reports_the_price_move_first_to_last(self):
-        """The price movers table: last receipt against the first in the
-        window, per base unit — so the bigger box at the same price is 0."""
-        rise = Api(
-            [
-                invoice(
-                    "i1",
-                    "Bidfood",
-                    "2026-08-02",
-                    [line(MILK, "1 Litre", 1.0, 10, 4.00)],
-                ),
-                invoice(
-                    "i2",
-                    "Bidfood",
-                    "2026-08-09",
-                    [line(MILK, "1 Litre", 1.0, 10, 5.00)],
-                ),
-            ]
-        )
-        row = run_consolidator(rise, group_by="item_supplier")["rows"][0]
-        assert row["unit_cost_change_pct"] == 0.25
-        box = Api(
-            [
-                invoice(
-                    "i1",
-                    "Bidfood",
-                    "2026-08-02",
-                    [line(MILK, "1 Litre", 1.0, 12, 4.60)],
-                ),
-                invoice(
-                    "i2", "Bidfood", "2026-08-09", [line(MILK, "6x1L", 6.0, 2, 27.60)]
-                ),
-            ]
-        )
-        row = run_consolidator(box, group_by="item_supplier")["rows"][0]
-        assert row["unit_cost_change_pct"] == 0.0
-        once = Api(
-            [
-                invoice(
-                    "i1",
-                    "Bidfood",
-                    "2026-08-02",
-                    [line(MILK, "1 Litre", 1.0, 10, 4.00)],
-                )
-            ]
-        )
-        row = run_consolidator(once, group_by="item_supplier")["rows"][0]
-        assert row["unit_cost_change_pct"] is None
 
 
 # ── Oct 2026: the purchases-based cost-of-goods dashboard ──────────────────
@@ -896,3 +830,138 @@ class TestSupplierMode:
         assert mom["share"] == round(288.0 / 370.0, 4)
         assert mom["top_items"][0] == {"item": "COFFEE BEANS", "spend": 228.0}
         assert sonoma["credit_amount"] == -5.0
+
+
+# ── group rollups (moved from test_invoice_consolidators.py, 17 Oct 2026) ──
+
+RECEIVED_FEED = [
+    {
+        "id": "ri-1",
+        "supplierName": "Bidfood",
+        "invoiceNumber": "109700",
+        "invoicedAt": "2026-08-03T00:00:00+12:00",
+        "creditRequest": False,
+        "lines": [
+            {
+                "StockItemId": "i-flour",
+                "quantityReceived": 2,
+                "unitCost": 20.0,
+                "unitRatio": 10.0,
+                "unitName": "10 KG",
+            },
+            {
+                "StockItemId": "i-oil",
+                "quantityReceived": 1,
+                "unitCost": 30.0,
+                "unitRatio": 5.0,
+                "unitName": "5 L",
+            },
+            {
+                "StockItemId": "i-gin",
+                "quantityReceived": 6,
+                "unitCost": 45.0,
+                "unitRatio": 0.7,
+                "unitName": "700 mL",
+            },
+        ],
+    }
+]
+
+CATALOGUE = [
+    {
+        "id": "i-flour",
+        "name": "FLOUR HIGH GRADE",
+        "groupId": "g-dry",
+        "groupName": "Dry Goods",
+    },
+    {"id": "i-oil", "name": "OIL CANOLA", "groupId": "g-dry", "groupName": "Dry Goods"},
+    {
+        "id": "i-gin",
+        "name": "GIN LONDON DRY",
+        "groupId": "g-spirits",
+        "groupName": "Spirits",
+    },
+]
+
+SUBCATS = [
+    {
+        "id": "g-dry",
+        "categoryId": "c-food",
+        "categoryName": "Food",
+        "name": "Dry Goods",
+    },
+    {
+        "id": "g-spirits",
+        "categoryId": "c-bev",
+        "categoryName": "Beverage",
+        "name": "Spirits",
+    },
+]
+
+
+class ItemsApi:
+    def call_api(self, connector, action, params=None):
+        if action == "resolve_dates":
+            return {"window": dict(WINDOW)}
+        if action == "get_received_invoices":
+            import copy
+
+            return copy.deepcopy(RECEIVED_FEED)
+        if action == "get_stock_items_raw":
+            import copy
+
+            return copy.deepcopy(CATALOGUE)
+        if action == "get_stock_units":
+            return []
+        if action == "get_stock_item_groups":
+            import copy
+
+            return copy.deepcopy(SUBCATS)
+        raise AssertionError(f"unexpected action {action}")
+
+
+def run_items(**params):
+    return harness.run(
+        FUNCTION_CODE, ItemsApi(), venue="La Zeppa", period="last week", **params
+    )
+
+
+class TestReceivedItemsRollups:
+    def test_group_rollup(self):
+        out = run_items(group_by="group")
+        rows = {r["group"]: r for r in out["rows"]}
+        assert rows["Dry Goods"]["spend"] == 70.0  # 2*20 + 1*30
+        assert rows["Dry Goods"]["distinct_items"] == 2
+        assert rows["Spirits"]["spend"] == 270.0  # 6*45
+        assert rows["Spirits"]["top_items"] == [
+            {"item": "GIN LONDON DRY", "spend": 270.0}
+        ]
+        assert out["summary"]["net_spend"] == 340.0
+
+    def test_super_group_rollup(self):
+        out = run_items(group_by="super_group")
+        rows = {r["super_group"]: r for r in out["rows"]}
+        assert rows["Food"]["spend"] == 70.0
+        assert rows["Beverage"]["spend"] == 270.0
+
+    def test_item_query_filter(self):
+        out = run_items(query="oil")
+        assert len(out["rows"]) == 1
+        assert out["rows"][0]["item_name"] == "OIL CANOLA"
+        assert out["rows"][0]["quantity_base"] == 5.0
+
+    def test_group_filter(self):
+        out = run_items(group="dry")
+        assert {r["item_name"] for r in out["rows"]} == {
+            "FLOUR HIGH GRADE",
+            "OIL CANOLA",
+        }
+
+    def test_limit_rolls_up_others(self):
+        out = run_items(limit=1)
+        assert len(out["rows"]) == 2  # top row + (others)
+        assert out["rows"][0]["item_name"] == "GIN LONDON DRY"
+        others = out["rows"][1]
+        assert others["item_name"] == "(others)"
+        assert others["rows_rolled_up"] == 2
+        assert others["spend"] == 70.0

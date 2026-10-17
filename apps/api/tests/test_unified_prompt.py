@@ -4,18 +4,14 @@ Every conversation gets ONE Norm prompt (the base row) + its member's light
 personality + short notes for the Apps that are on. Writing the base prompt is
 the switch; clearing it rolls back to per-agent prompts."""
 
-import importlib.util
-import pathlib
 import uuid
 
-from app.db.config_models import AgentConfig, MarketplaceApp, Playbook
+from app.db.config_models import AgentConfig, MarketplaceApp
 from app.db.models import AgentConnectionBinding, ConnectionSpec
 from app.services.agent_config_service import (
     build_unified_prompt,
     unified_prompt_active,
 )
-
-REPO = pathlib.Path(__file__).resolve().parents[3]
 
 
 def _agent(db, slug, prompt=None, persona=None, description=None):
@@ -176,44 +172,3 @@ class TestNoteCaps:
         issues = check_app_notes(rows)
         assert any("big" in i.where for i in issues)
         assert any(i.where == "catalog.notes" for i in issues)
-
-
-class TestRolloutScript:
-    def _mod(self):
-        spec = importlib.util.spec_from_file_location(
-            "sup", REPO / "apps/api/scripts/sync_unified_prompt.py"
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-
-    def test_plan_is_idempotent_and_builds_the_skill(self, db_session):
-        mod = self._mod()
-        _agent(db_session, "procurement", prompt="p")
-        _agent(
-            db_session,
-            "app_builder",
-            prompt="You are Norm's App Builder.\nToday's date is {{today}}.\n\n## How to work\n1. Build.",
-        )
-        _agent(
-            db_session,
-            "router",
-            prompt="Available domains:\n{domains}\n\nDomain capabilities:\n- procurement: x\n\nTitle guidelines:\n- short",
-        )
-        first = mod.plan(db_session, dry_run=False)
-        db_session.flush()
-        assert any("Norm prompt" in c for c in first)
-        assert unified_prompt_active(db_session)
-        skill = db_session.query(Playbook).filter_by(slug="build_an_app").one()
-        assert skill.instructions.startswith("## How to work")
-        router = db_session.query(AgentConfig).filter_by(agent_slug="router").one()
-        assert (
-            "Domain capabilities" not in router.system_prompt
-            and "{domains}" in router.system_prompt
-        )
-        assert mod.plan(db_session, dry_run=False) == []  # second run: nothing to do
-
-    def test_obsolete_rules_are_gone_from_the_norm_prompt(self):
-        mod = self._mod()
-        assert "[Tool]" not in mod.NORM_PROMPT
-        assert "Use date formats exactly" not in mod.NORM_PROMPT

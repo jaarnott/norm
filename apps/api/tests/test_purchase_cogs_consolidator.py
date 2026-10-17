@@ -7,16 +7,9 @@ get_received_items_for_period (group_by month/week) and get_sales (daily;
 items) return today.
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-CODE = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "purchase_cogs.py"
-).read_text(encoding="utf-8")
+CODE = harness.source("purchase_cogs")
 
 WINDOW = {
     "start": "2026-09-01T00:00:00+10:00",
@@ -127,11 +120,9 @@ class Api:
 def run(api, **params):
     """A dashboard-style call: the executor hands the tool this venue's id
     (tool_executor sets venue_id); pass venue_id=None to leave it out."""
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(CODE, ns)
     merged = {"period": "September 2026", "venue_id": "id-applegum-cafe", **params}
     merged = {k: v for k, v in merged.items() if v is not None}
-    return ns["run"](merged, api.call_api, lambda m: None)
+    return harness.run(CODE, api, **merged)
 
 
 class TestTheJoin:

@@ -79,13 +79,22 @@ class TestGetDocument:
         assert data["version"] == 1
 
     def test_get_document_not_found_returns_404(self, client, admin_headers):
-        thread_id = str(uuid.uuid4())
-        doc_id = str(uuid.uuid4())
-        resp = client.get(
-            f"/api/threads/{thread_id}/working-documents/{doc_id}",
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
+        """Every read and patch route 404s on an unknown document, in a thread
+        or standalone."""
+        in_thread = f"/api/threads/{uuid.uuid4()}/working-documents/{uuid.uuid4()}"
+        standalone = f"/api/working-documents/{uuid.uuid4()}"
+        patch = {"ops": [], "version": 1}
+        for method, path, body in (
+            ("get", in_thread, None),
+            ("patch", in_thread, patch),
+            ("get", standalone, None),
+            ("patch", standalone, patch),
+        ):
+            kwargs = {"headers": admin_headers}
+            if body is not None:
+                kwargs["json"] = body
+            resp = getattr(client, method)(path, **kwargs)
+            assert resp.status_code == 404, (method, path)
 
 
 class TestPatchDocument:
@@ -174,14 +183,6 @@ class TestPatchDocument:
         )
         assert resp.status_code == 409
 
-    def test_patch_document_not_found_returns_404(self, client, admin_headers):
-        resp = client.patch(
-            f"/api/threads/{uuid.uuid4()}/working-documents/{uuid.uuid4()}",
-            json={"ops": [], "version": 1},
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
-
 
 class TestGetStandaloneDocument:
     """GET /api/working-documents/{doc_id}"""
@@ -203,12 +204,6 @@ class TestGetStandaloneDocument:
         resp = client.get(f"/api/working-documents/{doc.id}", headers=admin_headers)
         assert resp.status_code == 200
         assert resp.json()["id"] == doc.id
-
-    def test_get_standalone_document_not_found_returns_404(self, client, admin_headers):
-        resp = client.get(
-            f"/api/working-documents/{uuid.uuid4()}", headers=admin_headers
-        )
-        assert resp.status_code == 404
 
 
 class TestPatchStandaloneDocument:
@@ -251,14 +246,6 @@ class TestPatchStandaloneDocument:
         assert resp.json()["version"] == 2
         assert resp.json()["data"]["lines"][0]["quantity"] == 10
 
-    def test_patch_standalone_not_found_returns_404(self, client, admin_headers):
-        resp = client.patch(
-            f"/api/working-documents/{uuid.uuid4()}",
-            json={"ops": [], "version": 1},
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
-
     def test_patch_standalone_version_conflict_returns_409(
         self,
         client,
@@ -285,64 +272,76 @@ class TestPatchStandaloneDocument:
         assert resp.status_code == 409
 
 
+def _venue_id(db_session):
+    from app.db.models import Venue
+
+    v = Venue(id=str(uuid.uuid4()), name=f"Venue {uuid.uuid4().hex[:6]}")
+    db_session.add(v)
+    db_session.flush()
+    return v.id
+
+
+def _receive_thread(db_session, admin_user):
+    t = Thread(
+        id=str(uuid.uuid4()),
+        user_id=admin_user.id,
+        domain="procurement",
+        status="processing",
+        intent="receive_invoices.tool_use",
+        raw_prompt="Receive the outstanding invoices",
+    )
+    db_session.add(t)
+    db_session.flush()
+    return t
+
+
+def _upsert_invoice(db_session, thread, item, venue_id):
+    """The fan-out call: the ITEM is both the data and the ref source."""
+    from app.agents.tool_loop import _upsert_working_document
+
+    return _upsert_working_document(
+        db_session,
+        thread.id,
+        "loadedhub",
+        {
+            "doc_type": "received_invoice",
+            "sync_mode": "submit",
+            "ref_fields": ["invoice_id"],
+        },
+        item,
+        item,
+        venue_id=venue_id,
+    )
+
+
 class TestUpsertWorkingDocumentFanOut:
     """_upsert_working_document keyed per item ref (working_document.items_path
     fan-out): one doc per invoice, re-runs update in place, venue_id stamped so
     venue-scoped endpoints (and the Invoices page) find the same draft."""
 
-    def _venue(self, db_session):
-        from app.db.models import Venue
-
-        v = Venue(id=str(uuid.uuid4()), name=f"Venue {uuid.uuid4().hex[:6]}")
-        db_session.add(v)
-        db_session.flush()
-        return v.id
-
-    def _thread(self, db_session, admin_user):
-        t = Thread(
-            id=str(uuid.uuid4()),
-            user_id=admin_user.id,
-            domain="procurement",
-            status="processing",
-            intent="receive_invoices.tool_use",
-            raw_prompt="Receive the outstanding invoices",
-        )
-        db_session.add(t)
-        db_session.flush()
-        return t
-
-    def _upsert(self, db_session, thread, item, venue_id):
-        from app.agents.tool_loop import _upsert_working_document
-
-        return _upsert_working_document(
-            db_session,
-            thread.id,
-            "loadedhub",
-            {
-                "doc_type": "received_invoice",
-                "sync_mode": "submit",
-                "ref_fields": ["invoice_id"],
-            },
-            item,
-            item,  # fan-out passes the ITEM as the ref source
-            venue_id=venue_id,
-        )
-
     def test_one_doc_per_item_ref(self, db_session, admin_user):
-        thread = self._thread(db_session, admin_user)
-        vid = self._venue(db_session)
-        a = self._upsert(db_session, thread, {"invoice_id": "inv-a", "total": 1}, vid)
-        b = self._upsert(db_session, thread, {"invoice_id": "inv-b", "total": 2}, vid)
+        thread = _receive_thread(db_session, admin_user)
+        vid = _venue_id(db_session)
+        a = _upsert_invoice(
+            db_session, thread, {"invoice_id": "inv-a", "total": 1}, vid
+        )
+        b = _upsert_invoice(
+            db_session, thread, {"invoice_id": "inv-b", "total": 2}, vid
+        )
         assert a.id != b.id
         assert a.external_ref == {"invoice_id": "inv-a", "venue_id": vid}
         assert a.venue_id == vid
 
     def test_rerun_updates_the_same_doc(self, db_session, admin_user):
-        thread = self._thread(db_session, admin_user)
-        vid = self._venue(db_session)
-        a1 = self._upsert(db_session, thread, {"invoice_id": "inv-a", "total": 1}, vid)
+        thread = _receive_thread(db_session, admin_user)
+        vid = _venue_id(db_session)
+        a1 = _upsert_invoice(
+            db_session, thread, {"invoice_id": "inv-a", "total": 1}, vid
+        )
         v1 = a1.version
-        a2 = self._upsert(db_session, thread, {"invoice_id": "inv-a", "total": 9}, vid)
+        a2 = _upsert_invoice(
+            db_session, thread, {"invoice_id": "inv-a", "total": 9}, vid
+        )
         assert a2.id == a1.id
         assert a2.data["total"] == 9
         assert a2.version == v1 + 1
@@ -350,8 +349,8 @@ class TestUpsertWorkingDocumentFanOut:
     def test_single_doc_path_unchanged_but_gains_venue(self, db_session, admin_user):
         from app.agents.tool_loop import _upsert_working_document
 
-        thread = self._thread(db_session, admin_user)
-        vid = self._venue(db_session)
+        thread = _receive_thread(db_session, admin_user)
+        vid = _venue_id(db_session)
         d1 = _upsert_working_document(
             db_session,
             thread.id,
@@ -387,59 +386,21 @@ class TestCrossThreadDocIdentity:
     per (venue, invoice), whichever thread reviews it — per-thread twins were
     how a card could display a review its own doc never carried."""
 
-    def _venue(self, db_session):
-        from app.db.models import Venue
-
-        v = Venue(id=str(uuid.uuid4()), name=f"Venue {uuid.uuid4().hex[:6]}")
-        db_session.add(v)
-        db_session.flush()
-        return v.id
-
-    def _thread(self, db_session, admin_user):
-        t = Thread(
-            id=str(uuid.uuid4()),
-            user_id=admin_user.id,
-            domain="procurement",
-            status="processing",
-            intent="receive_invoices.tool_use",
-            raw_prompt="Receive the outstanding invoices",
-        )
-        db_session.add(t)
-        db_session.flush()
-        return t
-
-    def _upsert(self, db_session, thread, item, venue_id):
-        from app.agents.tool_loop import _upsert_working_document
-
-        return _upsert_working_document(
-            db_session,
-            thread.id,
-            "loadedhub",
-            {
-                "doc_type": "received_invoice",
-                "sync_mode": "submit",
-                "ref_fields": ["invoice_id"],
-            },
-            item,
-            item,
-            venue_id=venue_id,
-        )
-
     def test_second_thread_reuses_the_same_doc(self, db_session, admin_user):
-        vid = self._venue(db_session)
+        vid = _venue_id(db_session)
         inv = f"inv-{uuid.uuid4().hex[:10]}"
-        t1 = self._thread(db_session, admin_user)
-        t2 = self._thread(db_session, admin_user)
-        a = self._upsert(db_session, t1, {"invoice_id": inv, "total": 1}, vid)
-        b = self._upsert(db_session, t2, {"invoice_id": inv, "total": 2}, vid)
+        t1 = _receive_thread(db_session, admin_user)
+        t2 = _receive_thread(db_session, admin_user)
+        a = _upsert_invoice(db_session, t1, {"invoice_id": inv, "total": 1}, vid)
+        b = _upsert_invoice(db_session, t2, {"invoice_id": inv, "total": 2}, vid)
         assert b.id == a.id  # no twin
         assert b.data["total"] == 2
 
     def test_reuse_carries_local_editor_state(self, db_session, admin_user):
-        vid = self._venue(db_session)
+        vid = _venue_id(db_session)
         inv = f"inv-{uuid.uuid4().hex[:10]}"
-        t1 = self._thread(db_session, admin_user)
-        doc = self._upsert(
+        t1 = _receive_thread(db_session, admin_user)
+        doc = _upsert_invoice(
             db_session,
             t1,
             {
@@ -458,8 +419,8 @@ class TestCrossThreadDocIdentity:
         doc.data = data
         db_session.flush()
 
-        t2 = self._thread(db_session, admin_user)
-        doc2 = self._upsert(
+        t2 = _receive_thread(db_session, admin_user)
+        doc2 = _upsert_invoice(
             db_session,
             t2,
             {
@@ -477,12 +438,12 @@ class TestCrossThreadDocIdentity:
         ]
 
     def test_received_docs_are_not_reused(self, db_session, admin_user):
-        vid = self._venue(db_session)
+        vid = _venue_id(db_session)
         inv = f"inv-{uuid.uuid4().hex[:10]}"
-        t1 = self._thread(db_session, admin_user)
-        old = self._upsert(
+        t1 = _receive_thread(db_session, admin_user)
+        old = _upsert_invoice(
             db_session, t1, {"invoice_id": inv, "is_received": True}, vid
         )
-        t2 = self._thread(db_session, admin_user)
-        fresh = self._upsert(db_session, t2, {"invoice_id": inv, "total": 5}, vid)
+        t2 = _receive_thread(db_session, admin_user)
+        fresh = _upsert_invoice(db_session, t2, {"invoice_id": inv, "total": 5}, vid)
         assert fresh.id != old.id

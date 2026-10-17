@@ -25,7 +25,7 @@ from tests.conftest import (
     _make_user,
     _make_venue,
 )
-from tests.test_permissions import _auth, _seed_system_roles
+from tests.org_helpers import auth_headers, seed_system_roles
 
 # The shared test app doesn't mount the email router; this file's own does.
 _app = FastAPI()
@@ -80,48 +80,55 @@ class TestScopes:
 
 class TestEmailAccess:
     def test_owner_can_open_email_settings(self, email_client, db_session):
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         owner = _member(db_session, _make_organization(db_session), roles["owner"])
 
         assert (
-            email_client.get("/api/email/connections", headers=_auth(owner)).status_code
+            email_client.get(
+                "/api/email/connections", headers=auth_headers(owner)
+            ).status_code
             == 200
         )
         assert (
-            email_client.get("/api/email/logs", headers=_auth(owner)).status_code == 200
+            email_client.get("/api/email/logs", headers=auth_headers(owner)).status_code
+            == 200
         )
 
     def test_team_member_cannot(self, email_client, db_session):
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         member = _member(
             db_session, _make_organization(db_session), roles["team_member"]
         )
 
         assert (
             email_client.get(
-                "/api/email/connections", headers=_auth(member)
+                "/api/email/connections", headers=auth_headers(member)
             ).status_code
             == 403
         )
         assert (
-            email_client.get("/api/email/logs", headers=_auth(member)).status_code
+            email_client.get(
+                "/api/email/logs", headers=auth_headers(member)
+            ).status_code
             == 403
         )
 
     def test_owner_cannot_touch_platform_email(self, email_client, db_session):
         """The templates are shared by every organisation, and a test send goes
         out from Norm's own address: platform admin only."""
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         owner = _member(db_session, _make_organization(db_session), roles["owner"])
 
         put = email_client.put(
             "/api/email/templates/password_reset",
             json={"subject_template": "Click here"},
-            headers=_auth(owner),
+            headers=auth_headers(owner),
         )
         assert put.status_code == 403
         send = email_client.post(
-            "/api/email/send-test", json={"to": "x@example.com"}, headers=_auth(owner)
+            "/api/email/send-test",
+            json={"to": "x@example.com"},
+            headers=auth_headers(owner),
         )
         assert send.status_code == 403
 
@@ -129,7 +136,7 @@ class TestEmailAccess:
 class TestLogScoping:
     @pytest.fixture()
     def two_orgs(self, db_session):
-        roles = _seed_system_roles(db_session)
+        roles = seed_system_roles(db_session)
         org_a = _make_organization(db_session, name="Org A")
         org_b = _make_organization(db_session, name="Org B")
         owner_a = _member(db_session, org_a, roles["owner"])
@@ -169,7 +176,9 @@ class TestLogScoping:
         self, email_client, db_session, two_orgs
     ):
         owner_a, logs = two_orgs
-        res = email_client.get("/api/email/logs?limit=500", headers=_auth(owner_a))
+        res = email_client.get(
+            "/api/email/logs?limit=500", headers=auth_headers(owner_a)
+        )
         assert res.status_code == 200
         seen = {row["id"] for row in res.json()["logs"]}
         assert seen == {
@@ -184,30 +193,30 @@ class TestLogScoping:
         owner_a, logs = two_orgs
         for key in ("b_thread", "reset"):
             res = email_client.get(
-                f"/api/email/logs/{logs[key].id}", headers=_auth(owner_a)
+                f"/api/email/logs/{logs[key].id}", headers=auth_headers(owner_a)
             )
             assert res.status_code == 404, key
         own = email_client.get(
-            f"/api/email/logs/{logs['a_thread'].id}", headers=_auth(owner_a)
+            f"/api/email/logs/{logs['a_thread'].id}", headers=auth_headers(owner_a)
         )
         assert own.status_code == 200
 
     def test_retry_is_scoped_too(self, email_client, db_session, two_orgs):
         owner_a, logs = two_orgs
         other = email_client.post(
-            f"/api/email/retry/{logs['b_thread'].id}", headers=_auth(owner_a)
+            f"/api/email/retry/{logs['b_thread'].id}", headers=auth_headers(owner_a)
         )
         assert other.status_code == 404
         # Found (so not 404) — an on-behalf send just can't be retried here.
         own = email_client.post(
-            f"/api/email/retry/{logs['a_on_behalf'].id}", headers=_auth(owner_a)
+            f"/api/email/retry/{logs['a_on_behalf'].id}", headers=auth_headers(owner_a)
         )
         assert own.status_code == 400
 
     def test_platform_admin_sees_everything(self, email_client, db_session, two_orgs):
         _, logs = two_orgs
         admin = _make_user(db_session, role="admin")
-        res = email_client.get("/api/email/logs?limit=500", headers=_auth(admin))
+        res = email_client.get("/api/email/logs?limit=500", headers=auth_headers(admin))
         assert res.status_code == 200
         seen = {row["id"] for row in res.json()["logs"]}
         assert {log.id for log in logs.values()} <= seen

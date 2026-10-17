@@ -25,7 +25,7 @@ from app.db.models import (
     UserVenueAccess,
     Venue,
 )
-from tests.conftest import _make_organization, _make_user, _make_venue
+from tests.conftest import _make_organization, _make_venue
 
 
 @pytest.fixture
@@ -74,6 +74,7 @@ class TestDeleteVenue:
         resp = client.delete(f"/api/venues/{venue.id}", headers=admin_headers)
 
         assert resp.status_code == 200, resp.text
+        assert resp.json()["ok"] is True
         assert db_session.query(Venue).filter(Venue.id == venue.id).first() is None
 
     def test_history_survives_with_the_venue_reference_dropped(

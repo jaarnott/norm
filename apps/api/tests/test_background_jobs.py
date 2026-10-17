@@ -143,14 +143,9 @@ class TestTheQueue:
         theirs = bj.JobContext(job.id, "worker-b", {}, {})
         assert mine.cancelled() is True
         assert theirs.cancelled() is False
-
-    def test_the_old_worker_stops_once_another_has_taken_over(
-        self, db_session, sessions
-    ):
-        job = _job(db_session, status="running", claimed_by="worker-b")
-        ctx = bj.JobContext(job.id, "worker-a", {}, {})
+        # And the old worker cannot write progress once another has taken over.
         with pytest.raises(bj.LostClaim):
-            ctx.update(done=1)
+            mine.update(done=1)
 
     def test_progress_is_saved_and_is_the_heartbeat(self, db_session, sessions):
         _job(db_session)

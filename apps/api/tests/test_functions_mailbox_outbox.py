@@ -13,16 +13,17 @@ sending.py), against a fake Gmail.
   sync) and the facts recorded: proposal version sent + quoted, portal link
   sent, the thread linked;
 * fail closed: shadow mode, a mailbox needing reconnection, a dead grant;
-* the pricing warning, and its audited override.
+* when the pricing warning holds back. (The warning itself and its audited
+  override — logged, reason stored on the outbox row — are held through
+  HTTP: test_functions_mailbox_inbox.py
+  ``TestComposer::test_send_pricing_warning_and_override``.)
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import logging
 
 import pytest
-from sqlalchemy import update
 
 from app.db.functions_models import (
     FnEventChange,
@@ -40,7 +41,7 @@ from app.services.functions import events as events_svc
 from app.services.functions import status as status_svc
 from app.services.functions.errors import Invalid, NotLive
 from app.services.functions.mailbox import accounts as accounts_svc
-from app.services.functions.mailbox import inbox, outbox, pricing, sending
+from app.services.functions.mailbox import outbox, pricing, sending
 from tests.functions_mailbox_fakes import (
     MAILBOX,
     FakeGmail,
@@ -435,36 +436,6 @@ class TestFacts:
 
 
 class TestPricing:
-    def test_a_price_without_a_proposal_warns_and_an_override_is_recorded(
-        self, db_session, fake, caplog
-    ):
-        w = mailbox_world(db_session)
-        _thread(fake)
-        enquiry = _enquiry(db_session, w, "t-1")
-        args = dict(
-            mode="reply",
-            body_html="<p>The deck is $2,500 minimum spend.</p>",
-            gmail_thread_id="t-1",
-            idempotency_key="price-1",
-        )
-        with pytest.raises(pricing.PricingWarning):
-            inbox.compose_send(db_session, w.ctx(), w.account.id, **args)
-        assert fake.sent == []
-        with caplog.at_level(logging.WARNING):
-            result = inbox.compose_send(
-                db_session,
-                w.ctx(),
-                w.account.id,
-                price_override_reason="Customer asked for a ballpark on the phone",
-                **args,
-            )
-        assert result.status == "sent"
-        assert any("pricing_override" in r.message for r in caplog.records)
-        row = db_session.query(FnOutbox).filter_by(idempotency_key="price-1").one()
-        if hasattr(FnOutbox, "price_override_reason"):
-            assert row.price_override_reason.startswith("Customer asked")
-        assert row.enquiry_id is None or row.enquiry_id == enquiry.id
-
     def test_no_warning_once_quoted_or_without_a_price(self, db_session, fake):
         w = mailbox_world(db_session)
         enquiry = _enquiry(db_session, w)
@@ -530,7 +501,5 @@ def test_cross_org_account_is_not_found(db_session, fake):
             purpose="compose",
             idempotency_key="xorg",
         )
-    db_session.execute(
-        update(FnOutbox).where(FnOutbox.idempotency_key == "never").values(error=None)
-    )
     assert fake.sent == []
+    assert db_session.query(FnOutbox).filter_by(idempotency_key="xorg").count() == 0

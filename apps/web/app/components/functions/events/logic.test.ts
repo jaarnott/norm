@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  addDays,
   addMonths,
   addRestriction,
   centsToInput,
@@ -32,7 +31,6 @@ import {
   stripIds,
   textToHtml,
   timingNextDay,
-  todayIn,
 } from './logic';
 import type { EventChange, EventDetail, EventRow } from './types';
 
@@ -88,25 +86,11 @@ const noSections: BadgeInput['sections'] = {
 };
 
 describe('plain dates never pass through the browser zone', () => {
-  it('reads today in the company zone, not the machine zone', () => {
-    // 11:30 UTC on 12 Oct is already 13 Oct in Auckland (NZDT, +13).
-    const instant = new Date('2026-10-12T11:30:00Z');
-    expect(todayIn('Pacific/Auckland', instant)).toBe('2026-10-13');
-    expect(todayIn('America/New_York', instant)).toBe('2026-10-12');
-  });
-
-  it('adds days across month, year and DST boundaries', () => {
-    expect(addDays('2026-10-30', 3)).toBe('2026-11-02');
-    expect(addDays('2026-12-31', 1)).toBe('2027-01-01');
-    // NZ DST starts 27 Sep 2026 — a calendar day is still a day.
-    expect(addDays('2026-09-26', 2)).toBe('2026-09-28');
-    expect(addDays('2026-03-01', -1)).toBe('2026-02-28');
-    expect(daysBetween('2026-10-12', '2026-11-12')).toBe(31);
-  });
-
-  it('steps months and labels them', () => {
+  it('steps months, counts days and labels months', () => {
+    // (today in a zone and adding days: shared/dates.test.ts)
     expect(addMonths('2026-12', 1)).toBe('2027-01');
     expect(addMonths('2026-01', -1)).toBe('2025-12');
+    expect(daysBetween('2026-10-12', '2026-11-12')).toBe(31);
     expect(monthLabel('2026-10')).toBe('October 2026');
   });
 

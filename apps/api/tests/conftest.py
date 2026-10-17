@@ -7,6 +7,7 @@ Uses a minimal FastAPI app (no startup events) so tests run without
 triggering the scheduler, config validation, or connector-spec migrations.
 """
 
+import functools
 import uuid
 
 import pytest
@@ -295,12 +296,20 @@ def client(db_session):
 # ---------------------------------------------------------------------------
 
 
+@functools.cache
+def _test_password_hash() -> str:
+    """bcrypt is slow on purpose (~0.3 s a hash). Hashing once per run, not
+    once per user, halved the suite's time (the Functions world makes five
+    users a test); logins with "testpass123" still verify."""
+    return hash_password("testpass123")
+
+
 def _make_user(db_session, *, email=None, role="user", full_name="Test User"):
     """Insert a user directly into the database and return it."""
     user = User(
         id=str(uuid.uuid4()),
         email=email or f"user-{uuid.uuid4().hex[:8]}@test.com",
-        hashed_password=hash_password("testpass123"),
+        hashed_password=_test_password_hash(),
         full_name=full_name,
         role=role,
     )

@@ -63,11 +63,14 @@ class TestConnectorHealth:
 class TestUpsertConnector:
     """PUT /api/connectors/{name}"""
 
-    def test_save_anthropic_config_as_admin(self, client, db_session, admin_headers):
+    def test_update_existing_config_merges(self, client, db_session, admin_headers):
+        """Also (was test_save_anthropic_config_as_admin): the first save
+        succeeds and its response redacts the api_key."""
+        # First save
         resp = client.put(
             "/api/connectors/anthropic",
             json={
-                "config": {"api_key": "sk-test-key"},
+                "config": {"api_key": "sk-real-key"},
                 "enabled": True,
             },
             headers=admin_headers,
@@ -77,40 +80,7 @@ class TestUpsertConnector:
         assert data["name"] == "anthropic"
         assert data["enabled"] is True
         # api_key should be redacted in response
-        assert data["config"]["api_key"] != "sk-test-key"
-
-    def test_save_connector_as_manager_returns_403(self, client, manager_headers):
-        resp = client.put(
-            "/api/connectors/anthropic",
-            json={
-                "config": {"api_key": "sk-test-key"},
-                "enabled": True,
-            },
-            headers=manager_headers,
-        )
-        assert resp.status_code == 403
-
-    def test_save_unknown_connector_returns_404(self, client, admin_headers):
-        resp = client.put(
-            "/api/connectors/nonexistent",
-            json={
-                "config": {},
-                "enabled": True,
-            },
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
-
-    def test_update_existing_config_merges(self, client, db_session, admin_headers):
-        # First save
-        client.put(
-            "/api/connectors/anthropic",
-            json={
-                "config": {"api_key": "sk-real-key"},
-                "enabled": True,
-            },
-            headers=admin_headers,
-        )
+        assert data["config"]["api_key"] != "sk-real-key"
 
         # Update with redacted key should keep original
         resp = client.put(
@@ -155,26 +125,6 @@ class TestToggleConnector:
         assert resp.status_code == 200
         assert resp.json()["enabled"] is False
 
-    def test_toggle_nonexistent_connector_returns_404(self, client, admin_headers):
-        resp = client.patch("/api/connectors/nonexistent/toggle", headers=admin_headers)
-        assert resp.status_code == 404
-
-    def test_toggle_connector_as_manager_returns_403(
-        self, client, db_session, manager_headers
-    ):
-        db_session.add(
-            Connection(
-                id=str(uuid.uuid4()),
-                connector_name="anthropic",
-                config={},
-                enabled="true",
-            )
-        )
-        db_session.flush()
-
-        resp = client.patch("/api/connectors/anthropic/toggle", headers=manager_headers)
-        assert resp.status_code == 403
-
 
 class TestDeleteConnector:
     """DELETE /api/connectors/{name}"""
@@ -193,24 +143,6 @@ class TestDeleteConnector:
         resp = client.delete("/api/connectors/anthropic", headers=admin_headers)
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
-
-    def test_delete_nonexistent_returns_404(self, client, admin_headers):
-        resp = client.delete("/api/connectors/nonexistent", headers=admin_headers)
-        assert resp.status_code == 404
-
-    def test_delete_as_manager_returns_403(self, client, db_session, manager_headers):
-        db_session.add(
-            Connection(
-                id=str(uuid.uuid4()),
-                connector_name="anthropic",
-                config={},
-                enabled="true",
-            )
-        )
-        db_session.flush()
-
-        resp = client.delete("/api/connectors/anthropic", headers=manager_headers)
-        assert resp.status_code == 403
 
 
 class TestTestConnector:
@@ -251,22 +183,42 @@ class TestTestConnector:
         )
         assert resp.status_code == 400
 
-    def test_test_connector_as_manager_returns_403(self, client, manager_headers):
-        resp = client.post(
-            "/api/connectors/anthropic/test",
-            json={
-                "config": {"api_key": "sk-test"},
-            },
-            headers=manager_headers,
-        )
-        assert resp.status_code == 403
 
-    def test_test_unknown_connector_returns_404(self, client, admin_headers):
-        resp = client.post(
-            "/api/connectors/nonexistent/test",
-            json={
-                "config": {},
-            },
-            headers=admin_headers,
+class TestEveryWriteVerb:
+    """The admin-only write routes, one check per kind across every verb:
+    PUT /connectors/{name}, PATCH …/toggle, DELETE, POST …/test.
+
+    Folds the per-verb *_as_manager_returns_403 and *_returns_404 tests."""
+
+    def _verbs(self, name):
+        return [
+            ("put", f"/api/connectors/{name}", {"config": {}, "enabled": True}),
+            ("patch", f"/api/connectors/{name}/toggle", None),
+            ("delete", f"/api/connectors/{name}", None),
+            ("post", f"/api/connectors/{name}/test", {"config": {}}),
+        ]
+
+    def test_a_manager_is_refused_on_every_verb(
+        self, client, db_session, manager_headers
+    ):
+        # A real row, so a refusal can't be a not-found in disguise.
+        db_session.add(
+            Connection(
+                id=str(uuid.uuid4()),
+                connector_name="anthropic",
+                config={},
+                enabled="true",
+            )
         )
-        assert resp.status_code == 404
+        db_session.flush()
+
+        for method, url, body in self._verbs("anthropic"):
+            kwargs = {"json": body} if body is not None else {}
+            resp = client.request(method, url, headers=manager_headers, **kwargs)
+            assert resp.status_code == 403, (method, url)
+
+    def test_an_unknown_connector_is_404_on_every_verb(self, client, admin_headers):
+        for method, url, body in self._verbs("nonexistent"):
+            kwargs = {"json": body} if body is not None else {}
+            resp = client.request(method, url, headers=admin_headers, **kwargs)
+            assert resp.status_code == 404, (method, url)

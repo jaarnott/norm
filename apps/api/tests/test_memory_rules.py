@@ -318,7 +318,12 @@ class TestRule4Persistence:
             trigger="explicit",
         )
         assert r["stored"] is False
-        assert db_session.query(Memory).count() == 0
+        # Scoped to this test's org: a database other runs have used holds
+        # other organisations' memories.
+        assert (
+            db_session.query(Memory).filter(Memory.organization_id == org.id).count()
+            == 0
+        )
 
 
 class TestRule6AdvisoryRecall:

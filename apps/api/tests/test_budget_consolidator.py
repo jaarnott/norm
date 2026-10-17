@@ -10,16 +10,9 @@ so the consolidator queries [F, T+1] and maps every date back a day
 report's budget peak landed on Sunday while sales peaked Saturday).
 """
 
-import pathlib
+from tests import consolidator_harness as harness
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-FUNCTION_CODE = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "config"
-    / "consolidators"
-    / "get_budgets.py"
-).read_text()
+FUNCTION_CODE = harness.source("get_budgets")
 
 
 class Api:
@@ -47,11 +40,7 @@ class Api:
 
 
 def run(api, **params):
-    namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(FUNCTION_CODE, namespace)
-    return namespace["run"](
-        {"venue": "The Glass Goose", **params}, api.call_api, lambda m: None
-    )
+    return harness.run(FUNCTION_CODE, api, **{"venue": "The Glass Goose", **params})
 
 
 # The live November week (the user's case): Loaded's dates, one day late.
@@ -83,10 +72,7 @@ class TestBudgetDates:
         ]  # fmt: skip
         assert out["total"] == 105000.0
         assert out["days_without_budget"] == []
-
-    def test_the_query_window_covers_the_ranges_last_day(self):
-        api = Api(NOV)
-        run(api, from_date="2026-11-23", to_date="2026-11-29")
+        # the query window covers the range's last day
         _, _, p = api.calls[0]
         assert p["from_date"] == "2026-11-23"
         assert p["to_date"] == "2026-11-30"  # T+1: the to-exclusive filter
@@ -151,9 +137,12 @@ class TestPeriodResolution:
         assert raw["to_date"] == "2026-11-30"
 
     def test_unresolvable_period_is_an_error_not_a_guess(self):
+        """...and the resolver's reason reaches the model (consolidator
+        review, 1 Oct 2026)."""
         api = Api(NOV)
         out = run(api, period="the vibes of spring")
         assert "could not resolve" in out["error"]
+        assert "(offline)" in out["error"]
         assert not [c for c in api.calls if c[1] == "get_budgets_raw"]
 
     def test_no_period_and_no_from_date_is_refused(self):
@@ -206,7 +195,3 @@ class TestReviewFixes:
         api = Api({"2026-11-24": (0.0, 0.15), "2026-11-25": (7000.0, 0.15)})
         out = run(api, from_date="2026-11-23", to_date="2026-11-24")
         assert out["days_with_zero_budget"] == ["2026-11-23"]
-
-    def test_the_resolvers_reason_reaches_the_model(self):
-        out = run(Api(NOV), period="the vibes of spring")
-        assert "(offline)" in out["error"]

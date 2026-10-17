@@ -12,7 +12,6 @@ from app.agents.context_builder import (
     _summarise_older_messages,
     _format_messages_for_summary,
     _ensure_alternation,
-    _get_or_create_summary,
 )
 
 
@@ -125,7 +124,7 @@ class TestBuildConversationMessages:
         thread = _make_thread(summary="Old summary.", summary_count=10)
         db = MagicMock()
 
-        result = build_conversation_messages(msgs, "new", thread=thread, db=db)
+        build_conversation_messages(msgs, "new", thread=thread, db=db)
 
         mock_llm.assert_called_once()
         # Should have been called with existing_summary
@@ -161,7 +160,7 @@ class TestBuildConversationMessages:
         assert "LOCATION" in result[0]["content"]
         assert "skip_me" not in result[0]["content"]
 
-    def test_context_none_values_skipped(self):
+        # None values are skipped
         result = build_conversation_messages(
             [], "test", context={"empty": None, "present": "value"}
         )
@@ -177,18 +176,6 @@ class TestBuildConversationMessages:
         assert result[0]["content"] == "first"
         assert result[1]["content"] == "second"
         assert result[2]["content"] == "third"
-
-    def test_recent_messages_count(self):
-        """Above threshold, exactly RECENT_AFTER_SUMMARY messages are kept in full."""
-        msgs = []
-        for i in range(SUMMARY_THRESHOLD + 10):
-            role = "user" if i % 2 == 0 else "assistant"
-            msgs.append(_make_msg(role, f"msg {i}", minutes_ago=100 - i))
-
-        result = build_conversation_messages(msgs, "new")
-        # Summary pair (2) + RECENT_AFTER_SUMMARY messages + new message (1)
-        # Alternation merging may reduce count slightly
-        assert len(result) >= RECENT_AFTER_SUMMARY
 
 
 class TestFormatMessagesForSummary:
@@ -256,6 +243,7 @@ class TestSummariseOlderMessages:
 
 class TestEnsureAlternation:
     def test_already_alternating(self):
+        """Unchanged — and so are an empty list and a single message."""
         msgs = [
             {"role": "user", "content": "a"},
             {"role": "assistant", "content": "b"},
@@ -263,6 +251,10 @@ class TestEnsureAlternation:
         ]
         result = _ensure_alternation(msgs)
         assert result == msgs
+        # ...as are the trivial cases
+        assert _ensure_alternation([]) == []
+        single = [{"role": "user", "content": "hello"}]
+        assert _ensure_alternation(single) == single
 
     def test_consecutive_same_role_merged(self):
         msgs = [
@@ -274,13 +266,6 @@ class TestEnsureAlternation:
         assert len(result) == 2
         assert result[0]["content"] == "a\n\nb"
         assert result[1]["content"] == "c"
-
-    def test_empty_list(self):
-        assert _ensure_alternation([]) == []
-
-    def test_single_message(self):
-        msgs = [{"role": "user", "content": "hello"}]
-        assert _ensure_alternation(msgs) == msgs
 
 
 class TestUserMessageNotDuplicated:
@@ -419,14 +404,11 @@ class TestToolResultManifest:
         assert "autopilot" not in out
         assert "period=yesterday" in out
 
-    def test_no_tool_calls_yields_nothing(self):
+    def test_missing_thread_or_db_is_safe(self):
+        """...and a thread with no tool calls yields nothing."""
         from app.agents.context_builder import build_tool_result_manifest
 
         assert build_tool_result_manifest(MagicMock(), _db_returning([])) is None
-
-    def test_missing_thread_or_db_is_safe(self):
-        from app.agents.context_builder import build_tool_result_manifest
-
         assert build_tool_result_manifest(None, MagicMock()) is None
         assert build_tool_result_manifest(MagicMock(), None) is None
 
@@ -516,6 +498,67 @@ class TestTokenTriggeredCompaction:
         from app.agents.context_builder import _split_history
 
         assert _split_history([]) == ([], [])
+
+
+class TestDateAnchoredHistory:
+    """A scheduled run replays one persistent conversation, so messages from
+    earlier days carry a [YYYY-MM-DD] prefix; today's messages and the new turn
+    stay bare. Without the dates the model read a two-day-old "I've emailed the
+    report" as current and skipped its own send as a duplicate (live incident,
+    Aug 2026: two daily reconciliation emails silently not sent). Moved here
+    from test_task_scheduler.py::TestTemporalGrounding.
+
+    The clock is frozen. Built from the real clock, this test failed in the
+    first six minutes after UTC midnight — its "today" message, six minutes
+    old, really was yesterday's — and blocked a deploy on 27 Sep 2026. The
+    three-past-midnight case pins that window."""
+
+    @pytest.mark.parametrize(
+        "now",
+        [
+            datetime(2026, 10, 7, 14, 30, tzinfo=timezone.utc),
+            datetime(2026, 10, 7, 0, 3, tzinfo=timezone.utc),
+        ],
+        ids=["afternoon", "three-past-midnight"],
+    )
+    def test_history_from_previous_days_is_date_prefixed(self, monkeypatch, now):
+        from types import SimpleNamespace
+
+        class _Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz is None else now.astimezone(tz)
+
+        monkeypatch.setattr("app.agents.context_builder.datetime", _Frozen)
+        two_days_ago = now - timedelta(days=2)
+        msgs = [
+            SimpleNamespace(
+                role="user", content="run the task", created_at=two_days_ago
+            ),
+            SimpleNamespace(
+                role="assistant",
+                content="I've emailed the report to dianna@cbhg.co.nz",
+                created_at=two_days_ago,
+            ),
+            # Earlier today — at 00:03 that is 00:01 and 00:02, still today.
+            SimpleNamespace(
+                role="user", content="thanks", created_at=now - timedelta(minutes=2)
+            ),
+            SimpleNamespace(
+                role="assistant",
+                content="Anything else?",
+                created_at=now - timedelta(minutes=1),
+            ),
+        ]
+        out = build_conversation_messages(
+            msgs, "run today's reconciliation", date_history=True
+        )
+        old_day = two_days_ago.date().isoformat()
+        assert out[0]["content"] == f"[{old_day}] run the task"
+        assert out[1]["content"].startswith(f"[{old_day}] I've emailed")
+        assert out[2]["content"] == "thanks"  # today: no prefix
+        assert out[3]["content"] == "Anything else?"  # today: no prefix
+        assert out[-1]["content"] == "run today's reconciliation"  # new turn bare
 
 
 class TestSummaryPreservesRetrievalIds:

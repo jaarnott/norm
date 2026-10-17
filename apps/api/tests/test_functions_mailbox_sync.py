@@ -29,7 +29,6 @@ from sqlalchemy import func, update
 from app.config import settings
 from app.db.functions_models import (
     FnMailboxAccount,
-    FnMailboxLabel,
     FnMailboxMessage,
     FnMailboxRetry,
     FnMailboxThread,
@@ -187,10 +186,6 @@ class TestMessages:
         w = mailbox_world(db_session)
         (mid,) = _inbound(fake, 1)
         _tick(db_session, w, fake)
-        fake.labels = fake.labels  # Actioned labels exist in the fake
-        sync_labels = (
-            db_session.query(FnMailboxLabel).filter_by(account_id=w.account.id).count()
-        )
         fake.relabel(mid, add=["Label_res"], remove=["UNREAD", "INBOX"])
         _tick(db_session, w, fake)
         msg = _messages(db_session, w)[mid]
@@ -204,7 +199,6 @@ class TestMessages:
             db_session.query(FnThreadFolder).filter_by(account_id=w.account.id).one()
         )
         assert (folder.folder, folder.set_by_label) == ("reservation", "gmail")
-        assert sync_labels >= 0
 
     def test_drafts_are_never_mirrored(self, db_session, fake):
         w = mailbox_world(db_session)
@@ -272,6 +266,10 @@ class TestMessages:
 
 class TestFlags:
     def test_the_three_flags_and_the_replied_stage(self, db_session, fake):
+        """The flags as the sync stores them, the replied stage they feed —
+        and, on their own threads, a colleague answering from their own
+        address (a reply, not internal) and a web form's notification the
+        mailbox sends itself (the customer writing, Reply-To kept)."""
         w = mailbox_world(db_session)
         t = "t-flags"
         inbound = fake.add_message(frm=f"Casey <{CUSTOMER}>", to=[MAILBOX], thread_id=t)
@@ -285,11 +283,26 @@ class TestFlags:
             subject="Automatic reply: Party",
             headers={"Auto-Submitted": "auto-replied"},
         )
+        colleague = fake.add_message(
+            frm="Sam <sam@cookbros.co.nz>",
+            to=[CUSTOMER],
+            cc=[MAILBOX],
+            labels=["INBOX"],
+        )
+        form = fake.add_message(
+            frm=MAILBOX, to=[MAILBOX], reply_to=CUSTOMER, labels=["INBOX", "SENT"]
+        )
         _tick(db_session, w, fake)
         msgs = _messages(db_session, w)
         assert (msgs[inbound].is_inbound, msgs[inbound].is_internal) == (True, False)
         assert (msgs[internal].is_inbound, msgs[internal].is_internal) == (False, True)
         assert msgs[auto].is_auto_reply is True
+        assert (msgs[colleague].is_inbound, msgs[colleague].is_internal) == (
+            False,
+            False,
+        )
+        assert (msgs[form].is_inbound, msgs[form].is_internal) == (True, False)
+        assert msgs[form].reply_to_email == CUSTOMER
 
         contact = add_contact(db_session, w.org.id, email=CUSTOMER)
         enquiry = add_enquiry(db_session, w.org.id, contact.id, w.venue.id)
@@ -315,32 +328,6 @@ class TestFlags:
         )
         stage, _ = status_svc.enquiry_status(db_session, w.org.id, enquiry.id, None)
         assert stage == "replied"
-
-    def test_a_colleague_answering_from_their_own_address_is_a_reply(
-        self, db_session, fake
-    ):
-        w = mailbox_world(db_session)
-        mid = fake.add_message(
-            frm="Sam <sam@cookbros.co.nz>",
-            to=[CUSTOMER],
-            cc=[MAILBOX],
-            labels=["INBOX"],
-        )
-        _tick(db_session, w, fake)
-        msg = _messages(db_session, w)[mid]
-        assert (msg.is_inbound, msg.is_internal) == (False, False)
-
-    def test_a_form_notification_to_itself_is_the_customer_writing(
-        self, db_session, fake
-    ):
-        w = mailbox_world(db_session)
-        mid = fake.add_message(
-            frm=MAILBOX, to=[MAILBOX], reply_to=CUSTOMER, labels=["INBOX", "SENT"]
-        )
-        _tick(db_session, w, fake)
-        msg = _messages(db_session, w)[mid]
-        assert (msg.is_inbound, msg.is_internal) == (True, False)
-        assert msg.reply_to_email == CUSTOMER
 
 
 class TestResync:

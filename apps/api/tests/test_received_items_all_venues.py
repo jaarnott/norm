@@ -7,8 +7,10 @@ by eye — most of a 72k-token request and two 11.7k-token answers (prod thread
 consolidator and merges in code.
 """
 
-from tests.test_received_items_consolidator import FUNCTION_CODE, invoice, line
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
+from tests import consolidator_harness as harness
+from tests.test_received_items_consolidator import invoice, line
+
+FUNCTION_CODE = harness.source("received_items_for_period")
 
 WINDOW = {
     "start": "2026-04-01T07:00:00+13:00",
@@ -84,16 +86,15 @@ class Api:
 
 
 def run(api, **params):
-    namespace = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(FUNCTION_CODE, namespace)
-    return namespace["run"](
-        {"period": "April to June 2026", **params}, api.call_api, lambda m: None
-    )
+    return harness.run(FUNCTION_CODE, api, **{"period": "April to June 2026", **params})
 
 
 class TestOneMergedRanking:
     def test_the_same_product_merges_across_venues_despite_different_ids(self):
-        out = run(Api(), venues="all")
+        """One venues='all' read: the merge, the ranking across the group, the
+        per-venue totals beside it, and one fetch per venue."""
+        api = Api()
+        out = run(api, venues="all")
         potatoes = next(r for r in out["rows"] if "potato" in r["item_name"].lower())
         # 2 x 10kg at $30 (B&E) + 5 x 1kg at $3.50 (Glass Goose)
         assert potatoes["spend"] == 77.5
@@ -105,23 +106,19 @@ class TestOneMergedRanking:
         ]
         assert "item_id" not in potatoes  # an id belongs to ONE venue
 
-    def test_rows_are_ranked_by_spend_across_the_group(self):
-        out = run(Api(), venues="all")
+        # rows are ranked by spend across the group
         assert [r["spend"] for r in out["rows"]] == [77.5, 30.0]
         assert out["summary"]["net_spend"] == 107.5
 
-    def test_every_venue_is_fetched_once_per_read(self):
-        api = Api()
-        run(api, venues="all")
-        invoice_calls = [v for a, v in api.calls if a == "get_received_invoices"]
-        assert sorted(invoice_calls) == sorted(VENUES)
-
-    def test_per_venue_totals_come_back_with_the_group_answer(self):
-        out = run(Api(), venues="all")
+        # per-venue totals come back with the group answer
         assert out["venues"] == [
             {"venue": "Bessie & Engineers", "net_spend": 90.0, "lines": 2},
             {"venue": "The Glass Goose", "net_spend": 17.5, "lines": 1},
         ]
+
+        # every venue is fetched once per read
+        invoice_calls = [v for a, v in api.calls if a == "get_received_invoices"]
+        assert sorted(invoice_calls) == sorted(VENUES)
 
     def test_group_rollup_carries_a_venue_split(self):
         out = run(Api(), venues="all", group_by="group")

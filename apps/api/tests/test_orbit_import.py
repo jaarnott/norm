@@ -580,6 +580,8 @@ class TestTrainingMapping:
     def test_people_carry_manager_and_payroll_and_only_who_matters(
         self, db_session, orbit, target
     ):
+        """...and every person reference remaps to a Norm person, with the raw
+        Orbit id kept beside it (folds the old person-id remap test)."""
         assert _training(db_session, orbit, target).code == 0
         people = _by_orbit(db_session, target, "people")
         # Active + anyone with history; Dave (only referenced as an actor) and
@@ -595,9 +597,8 @@ class TestTrainingMapping:
         assert people[BOB].data["norm_user_id"] == target["bob_user"].id
         assert "norm_user_id" not in alice
 
-    def test_person_ids_remap_with_raw_fallback(self, db_session, orbit, target):
-        _training(db_session, orbit, target)
-        people = {k: v.id for k, v in _by_orbit(db_session, target, "people").items()}
+        # Person ids remap, with the raw Orbit id as the fallback.
+        people = {k: v.id for k, v in people.items()}
         a = _by_orbit(db_session, target, "assignments")
         assert a[A1].data["assigned_by"] == people[BOB]
         assert a[A1].data["assigned_by_orbit_id"] == BOB
@@ -620,7 +621,15 @@ class TestTrainingMapping:
         ms = _by_orbit(db_session, target, "module_signoffs")[MS1].data
         assert "signed_off_by" not in ms and ms["signed_off_by_orbit_id"] == DAVE
 
-    def test_performance_review_new_columns(self, db_session, orbit, target):
+    def test_performance_reviews_emails_settings_and_remuneration(
+        self, db_session, orbit, target
+    ):
+        """Every new review column; review emails, email settings and pay
+        (folds the old new-columns, soft-delete and emails tests, one import).
+
+        Soft-deleted reviews arrive marked: Orbit hides a soft-deleted review
+        in its UI but keeps the row (and can restore it). Dropping it would
+        make a restore in Orbit look like a brand-new review here."""
         _training(db_session, orbit, target)
         people = {k: v.id for k, v in _by_orbit(db_session, target, "people").items()}
         reviews = _by_orbit(db_session, target, "performance_reviews")
@@ -640,21 +649,11 @@ class TestTrainingMapping:
         assert r1["previous_goals"][0]["id"] == G1
         assert "deleted_at" not in r1
 
-    def test_soft_deleted_reviews_arrive_marked(self, db_session, orbit, target):
-        """Orbit hides a soft-deleted review in its UI but keeps the row (and
-        can restore it). Dropping it would make a restore in Orbit look like a
-        brand-new review here."""
-        _training(db_session, orbit, target)
-        people = {k: v.id for k, v in _by_orbit(db_session, target, "people").items()}
-        r2 = _by_orbit(db_session, target, "performance_reviews")[R2].data
+        r2 = reviews[R2].data
         assert r2["deleted_at"] == "2026-09-09T00:00:00Z"
         assert r2["deleted_by"] == people[BOB]
         assert r2["deleted_by_orbit_id"] == BOB
 
-    def test_review_emails_settings_and_remuneration(self, db_session, orbit, target):
-        _training(db_session, orbit, target)
-        people = {k: v.id for k, v in _by_orbit(db_session, target, "people").items()}
-        reviews = _by_orbit(db_session, target, "performance_reviews")
         email = _by_orbit(db_session, target, "performance_review_emails")[E1].data
         assert email["review_id"] == reviews[R1].id
         assert email["review_ids"] == [reviews[R1].id]

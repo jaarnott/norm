@@ -37,6 +37,8 @@ class TestAgentModel:
         assert agent_model(override="claude-sonnet-5-5") == "claude-sonnet-5-5"
 
     def test_reads_selector_from_db(self, db_session):
+        """A deliberate current choice is honoured — the superseded and
+        retired guards must not swallow a valid non-default model."""
         _set_selector(db_session, interpreter_model="claude-sonnet-5-5")
         assert agent_model(db_session) == "claude-sonnet-5-5"
 
@@ -58,10 +60,6 @@ class TestAgentModel:
         _set_selector(db_session, interpreter_model="claude-opus-4-8")
         assert agent_model(db_session) == settings.LLM_INTERPRETER_MODEL
         assert agent_model(db_session) == "claude-opus-5-5"
-
-    def test_a_deliberate_current_choice_is_honoured(self, db_session):
-        _set_selector(db_session, interpreter_model="claude-sonnet-5-5")
-        assert agent_model(db_session) == "claude-sonnet-5-5"
 
 
 class TestSupportsEffort:
@@ -85,26 +83,18 @@ class TestRetiredSelectionIsIgnored:
     deploying a new default would fix.
     """
 
-    def test_retired_agent_selection_falls_back_to_default(self, db_session):
-        _set_selector(db_session, interpreter_model="claude-opus-4-20250514")
-        assert agent_model(db_session) == settings.LLM_INTERPRETER_MODEL
-
     def test_retired_router_selection_falls_back_to_default(self, db_session):
         _set_selector(db_session, router_model="claude-sonnet-4-20250514")
         assert router_model(db_session) == settings.ROUTER_MODEL
 
     def test_every_retired_id_is_rejected(self, db_session):
+        """claude-opus-4-20250514 among them."""
         for retired in RETIRED_MODEL_IDS:
             db_session.query(Connection).delete()
             _set_selector(db_session, interpreter_model=retired)
             resolved = agent_model(db_session)
             assert resolved not in RETIRED_MODEL_IDS
             assert resolved == settings.LLM_INTERPRETER_MODEL
-
-    def test_current_selection_is_still_honoured(self, db_session):
-        """The guard must not swallow a valid non-default choice."""
-        _set_selector(db_session, interpreter_model="claude-sonnet-5-5")
-        assert agent_model(db_session) == "claude-sonnet-5-5"
 
 
 class TestRouterModel:

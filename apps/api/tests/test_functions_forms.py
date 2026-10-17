@@ -166,6 +166,17 @@ def _auth(user):
     return {"Authorization": f"Bearer {create_access_token({'sub': user.id})}"}
 
 
+def _unsaved_fields():
+    """FIELDS exactly as create_form stores them, but unsaved: validate_answers
+    reads only the field definitions, so its size caps need no database world.
+    (TestAbuse's oversized-email test checks these equal the stored fields.)"""
+    return [forms_svc.FnWebFormField(**x) for x in forms_svc._clean_fields(FIELDS)]
+
+
+def _definition(field) -> dict:
+    return {k: v for k, v in forms_svc.field_dict(field).items() if k != "id"}
+
+
 class TestPublicSchema:
     def test_schema_renders_without_private_settings(self, client, f):
         r = client.get(f"/api/public/forms/{f.form.slug}")
@@ -449,6 +460,10 @@ class TestAbuse:
 
     def test_an_oversized_email_is_refused_before_any_regex(self, client, f):
         fields = forms_svc._fields(f.db, f.form)
+        # The unsaved stand-in the size-cap cases use is this form's fields.
+        assert [_definition(x) for x in _unsaved_fields()] == [
+            _definition(x) for x in fields
+        ]
         started = time.perf_counter()
         with pytest.raises(forms_svc.FormInvalid) as caught:
             forms_svc.validate_answers(fields, {**GOOD, "email": self.EVIL_EMAIL})
@@ -489,13 +504,12 @@ class TestAbuse:
             ("extras", [{"a": 1}]),
         ],
     )
-    def test_every_answer_type_has_a_size_cap(self, client, f, key, value):
-        fields = forms_svc._fields(f.db, f.form)
+    def test_every_answer_type_has_a_size_cap(self, key, value):
         with pytest.raises(forms_svc.FormInvalid) as caught:
-            forms_svc.validate_answers(fields, {**GOOD, key: value})
+            forms_svc.validate_answers(_unsaved_fields(), {**GOOD, key: value})
         assert set(caught.value.errors) == {key}
 
-    def test_dates_lists_are_capped(self, client, f):
+    def test_dates_lists_are_capped(self):
         field = forms_svc.FnWebFormField(key="d", label="Dates", type="dates")
         many = [f"2026-12-{day:02d}" for day in range(1, 22)]
         with pytest.raises(forms_svc.FormInvalid):
@@ -749,18 +763,24 @@ class TestBuilder:
 
     def test_theme_keys_mirror_forms_js(self):
         """The server accepts exactly the keys the embed applies — a key only
-        one side knew would be refused, or saved and silently ignored."""
+        one side knew would be refused, or saved and silently ignored. The
+        Orbit importer keeps only these settings too (its FORM_THEME_KEYS is
+        this set), so the two cannot drift."""
         forms_js = (
             pathlib.Path(__file__).resolve().parents[3]
             / "apps/web/public/embed/forms.js"
         ).read_text()
-        keys = set()
+        keys, listed = [], []
         for table in ("THEME_ALIASES", "THEME_KEYS"):
             block = re.search(rf"var {table} = \{{(.*?)\n  \}};", forms_js, re.S).group(
                 1
             )
-            keys |= set(re.findall(r"^\s+([a-z_]+): \[", block, re.M))
-        assert keys == set(forms_svc.THEME_KEYS)
+            keys += re.findall(r"^\s+([a-z_]+):", block, re.M)
+            listed += re.findall(r"^\s+([a-z_]+): \[", block, re.M)
+        assert len(keys) > 40
+        assert listed == keys  # every setting maps to [css variables, property]
+        assert len(keys) == len(set(keys))  # no setting in both tables
+        assert set(keys) == set(forms_svc.THEME_KEYS)
 
     def test_bad_fields_are_refused(self, client, f):
         url = f"/api/functions/forms/{f.form.id}/fields"

@@ -11,7 +11,8 @@ committed — and its rollback took the user's message with it.
 
 Three layers now guarantee persistence, each tested here:
 1. record_usage writes through its own short transaction (no shared-session
-   poison, no minutes-long row locks, race resolved by retry-as-update).
+   poison, no minutes-long row locks, race resolved by retry-as-update) —
+   tested in test_llm_usage_recording.py::TestRecordUsage.
 2. handle_message_with_tools COMMITS the thread + user message before any LLM
    work.
 3. The /messages endpoints persist the user message + a failure note on ANY
@@ -26,15 +27,13 @@ Three layers now guarantee persistence, each tested here:
    Cloud Run logs.
 """
 
-import datetime
 import json
 
 import pytest
 from sqlalchemy.orm import Session
 
 import app.routers.messages as messages_mod
-from app.db.models import Message, Thread, TokenUsage
-from app.services.usage_service import record_usage
+from app.db.models import Message, Thread
 
 
 def _sse_events(body: str) -> list[dict]:
@@ -56,83 +55,6 @@ def net_sessions(monkeypatch, db_session):
     monkeypatch.setattr(
         messages_mod, "SessionLocal", lambda: Session(bind=db_session.get_bind())
     )
-
-
-class TestRecordUsage:
-    def _org_for(self, db_session, user):
-        from app.db.models import Organization, OrganizationMembership
-
-        org = Organization(name="Test Org", slug=f"test-org-{user.id[:8]}")
-        db_session.add(org)
-        db_session.flush()
-        db_session.add(
-            OrganizationMembership(
-                organization_id=org.id, user_id=user.id, role="owner"
-            )
-        )
-        db_session.flush()
-        return org
-
-    def test_accumulates_into_one_row(self, db_session, admin_user):
-        org = self._org_for(db_session, admin_user)
-        record_usage(db_session, admin_user.id, 100, 50)
-        record_usage(db_session, admin_user.id, 10, 5)
-
-        rows = (
-            db_session.query(TokenUsage)
-            .filter(TokenUsage.organization_id == org.id)
-            .all()
-        )
-        assert len(rows) == 1
-        assert rows[0].input_tokens == 110
-        assert rows[0].output_tokens == 55
-        assert rows[0].llm_call_count == 2
-
-    def test_updates_existing_row_with_null_counters(self, db_session, admin_user):
-        """Legacy rows may hold NULLs; the increment must coalesce, not NULL out."""
-        org = self._org_for(db_session, admin_user)
-        db_session.add(
-            TokenUsage(
-                organization_id=org.id,
-                user_id=admin_user.id,
-                date=datetime.date.today().isoformat(),
-                input_tokens=None,
-                output_tokens=None,
-                llm_call_count=None,
-            )
-        )
-        db_session.flush()
-
-        record_usage(db_session, admin_user.id, 7, 3)
-
-        row = (
-            db_session.query(TokenUsage)
-            .filter(TokenUsage.organization_id == org.id)
-            .one()
-        )
-        assert row.input_tokens == 7
-        assert row.output_tokens == 3
-        assert row.llm_call_count == 1
-
-    def test_no_org_is_a_noop(self, db_session, admin_user):
-        record_usage(db_session, admin_user.id, 100, 50)
-        assert (
-            db_session.query(TokenUsage)
-            .filter(TokenUsage.user_id == admin_user.id)
-            .count()
-            == 0
-        )
-
-    def test_failure_never_raises(self, db_session, admin_user, monkeypatch):
-        """A broken usage write must not break the turn that reported it."""
-        self._org_for(db_session, admin_user)
-        import app.services.usage_service as usage_mod
-
-        def boom(*a, **k):
-            raise RuntimeError("db down")
-
-        monkeypatch.setattr(usage_mod, "_upsert", boom)
-        record_usage(db_session, admin_user.id, 100, 50)  # must not raise
 
 
 class TestStreamFailureNet:

@@ -43,7 +43,7 @@ from tests.functions_mailbox_fakes import (
     sessions,
 )
 from tests.functions_world import add_contact, add_enquiry
-from tests.test_tool_loop_unknown_tool import _Block, _Response
+from tests.tool_loop_harness import _Block, _Response
 
 UTC = dt.timezone.utc
 CUSTOMER = "casey@clientco.nz"
@@ -261,40 +261,37 @@ class TestSendEmail:
         assert thread.status == approvals.AWAITING
         assert any("reason recorded" in x for x in tc.preview["warnings"])
 
-    def test_a_draft_with_blanks_never_reaches_a_card(self, db_session, w, fake):
-        draft = _draft(
+    def test_refusals_before_or_without_a_card(self, db_session, w, fake):
+        """No card for a draft with unfilled blanks, for a proposal draft sent
+        as an email (it's send_proposal's), or for send_proposal before a
+        proposal is built; and the send itself refuses without a card."""
+        thread = _make_thread(
+            db_session, w.staff, domain="functions", intent="functions.tool_use"
+        )
+        send_email = IT.get_previewer("norm_functions", "send_email")
+
+        blanks = _draft(
             db_session, w, body="<p>Hi {{client_name}}, see you on [DATE].</p>"
         )
-        assert "Hi Casey" in draft.body_html
-        thread = _make_thread(
-            db_session, w.staff, domain="functions", intent="functions.tool_use"
-        )
-        out = IT.get_previewer("norm_functions", "send_email")(
-            {"draft_id": draft.id}, db_session, thread.id
-        )
+        assert "Hi Casey" in blanks.body_html
+        out = send_email({"draft_id": blanks.id}, db_session, thread.id)
         assert "unfilled blanks: [DATE]" in out["error"]
 
-    def test_without_a_card_it_refuses(self, db_session, w, fake):
+        proposal = _draft(
+            db_session, w, kind="proposal", body="Here's your proposal: {{quote_link}}"
+        )
+        out = send_email({"draft_id": proposal.id}, db_session, thread.id)
+        assert "send_proposal" in out["error"]
+        out = IT.get_previewer("norm_functions", "send_proposal")(
+            {"draft_id": proposal.id}, db_session, thread.id
+        )
+        assert "build_proposal" in out["error"]
+
         draft = _draft(db_session, w)
         handler = IT.get_handler("norm_functions", "send_email")
-        thread = _make_thread(
-            db_session, w.staff, domain="functions", intent="functions.tool_use"
-        )
         out = handler({"draft_id": draft.id}, db_session, thread.id)
         assert not out["success"] and "approval card" in out["error"]
         assert fake.sent == []
-
-    def test_a_proposal_draft_is_not_an_email(self, db_session, w, fake):
-        draft = _draft(
-            db_session, w, kind="proposal", body="Here's your proposal: {{quote_link}}"
-        )
-        thread = _make_thread(
-            db_session, w.staff, domain="functions", intent="functions.tool_use"
-        )
-        out = IT.get_previewer("norm_functions", "send_email")(
-            {"draft_id": draft.id}, db_session, thread.id
-        )
-        assert "send_proposal" in out["error"]
 
 
 class TestSendProposal:
@@ -349,16 +346,6 @@ class TestSendProposal:
             enquiries_svc.enquiry_state(db_session, w.ctx(), w.enquiry.id)[0]
             == "quoted"
         )
-
-    def test_no_proposal_no_card(self, db_session, w, fake):
-        draft = _draft(db_session, w, kind="proposal", body="Here: {{quote_link}}")
-        thread = _make_thread(
-            db_session, w.staff, domain="functions", intent="functions.tool_use"
-        )
-        out = IT.get_previewer("norm_functions", "send_proposal")(
-            {"draft_id": draft.id}, db_session, thread.id
-        )
-        assert "build_proposal" in out["error"]
 
 
 def test_shadow_mode_never_sends(db_session, fake, monkeypatch):

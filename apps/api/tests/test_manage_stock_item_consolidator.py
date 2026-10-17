@@ -20,12 +20,10 @@ production:
 """
 
 import copy
-import pathlib
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
+from tests import consolidator_harness as harness
 
-_DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-CODE = (_DIR / "manage_stock_item.py").read_text()
+CODE = harness.source("manage_stock_item")
 
 VAR1 = "11111111-1111-4111-8111-111111111111"
 VAR2 = "22222222-2222-4222-8222-222222222222"
@@ -113,11 +111,7 @@ class Api:
 
 
 def run(api, **params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(CODE, ns)
-    return ns["run"](
-        {"venue": "The Glass Goose", **params}, api.call_api, lambda m: None
-    )
+    return harness.run(CODE, api, **{"venue": "The Glass Goose", **params})
 
 
 class TestOps:

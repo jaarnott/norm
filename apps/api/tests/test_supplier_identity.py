@@ -141,8 +141,7 @@ class TestAliasCandidates:
         never read, and the invoice resolved to nothing."""
         got = alias_candidates(["SERVICE FOODS LTD"], self.SUPS)
         assert got and got[0]["id"] == "sf"
-
-    def test_a_single_shared_word_still_ranks_below_two(self):
+        # A single shared word still ranks below two.
         got = alias_candidates(["SERVICE FOODS LTD"], self.SUPS, limit=4)
         assert [s["id"] for s in got][0] == "sf"
         assert "ev" not in [s["id"] for s in got]
@@ -341,3 +340,57 @@ class TestTheAccountMayNotContradictItself:
         """The list is best-effort (one Loaded call). If it is unavailable the
         aliases must still work — degrade, never blank."""
         assert admissible_aliases("La Zeppa", ["Oravida"], []) == ["Oravida"]
+
+
+class TestSupplierPlaceholder:
+    """The 110016259 regression (19 Aug 2026): Loaded's literal
+    '[Unnamed Supplier]' record exact-matched the DRAFT's placeholder name
+    hint, and the low-authority exact beat the printed name's correct
+    containment match to Bidfood. Placeholders are never identities, and
+    every tier runs for a hint before the next hint is consulted. (Moved from
+    test_invoice_replica.py on 17 Oct 2026; its build_replica pin stays there.)"""
+
+    PLACEHOLDER = {"id": "sup-junk", "name": "[Unnamed Supplier]"}
+    POOL = [
+        PLACEHOLDER,
+        {"id": "sup-bidfood", "name": "Bidfood"},
+        {"id": "sup-bff", "name": "Bidfoods fresh produce"},
+    ]
+
+    def test_placeholder_names_are_recognised(self):
+        from app.services.supplier_identity import is_placeholder_supplier_name
+
+        assert is_placeholder_supplier_name("[Unnamed Supplier]")
+        assert is_placeholder_supplier_name("unnamed supplier")
+        assert is_placeholder_supplier_name("")
+        assert is_placeholder_supplier_name("   ")
+        assert not is_placeholder_supplier_name("Bidfood")
+        assert not is_placeholder_supplier_name("Unnamed Brewing Co")
+
+    def test_the_110016259_pin(self):
+        s, by = resolve_supplier(
+            ["BIDFOOD FSV DUNEDIN", "[Unnamed Supplier]"], self.POOL
+        )
+        assert s["id"] == "sup-bidfood"
+        assert by == "containment"
+
+    def test_a_lower_authority_exact_never_beats_the_copys_containment(self):
+        pool = [
+            {"id": "sup-a", "name": "Bidfood"},
+            {"id": "sup-b", "name": "Totally Other Ltd"},
+        ]
+        s, by = resolve_supplier(["BIDFOOD FSV DUNEDIN", "Totally Other Ltd"], pool)
+        assert s["id"] == "sup-a" and by == "containment"
+
+    def test_placeholder_only_hints_resolve_nothing(self):
+        assert resolve_supplier(["[Unnamed Supplier]"], self.POOL) == (None, None)
+
+    def test_ambiguity_on_the_copy_defers_to_loadeds_human_choice(self):
+        pool = [
+            {"id": "sup-a", "name": "Bidfood North"},
+            {"id": "sup-b", "name": "Bidfood South"},
+        ]
+        # the copy is ambiguous; Loaded's supplier (chosen at order time)
+        # breaks the tie via its own exact match
+        s, by = resolve_supplier(["Bidfood", "Bidfood South"], pool)
+        assert s["id"] == "sup-b" and by == "exact"

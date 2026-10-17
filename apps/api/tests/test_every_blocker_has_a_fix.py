@@ -69,26 +69,32 @@ class TestUnitBlockersCarryAUnit:
         }
 
     def test_the_resolvers_answer_is_proposed_at_any_confidence(self):
-        replica = self._replica(
-            unit_resolved={
-                "unit_id": "u-each",
-                "unit_name": "Each",
+        # Norm always proposes a fix (user, 11 Oct 2026): a low or medium
+        # answer is a guess for a person, never applied without the switch.
+        # (The high case is the Oravida test below; the review's wiring of it
+        # is test_invoice_review's test_resolver_pick_is_the_blockers_fix...)
+        for confidence in ("low", "medium"):
+            replica = self._replica(
+                unit_resolved={
+                    "unit_id": "u-each",
+                    "unit_name": "Each",
+                    "unit_ratio": 1,
+                    "confidence": confidence,
+                }
+            )
+            issue = _unit_issue()
+            fix = _decide_unit(self._data(), replica, {"rep-0": "ld-1"}, issue=issue)
+            assert fix["apply"] == {
+                "linked_unit_id": "u-each",
+                "unit": "Each",
                 "unit_ratio": 1,
-                "confidence": "low",
             }
-        )
-        fix = _decide_unit(
-            self._data(), replica, {"rep-0": "ld-1"}, issue=_unit_issue()
-        )
-        assert fix["apply"] == {
-            "linked_unit_id": "u-each",
-            "unit": "Each",
-            "unit_ratio": 1,
-        }
-        # A guess is for a person, or for the switch that says Norm may pick.
-        assert fix["sure"] is False and fix["gate"] == VA.RECEIVE_WITHOUT_UNIT
-        # ...and the Replica says so: the Replica tab shows what the card does.
-        assert replica["lines"][0]["linked_unit_id"] == "u-each"
+            assert issue["fix"] == [fix["id"]]  # the blocker points at it
+            # A guess is for a person, or for the switch that says Norm may pick.
+            assert fix["sure"] is False and fix["gate"] == VA.RECEIVE_WITHOUT_UNIT
+            assert fix["confidence"] == confidence
+            # ...and the Replica says so: the Replica tab shows what the card does.
+            assert replica["lines"][0]["linked_unit_id"] == "u-each"
 
     def test_a_line_already_holding_the_unit_is_kept(self):
         # The Aitkens freight shape: Loaded's line had Each, so nothing was
@@ -176,7 +182,10 @@ class TestUnitBlockersCarryAUnit:
         assert fix["apply"]["linked_unit_id"] == "u-each"
 
 
-class TestSupplierAndPhantomLines:
+class TestSupplierBlockers:
+    """(The phantom-line strike is pinned through a whole review in
+    test_invoice_review.py::TestCoverage::test_loaded_money_line_not_on_copy_blocks.)"""
+
     def _replica(self, name):
         return {
             "issues": [
@@ -204,12 +213,17 @@ class TestSupplierAndPhantomLines:
         return issue, suggestions
 
     def test_a_near_supplier_is_proposed(self):
+        """Folded in: an undecided near match needs no switch, and linking an
+        existing record writes nothing to it, so the invoice isn't read for
+        its details."""
+        asked = []
         issue, suggestions = self._decide(
             self._replica("SERVICE FOODS LTD"),
             [
                 {"id": "sup-sf", "name": "SERVICE FOODS AUCKLAND"},
                 {"id": "sup-bf", "name": "Bidfood"},
             ],
+            read_details=lambda name: asked.append(name) or {},
         )
         [s] = suggestions
         assert s["kind"] == "supplier"
@@ -219,6 +233,8 @@ class TestSupplierAndPhantomLines:
         }
         assert s["sure"] is False  # the closest record is a guess
         assert issue["fix"] == [s["id"]]
+        assert issue.get("gate") is None
+        assert asked == []
 
     def test_sharing_only_trade_words_is_not_close(self):
         # Applegum Cafe SI650438: proposed as PFD Food Services, while its
@@ -278,13 +294,6 @@ class TestSupplierAndPhantomLines:
         )
         assert s["kind"] == "supplier" and s["sure"] is False
 
-    def test_an_undecided_near_match_needs_no_switch(self):
-        issue, _ = self._decide(
-            self._replica("SERVICE FOODS LTD"),
-            [{"id": "sup-sf", "name": "SERVICE FOODS AUCKLAND"}],
-        )
-        assert issue.get("gate") is None
-
     def test_nothing_close_is_created(self):
         issue, suggestions = self._decide(
             self._replica("Tickety-Boo Liquor Ltd"),
@@ -325,17 +334,6 @@ class TestSupplierAndPhantomLines:
             "09 555 0101 · orders@tickety.co.nz"
         )
 
-    def test_a_near_match_reads_nothing(self):
-        # Linking an existing record writes nothing to it, so there is
-        # nothing to read the invoice for.
-        asked = []
-        self._decide(
-            self._replica("SERVICE FOODS LTD"),
-            [{"id": "sup-sf", "name": "SERVICE FOODS AUCKLAND"}],
-            read_details=lambda name: asked.append(name) or {},
-        )
-        assert asked == []
-
     def test_an_unreadable_invoice_still_creates_the_supplier(self):
         _, [s] = self._decide(
             self._replica("Tickety-Boo Liquor Ltd"),
@@ -343,25 +341,6 @@ class TestSupplierAndPhantomLines:
             read_details=lambda name: {},
         )
         assert s["payload"] == {"supplier_name": "Tickety-Boo Liquor Ltd"}
-
-    def test_a_phantom_line_is_struck(self):
-        data = {
-            "lines": [
-                {
-                    "id": "ld-9",
-                    "description": "Ghost",
-                    "quantity_received": 1,
-                    "unit_cost": 12.0,
-                    "total_cost": 12.0,
-                }
-            ]
-        }
-        suggestions, issues, _pairs = IR.build_suggestions(data, {"lines": []})
-        IR.link_fixes(data, None, issues, suggestions)
-        strike = next(s for s in suggestions if s["kind"] == "strike")
-        issue = next(i for i in issues if i["code"] == "loaded_line_not_on_copy")
-        assert issue["fix"] == [strike["id"]]
-        assert strike["gate"] == VA.AUTO_STRIKE_PHANTOM_LINES
 
 
 class _OrdersLoaded:
@@ -787,9 +766,18 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
         assert not IR.totals_balance(IR._all_applied(data, suggestions))
 
     def test_the_model_works_out_the_wrong_line(self):
+        # ...reading the invoice itself, because its figures alone didn't say.
         data, price = self._off()
         suggestions, issues = [price], []
-        IR.balance_after_suggestions(data, suggestions, issues, ask=self._answer(15.0))
+        read: list = []
+        IR.balance_after_suggestions(
+            data,
+            suggestions,
+            issues,
+            ask=self._answer(15.0),
+            document=lambda: read.append(1) or {"type": "document"},
+        )
+        assert read == [1]
         [s] = suggestions  # the price suggestion now carries the right price
         assert s["proposed"] == 15.0 and s["sure"] is True
         assert "the price was misread" in s["explanation"]
@@ -848,6 +836,7 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
         assert IR.totals_balance(IR._all_applied(data, suggestions))
 
     def test_an_invoice_that_adds_up_never_asks(self):
+        # The invoice is read only when needed: not here.
         data, _ = self._off()
         data["total"] = 23.0
 
@@ -858,18 +847,6 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
             raise AssertionError("nor is its copy read")
 
         IR.balance_after_suggestions(data, [], [], ask=ask, document=document)
-
-    def test_the_invoice_itself_is_read_only_when_needed(self):
-        data, price = self._off()
-        read: list = []
-        IR.balance_after_suggestions(
-            data,
-            [price],
-            [],
-            ask=self._answer(15.0),
-            document=lambda: read.append(1) or {"type": "document"},
-        )
-        assert read == [1]
 
     def test_a_suggestion_that_would_unbalance_a_matching_invoice_goes(self):
         # Loaded's 2 x 10.00 already comes to 23.00: a list price that would
@@ -1191,13 +1168,25 @@ class TestLinesWithoutGst:
         return [rl["sale_tax_rate"] for rl in replica["lines"]]
 
     def test_nil_gst_means_every_line_is_tax_free(self):
-        _, replica, _ = self._settle(
+        """Folded in: the review then suggests the rate on each line and moves
+        no cost, and the result adds up."""
+        data, replica, pairs = self._settle(
             [("BBQ Sauce 3Ltr", 1, 13.26), ("Invoice Rounding", 1, -0.01)],
             tax=0.0,
             total=13.25,
         )
         assert self._rates(replica) == [0.0, 0.0]
         assert "charges no GST" in replica["lines"][0]["sale_tax_rate_why"]
+        suggestions: list = []
+        for rl in replica["lines"]:
+            ln = next(x for x in data["lines"] if x["id"] == pairs[rl["id"]])
+            IR._line_suggestions(suggestions, rl, ln, ln["id"])
+        rate = [s for s in suggestions if s["field"] == "sale_tax_rate"]
+        assert [s["proposed"] for s in rate] == [0.0, 0.0]
+        issues: list = []
+        IR.balance_after_suggestions(data, suggestions, issues)
+        assert not [s for s in suggestions if s["field"] == "unit_cost"]
+        assert IR.totals_balance(IR._all_applied(data, suggestions))
 
     def test_only_the_line_whose_tax_makes_the_gst_keeps_it(self):
         _, replica, _ = self._settle(
@@ -1226,23 +1215,6 @@ class TestLinesWithoutGst:
             [("A", 1, 10.0), ("B", 2, 5.0)], tax=2.0, total=22.0
         )
         assert self._rates(replica) == [0.1, 0.1]
-
-    def test_the_review_then_suggests_the_rate_and_moves_no_cost(self):
-        data, replica, pairs = self._settle(
-            [("BBQ Sauce 3Ltr", 1, 13.26), ("Invoice Rounding", 1, -0.01)],
-            tax=0.0,
-            total=13.25,
-        )
-        suggestions: list = []
-        for rl in replica["lines"]:
-            ln = next(x for x in data["lines"] if x["id"] == pairs[rl["id"]])
-            IR._line_suggestions(suggestions, rl, ln, ln["id"])
-        rate = [s for s in suggestions if s["field"] == "sale_tax_rate"]
-        assert [s["proposed"] for s in rate] == [0.0, 0.0]
-        issues: list = []
-        IR.balance_after_suggestions(data, suggestions, issues)
-        assert not [s for s in suggestions if s["field"] == "unit_cost"]
-        assert IR.totals_balance(IR._all_applied(data, suggestions))
 
 
 class TestTheReviewLeavesNoBlockerWithoutAFix:
@@ -1301,11 +1273,15 @@ class TestTheReviewLeavesNoBlockerWithoutAFix:
         assert IR.blockers_without_a_fix(data) == []
 
     def test_a_header_misread_becomes_a_header_fix(self):
-        det = DETAIL(total=252.75)
-        ext = EXTRACTION(total_incl_tax=999.0)
+        # The copy misread the printed total; the totals model corrects the
+        # HEADER, not a line. The Replica holds the corrected total, says why,
+        # and marks it a fix — the only test of replica_finish's header-
+        # correction branch (restored 17 Oct 2026: its assertions sat behind
+        # an `if` that never fired, so it looked inert, but it was the one
+        # test driving that code).
         data = _review(
-            detail=det,
-            extraction=ext,
+            detail=DETAIL(total=252.75),
+            extraction=EXTRACTION(total_incl_tax=999.0),
             totals_ask=lambda p: {
                 "corrections": [
                     {
@@ -1319,11 +1295,10 @@ class TestTheReviewLeavesNoBlockerWithoutAFix:
                 "why": "the total was misread",
             },
         )
-        issue = next(
-            (i for i in data["issues"] if i["code"] == "totals_inconsistent"), None
-        )
-        if issue is not None:
-            assert data["replica"]["total"] == 252.75  # the Replica holds the fix
+        rep = data["replica"]
+        assert rep["total"] == 252.75
+        assert "the total was misread" in rep["total_why"]
+        assert rep["fixes_confidence"] == "high"
         assert IR.blockers_without_a_fix(data) == []
 
 

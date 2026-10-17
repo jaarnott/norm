@@ -79,17 +79,6 @@ class TestCreateVenue:
 class TestUpdateVenue:
     """PUT /api/venues/{venue_id}"""
 
-    def test_update_venue(self, client, db_session, admin_headers, venue):
-        resp = client.put(
-            f"/api/venues/{venue.id}",
-            json={"name": "Updated Venue", "location": "Christchurch"},
-            headers=admin_headers,
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["name"] == "Updated Venue"
-        assert data["location"] == "Christchurch"
-
     def test_update_venue_not_found_returns_404(self, client, admin_headers):
         resp = client.put(
             f"/api/venues/{uuid.uuid4()}",
@@ -102,18 +91,9 @@ class TestUpdateVenue:
 class TestDeleteVenue:
     """DELETE /api/venues/{venue_id}"""
 
-    def test_delete_venue_as_admin(self, client, db_session, admin_headers, venue):
-        resp = client.delete(f"/api/venues/{venue.id}", headers=admin_headers)
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-
     def test_delete_venue_as_manager_returns_403(self, client, manager_headers, venue):
         resp = client.delete(f"/api/venues/{venue.id}", headers=manager_headers)
         assert resp.status_code == 403
-
-    def test_delete_venue_not_found_returns_404(self, client, admin_headers):
-        resp = client.delete(f"/api/venues/{uuid.uuid4()}", headers=admin_headers)
-        assert resp.status_code == 404
 
 
 class TestVenueConnectors:

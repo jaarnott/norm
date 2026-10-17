@@ -167,17 +167,6 @@ class TestResourcesDispatch:
         assert "error" in resp
 
 
-# ── initialize capability ────────────────────────────────────────────────
-
-
-class TestInitializeCapability:
-    def test_advertises_ui_extension(self):
-        resp = _rpc("initialize", {"protocolVersion": "2025-06-18"})
-        caps = resp["result"]["capabilities"]
-        assert "resources" in caps
-        assert caps["extensions"][UI_EXTENSION_ID]["mimeTypes"] == [UI_MIME_TYPE]
-
-
 # ── tool binding ─────────────────────────────────────────────────────────
 
 
@@ -211,6 +200,14 @@ class TestToolBinding:
 
 class TestKillSwitch:
     def test_disabled_removes_capability_and_resources(self, monkeypatch):
+        """On (the default), initialize advertises resources and the UI
+        extension with its mime type; switched off, all of it goes."""
+        caps = _rpc("initialize", {"protocolVersion": "2025-06-18"})["result"][
+            "capabilities"
+        ]
+        assert "resources" in caps
+        assert caps["extensions"][UI_EXTENSION_ID]["mimeTypes"] == [UI_MIME_TYPE]
+
         monkeypatch.setattr(settings, "MCP_UI_ENABLED", False)
         init = _rpc("initialize", {"protocolVersion": "2025-06-18"})
         caps = init["result"]["capabilities"]
@@ -253,25 +250,18 @@ class TestUiPayloadSeparation:
             ],
         }
 
-    def test_big_payload_is_shaped_for_the_model(self):
-        from app.mcp.results import shape_result
-
-        shaped, truncated = shape_result(self._roster(400))
-        assert truncated
-        assert "rosteredShifts" not in shaped  # the model gets a stub
-
-    def test_but_the_app_still_gets_the_real_data(self):
-        from app.mcp.results import ui_payload
-
-        full = self._roster(400)
-        assert ui_payload(full) is full  # unshaped, array intact
-
     def test_result_carries_both_halves(self):
+        """A big payload is shaped for the model, but the app still gets the
+        real data — and the result carries both."""
         from app.connectors.mcp_protocol import tools_call_result
         from app.mcp.results import shape_result, ui_payload
 
         full = self._roster(400)
-        shaped, _ = shape_result(full)
+        shaped, truncated = shape_result(full)
+        assert truncated
+        assert "rosteredShifts" not in shaped  # the model gets a stub
+        assert ui_payload(full) is full  # unshaped, array intact
+
         res = tools_call_result(shaped, structured=ui_payload(full))
         # model-facing text is the stub; the app's copy has the shifts
         assert "rosteredShifts" not in res["content"][0]["text"]
@@ -281,12 +271,6 @@ class TestUiPayloadSeparation:
         from app.mcp.results import ui_payload
 
         assert ui_payload({"x": "y" * 500_000}) is None
-
-    def test_non_ui_tool_is_unchanged(self):
-        from app.connectors.mcp_protocol import tools_call_result
-
-        res = tools_call_result({"a": 1})
-        assert res["structuredContent"] == {"a": 1}
 
 
 class TestUiContentSummary:
@@ -330,14 +314,10 @@ class TestUiContentSummary:
         assert len(item["rosteredShifts"]) < 115
         assert "_too_large" not in out
         # The message instructs AGAINST narrowing — the opposite of the
-        # shape_result envelope that says "narrow the request".
-        assert "not narrow" in out["message"].lower()
-
-    def test_message_tells_the_model_not_to_refetch(self):
-        from app.mcp.results import ui_content_summary
-
-        out = ui_content_summary(self._roster_wrapped(115))
+        # shape_result envelope that says "narrow the request" — and tells
+        # the model not to re-fetch what is already on screen.
         msg = out["message"].lower()
+        assert "not narrow" in msg
         assert "already" in msg or "on their screen" in msg
         assert "do not" in msg or "don't" in msg
 

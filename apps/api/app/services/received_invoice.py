@@ -1537,6 +1537,33 @@ def receive_request_from_doc(
     )
 
 
+def _suggested_po_refs(suggestions) -> set[str]:
+    """The purchase-order ids and numbers a draft's suggestions point at.
+
+    Two shapes: the replica review's (``kind`` link_po / split_reference with
+    the values under ``apply`` — ``linked_purchase_order_id``,
+    ``purchase_order_number``, ``split_po_id``), and the legacy top-level
+    ``purchase_order_id`` / ``po_number`` older drafts may still carry. Only
+    the legacy one used to be read, so a current link suggestion never
+    matched and its card kept offering an order another invoice had taken.
+    """
+    refs: set[str] = set()
+    for s in suggestions or []:
+        if not isinstance(s, dict):
+            continue
+        apply = s.get("apply") if isinstance(s.get("apply"), dict) else {}
+        for v in (
+            s.get("purchase_order_id"),
+            s.get("po_number"),
+            apply.get("linked_purchase_order_id"),
+            apply.get("purchase_order_number"),
+            apply.get("split_po_id"),
+        ):
+            if v:
+                refs.add(str(v))
+    return refs
+
+
 def invalidate_conflicting_drafts(
     db,
     venue_id: str,
@@ -1589,11 +1616,7 @@ def invalidate_conflicting_drafts(
             for key in ("linked_purchase_order_id", "purchase_order_number"):
                 if data.get(key):
                     po_set.add(str(data[key]))
-            for s in data.get("suggestions") or []:
-                if isinstance(s, dict):
-                    for k in ("purchase_order_id", "po_number"):
-                        if s.get(k):
-                            po_set.add(str(s[k]))
+            po_set |= _suggested_po_refs(data.get("suggestions"))
         want_ref = _norm(reference_number)
         want_sup = _norm(supplier_name)
 
@@ -1626,11 +1649,7 @@ def invalidate_conflicting_drafts(
                 )
                 if v
             }
-            for s in data.get("suggestions") or []:
-                if isinstance(s, dict):
-                    for k in ("purchase_order_id", "po_number"):
-                        if s.get(k):
-                            sib_pos.add(str(s[k]))
+            sib_pos |= _suggested_po_refs(data.get("suggestions"))
             if duplicate or (po_set and po_set & sib_pos):
                 data["suggestions"] = []
                 # The cached-review marker: clearing reviewed_at makes the

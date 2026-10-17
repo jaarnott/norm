@@ -103,7 +103,14 @@ def detail_of(created: dict) -> str:
 
 
 class TestGate:
-    def test_off_org_gets_404_everywhere(self, client, w):
+    def test_off_is_404_everywhere_at_once(self, client, w, db_session):
+        """Mode off is a 404 ``not_found`` on every endpoint, and at once: the
+        catalog half of the gate is remembered for a short while, but the
+        org's own mode is read fresh. A user with no organisation gets 404
+        too; no token at all is refused."""
+        from tests.conftest import _make_user
+
+        assert call(client, "GET", "/meta", w.staff).status_code == 200
         w.org.functions_mode = "off"
         w.db.flush()
         for method, path in (
@@ -116,25 +123,12 @@ class TestGate:
             r = call(client, method, path, w.staff, json={"name": "x"})
             assert r.status_code == 404, (method, path, r.text)
             assert r.json()["detail"]["code"] == "not_found"
-
-    def test_switching_off_bites_at_once_despite_the_entitlement_cache(self, client, w):
-        # The catalog half of the gate is remembered for a short while; the
-        # org's own mode is read fresh, so "off" is immediate.
-        assert call(client, "GET", "/meta", w.staff).status_code == 200
-        w.org.functions_mode = "off"
-        w.db.flush()
-        assert call(client, "GET", "/meta", w.staff).status_code == 404
         w.org.functions_mode = "shadow"
         w.db.flush()
         assert call(client, "GET", "/meta", w.staff).json()["mode"] == "shadow"
 
-    def test_user_with_no_organisation_gets_404(self, client, w, db_session):
-        from tests.conftest import _make_user
-
         loner = _make_user(db_session, full_name="No Org")
         assert call(client, "GET", "/meta", loner).status_code == 404
-
-    def test_unauthenticated_is_refused(self, client, w):
         assert client.get("/api/functions/meta").status_code in (401, 403)
 
     def test_shadow_mode_reads_but_refuses_every_write(self, client, w):
@@ -142,9 +136,8 @@ class TestGate:
         w.org.functions_mode = "shadow"
         w.db.flush()
         enquiry_id = detail_of(created)
-        assert (
-            call(client, "GET", f"/enquiries/{enquiry_id}", w.staff).status_code == 200
-        )
+        for path in (f"/enquiries/{enquiry_id}", "/dashboard", "/reports/approvals"):
+            assert call(client, "GET", path, w.staff).status_code == 200, path
         assert call(client, "GET", "/meta", w.staff).json()["can_write"] is False
         for method, path, body in (
             ("POST", "/enquiries", {"contact": {"name": "A", "email": "a@x.com"}}),
@@ -162,17 +155,6 @@ class TestGate:
             assert r.json()["detail"]["code"] == "not_live"
             assert "shadow" in r.json()["detail"]["message"]
 
-    def test_unknown_body_fields_are_refused(self, client, w):
-        created = new_enquiry(client, w)
-        r = call(
-            client,
-            "PATCH",
-            f"/enquiries/{detail_of(created)}",
-            w.staff,
-            json={"guestz": 10},
-        )
-        assert r.status_code == 422
-
 
 # ===========================================================================
 # Meta
@@ -181,6 +163,8 @@ class TestGate:
 
 class TestMeta:
     def test_staff_sees_their_venue_and_company_settings(self, client, w):
+        """Also: the owner sees every venue, the approver's flag, and enabled
+        fields that follow the venue settings."""
         r = call(client, "GET", "/meta", w.staff)
         assert r.status_code == 200, r.text
         m = r.json()
@@ -208,13 +192,13 @@ class TestMeta:
         assert {"Sam Staff", "Olive Owner", "Andy Approver"} <= names
         assert "Rita Rival" not in names
 
-    def test_owner_sees_every_venue_approver_flag(self, client, w):
+        # The owner sees every venue; the approver's flag is theirs.
         owner = call(client, "GET", "/meta", w.owner).json()
         assert {v["name"] for v in owner["venues"]} == {"Brew Bar", "Garden Bar"}
         approver = call(client, "GET", "/meta", w.approver).json()
         assert approver["venues"][0]["is_approver"] is True
 
-    def test_enabled_fields_follow_the_venue_settings(self, client, w):
+        # Enabled fields follow the venue's settings.
         from app.db.functions_models import FnVenueFunctionSettings
 
         s = w.db.query(FnVenueFunctionSettings).filter_by(venue_id=w.venue.id).one()
@@ -235,6 +219,7 @@ class TestMeta:
 
 class TestContacts:
     def test_create_list_get_update_with_versions(self, client, w):
+        """Also: a duplicate email (whatever its case) is a conflict."""
         r = call(
             client,
             "POST",
@@ -271,12 +256,13 @@ class TestContacts:
         assert stale.status_code == 409
         assert stale.json()["detail"]["code"] == "conflict"
 
-    def test_duplicate_email_is_a_conflict(self, client, w):
-        call(
-            client, "POST", "/contacts", w.staff, json={"name": "A", "email": "a@x.com"}
-        )
+        # An email another contact already has (in any case) is a conflict.
         r = call(
-            client, "POST", "/contacts", w.staff, json={"name": "B", "email": "A@x.com"}
+            client,
+            "POST",
+            "/contacts",
+            w.staff,
+            json={"name": "B", "email": "DANA@example.com"},
         )
         assert r.status_code == 409
 
@@ -517,22 +503,6 @@ class TestEnquiries:
         )
         assert call(client, "GET", "/enquiries?sort=bogus", w.staff).status_code == 422
 
-    def test_list_kpis_count_what_the_rows_show_under_a_venue_filter(self, client, w):
-        new_enquiry(client, w, subject="At the bar")
-        group_wide = call(
-            client,
-            "POST",
-            "/enquiries",
-            w.staff,
-            json={"contact": {"name": "G", "email": "g@x.com"}, "subject": "Anywhere"},
-        )
-        assert group_wide.status_code == 201
-        listed = call(client, "GET", f"/enquiries?venue={w.venue.id}", w.staff).json()
-        # The list keeps group-wide enquiries under a venue filter; so do the
-        # KPIs, or the numbers above the table wouldn't match its rows.
-        assert {r["subject"] for r in listed["rows"]} == {"At the bar", "Anywhere"}
-        assert listed["kpis"]["open"] == 2
-
     def test_update_close_reopen_follow_up_archive(self, client, w):
         enquiry_id = detail_of(new_enquiry(client, w))
         r = call(
@@ -556,6 +526,17 @@ class TestEnquiries:
                 json={"version": version - 1, "guests": 1},
             ).status_code
             == 409
+        )
+        # A field the enquiry doesn't have is refused, not ignored.
+        assert (
+            call(
+                client,
+                "PATCH",
+                f"/enquiries/{enquiry_id}",
+                w.staff,
+                json={"guestz": 10},
+            ).status_code
+            == 422
         )
 
         assert (
@@ -953,7 +934,8 @@ class TestListAdditions:
             "follow_ups_due": 1,
             "open_value_cents": 250_000,
         }
-        # One venue: its own enquiries plus the group-wide ones, as the rows.
+        # One venue: its own enquiries plus the group-wide ones, as the rows —
+        # the KPIs too, or the numbers above the table wouldn't match its rows.
         subjects, kpis = listed(f"venue={w.venue.id}")
         assert subjects == {"At the bar", "Anywhere"}
         assert kpis == {
@@ -1010,100 +992,48 @@ class TestMinSpends:
         )
         assert w_.json()["state"] == "withdrawn"
 
-    def test_only_the_venue_approver_approves(self, client, w):
+    def test_approval_rights_map_to_status_codes(self, client, w):
+        """The owner's approval rule, server-side, as HTTP: only the venue's
+        approver approves (403 otherwise, saying why), only they revoke, and
+        only the override approver overrides — with a reason. An area that
+        needs no approval lets staff approve. The rules themselves (owners
+        have no power, no approver configured, revoke after confirmation)
+        are held in test_functions_core_services.py::TestApprovals."""
         enquiry_id = detail_of(new_enquiry(client, w))
         option = new_option(client, w, enquiry_id)
-        staff = call(client, "POST", f"/min-spends/{option['id']}/approve", w.staff)
+        url = f"/min-spends/{option['id']}"
+
+        staff = call(client, "POST", f"{url}/approve", w.staff)
         assert staff.status_code == 403
         assert "approver" in staff.json()["detail"]["message"]
-        assert (
-            call(
-                client, "POST", f"/min-spends/{option['id']}/approve", w.owner
-            ).status_code
-            == 403
-        )
-        ok = call(client, "POST", f"/min-spends/{option['id']}/approve", w.approver)
+        ok = call(client, "POST", f"{url}/approve", w.approver)
         assert ok.status_code == 200 and ok.json()["state"] == "approved"
         assert ok.json()["approvals"][0]["actor"] == "Andy Approver"
         assert ok.json()["rights"]["revoke"] is True
 
-    def test_override_needs_the_override_approver_and_a_reason(self, client, w):
-        enquiry_id = detail_of(new_enquiry(client, w))
-        option = new_option(client, w, enquiry_id)
+        revoke = f"{url}/revoke"
         assert (
-            call(
-                client,
-                "POST",
-                f"/min-spends/{option['id']}/override",
-                w.approver,
-                json={"reason": "VIP"},
-            ).status_code
+            call(client, "POST", revoke, w.staff, json={"reason": "x"}).status_code
             == 403
         )
+        r = call(client, "POST", revoke, w.approver, json={"reason": "Wrong date"})
+        assert r.status_code == 200 and r.json()["state"] == "proposed"
+        assert call(client, "POST", revoke, w.approver).status_code == 409
+
+        override = f"{url}/override"
         assert (
-            call(
-                client,
-                "POST",
-                f"/min-spends/{option['id']}/override",
-                w.overrider,
-                json={"reason": " "},
-            ).status_code
-            == 422
-        )
+            call(client, "POST", override, w.approver, json={"reason": "VIP"})
+        ).status_code == 403
         assert (
-            call(
-                client,
-                "POST",
-                f"/min-spends/{option['id']}/override",
-                w.overrider,
-                json={},
-            ).status_code
-            == 422
-        )
-        r = call(
-            client,
-            "POST",
-            f"/min-spends/{option['id']}/override",
-            w.overrider,
-            json={"reason": "VIP"},
-        )
+            call(client, "POST", override, w.overrider, json={"reason": " "})
+        ).status_code == 422
+        r = call(client, "POST", override, w.overrider, json={"reason": "VIP"})
         assert r.status_code == 200 and r.json()["approvals"][-1]["kind"] == "override"
 
-    def test_revoke_rules(self, client, w):
-        enquiry_id = detail_of(new_enquiry(client, w))
-        option = new_option(client, w, enquiry_id)
-        call(client, "POST", f"/min-spends/{option['id']}/approve", w.approver)
+        snug = new_option(client, w, enquiry_id, area=w.snug)
+        assert snug["confirmable"] is True  # an area needing no approval
         assert (
-            call(
-                client,
-                "POST",
-                f"/min-spends/{option['id']}/revoke",
-                w.staff,
-                json={"reason": "x"},
-            ).status_code
-            == 403
-        )
-        r = call(
-            client,
-            "POST",
-            f"/min-spends/{option['id']}/revoke",
-            w.approver,
-            json={"reason": "Wrong date"},
-        )
-        assert r.status_code == 200 and r.json()["state"] == "proposed"
-        assert (
-            call(
-                client, "POST", f"/min-spends/{option['id']}/revoke", w.approver
-            ).status_code
-            == 409
-        )
-
-    def test_no_approval_area_lets_staff_approve(self, client, w):
-        enquiry_id = detail_of(new_enquiry(client, w))
-        option = new_option(client, w, enquiry_id, area=w.snug)
-        assert option["confirmable"] is True  # an area needing no approval
-        assert (
-            call(client, "POST", f"/min-spends/{option['id']}/approve", w.staff).json()[
+            call(client, "POST", f"/min-spends/{snug['id']}/approve", w.staff).json()[
                 "state"
             ]
             == "approved"

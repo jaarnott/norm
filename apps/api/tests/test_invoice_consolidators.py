@@ -1,22 +1,20 @@
-"""The invoice-surface consolidators: get_invoices, get_purchase_orders, and
-the received-items group rollups.
+"""The invoice-surface consolidators: get_invoices and get_purchase_orders
+(the received-items group rollups live in test_received_items_consolidator.py).
 
 Exec'd under the REAL sandbox namespace. The facts pinned: list modes return
 HEADERS ONLY (an agent can no longer pull every invoice with every line over
-a period); lines exist per single document or AGGREGATED; group/super_group
-rollups answer "how much did we buy" in ~25 rows; PO list rows pass the
+a period); lines exist per single document or AGGREGATED; PO list rows pass the
 summary transform's camelCase fields through untouched (the orders dashboard
 parses that exact shape via show_orders replay).
 """
 
 import pathlib
 
-from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
+from tests import consolidator_harness as harness
 
 _DIR = pathlib.Path(__file__).resolve().parent.parent / "config" / "consolidators"
-INVOICES_CODE = (_DIR / "get_invoices.py").read_text()
-POS_CODE = (_DIR / "get_purchase_orders.py").read_text()
-ITEMS_CODE = (_DIR / "received_items_for_period.py").read_text()
+INVOICES_CODE = harness.source("get_invoices")
+POS_CODE = harness.source("get_purchase_orders")
 
 WINDOW = {
     "start": "2026-08-01T07:00:00+12:00",
@@ -203,9 +201,7 @@ class Api:
 
 
 def run(code, api, **params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(code, ns)
-    return ns["run"]({"venue": "La Zeppa", **params}, api.call_api, lambda m: None)
+    return harness.run(code, api, venue="La Zeppa", **params)
 
 
 class TestGetInvoices:
@@ -301,156 +297,6 @@ class TestGetPurchaseOrders:
 
     def test_unknown_order_errors(self):
         assert run(POS_CODE, Api(), order_id="nope") == {"error": "not found"}
-
-
-# ── received-items group rollups ─────────────────────────────────────────
-
-RECEIVED_FEED = [
-    {
-        "id": "ri-1",
-        "supplierName": "Bidfood",
-        "invoiceNumber": "109700",
-        "invoicedAt": "2026-08-03T00:00:00+12:00",
-        "creditRequest": False,
-        "lines": [
-            {
-                "StockItemId": "i-flour",
-                "quantityReceived": 2,
-                "unitCost": 20.0,
-                "unitRatio": 10.0,
-                "unitName": "10 KG",
-            },
-            {
-                "StockItemId": "i-oil",
-                "quantityReceived": 1,
-                "unitCost": 30.0,
-                "unitRatio": 5.0,
-                "unitName": "5 L",
-            },
-            {
-                "StockItemId": "i-gin",
-                "quantityReceived": 6,
-                "unitCost": 45.0,
-                "unitRatio": 0.7,
-                "unitName": "700 mL",
-            },
-        ],
-    }
-]
-
-CATALOGUE = [
-    {
-        "id": "i-flour",
-        "name": "FLOUR HIGH GRADE",
-        "groupId": "g-dry",
-        "groupName": "Dry Goods",
-    },
-    {"id": "i-oil", "name": "OIL CANOLA", "groupId": "g-dry", "groupName": "Dry Goods"},
-    {
-        "id": "i-gin",
-        "name": "GIN LONDON DRY",
-        "groupId": "g-spirits",
-        "groupName": "Spirits",
-    },
-]
-
-SUBCATS = [
-    {
-        "id": "g-dry",
-        "categoryId": "c-food",
-        "categoryName": "Food",
-        "name": "Dry Goods",
-    },
-    {
-        "id": "g-spirits",
-        "categoryId": "c-bev",
-        "categoryName": "Beverage",
-        "name": "Spirits",
-    },
-]
-
-
-class ItemsApi:
-    def call_api(self, connector, action, params=None):
-        if action == "resolve_dates":
-            return {"window": dict(WINDOW)}
-        if action == "get_received_invoices":
-            import copy
-
-            return copy.deepcopy(RECEIVED_FEED)
-        if action == "get_stock_items_raw":
-            import copy
-
-            return copy.deepcopy(CATALOGUE)
-        if action == "get_stock_units":
-            return []
-        if action == "get_stock_item_groups":
-            import copy
-
-            return copy.deepcopy(SUBCATS)
-        raise AssertionError(f"unexpected action {action}")
-
-
-def run_items(**params):
-    ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-    exec(ITEMS_CODE, ns)
-    return ns["run"](
-        {"venue": "La Zeppa", "period": "last week", **params},
-        ItemsApi().call_api,
-        lambda m: None,
-    )
-
-
-class TestReceivedItemsRollups:
-    def test_group_rollup(self):
-        out = run_items(group_by="group")
-        rows = {r["group"]: r for r in out["rows"]}
-        assert rows["Dry Goods"]["spend"] == 70.0  # 2*20 + 1*30
-        assert rows["Dry Goods"]["distinct_items"] == 2
-        assert rows["Spirits"]["spend"] == 270.0  # 6*45
-        assert rows["Spirits"]["top_items"] == [
-            {"item": "GIN LONDON DRY", "spend": 270.0}
-        ]
-        assert out["summary"]["net_spend"] == 340.0
-
-    def test_super_group_rollup(self):
-        out = run_items(group_by="super_group")
-        rows = {r["super_group"]: r for r in out["rows"]}
-        assert rows["Food"]["spend"] == 70.0
-        assert rows["Beverage"]["spend"] == 270.0
-
-    def test_item_query_filter(self):
-        out = run_items(query="oil")
-        assert len(out["rows"]) == 1
-        assert out["rows"][0]["item_name"] == "OIL CANOLA"
-        assert out["rows"][0]["quantity_base"] == 5.0
-
-    def test_group_filter(self):
-        out = run_items(group="dry")
-        assert {r["item_name"] for r in out["rows"]} == {
-            "FLOUR HIGH GRADE",
-            "OIL CANOLA",
-        }
-
-    def test_limit_rolls_up_others(self):
-        out = run_items(limit=1)
-        assert len(out["rows"]) == 2  # top row + (others)
-        assert out["rows"][0]["item_name"] == "GIN LONDON DRY"
-        others = out["rows"][1]
-        assert others["item_name"] == "(others)"
-        assert others["rows_rolled_up"] == 2
-        assert others["spend"] == 70.0
-
-    def test_item_mode_is_quantity_and_spend_and_prices_live_on_item_supplier(self):
-        """The `item` row is the four-column table (3 Oct 2026 review); the
-        per-base-unit price figures moved to `item_supplier`, the mode that
-        compares suppliers. Both still convert through the unit ratio."""
-        gin = next(r for r in run_items()["rows"] if r["item_name"] == "GIN LONDON DRY")
-        assert gin["quantity_base"] == 4.2  # 6 × 0.7
-        assert "unit_cost_avg" not in gin
-        by_supplier = run_items(group_by="item_supplier")["rows"]
-        gin_s = next(r for r in by_supplier if r["item_name"] == "GIN LONDON DRY")
-        assert gin_s["unit_cost_avg"] == round(45.0 / 0.7, 4)
 
 
 class TestReviewFixes:

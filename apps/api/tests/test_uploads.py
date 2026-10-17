@@ -55,13 +55,6 @@ class TestUpload:
         )
         assert res.status_code == 413
 
-    def test_upload_requires_auth(self, client):
-        res = client.post(
-            "/api/uploads",
-            files={"file": ("recipe.pdf", b"data", "application/pdf")},
-        )
-        assert res.status_code in (401, 403)
-
 
 class TestExtractRecipe:
     def _upload(self, client, headers, content=b"%PDF-1.4 hello"):

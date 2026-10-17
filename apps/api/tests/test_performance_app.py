@@ -1674,37 +1674,39 @@ class TestRawRowsStayBehindTheFieldRules:
     direct records endpoints (and the page's norm.storage) are refused, or
     anyone in the org could read the raw rows and skip every rule above."""
 
-    @pytest.mark.parametrize(
-        "collection",
-        [
+    def test_the_direct_door_refuses_and_the_ops_still_work(
+        self, db_session, admin, boss, world, app_and_version
+    ):
+        """Each logic-only collection, in one world (it was four parametrize
+        cases, each building the world)."""
+        from fastapi import HTTPException
+
+        app, version = app_and_version
+        for collection in (
             "performance_reviews",
             "remuneration",
             "performance_review_emails",
             "performance_review_email_settings",
-        ],
-    )
-    def test_the_direct_door_refuses_and_the_ops_still_work(
-        self, db_session, admin, boss, world, app_and_version, collection
-    ):
-        from fastapi import HTTPException
-
-        app, version = app_and_version
-        with pytest.raises(HTTPException) as err:
-            AR.store_list(
-                db_session, app=app, version=version, user=admin, collection=collection
-            )
-        assert err.value.status_code == 403
-        if collection == "performance_reviews":
+        ):
             with pytest.raises(HTTPException) as err:
-                AR.store_get(
+                AR.store_list(
                     db_session,
                     app=app,
                     version=version,
-                    user=boss,
+                    user=admin,
                     collection=collection,
-                    record_id=world["review"],
                 )
-            assert err.value.status_code == 403
+            assert err.value.status_code == 403, collection
+        with pytest.raises(HTTPException) as err:
+            AR.store_get(
+                db_session,
+                app=app,
+                version=version,
+                user=boss,
+                collection="performance_reviews",
+                record_id=world["review"],
+            )
+        assert err.value.status_code == 403
         # ...while the app's own logic still reads them, with its rules applied.
         d = _run(db_session, app, version, boss, op="review", review_id=world["review"])
         assert d["review"]["proposed_pay_rate"] == 31.5
@@ -1917,9 +1919,11 @@ class TestLocateAndSync:
 
 
 class TestTrainingNoLongerHasReviews:
-    @pytest.mark.parametrize(
-        "op",
-        [
+    def test_its_review_ops_are_gone(self, db_session, admin, world, training):
+        """Every review op Training used to have, in one world (it was fifteen
+        parametrize cases, each building the world and both bindings)."""
+        app, version = training
+        for op in (
             "review_badge",
             "reviews",
             "my_team_reviews",
@@ -1935,12 +1939,11 @@ class TestTrainingNoLongerHasReviews:
             "set_norm_runs_cycles",
             "frameworks",
             "save_framework",
-        ],
-    )
-    def test_its_review_ops_are_gone(self, db_session, admin, world, training, op):
-        app, version = training
-        out = _run(db_session, app, version, admin, op=op, review_id=world["review"])
-        assert out == {"error": f"unknown op '{op}'"}
+        ):
+            out = _run(
+                db_session, app, version, admin, op=op, review_id=world["review"]
+            )
+            assert out == {"error": f"unknown op '{op}'"}
 
     def test_the_nightly_is_performances_now(self, db_session, training):
         app, version = training
@@ -1949,28 +1952,28 @@ class TestTrainingNoLongerHasReviews:
         out = _system(db_session, app, version, op="nightly")
         assert out == {"error": "unknown op 'nightly'"}
 
-    @pytest.mark.parametrize(
-        "collection",
-        [
+    def test_it_cannot_read_the_review_rows(self, db_session, admin, world, training):
+        """Each review collection, in one world (it was five parametrize cases)."""
+        from fastapi import HTTPException
+
+        app, version = training
+        for collection in (
             "performance_reviews",
             "remuneration",
             "review_cycles",
             "capability_frameworks",
             "performance_review_emails",
-        ],
-    )
-    def test_it_cannot_read_the_review_rows(
-        self, db_session, admin, world, training, collection
-    ):
-        from fastapi import HTTPException
-
-        app, version = training
-        with pytest.raises(HTTPException) as err:
-            AR.store_list(
-                db_session, app=app, version=version, user=admin, collection=collection
-            )
-        assert err.value.status_code == 403
-        assert "not a collection this app declares" in err.value.detail
+        ):
+            with pytest.raises(HTTPException) as err:
+                AR.store_list(
+                    db_session,
+                    app=app,
+                    version=version,
+                    user=admin,
+                    collection=collection,
+                )
+            assert err.value.status_code == 403, collection
+            assert "not a collection this app declares" in err.value.detail
 
     def test_a_review_link_is_not_an_input_training_takes(
         self, db_session, admin, world, training
