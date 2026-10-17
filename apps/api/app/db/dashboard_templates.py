@@ -1,6 +1,97 @@
 """Pre-built dashboard templates — seed data for the config DB."""
 
 DASHBOARD_TEMPLATES: list[dict] = [
+    # The original procurement template, kept alongside the cost-of-goods one
+    # (the owner wants both on the picker, 17 Oct 2026). Its raw-endpoint and
+    # Xero charts are mapped onto tools when it is instantiated (to_tool_chart).
+    {
+        "slug": "procurement-dashboard",
+        "agent_slug": "procurement",
+        "title": "Procurement Overview",
+        "description": "Outstanding orders, monthly spend, supplier breakdown, and order tracking.",
+        "charts": [
+            {
+                "title": "Outstanding Orders",
+                "chart_type": "kpi",
+                "chart_spec": {"value_key": "outstanding_count", "format": "number"},
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_orders_summary",
+                    "params": {},
+                },
+                "layout": {"col": 1, "row": 1, "colSpan": 8, "rowSpan": 4},
+            },
+            {
+                "title": "Monthly Spend",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "value_key": "monthly_spend",
+                    "format": "currency",
+                    "currency": "NZD",
+                    "delta_key": "delta_pct",
+                    "delta_label": "vs last month",
+                },
+                "script": {
+                    "connector": "xero",
+                    "action": "get_monthly_spend",
+                    "params": {},
+                },
+                "layout": {"col": 9, "row": 1, "colSpan": 8, "rowSpan": 4},
+            },
+            {
+                "title": "Pending Deliveries",
+                "chart_type": "kpi",
+                "chart_spec": {"value_key": "pending_count", "format": "number"},
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_orders_summary",
+                    "params": {},
+                },
+                "layout": {"col": 17, "row": 1, "colSpan": 8, "rowSpan": 4},
+            },
+            {
+                "title": "Recent Orders",
+                "chart_type": "component",
+                "chart_spec": {
+                    "component_key": "orders_dashboard",
+                    "title": "Order Tracking",
+                },
+                "script": {},
+                "layout": {"col": 1, "row": 5, "colSpan": 24, "rowSpan": 10},
+            },
+            {
+                "title": "Orders by Supplier",
+                "chart_type": "bar",
+                "chart_spec": {
+                    "x_axis": {"key": "supplier", "label": "Supplier"},
+                    "series": [
+                        {"key": "amount", "label": "Amount", "color": "#b07d4f"}
+                    ],
+                    "orientation": "horizontal",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_purchase_orders_summary",
+                    "params": {"_all_venues": True},
+                },
+                "layout": {"col": 1, "row": 15, "colSpan": 12, "rowSpan": 8},
+            },
+            {
+                "title": "Spend Trend",
+                "chart_type": "line",
+                "chart_spec": {
+                    "x_axis": {"key": "month", "label": "Month"},
+                    "series": [{"key": "spend", "label": "Spend", "color": "#b07d4f"}],
+                },
+                "script": {
+                    "connector": "xero",
+                    "action": "get_monthly_spend",
+                    "params": {"period": "last_6_months"},
+                },
+                "layout": {"col": 13, "row": 15, "colSpan": 12, "rowSpan": 8},
+            },
+        ],
+    },
     # Purchases-based cost of goods (Oct 2026): a venue that receives its
     # invoices into Loaded but runs no stocktakes reads cost of goods as
     # purchases ÷ POS sales. Every tile is a tool over Loaded's data; the
@@ -9,6 +100,10 @@ DASHBOARD_TEMPLATES: list[dict] = [
     # window on the venue's calendar, and `period_span` widens a trend chart
     # to that many buckets ending at the chosen period. The cards add venues
     # up (a ratio sums its two parts first); the lines pivot per venue.
+    # Every card reads the same way (the previous period rides along), so the
+    # reconciliation and freight cards describe the same invoices as the
+    # headline: Loaded's received feed is by RECEIVED date, so a narrower
+    # read left out invoices dated this month but received last month.
     # Checked against Loaded for September 2026 at Applegum Cafe: Food
     # 7,896.63 + Beverage 2,177.78 + Other 1,383.19 + freight 177.00 =
     # invoice subtotals 11,634.61; sales ex-GST 47,371.13; 24.6%.
@@ -38,7 +133,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "params": {"period": "this month", "interval": "month"},
                     "rows": "summary",
                 },
-                "layout": {"col": 1, "row": 1, "colSpan": 6, "rowSpan": 4},
+                "layout": {"col": 1, "row": 1, "colSpan": 8, "rowSpan": 4},
             },
             {
                 "title": "Sales ex-GST",
@@ -56,7 +151,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "params": {"period": "this month", "interval": "month"},
                     "rows": "summary",
                 },
-                "layout": {"col": 7, "row": 1, "colSpan": 6, "rowSpan": 4},
+                "layout": {"col": 9, "row": 1, "colSpan": 8, "rowSpan": 4},
             },
             {
                 "title": "Cost of goods %",
@@ -82,7 +177,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "params": {"period": "this month", "interval": "month"},
                     "rows": "summary",
                 },
-                "layout": {"col": 13, "row": 1, "colSpan": 6, "rowSpan": 4},
+                "layout": {"col": 17, "row": 1, "colSpan": 8, "rowSpan": 4},
             },
             {
                 "title": "Food cost of goods %",
@@ -98,6 +193,14 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "empty_note": (
                         "No food sales: the POS items in Loaded have no category yet"
                     ),
+                    "warning": {
+                        "numerator_key": "uncategorised_sales",
+                        "denominator_key": "sales",
+                        "text": (
+                            "of sales have no POS category in Loaded — the food / "
+                            "beverage split misses them"
+                        ),
+                    },
                 },
                 "script": {
                     "connector": "loadedhub",
@@ -122,6 +225,14 @@ DASHBOARD_TEMPLATES: list[dict] = [
                         "No beverage sales: the POS items in Loaded have no "
                         "category yet"
                     ),
+                    "warning": {
+                        "numerator_key": "uncategorised_sales",
+                        "denominator_key": "sales",
+                        "text": (
+                            "of sales have no POS category in Loaded — the food / "
+                            "beverage split misses them"
+                        ),
+                    },
                 },
                 "script": {
                     "connector": "loadedhub",
@@ -130,32 +241,6 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "rows": "summary",
                 },
                 "layout": {"col": 9, "row": 5, "colSpan": 8, "rowSpan": 4},
-            },
-            {
-                "title": "Sales with no POS category",
-                "chart_type": "kpi",
-                "chart_spec": {
-                    "numerator_key": "uncategorised_sales",
-                    "denominator_key": "sales",
-                    "format": "percent",
-                    "note": "of sales — the food / beverage split misses these",
-                    "threshold": {
-                        "warning": 0.05,
-                        "danger": 0.25,
-                        "direction": "above",
-                    },
-                },
-                "script": {
-                    "connector": "loadedhub",
-                    "action": "get_purchase_cogs",
-                    "params": {
-                        "period": "this month",
-                        "interval": "month",
-                        "compare_previous": False,
-                    },
-                    "rows": "summary",
-                },
-                "layout": {"col": 17, "row": 5, "colSpan": 8, "rowSpan": 4},
             },
             {
                 "title": "Freight",
@@ -169,14 +254,10 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "script": {
                     "connector": "loadedhub",
                     "action": "get_purchase_cogs",
-                    "params": {
-                        "period": "this month",
-                        "interval": "month",
-                        "compare_previous": False,
-                    },
+                    "params": {"period": "this month", "interval": "month"},
                     "rows": "summary",
                 },
-                "layout": {"col": 19, "row": 1, "colSpan": 6, "rowSpan": 4},
+                "layout": {"col": 17, "row": 5, "colSpan": 8, "rowSpan": 4},
             },
             {
                 "title": "Cost of goods % over time",

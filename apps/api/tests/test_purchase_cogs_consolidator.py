@@ -116,6 +116,10 @@ class Api:
                     rows += sales_rows(v)
             else:
                 rows = sales_rows()
+            # A real read answers only its own window — chunked calls must add
+            # up, never double-count.
+            lo, hi = str(params.get("start", ""))[:10], str(params.get("end", "9"))[:10]
+            rows = [r for r in rows if lo <= r["date"] <= hi]
             return {"rows": rows, "totals": {}}
         raise AssertionError(action)
 
@@ -209,18 +213,27 @@ class TestTheJoin:
 
 
 class TestEdges:
-    def test_no_sales_gives_a_null_percentage_not_a_crash(self):
-        class NoSales(Api):
-            def call_api(self, connector, action, params=None):
-                if action == "get_sales" and (params or {}).get("breakdown") == "daily":
-                    self.calls.append((action, params))
-                    return {"rows": [], "totals": {}}
-                return super().call_api(connector, action, params)
+    def test_a_bucket_without_sales_gives_a_null_percentage_not_a_crash(self):
+        """September sold nothing (August did): the row says 0 sales and no
+        percentage. A window with NO sales at all is an error instead — see
+        test_no_sales_rows_at_all_with_purchases_is_an_error."""
 
-        out = run(NoSales())
+        class AugustOnly(Api):
+            def call_api(self, connector, action, params=None):
+                res = super().call_api(connector, action, params)
+                if action == "get_sales" and (params or {}).get("breakdown") == "daily":
+                    res = {
+                        **res,
+                        "rows": [r for r in res["rows"] if r["date"] < "2026-09-01"],
+                    }
+                return res
+
+        out = run(AugustOnly())
         sep = out["rows"][0]
+        assert sep["bucket"] == "September 2026"
         assert sep["sales"] == 0.0 and sep["cogs_pct"] is None
         assert sep["food_cogs_pct"] is None
+        assert out["summary"]["previous"]["sales"] == 40000.0
 
     def test_uncategorised_sales_leave_the_split_null(self):
         items = [
@@ -329,6 +342,110 @@ class TestEdges:
         assert all(
             p.get("venue") == "Little West" for a, p in api.calls if a == "get_sales"
         )
+
+    def test_a_long_window_reads_sales_in_quarter_sized_pieces(self):
+        """Twelve months of days in one Loaded call timed out under the
+        dashboard's burst (17 Oct 2026); the read is chunked and the pieces
+        add up to the same sales."""
+
+        class Year(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "resolve_dates":
+                    self.calls.append((action, params))
+                    return {
+                        "window": {
+                            "start": "2025-11-01T00:00:00+11:00",
+                            "end": "2026-10-31T23:59:59+11:00",
+                            "trading_aligned": True,
+                            "description": "the last 12 months",
+                        }
+                    }
+                return super().call_api(connector, action, params)
+
+        api = Year()
+        out = run(api, compare_previous=False)
+        daily = [
+            p
+            for a, p in api.calls
+            if a == "get_sales" and p.get("breakdown") == "daily"
+        ]
+        assert len(daily) == 4
+        import datetime as dt
+
+        for p in daily:
+            span = dt.datetime.fromisoformat(p["end"]) - dt.datetime.fromisoformat(
+                p["start"]
+            )
+            assert span.days <= 92 and p["confirmed_by_user"] is True
+        assert daily[0]["start"] == "2025-11-01T00:00:00+11:00"
+        assert daily[-1]["end"] == "2026-10-31T23:59:59+11:00"
+        # every fixture day falls in exactly one piece
+        assert out["summary"]["sales"] == 40000.0 + 47371.13
+
+    def test_a_failed_sales_read_is_an_error_not_zero_sales(self):
+        """The sales tool reports a venue whose read failed in a note and
+        returns no rows; that must not become 0 sales and a blank line."""
+
+        class Noted(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "get_sales" and (params or {}).get("breakdown") == "daily":
+                    return {
+                        "rows": [],
+                        "note": 'some venues had errors: {"Applegum Cafe": ["actual: Request timed out"]}',
+                    }
+                return super().call_api(connector, action, params)
+
+        out = run(Noted())
+        assert out["error"].startswith("sales: some venues had errors")
+        assert "rows" not in out
+
+    def test_no_sales_rows_at_all_with_purchases_is_an_error(self):
+        class Empty(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "get_sales" and (params or {}).get("breakdown") == "daily":
+                    return {"rows": [], "totals": {}}
+                return super().call_api(connector, action, params)
+
+        out = run(Empty())
+        assert out["error"].startswith("sales: no rows came back")
+
+    def test_a_bucket_after_the_last_trading_day_is_not_this_periods(self):
+        """The trading month ends at 06:59 on the 1st, so the feed query runs
+        to then and an invoice dated the 1st comes back; it is next month's."""
+
+        class Straddle(Api):
+            def call_api(self, connector, action, params=None):
+                if action == "resolve_dates":
+                    self.calls.append((action, params))
+                    return {
+                        "window": {
+                            "start": "2026-09-01T07:00:00+10:00",
+                            "end": "2026-10-01T06:59:59+10:00",
+                            "trading_aligned": True,
+                            "description": "September 2026",
+                        }
+                    }
+                if action == "get_received_items_for_period":
+                    self.calls.append((action, params))
+                    rows = purchases_rows() + [
+                        {
+                            "bucket": "October 2026",
+                            "bucket_start": "2026-10-01",
+                            "spend": 50.0,
+                            "food": 50.0,
+                            "beverage": 0.0,
+                            "other": 0.0,
+                            "freight": 0.0,
+                            "credit_amount": 0.0,
+                            "invoice_subtotals": 50.0,
+                            "invoice_count": 1,
+                        }
+                    ]
+                    return {"rows": rows, "summary": {}, "warnings": []}
+                return super().call_api(connector, action, params)
+
+        out = run(Straddle(), compare_previous=False)
+        assert [r["bucket"] for r in out["rows"]] == ["September 2026"]
 
     def test_a_bad_interval_is_refused(self):
         assert "interval must be" in run(Api(), interval="day")["error"]

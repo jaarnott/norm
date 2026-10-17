@@ -15,9 +15,10 @@ What this puts in the shared config DB, idempotently:
                                             sales per month / week, food vs
                                             beverage (config/consolidators/
                                             purchase_cogs.py)
-  dashboard template procurement-cogs       from app.db.dashboard_templates;
-                                            the stale procurement-dashboard
-                                            (Xero, raw endpoints) is removed
+  dashboard templates procurement-cogs      from app.db.dashboard_templates —
+  and procurement-dashboard                 both procurement templates stay on
+                                            the picker (the owner wants the
+                                            original Procurement Overview too)
   skill cogs_analysis                       one section on the no-stocktake
                                             case
 
@@ -49,8 +50,7 @@ from sync_received_items_config import (  # noqa: E402
 
 CONNECTOR = "loadedhub"
 ACTION = "get_purchase_cogs"
-TEMPLATE_SLUG = "procurement-cogs"
-STALE_TEMPLATE_SLUG = "procurement-dashboard"
+TEMPLATE_SLUGS = ("procurement-dashboard", "procurement-cogs")
 SKILL_SLUG = "cogs_analysis"
 CODE_PATH = (
     pathlib.Path(__file__).resolve().parent.parent
@@ -143,9 +143,10 @@ TOOL = {
     "max_result_chars": 40_000,
     "consolidator_config": {
         # function_code injected from CODE_PATH at sync time.
-        # dates + venues + purchases + daily sales + one items read per venue:
-        # 5 for one venue, 7 for three. Each read is itself a consolidator.
-        "max_api_calls": 12,
+        # dates + venues + purchases + daily sales in ≤92-day pieces (4 for a
+        # year, 8 with the previous year) + one items read per venue. Each
+        # read is itself a consolidator.
+        "max_api_calls": 24,
         "allowed_write_actions": [],
     },
 }
@@ -194,8 +195,11 @@ def _sync_tools(spec, changes):
         "function_code": CODE_PATH.read_text(encoding="utf-8"),
     }
     if ACTION in by_action:
-        if tools[by_action[ACTION]] != tool:
-            tools[by_action[ACTION]] = tool
+        # Over the live row, so keys Norm stamps on a row after install
+        # (added_at) survive and a re-run reports "in sync".
+        merged = {**tools[by_action[ACTION]], **tool}
+        if tools[by_action[ACTION]] != merged:
+            tools[by_action[ACTION]] = merged
             changes.append(f"updated tool {ACTION}")
     else:
         tools.append(tool)
@@ -204,43 +208,35 @@ def _sync_tools(spec, changes):
 
 
 def _sync_template(db, changes):
+    """Both procurement templates, as the code has them (an existing row is
+    brought up to date; a missing one — the original was removed on 16 Oct
+    by an earlier version of this script — is put back)."""
     from app.db.config_models import DashboardTemplate
     from app.db.dashboard_templates import get_template
 
-    wanted = get_template(TEMPLATE_SLUG)
-    if not wanted:
-        raise SystemExit(f"{TEMPLATE_SLUG} is not in app.db.dashboard_templates")
-    row = (
-        db.query(DashboardTemplate)
-        .filter(DashboardTemplate.slug == TEMPLATE_SLUG)
-        .first()
-    )
-    fields = {
-        "agent_slug": wanted["agent_slug"],
-        "title": wanted["title"],
-        "description": wanted.get("description", ""),
-        "charts": wanted["charts"],
-        "enabled": True,
-    }
-    if row is None:
-        db.add(DashboardTemplate(slug=TEMPLATE_SLUG, **fields))
-        changes.append(f"added dashboard template {TEMPLATE_SLUG}")
-    else:
+    for slug in TEMPLATE_SLUGS:
+        wanted = get_template(slug)
+        if not wanted:
+            raise SystemExit(f"{slug} is not in app.db.dashboard_templates")
+        row = db.query(DashboardTemplate).filter(DashboardTemplate.slug == slug).first()
+        fields = {
+            "agent_slug": wanted["agent_slug"],
+            "title": wanted["title"],
+            "description": wanted.get("description", ""),
+            "charts": wanted["charts"],
+            "enabled": True,
+        }
+        if row is None:
+            db.add(DashboardTemplate(slug=slug, **fields))
+            changes.append(f"added dashboard template {slug}")
+            continue
         differs = {k for k, v in fields.items() if getattr(row, k) != v}
         if differs:
             for k in differs:
                 setattr(row, k, fields[k])
             changes.append(
-                f"updated dashboard template {TEMPLATE_SLUG} ({', '.join(sorted(differs))})"
+                f"updated dashboard template {slug} ({', '.join(sorted(differs))})"
             )
-    stale = (
-        db.query(DashboardTemplate)
-        .filter(DashboardTemplate.slug == STALE_TEMPLATE_SLUG)
-        .first()
-    )
-    if stale is not None:
-        db.delete(stale)
-        changes.append(f"removed stale dashboard template {STALE_TEMPLATE_SLUG}")
 
 
 def _sync_skill(db, changes):

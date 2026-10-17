@@ -31,6 +31,10 @@ interface KpiCardProps {
     // Shown instead of a ratio whose denominator is zero (no food sales:
     // the POS items have no category yet).
     empty_note?: string;
+    // A caveat under the value when a share is above zero: numerator ÷
+    // denominator summed across rows (uncategorised sales ÷ sales), shown
+    // as "12.3% <text>".
+    warning?: { numerator_key: string; denominator_key: string; text: string };
     // Cost of goods: a rise is the bad direction.
     lower_is_better?: boolean;
     threshold?: { warning: number; danger: number; direction: 'above' | 'below' };
@@ -128,6 +132,17 @@ export default function KpiCard({ rows, spec, title }: KpiCardProps) {
     return d === 0 ? null : sumOf(num) / d;
   };
 
+  const warnShare = spec.warning ? ratioOf(spec.warning.numerator_key, spec.warning.denominator_key) : null;
+  const warningLine = spec.warning && warnShare !== null && warnShare > 0 ? (
+    <div style={{
+      display: 'flex', alignItems: 'flex-start', justifyContent: 'center', gap: 4, marginTop: 6,
+      fontSize: 'var(--fs-xs)', color: 'var(--warn)', lineHeight: 1.3, textAlign: 'left',
+    }}>
+      <Icon icon={TriangleAlert} size="dense" label="Warning" />
+      <span>{(warnShare * 100).toFixed(1)}% {spec.warning.text}</span>
+    </div>
+  ) : null;
+
   // Get the value — the sum across rows (one row is just itself), or a ratio
   // of two sums.
   const ratio = isRatio ? ratioOf(spec.numerator_key, spec.denominator_key) : null;
@@ -136,6 +151,7 @@ export default function KpiCard({ rows, spec, title }: KpiCardProps) {
       <div style={{ ...centred, padding: '0.5rem', gap: 4, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
         {title && <div style={{ fontWeight: 500 }}>{title}</div>}
         <div style={{ textAlign: 'center' }}>{spec.empty_note || 'No sales in this period'}</div>
+        {warningLine}
       </div>
     );
   }
@@ -198,6 +214,7 @@ export default function KpiCard({ rows, spec, title }: KpiCardProps) {
           {spec.note}
         </div>
       )}
+      {warningLine}
     </div>
   );
 }

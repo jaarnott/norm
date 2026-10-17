@@ -7,7 +7,7 @@
 # docs/plans/procurement-cogs-dashboard.md).
 #
 # Requires consolidator_config:
-#   {"max_api_calls": 12, "allowed_write_actions": []}   # reads only, always
+#   {"max_api_calls": 24, "allowed_write_actions": []}   # reads only, always
 #   (resolve_dates + list_venues, one received-items read, one daily sales
 #   read, and one item-sales read per venue for the category split)
 #
@@ -123,6 +123,66 @@ def _shift(iso_text, seconds):
     """An ISO datetime moved by `seconds`, offset kept."""
     moment = datetime.datetime.fromisoformat(str(iso_text))
     return (moment + datetime.timedelta(seconds=seconds)).isoformat()
+
+
+#: The daily sales read is split into pieces this long. One Loaded call for
+#: twelve months of days took ~20 s on a quiet server and timed out under a
+#: dashboard's eleven-chart burst (17 Oct 2026) — the sales tool then answered
+#: with no rows, every bucket read 0 sales, and the trend line went blank.
+_SALES_CHUNK_DAYS = 92
+
+
+def _chunks(start_iso, end_iso, days):
+    """[(start, end)] covering start..end, each at most `days` long, cut at
+    the window's own clock time so a trading day is never split."""
+    start = datetime.datetime.fromisoformat(str(start_iso))
+    end = datetime.datetime.fromisoformat(str(end_iso))
+    out = []
+    cursor = start
+    step = datetime.timedelta(days=days)
+    while cursor < end:
+        nxt = min(cursor + step, end + datetime.timedelta(seconds=1))
+        out.append(
+            (cursor.isoformat(), (nxt - datetime.timedelta(seconds=1)).isoformat())
+        )
+        cursor = nxt
+    return out or [(str(start_iso), str(end_iso))]
+
+
+def _trading_date(iso_text, day_start=None):
+    """The trading date an instant belongs to: the civil date, or the day
+    before when the clock is earlier than the venue's day start (a "HH:MM"
+    string or a time; without one, anything before noon is the night before)."""
+    moment = datetime.datetime.fromisoformat(str(iso_text))
+    cut = datetime.time(12, 0)
+    if hasattr(day_start, "hour"):
+        cut = datetime.time(day_start.hour, getattr(day_start, "minute", 0))
+    elif isinstance(day_start, str) and ":" in day_start:
+        parts = day_start.split(":")
+        try:
+            cut = datetime.time(int(parts[0]), int(parts[1]))
+        except ValueError:
+            pass
+    day = moment.date()
+    if moment.time() < cut:
+        day = day - datetime.timedelta(days=1)
+    return day.isoformat()
+
+
+def _sales_failure(res):
+    """Why a sales read cannot be trusted, or None. The sales tool reports a
+    venue whose read failed in a `note`, not as an error, and returns no rows
+    for it — which must not be read as "sold nothing"."""
+    if not isinstance(res, dict):
+        return str(res)
+    if res.get("error"):
+        return str(res["error"])
+    note = str(res.get("note") or "")
+    if "error" in note.lower():
+        return note
+    if res.get("errors"):
+        return json.dumps(res["errors"])
+    return None
 
 
 def _resolve_venues(params, call_api):
@@ -284,20 +344,40 @@ def run(params, call_api, log, call_api_parallel=None):
             + str(purchases.get("error") if isinstance(purchases, dict) else purchases),
             "window": window,
         }
-    sales = call_api(
-        "loadedhub",
-        "get_sales",
-        {
-            **common,
-            "breakdown": "daily",
-            "interval": "1.00:00:00",
-            "tax": "exclude",
-        },
-    )
-    if not isinstance(sales, dict) or sales.get("error"):
+    daily_calls = [
+        (
+            "loadedhub",
+            "get_sales",
+            {
+                **common,
+                "start": c_start,
+                "end": c_end,
+                "breakdown": "daily",
+                "interval": "1.00:00:00",
+                "tax": "exclude",
+            },
+        )
+        for c_start, c_end in _chunks(fetch_start, w_end, _SALES_CHUNK_DAYS)
+    ]
+    if call_api_parallel and len(daily_calls) > 1:
+        daily_results = call_api_parallel(daily_calls)
+    else:
+        daily_results = [call_api(c, a, p) for (c, a, p) in daily_calls]
+    sales = {"rows": []}
+    for res in daily_results:
+        failure = _sales_failure(res)
+        if failure:
+            return {"error": "sales: " + failure, "window": window}
+        sales["rows"].extend(res.get("rows") or [])
+    if not sales["rows"] and purchases.get("rows"):
+        # Purchases came back and sales did not: a failed read, not a venue
+        # that sold nothing. Saying so keeps a dashboard on its last good
+        # figures instead of writing zeros.
         return {
-            "error": "sales: "
-            + str(sales.get("error") if isinstance(sales, dict) else sales),
+            "error": (
+                "sales: no rows came back for the window although purchases "
+                "did — the sales read failed or is empty; try again"
+            ),
             "window": window,
         }
 
@@ -430,8 +510,13 @@ def run(params, call_api, log, call_api_parallel=None):
 
     # A bucket is the asked period's when any of it falls inside the window
     # (a week that straddles the 1st belongs to "this month"); buckets that
-    # end before the window began are the comparison period.
-    asked_from, asked_to = w_start[:10], w_end[:10]
+    # end before the window began are the comparison period. The window's
+    # last day is its last TRADING day: a month that ends at 06:59 on the 1st
+    # ends on the last day of the month, so an invoice dated the 1st (the
+    # feed includes it — the query runs to 06:59) is next month's, not a
+    # thirteenth bucket on this month's trend (17 Oct 2026).
+    asked_from = w_start[:10]
+    asked_to = _trading_date(w_end, window.get("day_start"))
     current, previous = [], []
     for r in all_rows:
         start_text = r["bucket_start"] or ""
