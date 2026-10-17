@@ -189,6 +189,10 @@ def _setup_tables():
             "ADD COLUMN IF NOT EXISTS response_field_mapping JSON",
             # Top-ups record the usage they add in dollars (Oct 2026 plans).
             "ALTER TABLE token_top_ups ADD COLUMN IF NOT EXISTS usage_usd NUMERIC(10,2)",
+            # A dashboard chart remembers what its cached rows are for
+            # (migration fb1c2d3e4f5a, Oct 2026); without it every report
+            # route 500s on a persistent local DB.
+            "ALTER TABLE report_charts ADD COLUMN IF NOT EXISTS data_meta JSON",
         ):
             conn.execute(_sqltext(ddl))
     yield
