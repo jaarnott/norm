@@ -846,6 +846,31 @@ class TestOrdermentumDuplicates:
         dup = next(i for i in data["issues"] if i["code"] == "duplicate_invoice")
         assert dup["data"]["duplicate_of_invoice_id"] == "inv-old"
 
+    def test_the_look_back_also_covers_the_date_read_off_the_copy(self):
+        # Loaded dated a Premier Northpak draft 21 May 2025 but the copy was
+        # printed 16 Apr; the look-back around 21 May missed the first copy
+        # and 4107357 was received four times (17 Oct 2026).
+        first = {
+            **self.COPY_ROW,
+            "id": "inv-april",
+            "invoiceNumber": "F100",
+            "purchaseOrderNumber": None,
+            "invoicedAt": "2025-04-16",
+        }
+
+        class _Lh:
+            def get(self, path):
+                return [first] if "from=2025-04-09" in path else []
+
+        data = _review(
+            detail=DETAIL(issuedAt="2025-05-21"),
+            extraction=EXTRACTION(invoice_date="16/04/2025"),
+            reference=REFERENCE(received_feed=[]),
+            lh=_Lh(),
+        )
+        dup = next(i for i in data["issues"] if i["code"] == "duplicate_invoice")
+        assert dup["data"]["duplicate_of_invoice_id"] == "inv-april"
+
     # -- the same invoice sent more than once, settled before reading --------
 
     RECEIVED_F100 = {

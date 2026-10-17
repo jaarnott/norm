@@ -269,12 +269,13 @@ def received_feed_for(lh, invoice_date: object, rows: list | None = None) -> lis
     """The received feed that can hold this invoice's twin: the usual 400 days,
     plus the fortnight around an older invoice's own date. A backlog reaching
     back past the window (Applegum to June 2025) had its twins received twice
-    because the check could not see the first copy (46 invoices, 16 Oct 2026)."""
+    because the check could not see the first copy (46 invoices, 16 Oct 2026).
+    ``invoice_date`` may be Loaded's or as printed on the copy ('16/04/2025')."""
     import datetime as _dt
 
     rows = list(rows) if rows is not None else _received_feed(lh)
     try:
-        day = _dt.date.fromisoformat(str(invoice_date or "")[:10])
+        day = _dt.date.fromisoformat(str(_iso_date(invoice_date) or "")[:10])
     except ValueError:
         return rows
     if day >= _dt.date.today() - _dt.timedelta(days=400):

@@ -2182,7 +2182,7 @@ def review_invoice(
     # What this invoice could duplicate, reaching back to an older invoice's
     # own date — fetched once, for the Ordermentum check below and the
     # replica's same-number check.
-    received = _received_rows(lh, reference, detail)
+    received = _received_rows(lh, reference, detail.get("issuedAt"))
     if received is not None:
         reference = {**(reference or {}), "received_feed": received}
     # An Ordermentum delivery reaches Loaded twice under different numbers:
@@ -2384,6 +2384,13 @@ def review_invoice(
                     config_db.rollback()
                 except Exception:  # noqa: BLE001
                     pass
+            # Loaded's draft date can be weeks off the printed one (a Premier
+            # Northpak copy: draft 21 May, printed 16 Apr 2025), so an old
+            # invoice's twin is also looked for around the date read off it —
+            # without this 4107357 was received four times (17 Oct 2026).
+            if received is not None and extraction.get("invoice_date"):
+                received = _received_rows(lh, reference, extraction["invoice_date"])
+                reference = {**(reference or {}), "received_feed": received}
             replica = build_replica(
                 db,
                 config_db,
@@ -2697,12 +2704,12 @@ def extraction_instructions(
     )
 
 
-def _received_rows(lh, reference: dict | None, detail: dict) -> list | None:
-    """The received feed for this invoice (``received_feed_for``), or None when
-    Loaded couldn't be asked — the replica then fetches its own, as before."""
+def _received_rows(lh, reference: dict | None, invoice_date: object) -> list | None:
+    """The received feed around ``invoice_date`` (``received_feed_for``), or
+    None when Loaded couldn't be asked — the replica then fetches its own."""
     try:
         return received_feed_for(
-            lh, detail.get("issuedAt"), (reference or {}).get("received_feed")
+            lh, invoice_date, (reference or {}).get("received_feed")
         )
     except Exception as exc:  # noqa: BLE001 — the duplicate checks degrade, never fail
         logger.info("received feed unavailable: %s", exc)
