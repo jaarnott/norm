@@ -51,8 +51,11 @@ from app.services.invoice_extraction import (
     compose_pdf_instructions,
     extract_invoice_copy,
     extraction_from_loaded,
+    find_ordermentum_twin,
     find_spec_for_supplier,
     is_feed_invoice,
+    ordermentum_order_number,
+    ordermentum_twin_message,
     pdf_instructions_for,
 )
 from app.services.autopilot_metrics import record_receive_outcome
@@ -64,7 +67,7 @@ from app.services.invoice_po_reference import (
     po_id_for,
     seed_working_from_loaded,
 )
-from app.services.invoice_replica import build_replica
+from app.services.invoice_replica import build_replica, received_copy, received_feed_for
 from app.services.replica_finish import (
     LOADED_ROUNDING,
     TOTALS_ISSUE,
@@ -2176,7 +2179,87 @@ def review_invoice(
     feed = is_feed_invoice(detail)
     if feed and extraction is None:
         extraction = extraction_from_loaded(detail)
-    if not file_id and not feed:
+    # What this invoice could duplicate, reaching back to an older invoice's
+    # own date — fetched once, for the Ordermentum check below and the
+    # replica's same-number check.
+    received = _received_rows(lh, reference, detail)
+    if received is not None:
+        reference = {**(reference or {}), "received_feed": received}
+    # An Ordermentum delivery reaches Loaded twice under different numbers:
+    # Ordermentum's copy and the supplier's own invoice (which carries the
+    # Ordermentum order number). When the other copy is already received this
+    # one is a duplicate — settled here, before any copy is read.
+    twin = message = summary = None
+    if feed or ordermentum_order_number(
+        detail.get("purchaseOrderNumber"), detail.get("referenceNumber")
+    ):
+        twin = find_ordermentum_twin(
+            received,
+            feed=feed,
+            supplier_id=detail.get("linkedSupplierId"),
+            supplier_name=detail.get("supplierName"),
+            total=detail.get("total"),
+            invoice_date=detail.get("issuedAt"),
+            own_invoice_id=invoice_id,
+        )
+        if twin:
+            message = ordermentum_twin_message(twin, feed=feed)
+            summary = "the other copy of an Ordermentum delivery is already received"
+    # The same invoice sent more than once becomes several drafts, each with its
+    # own PDF — PNM's arrived six times, and all six were read before five were
+    # deleted (16 Oct 2026, a quarter of a night's AI spend). When Loaded's own
+    # read of the draft already matches a received invoice on number AND total,
+    # it's a duplicate without reading the copy. The total is what makes
+    # Loaded's read trustworthy here; anything short of both goes to the read.
+    number = detail.get("referenceNumber")
+    if (
+        twin is None
+        and file_id
+        and any(ch.isdigit() for ch in str(number or ""))
+        and isinstance(detail.get("total"), (int, float))
+    ):
+        same = received_copy(
+            received,
+            number,
+            detail.get("supplierName"),
+            is_credit_note=detail["total"] < 0,
+            own_invoice_id=invoice_id,
+            total=detail["total"],
+        )
+        if same and str(same.get("type") or "") != "PurchaseOrder":
+            twin = same
+            message = (
+                f"invoice {number} was already received on "
+                f"{str(same.get('receivedAt') or '')[:10]} with the same total — "
+                "delete this duplicate"
+            )
+            summary = "a copy of an invoice already received"
+    if twin:
+        data["issues"].append(
+            {
+                "id": "duplicate_invoice",
+                "code": "duplicate_invoice",
+                "blocking": True,
+                "line_id": None,
+                "gate": _VA.AUTO_DELETE_DUPLICATES,
+                "message": message,
+                "data": {"duplicate_of_invoice_id": twin.get("id")},
+            }
+        )
+        _delete_suggestion(
+            data["suggestions"],
+            data,
+            message,
+            _VA.AUTO_DELETE_DUPLICATES,
+            reason="duplicate",
+            extra={
+                "duplicate_of_invoice_id": twin.get("id"),
+                "duplicate_of_file_id": twin.get("fileId"),
+            },
+            summary=summary,
+        )
+        link_fixes(data, None, data["issues"], data["suggestions"])
+    elif not file_id and not feed:
         # A draft with no document behind it can't be reviewed: the Replica's
         # answer is "delete it" (a Loaded write, the verified delete endpoint;
         # the venue's switch decides whether Norm may do it alone). The
@@ -2612,6 +2695,18 @@ def extraction_instructions(
         loaded_supplier=detail.get("supplierName"),
         loaded_aliases=aliases,
     )
+
+
+def _received_rows(lh, reference: dict | None, detail: dict) -> list | None:
+    """The received feed for this invoice (``received_feed_for``), or None when
+    Loaded couldn't be asked — the replica then fetches its own, as before."""
+    try:
+        return received_feed_for(
+            lh, detail.get("issuedAt"), (reference or {}).get("received_feed")
+        )
+    except Exception as exc:  # noqa: BLE001 — the duplicate checks degrade, never fail
+        logger.info("received feed unavailable: %s", exc)
+        return (reference or {}).get("received_feed")
 
 
 def _with_suppliers(reference: dict | None, suppliers: list[dict]) -> dict:

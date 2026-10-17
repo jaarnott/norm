@@ -745,6 +745,192 @@ class TestBlockingIssues:
         assert compute_confidence(data) == "ready"
 
 
+class TestOrdermentumDuplicates:
+    """One Ordermentum delivery reaches Loaded as Ordermentum's copy (OMI…, no
+    file) and the supplier's emailed invoice (which carries the order number,
+    OMO…). Norm received both for 260 deliveries on 14–16 Oct 2026. Whichever
+    is received first stays; the other is a duplicate, settled before a copy
+    is read."""
+
+    OM_ROW = {
+        "id": "inv-om",
+        "invoiceNumber": "OMI1072575",
+        "fileId": None,
+        "supplierId": "sup-akaroa",
+        "supplierName": "Akaroa Salmon",
+        "invoicedAt": "2026-08-06",
+        "receivedAt": "2026-08-06T00:00:00",
+        "total": 252.75,
+    }
+    COPY_ROW = {
+        "id": "inv-copy",
+        "invoiceNumber": "3693436",
+        "purchaseOrderNumber": "OMO1073025",
+        "fileId": "f-copy",
+        "supplierId": "sup-akaroa",
+        "supplierName": "Akaroa Salmon",
+        "invoicedAt": "2026-08-08",
+        "receivedAt": "2026-08-08T00:00:00",
+        "total": 252.75,
+    }
+
+    def _no_read(self, monkeypatch):
+        monkeypatch.setattr(
+            IR,
+            "extract_invoice_copy",
+            lambda *a, **k: pytest.fail("a duplicate was read"),
+        )
+
+    def _assert_duplicate_of(self, data, twin_id):
+        issue = next(i for i in data["issues"] if i["code"] == "duplicate_invoice")
+        delete = next(s for s in data["suggestions"] if s["kind"] == "delete_invoice")
+        assert issue["gate"] == delete["gate"] == VA.AUTO_DELETE_DUPLICATES
+        assert delete["payload"]["reason"] == "duplicate"
+        assert delete["payload"]["duplicate_of_invoice_id"] == twin_id
+        assert issue["fix"] == [delete["id"]]
+        assert "replica" not in data  # stopped before the review proper
+        assert data["confidence"] == "needs_review"
+
+    def test_ordermentums_copy_when_the_supplier_copy_is_received(self, monkeypatch):
+        self._no_read(monkeypatch)
+        data = _review(
+            detail=DETAIL(
+                fileId=None,
+                source="Ordermentum",
+                referenceNumber="OMI1072575",
+                purchaseOrderNumber=None,
+                issuedAt="2026-08-07",
+            ),
+            extraction=None,
+            reference=REFERENCE(received_feed=[self.COPY_ROW]),
+        )
+        self._assert_duplicate_of(data, "inv-copy")
+        assert "supplier's own invoice 3693436" in data["issues"][0]["message"]
+
+    def test_the_supplier_copy_when_ordermentums_is_received(self, monkeypatch):
+        # Loaded's draft already carries the order number: no read needed.
+        self._no_read(monkeypatch)
+        data = _review(
+            detail=DETAIL(purchaseOrderNumber="OMO1073025", issuedAt="2026-08-07"),
+            extraction=None,
+            reference=REFERENCE(received_feed=[self.OM_ROW]),
+        )
+        self._assert_duplicate_of(data, "inv-om")
+        assert (
+            "Ordermentum's copy of this order (OMI1072575)"
+            in (data["issues"][0]["message"])
+        )
+
+    def test_the_order_number_only_the_read_found_still_counts(self):
+        # Loaded's draft has no order number; the copy prints "PO No. OMO…".
+        data = _review(
+            detail=DETAIL(purchaseOrderNumber=None),
+            extraction=EXTRACTION(customer_purchase_order_number="OMO1073025"),
+            reference=REFERENCE(received_feed=[self.OM_ROW]),
+        )
+        dup = next(i for i in data["issues"] if i["code"] == "duplicate_invoice")
+        assert dup["data"]["duplicate_of_invoice_id"] == "inv-om"
+        delete = next(s for s in data["suggestions"] if s["kind"] == "delete_invoice")
+        assert delete["payload"]["reason"] == "duplicate"
+
+    def test_no_twin_received_reviews_as_usual(self):
+        data = _review(
+            detail=DETAIL(purchaseOrderNumber="OMO1073025"),
+            reference=REFERENCE(received_feed=[{**self.OM_ROW, "total": 99.0}]),
+        )
+        assert "duplicate_invoice" not in _issue_codes(data)
+        assert data["replica"]["replica"] is True
+
+    def test_an_ordinary_supplier_is_never_matched_on_amount_and_date(self):
+        # The same order under a different number a day earlier — a standing
+        # order, not a duplicate (Procal at Applegum, Bidfood at Cook Brothers).
+        standing = {
+            **self.COPY_ROW,
+            "invoiceNumber": "F099",
+            "purchaseOrderNumber": None,
+            "invoicedAt": "2026-08-06",
+        }
+        data = _review(reference=REFERENCE(received_feed=[standing]))
+        assert "duplicate_invoice" not in _issue_codes(data)
+
+    def test_an_old_invoice_sees_its_twin_past_the_400_days(self):
+        # The duplicate check read only the last 400 days, so Applegum's
+        # backlog from June 2025 was received twice (16 Oct 2026).
+        asked: list = []
+        first = {
+            **self.COPY_ROW,
+            "id": "inv-old",
+            "invoiceNumber": "F100",
+            "purchaseOrderNumber": None,
+            "invoicedAt": "2025-06-03",
+        }
+
+        class _Lh:
+            def get(self, path):
+                asked.append(path)
+                return [first] if "from=2025-05-27" in path else []
+
+        data = _review(
+            detail=DETAIL(issuedAt="2025-06-03"),
+            extraction=EXTRACTION(invoice_date="2025-06-03"),
+            reference=REFERENCE(received_feed=[]),
+            lh=_Lh(),
+        )
+        assert any("from=2025-05-27&to=2025-06-11" in p for p in asked)
+        dup = next(i for i in data["issues"] if i["code"] == "duplicate_invoice")
+        assert dup["data"]["duplicate_of_invoice_id"] == "inv-old"
+
+    # -- the same invoice sent more than once, settled before reading --------
+
+    RECEIVED_F100 = {
+        "id": "inv-first",
+        "invoiceNumber": "F100",
+        "fileId": "f-first",
+        "supplierId": "sup-akaroa",
+        "supplierName": "Akaroa Salmon",
+        "invoicedAt": "2026-08-07",
+        "receivedAt": "2026-08-07T00:00:00",
+        "total": 252.75,
+    }
+
+    def test_a_copy_matching_on_number_and_total_is_settled_without_reading(
+        self, monkeypatch
+    ):
+        # PNM sent invoice 4166603 six times; each copy was read before five
+        # were deleted (16 Oct 2026).
+        self._no_read(monkeypatch)
+        data = _review(
+            detail=DETAIL(purchaseOrderNumber=None),
+            extraction=None,
+            reference=REFERENCE(received_feed=[self.RECEIVED_F100]),
+        )
+        self._assert_duplicate_of(data, "inv-first")
+        assert "with the same total" in data["issues"][0]["message"]
+
+    def test_anything_short_of_number_and_total_goes_to_the_read(self):
+        cases = [
+            # a different total: Loaded may have misread, so read it
+            (DETAIL(purchaseOrderNumber=None, total=260.00), self.RECEIVED_F100),
+            # a placeholder number isn't an invoice number
+            (
+                DETAIL(purchaseOrderNumber=None, referenceNumber="adj"),
+                {**self.RECEIVED_F100, "invoiceNumber": "adj"},
+            ),
+            # a credit note that reprints the invoice's number credits it
+            (DETAIL(purchaseOrderNumber=None, total=-252.75), self.RECEIVED_F100),
+            # goods receipted on the order: the read path words that case
+            (
+                DETAIL(purchaseOrderNumber=None),
+                {**self.RECEIVED_F100, "type": "PurchaseOrder"},
+            ),
+        ]
+        for detail, row in cases:
+            data = _review(detail=detail, reference=REFERENCE(received_feed=[row]))
+            # the review went on to the copy (the replica is built from it)
+            assert "replica" in data, (detail["referenceNumber"], detail["total"])
+            assert "with the same total" not in str(data["issues"])
+
+
 class TestPoPolicy:
     def test_no_po_blocks_under_the_batch_default(self):
         det = DETAIL(linkedPurchaseOrderId=None, purchaseOrderNumber=None)

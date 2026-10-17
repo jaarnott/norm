@@ -213,12 +213,79 @@ def _received_feed(lh) -> list:
     today = _dt.date.today()
     frm = (today - _dt.timedelta(days=400)).isoformat()
     to = (today + _dt.timedelta(days=1)).isoformat()
+    return _received_feed_window(lh, frm, to)
+
+
+def _received_feed_window(lh, frm: str, to: str) -> list:
     feed = lh.get(
         "/1.0/stock/internal/stock-received"
         f"?from={frm}&to={to}&property=Invoiced"
         "&includeAdjustingInvoices=true&ifNoneGetLastReceived=false"
     )
     return feed if isinstance(feed, list) else (feed or {}).get("data") or []
+
+
+def received_copy(
+    rows: list | None,
+    number: object,
+    supplier_name: object,
+    *,
+    is_credit_note: bool,
+    own_invoice_id: object = None,
+    total: object = None,
+) -> dict | None:
+    """The received invoice (or order receipt) with this number from this
+    supplier — the duplicate gate's one comparison. ``total``, when given, must
+    agree within 10c as well: that's how the review trusts Loaded's own read of
+    a draft enough to settle it before reading the copy."""
+    if not _norm(number):
+        return None
+    sup_key = _norm(supplier_name)
+    for row in rows or []:
+        if not isinstance(row, dict) or row.get("id") == own_invoice_id:
+            continue
+        if _norm(row.get("invoiceNumber")) != _norm(number):
+            continue
+        if _norm(row.get("supplierName")) != sup_key:
+            continue
+        # A credit note usually reprints the number of the invoice it credits.
+        # Opposite signs mean this IS that credit, not a duplicate of it —
+        # matching signs (credit vs credit) still count, because receiving a
+        # credit twice double-reverses stock with nothing else to catch it.
+        row_total = row.get("total")
+        if isinstance(row_total, (int, float)) and is_credit_note != (row_total < 0):
+            continue
+        if total is not None and not (
+            isinstance(row_total, (int, float))
+            and isinstance(total, (int, float))
+            and abs(row_total - total) <= 0.10
+        ):
+            continue
+        return row
+    return None
+
+
+def received_feed_for(lh, invoice_date: object, rows: list | None = None) -> list:
+    """The received feed that can hold this invoice's twin: the usual 400 days,
+    plus the fortnight around an older invoice's own date. A backlog reaching
+    back past the window (Applegum to June 2025) had its twins received twice
+    because the check could not see the first copy (46 invoices, 16 Oct 2026)."""
+    import datetime as _dt
+
+    rows = list(rows) if rows is not None else _received_feed(lh)
+    try:
+        day = _dt.date.fromisoformat(str(invoice_date or "")[:10])
+    except ValueError:
+        return rows
+    if day >= _dt.date.today() - _dt.timedelta(days=400):
+        return rows
+    seen = {r.get("id") for r in rows if isinstance(r, dict)}
+    older = _received_feed_window(
+        lh,
+        (day - _dt.timedelta(days=7)).isoformat(),
+        (day + _dt.timedelta(days=8)).isoformat(),
+    )
+    return rows + [r for r in older if isinstance(r, dict) and r.get("id") not in seen]
 
 
 def fetch_brands(lh) -> list[dict]:
@@ -1333,24 +1400,14 @@ def build_replica(
     if inv_no:
         try:
             rows = received_feed if received_feed is not None else _received_feed(lh)
-            sup_key = _norm((supplier or {}).get("name") or supplier_printed)
-            for row in rows or []:
-                if not isinstance(row, dict) or row.get("id") == own_invoice_id:
-                    continue
-                if _norm(row.get("invoiceNumber")) != _norm(inv_no):
-                    continue
-                if _norm(row.get("supplierName")) != sup_key:
-                    continue
-                # A credit note usually reprints the number of the invoice it
-                # credits. Opposite signs mean this IS that credit, not a
-                # duplicate of it — matching signs (credit vs credit) still
-                # count, because receiving a credit twice double-reverses
-                # stock with nothing else to catch it.
-                row_total = row.get("total")
-                if isinstance(row_total, (int, float)) and is_credit_note != (
-                    row_total < 0
-                ):
-                    continue
+            row = received_copy(
+                rows,
+                inv_no,
+                (supplier or {}).get("name") or supplier_printed,
+                is_credit_note=is_credit_note,
+                own_invoice_id=own_invoice_id,
+            )
+            if row:
                 dup_date = str(row.get("receivedAt") or "")[:10]
                 if str(row.get("type") or "") == "PurchaseOrder":
                     dup_po_id = row.get("id")
@@ -1382,7 +1439,38 @@ def build_replica(
                         if v
                     },
                 )
-                break
+            # A supplier's copy of an Ordermentum order whose order number only
+            # the read found (Loaded's draft didn't carry it): the same twin
+            # check the review runs before reading.
+            from app.services.invoice_extraction import (
+                find_ordermentum_twin,
+                ordermentum_order_number,
+                ordermentum_twin_message,
+            )
+
+            if not (dup_invoice_id or dup_po_id) and ordermentum_order_number(
+                extraction.get("customer_purchase_order_number"), inv_no
+            ):
+                twin = find_ordermentum_twin(
+                    rows,
+                    feed=False,
+                    supplier_id=supplier_id,
+                    supplier_name=(supplier or {}).get("name") or supplier_printed,
+                    total=extraction.get("total_incl_tax"),
+                    invoice_date=_iso_date(extraction.get("invoice_date")),
+                    own_invoice_id=own_invoice_id,
+                )
+                if twin:
+                    dup_invoice_id = twin.get("id")
+                    dup_file_id = twin.get("fileId")
+                    dup_msg = ordermentum_twin_message(twin, feed=False)
+                    warnings.append(dup_msg)
+                    log.append(dup_msg)
+                    _issue(
+                        "duplicate_invoice",
+                        dup_msg,
+                        data={"duplicate_of_invoice_id": dup_invoice_id},
+                    )
         except Exception as exc:  # noqa: BLE001
             log.append(f"duplicate check failed: {exc}")
 

@@ -384,6 +384,142 @@ def extraction_from_loaded(detail: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# One Ordermentum delivery, two copies
+# ---------------------------------------------------------------------------
+# A delivery ordered through Ordermentum reaches Loaded twice: Ordermentum's
+# copy (its invoice number, OMI…, no file) and the supplier's own emailed
+# invoice, which carries Ordermentum's ORDER number (OMO…) — as its purchase
+# order (Sonoma, Somage) or as its own number (M H Luxe). The numbers differ,
+# so the same-number duplicate check never paired them, and on 14–16 Oct 2026
+# Norm received both for 260 deliveries at Applegum Cafe, Little West and
+# Somewhere North ($30k ex-GST counted twice).
+#
+# The match is on what the two copies share: the same supplier, the same total
+# (within 10c), and the supplier's copy dated 0–4 days after Ordermentum's —
+# when a standing order repeats, the one dated the day before. Graded against
+# Ordermentum's own order numbers over every received invoice at those venues:
+# 502 right, none wrong. A 7-day window starts pairing weekly standing orders,
+# so it stays at 4. Without an Ordermentum copy on one side this never matches:
+# identical standing orders under different numbers are common (453 at the Cook
+# Brothers venues) and must not be read as duplicates.
+
+_OMO = re.compile(r"\bOMO\s*0*(\d{3,})\b", re.I)
+_OMI = re.compile(r"^OMI0*\d+$", re.I)
+#: Days the supplier's copy may be dated after Ordermentum's (backlog: 7 the
+#: same day, 217 one day, 19 two, 1 three, 4 four).
+ORDERMENTUM_TWIN_DAYS = 4
+ORDERMENTUM_TWIN_TOTAL = 0.10
+
+
+def ordermentum_order_number(*texts: object) -> str | None:
+    """Ordermentum's order number (``OMO1073025``) in any of ``texts`` — a
+    supplier's copy of an Ordermentum order prints it as its purchase order or
+    uses it as its own invoice number."""
+    for text in texts:
+        m = _OMO.search(str(text or ""))
+        if m:
+            return f"OMO{m.group(1)}"
+    return None
+
+
+def _is_ordermentum_copy(row: dict) -> bool:
+    """A received row that is Ordermentum's copy: its invoice number, no file
+    (the received feed doesn't carry Loaded's ``source``)."""
+    return not row.get("fileId") and bool(
+        _OMI.match(re.sub(r"\s", "", str(row.get("invoiceNumber") or "")))
+    )
+
+
+def _is_supplier_copy(row: dict) -> bool:
+    """A received row that is the supplier's copy of an Ordermentum order."""
+    return bool(row.get("fileId")) and bool(
+        ordermentum_order_number(
+            row.get("purchaseOrderNumber"), row.get("invoiceNumber")
+        )
+    )
+
+
+def find_ordermentum_twin(
+    rows: list | None,
+    *,
+    feed: bool,
+    supplier_id: object,
+    supplier_name: object,
+    total: object,
+    invoice_date: object,
+    own_invoice_id: object = None,
+) -> dict | None:
+    """The received copy of the same Ordermentum delivery, or None.
+
+    ``feed`` says which copy is being reviewed: Ordermentum's (look for the
+    supplier's) or the supplier's (look for Ordermentum's). ``rows`` is the
+    received feed (``stock-received``). Credit notes are left alone — a short
+    delivery's credit belongs with the order, not against it. Two copies equally
+    likely is answered with None: an invoice is never deleted on a coin toss."""
+    import datetime as _dt
+
+    def _day(v: object):
+        try:
+            return _dt.date.fromisoformat(str(v or "")[:10])
+        except ValueError:
+            return None
+
+    mine = _day(invoice_date)
+    if mine is None or not isinstance(total, (int, float)) or total <= 0:
+        return None
+    sup = norm(supplier_name)
+    fits: list[tuple[int, dict]] = []
+    for row in rows or []:
+        if not isinstance(row, dict) or row.get("id") == own_invoice_id:
+            continue
+        other = _is_supplier_copy(row) if feed else _is_ordermentum_copy(row)
+        if not other:
+            continue
+        # Loaded's supplier record decides; the name only when one side has none.
+        if supplier_id and row.get("supplierId"):
+            same_supplier = row.get("supplierId") == supplier_id
+        else:
+            same_supplier = bool(sup) and norm(row.get("supplierName")) == sup
+        row_total = row.get("total")
+        if (
+            not same_supplier
+            or not isinstance(row_total, (int, float))
+            or row_total <= 0
+        ):
+            continue
+        if abs(row_total - total) > ORDERMENTUM_TWIN_TOTAL:
+            continue
+        theirs = _day(row.get("invoicedAt") or row.get("receivedAt"))
+        if theirs is None:
+            continue
+        # Days from Ordermentum's copy to the supplier's.
+        gap = (theirs - mine).days if feed else (mine - theirs).days
+        if 0 <= gap <= ORDERMENTUM_TWIN_DAYS:
+            fits.append((abs(gap - 1), row))
+    if not fits:
+        return None
+    fits.sort(key=lambda f: f[0])
+    if len(fits) > 1 and fits[0][0] == fits[1][0]:
+        return None
+    return fits[0][1]
+
+
+def ordermentum_twin_message(twin: dict, *, feed: bool) -> str:
+    """The duplicate's reason, in the card's and the summary's words."""
+    when = str(twin.get("receivedAt") or twin.get("invoicedAt") or "")[:10]
+    number = twin.get("invoiceNumber") or "?"
+    if feed:
+        return (
+            f"the supplier's own invoice {number} for this Ordermentum order was "
+            f"already received ({when}) — delete this Ordermentum copy"
+        )
+    return (
+        f"Ordermentum's copy of this order ({number}) was already received "
+        f"({when}) — delete this duplicate"
+    )
+
+
 def extraction_system_prompt(schema: dict | None = None) -> str:
     """The extraction envelope — same shape as the consolidator executor's,
     so extractions behave identically on every path."""
