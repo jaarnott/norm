@@ -64,6 +64,21 @@ button, input, select, textarea {
 /* Hover for rows and rail tiles whose resting background is set inline. */
 .n-rail-tile:not([aria-current="page"]):hover { background-color: var(--surface-alt) !important; color: var(--text) !important; }
 .n-thread-row:hover { background-color: var(--surface-alt); }
+/* Home's suggested prompts: a quiet row that warms on hover, its × shown on
+   hover (always on touch screens, faintly). */
+/* The list ends where the field does (not under Send); on a phone the rows
+   take the full width, so more of each prompt shows before the ellipsis. */
+.n-suggestions { list-style: none; margin: 10px 80px 0 0; padding: 0; display: flex; flex-direction: column; }
+@media (max-width: 640px) { .n-suggestions { margin-right: 0; } }
+.n-suggestion { display: flex; align-items: center; gap: 4px; padding-right: 6px; border-radius: var(--radius); }
+.n-suggestion:hover { background-color: var(--surface-alt); }
+.n-suggestion-btn { flex: 1; min-width: 0; display: flex; align-items: center; gap: 15px; padding: 9px 8px 9px 17px; border: none; background: transparent; border-radius: var(--radius); text-align: left; font: inherit; font-size: var(--fs-base); line-height: 1.35; color: var(--text-soft); cursor: pointer; }
+/* 17px + a 16px icon + 15px = 48px: the field's text start (Composer). */
+.n-suggestion-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.n-suggestion:hover .n-suggestion-btn { color: var(--text); }
+.n-suggestion-dismiss { opacity: 0; transition: opacity 0.12s; }
+.n-suggestion:hover .n-suggestion-dismiss, .n-suggestion-dismiss:focus-visible { opacity: 1; }
+@media (hover: none) { .n-suggestion-dismiss { opacity: 0.6; } }
 /* A thread card's corner shows its age (Home's one-line rows: the status pill
    or the age), and the remove button takes that spot on hover or keyboard
    focus, so it costs the row no width. :focus-visible, not :focus-within, on

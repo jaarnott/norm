@@ -387,6 +387,53 @@ def _extras(flat, heads, narrowed):
     return out
 
 
+#: A move bigger than this between receipts is a unit booked wrongly on an
+#: invoice (a box at a kilo's price), not a price — reported as unknown.
+_PRICE_MOVE_LIMIT = 2.0
+
+
+def _price_move(prices):
+    """(change %, latest step) for one item from one supplier.
+
+    Compared in the unit the supplier invoices it in most often — a carton
+    against a carton — so a line booked in the wrong unit can't read as a 500%
+    rise. With fewer than two receipts in one unit, per base unit across
+    units, as before (a 6x1L box at the litre price is no change).
+    """
+    by_unit = {}
+    for date, _base, unit, cost in prices:
+        if unit and cost and cost > 0:
+            by_unit.setdefault(unit, []).append((date, cost))
+    unit, series = "", []
+    if by_unit:
+        unit, series = max(by_unit.items(), key=lambda kv: (len(kv[1]), kv[1][-1][0]))
+    if len(series) >= 2:
+        first, last = series[0][1], series[-1][1]
+    else:
+        base = [p[1] for p in prices if p[1]]
+        if len(base) < 2:
+            return None, None
+        first, last = base[0], base[-1]
+        unit, series = "", []
+    move = (last - first) / first if first else None
+    change = (
+        round(move * 100, 1)
+        if move is not None and abs(move) <= _PRICE_MOVE_LIMIT
+        else None
+    )
+    step = None
+    for (_d0, c0), (d1, c1) in zip(series, series[1:]):
+        if c0 and 0.02 <= abs(c1 - c0) / c0 <= _PRICE_MOVE_LIMIT:
+            step = {
+                "date": d1,
+                "from": round(c0, 4),
+                "to": round(c1, 4),
+                "unit": unit,
+                "pct": round((c1 - c0) / c0 * 100, 1),
+            }
+    return change, step
+
+
 def run(params, call_api, log, call_api_parallel=None):
     def norm(text):
         return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
@@ -977,7 +1024,14 @@ def run(params, call_api, log, call_api_parallel=None):
             and row["quantity"] > 0
             and row["cost_per_base_unit"] is not None
         ):
-            bucket["_prices"].append((row["date"], row["cost_per_base_unit"]))
+            bucket["_prices"].append(
+                (
+                    row["date"],
+                    row["cost_per_base_unit"],
+                    row.get("unit_name") or "",
+                    row.get("unit_cost"),
+                )
+            )
         if bucket["base_unit"] is None:
             bucket["base_unit"] = row["base_unit"]
 
@@ -1021,12 +1075,14 @@ def run(params, call_api, log, call_api_parallel=None):
             row["unit_cost_min"] = min(values) if values else None
             row["unit_cost_max"] = max(values) if values else None
             row["unit_cost_last"] = values[-1] if values else None
-            # First to last receipt in the window — the price movers table.
-            row["unit_cost_change_pct"] = (
-                round((values[-1] - values[0]) / values[0], 4)
-                if len(values) > 1 and values[0]
-                else None
-            )
+            # First to last receipt in the window — the price movers table — as
+            # a PERCENT (25.0 is +25%; until Oct 2026 it was a fraction, which
+            # read as "up 0.3%" for chips that went up 25%).
+            change, last_step = _price_move(prices)
+            row["unit_cost_change_pct"] = change
+            # The latest price step in the unit the supplier invoices it in:
+            # when it changed and from what to what.
+            row["last_price_change"] = last_step
         rows.append(row)
 
     rows.sort(key=lambda r: r["spend"], reverse=True)

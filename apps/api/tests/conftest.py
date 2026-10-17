@@ -61,6 +61,10 @@ from app.routers import (
     apps as apps_router,
 )
 
+# The insight run's rewording is a real model call; a test that wants it
+# switches it on and fakes the call (test_insight_wording.py).
+settings.INSIGHT_WORDING_ENABLED = False
+
 
 # ---------------------------------------------------------------------------
 # Minimal app for tests (no startup/shutdown events)
@@ -117,6 +121,10 @@ _test_app.include_router(_functions.router, prefix="/api")
 _test_app.include_router(_functions_inbox.router, prefix="/api")
 _test_app.include_router(_functions_forms.router, prefix="/api")
 _test_app.include_router(_public.router, prefix="/api")
+
+from app.routers import suggestions as _suggestions  # noqa: E402
+
+_test_app.include_router(_suggestions.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +194,8 @@ def _setup_tables():
             "ADD COLUMN IF NOT EXISTS id_field VARCHAR",
             "ALTER TABLE component_api_configs "
             "ADD COLUMN IF NOT EXISTS response_field_mapping JSON",
+            # A conversation started from a Home insight (Oct 2026).
+            "ALTER TABLE threads ADD COLUMN IF NOT EXISTS insight_id VARCHAR",
             # Top-ups record the usage they add in dollars (Oct 2026 plans).
             "ALTER TABLE token_top_ups ADD COLUMN IF NOT EXISTS usage_usd NUMERIC(10,2)",
             # A dashboard chart remembers what its cached rows are for

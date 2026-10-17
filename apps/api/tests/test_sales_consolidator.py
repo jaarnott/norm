@@ -672,28 +672,82 @@ class TestTax:
         out = run_day(FeedApi(LZ_28_SEP), tax="gst")
         assert "tax must be" in out["error"]
 
-    def test_budgets_are_tax_inclusive_so_exclude_divides_by_the_rate(self):
-        """Loaded's budget worksheet: budgetEx += amount / (1 + salesTax)."""
+    def test_an_ex_tax_budget_loses_the_share_of_tax_the_sales_did(self):
+        """Loaded's budgets include tax. Ex tax, the budget comes off at the
+        sales' own ex/incl ratio, so "vs budget" reads the same on either
+        basis."""
         api = FeedApi(LZ_28_SEP)
         incl = run_day(api, compare="budget")
         assert incl["rows"][0]["budget"] == 2300.0
         excl = run_day(api, compare="budget", tax="exclude")
-        assert excl["rows"][0]["budget"] == 2000.0
-        assert excl["rows"][0]["vs_budget"] == round(1551.93 - 2000.0, 2)
+        assert excl["rows"][0]["budget"] == round(2300.0 * 1551.93 / 1793.5, 2)
+        assert excl["rows"][0]["vs_budget"] == round(
+            1551.93 - excl["rows"][0]["budget"], 2
+        )
+        assert excl["rows"][0]["vs_budget_pct"] == incl["rows"][0]["vs_budget_pct"]
 
-    def test_a_budget_without_a_rate_is_flagged_not_left_taxed(self):
+    def test_tax_free_sales_no_longer_overstate_ahead_of_budget(self):
+        """La Zeppa, Oct 2026: some sales carry 0% tax, so dividing the budget
+        by 1.15 read +24% ex GST against +18% with it. 10% ahead is 10% ahead
+        on both bases."""
+        api = FeedApi(
+            [
+                {
+                    "startTime": "2026-09-28T13:00:00+13:00",
+                    "invoices": 1150.0,
+                    "invoicesTax": 150.0,
+                    "discounts": 0.0,
+                    "quantity": 1,
+                    "count": 1,
+                },
+                {
+                    "startTime": "2026-09-28T17:00:00+13:00",
+                    "invoices": 500.0,
+                    "invoicesTax": 0.0,
+                    "discounts": 0.0,
+                    "quantity": 1,
+                    "count": 1,
+                },
+            ]
+        )
+        api.budget_days = [
+            {"date": "2026-09-28", "amount": 1500.0, "sales_tax_rate": 0.15}
+        ]
+        incl = run_day(api, compare="budget")
+        excl = run_day(api, compare="budget", tax="exclude")
+        assert incl["rows"][0]["vs_budget_pct"] == 10.0
+        assert excl["rows"][0]["vs_budget_pct"] == 10.0  # was 15.0
+        daily = run_day(api, breakdown="daily", compare="budget", tax="exclude")
+        assert daily["totals"]["La Zeppa"]["budget"] == excl["rows"][0]["budget"]
+
+    def test_with_no_sales_the_budget_comes_off_at_its_own_rate(self):
+        """Loaded's budget worksheet: budgetEx += amount / (1 + salesTax)."""
+        api = FeedApi([])
+        out = run_day(api, compare="budget", tax="exclude")
+        assert out["rows"][0]["budget"] == 2000.0
+
+    def test_a_missing_rate_needs_no_flag_when_the_sales_give_the_ratio(self):
         api = FeedApi(LZ_28_SEP)
         api.budget_days = [{"date": "2026-09-28", "amount": 2300.0}]
-        out = run_day(api, compare="budget", tax="exclude")
-        row = out["rows"][0]
+        row = run_day(api, compare="budget", tax="exclude")["rows"][0]
+        assert row["budget"] == round(2300.0 * 1551.93 / 1793.5, 2)
+        assert not row.get("errors")
+
+    def test_a_budget_with_neither_sales_nor_a_rate_is_flagged_not_left_taxed(self):
+        api = FeedApi([])
+        api.budget_days = [{"date": "2026-09-28", "amount": 2300.0}]
+        row = run_day(api, compare="budget", tax="exclude")["rows"][0]
         assert row["budget"] is None
         assert any("tax rate" in e for e in row["errors"])
+        daily = run_day(api, breakdown="daily", compare="budget", tax="exclude")
+        assert "tax rate" in daily["note"]
 
     def test_daily_budget_ex_tax_too(self):
         api = FeedApi(LZ_28_SEP)
         out = run_day(api, breakdown="daily", compare="budget", tax="exclude")
-        assert out["rows"][0]["budget"] == 2000.0
-        assert out["totals"]["La Zeppa"]["budget"] == 2000.0
+        want = round(2300.0 * 1551.93 / 1793.5, 2)
+        assert out["rows"][0]["budget"] == want
+        assert out["totals"]["La Zeppa"]["budget"] == want
 
     def test_items_exclude_uses_the_gst_rate_as_loadeds_reports_do(self):
         """Not the effective rate inside the takings — exempt sales pull that

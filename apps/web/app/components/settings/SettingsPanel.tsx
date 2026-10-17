@@ -24,6 +24,7 @@ import McpPanel from './McpPanel';
 import AdminThreadsPanel from './AdminThreadsPanel';
 import ApprovalPreferences from './ApprovalPreferences';
 import MemoryTab from './MemoryTab';
+import SuggestionNotesTab from './SuggestionNotesTab';
 import AddressSearch from './AddressSearch';
 import { getStoredUser } from '../../lib/api';
 // can(user, scope): what the signed-in user may do — shared with the tabs.
@@ -1350,7 +1351,7 @@ function UsersTab({ canManage }: { canManage: boolean }) {
   );
 }
 
-export type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences';
+export type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences' | 'suggestions';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   return perms.some(p => can(user, p));
@@ -1602,6 +1603,8 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
     [showBilling, 'billing', 'Billing'],
     [showEmail, 'email', 'Email'],
     [showConnections, 'connections', 'Connections'],
+    // What people told Norm about Home's suggestions (insight notes).
+    [can(storedUser, 'reports:read'), 'suggestions', 'Suggestions'],
   ]);
   addGroup('AI team', [
     [showAgents, 'agents', 'Agents'],
@@ -1697,6 +1700,9 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
               )}
             </>
           )}
+
+          {/* ============ SUGGESTIONS TAB ============ */}
+          {tab === 'suggestions' && <SuggestionNotesTab />}
 
           {/* ============ VENUES TAB ============ */}
           {tab === 'venues' && <VenuesTab canManage={can(storedUser, 'org:venues')} canConnect={can(storedUser, 'settings:connectors')} />}

@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
     BILLING_ENFORCEMENT: bool = False
+    # The daily insight run (services/insights): once per venue per morning, it
+    # reads sales, wages and purchases through Norm's own tools and keeps what
+    # is worth a person's attention for Home's suggestions. Reads only. Off
+    # switch without a deploy.
+    INSIGHTS_ENABLED: bool = True
+    # ...and then rewords what changed in the organisation's own words: one
+    # small-model call per venue with changed insights, at Norm's cost (never
+    # counted against a plan). Off keeps the detectors' own wording.
+    INSIGHT_WORDING_ENABLED: bool = True
 
     # Stripe price IDs (set per environment)
     # Plans (billing_service.PLANS) and the one price every hired AI team

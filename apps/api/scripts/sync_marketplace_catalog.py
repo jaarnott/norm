@@ -265,6 +265,9 @@ APPS = [
             "gmail.send_email",
             # was set_workflow_mode under loaded-stock (scripts/sync_approval_preferences.py)
             "norm.set_approval_preference",
+            # what a person says about an insight they clicked on Home
+            # (scripts/sync_note_insight_tool.py)
+            "norm.note_insight",
         ],
         components=[
             _shared(

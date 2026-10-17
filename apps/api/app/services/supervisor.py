@@ -37,6 +37,7 @@ def handle_message(
     thread_id: str | None = None,
     venue_id: str | None = None,
     page_context: dict | None = None,
+    suggestion_id: str | None = None,
 ) -> dict:
     """Process a user message: continue its thread, or start one."""
     _cdb = config_db
@@ -53,9 +54,24 @@ def handle_message(
     thread = (
         db.query(Thread).filter(Thread.id == thread_id).first() if thread_id else None
     )
+    from app.services.insights import context as insight_context
+
     if thread is not None:
-        return _continue_thread(message, thread, db, _cdb, user_id, page_context)
-    return _new_thread(message, db, _cdb, user_id, venue_id, page_context)
+        return _continue_thread(
+            message,
+            thread,
+            db,
+            _cdb,
+            user_id,
+            page_context,
+            insight=insight_context.insight_dict(db, thread.insight_id),
+        )
+    insight = insight_context.from_suggestion(db, user_id, suggestion_id)
+    if insight and insight.get("venue_id"):
+        venue_id = insight["venue_id"]  # an insight is about one venue
+    return _new_thread(
+        message, db, _cdb, user_id, venue_id, page_context, insight=insight
+    )
 
 
 # ------------------------------------------------------------ follow-ups ----
@@ -68,6 +84,7 @@ def _continue_thread(
     config_db: Session,
     user_id: str | None,
     page_context: dict | None,
+    insight: dict | None = None,
 ) -> dict:
     """A follow-up. It stays in this thread, whatever it says — there is no
     other agent to hand it to, and the conversation (a pending approval, an
@@ -124,6 +141,7 @@ def _continue_thread(
         config_db=config_db,
         page_context=page_context,
         automated_task=automated_task_ctx,
+        insight=insight,
     )
 
 
@@ -192,6 +210,7 @@ def _new_thread(
     user_id: str | None,
     venue_id: str | None,
     page_context: dict | None,
+    insight: dict | None = None,
 ) -> dict:
     # "Connect BambooHR" shows the connect card, deterministically, rather
     # than depending on the model choosing to call show_connect.
@@ -213,6 +232,7 @@ def _new_thread(
         venue_timezone=venue.timezone if venue else None,
         config_db=config_db,
         page_context=page_context,
+        insight=insight,
     )
 
     thread_obj = (
@@ -221,6 +241,9 @@ def _new_thread(
         else None
     )
     if thread_obj is not None:
+        if insight and not thread_obj.insight_id:
+            thread_obj.insight_id = insight["id"]
+            db.commit()
         if not thread_obj.title:
             thread_obj.title = thread_titles.finish(
                 title_job, message, thread_obj.id, db

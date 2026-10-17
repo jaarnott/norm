@@ -37,6 +37,7 @@ class BaseDomainAgent(ABC):
         config_db: Session | None = None,
         page_context: dict | None = None,
         automated_task: dict | None = None,
+        insight: dict | None = None,
     ) -> dict:
         """Process a user message. Returns a thread dict for the API response."""
         ...
@@ -56,6 +57,7 @@ class BaseDomainAgent(ABC):
         page_context: dict | None = None,
         tool_filter: list[str] | None = None,
         automated_task: dict | None = None,
+        insight: dict | None = None,
     ) -> tuple[str, list[dict]]:
         """Return (system_prompt, anthropic_tools) for the agentic tool loop.
 
@@ -73,6 +75,7 @@ class BaseDomainAgent(ABC):
             page_context=page_context,
             tool_filter=tool_filter,
             automated_task=automated_task,
+            insight=insight,
         )
 
     def handle_message_with_tools(
@@ -87,6 +90,7 @@ class BaseDomainAgent(ABC):
         config_db: Session | None = None,
         page_context: dict | None = None,
         automated_task: dict | None = None,
+        insight: dict | None = None,
     ) -> dict:
         """Process a message using the agentic tool loop.
 
@@ -109,6 +113,7 @@ class BaseDomainAgent(ABC):
             config_db=config_db,
             page_context=page_context,
             automated_task=automated_task,
+            insight=insight,
         )
         ctx = self.build_context(db, user_id)
 

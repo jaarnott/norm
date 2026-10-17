@@ -3060,6 +3060,92 @@ def _remember(params: dict, db: Session, thread_id: str | None) -> dict:
     return {"success": True, "data": result}
 
 
+@register("norm", "note_insight")
+def _note_insight(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Record what the person said about an insight Norm raised (Oct 2026).
+
+    ``expected`` quietens it (until a date, or 60 days) unless it moves well
+    past the level explained; ``acting`` means they will change something and
+    Norm follows up; ``not_useful`` shows that kind less. The insight is the
+    one this conversation began from unless ``insight_id`` names another of
+    the organisation's (services/insights/context.py).
+    """
+    from datetime import date as _date
+
+    from app.db.models import Insight, InsightNote, Thread
+
+    verdict = str(params.get("verdict") or "").strip().lower()
+    if verdict not in ("expected", "acting", "not_useful"):
+        return {
+            "success": False,
+            "data": {},
+            "error": "verdict must be expected, acting or not_useful",
+        }
+    user_id, org_id = _principal_for_memory(thread_id, db)
+    if not user_id or not org_id:
+        return {
+            "success": False,
+            "data": {},
+            "error": "No user/organisation context for this conversation.",
+        }
+    insight_id = str(params.get("insight_id") or "").strip()
+    if not insight_id and thread_id:
+        thread = db.query(Thread).filter(Thread.id == thread_id).first()
+        insight_id = (thread.insight_id if thread else None) or ""
+    row = (
+        db.query(Insight).filter(Insight.id == insight_id).first()
+        if insight_id
+        else None
+    )
+    if row is None or row.organization_id != org_id:
+        return {
+            "success": False,
+            "data": {},
+            "error": "No insight to note — this conversation did not start from one. Use remember for other context.",
+        }
+    until = str(params.get("until") or "").strip()[:10] or None
+    if until:
+        try:
+            _date.fromisoformat(until)
+        except ValueError:
+            return {
+                "success": False,
+                "data": {},
+                "error": "until must be a date, YYYY-MM-DD",
+            }
+    note = InsightNote(
+        organization_id=org_id,
+        venue_id=row.venue_id,
+        subject_key=row.subject_key,
+        detector=row.detector,
+        verdict=verdict,
+        reason=str(params.get("reason") or "").strip()[:1000] or None,
+        until=until,
+        baseline=row.value,
+        created_by=user_id,
+        thread_id=thread_id,
+    )
+    db.add(note)
+    db.flush()
+    effect = {
+        "expected": "Norm will treat it as expected"
+        + (f" until {until}" if until else " for 60 days")
+        + ", and raise it again only if it moves well past today's level.",
+        "acting": "Norm will look again in a few weeks and tell them whether it worked.",
+        "not_useful": "Norm will show this kind of insight less often.",
+    }[verdict]
+    return {
+        "success": True,
+        "data": {
+            "note_id": note.id,
+            "insight": row.headline,
+            "verdict": verdict,
+            "until": until,
+            "what_happens": effect,
+        },
+    }
+
+
 @register("norm", "recall_memory")
 def _recall_memory(params: dict, db: Session, thread_id: str | None) -> dict:
     """Fetch the full detail of one memory listed in the index."""

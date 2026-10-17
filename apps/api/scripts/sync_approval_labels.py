@@ -128,6 +128,7 @@ WRITES = {
     "norm_functions.send_proposal": _ask(
         "send proposals to function customers", allow_auto=False
     ),
+    "norm.note_insight": _auto("note what you tell it about an insight"),
     "loadedhub.review_and_receive_invoices": {
         "default": "ask",
         "allow_auto": True,

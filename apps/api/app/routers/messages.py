@@ -151,6 +151,9 @@ class MessageRequest(BaseModel):
     # Ids of files the user attached to this message (uploaded via POST /uploads
     # first). The bytes are re-read from UploadedDocument and sent to the model.
     attachment_ids: list[str] = []
+    # A suggestion clicked on Home (services/suggestions): recorded as a click,
+    # and an insight's facts follow the conversation it starts.
+    suggestion_id: str | None = None
 
 
 @router.post("/messages")
@@ -174,6 +177,7 @@ async def post_message(
             thread_id=req.thread_id,
             venue_id=req.venue_id,
             page_context=req.page_context.model_dump() if req.page_context else None,
+            suggestion_id=req.suggestion_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -244,6 +248,7 @@ async def post_message_stream(
                     page_context=req.page_context.model_dump()
                     if req.page_context
                     else None,
+                    suggestion_id=req.suggestion_id,
                 )
                 on_event({"type": "complete", "data": result})
             except Exception as exc:

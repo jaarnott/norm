@@ -53,6 +53,7 @@ class NormAgent(BaseDomainAgent):
         config_db: Session | None = None,
         page_context: dict | None = None,
         automated_task: dict | None = None,
+        insight: dict | None = None,
     ) -> dict:
         _, tools = self.get_tool_definitions(
             db,
@@ -62,6 +63,7 @@ class NormAgent(BaseDomainAgent):
             config_db=config_db,
             page_context=page_context,
             automated_task=automated_task,
+            insight=insight,
         )
         if not tools:
             return self._no_tools(message, db, user_id, thread_id, venue_id)
@@ -76,6 +78,7 @@ class NormAgent(BaseDomainAgent):
             config_db=config_db,
             page_context=page_context,
             automated_task=automated_task,
+            insight=insight,
         )
 
     def _no_tools(

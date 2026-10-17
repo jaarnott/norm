@@ -57,40 +57,46 @@ export default function Composer({ onSend, loading, venueId, highlight = false, 
       <AttachmentError error={att.error} onDismiss={att.clearError} />
       <form
         onSubmit={(e) => { e.preventDefault(); submit(); }}
-        style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}
+        style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}
       >
-        <AttachButton onPick={att.addFiles} disabled={loading} />
-        <textarea
-          ref={(el) => { ref.current = el; fit(el); }}
-          data-testid={inputTestId}
-          aria-label="Message Norm"
-          value={value}
-          onChange={(e) => { setValue(e.target.value); fit(e.target); }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          placeholder={placeholder}
-          rows={1}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            minHeight: 50,
-            maxHeight: MAX_HEIGHT,
-            padding: '13px 20px',
-            fontSize: 'var(--fs-md)',
-            lineHeight: 1.4,
-            color: 'var(--text)',
-            background: 'var(--bg)',
-            border: `1px solid ${highlight ? 'var(--accent)' : 'var(--field)'}`,
-            borderRadius: 24,
-            resize: 'none',
-            boxSizing: 'border-box',
-            overflow: 'hidden',
-          }}
-        />
+        {/* The paperclip lives inside the field, so the field is the one
+            left edge everything lines up with (Home's suggestions too). */}
+        <div style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}>
+          <div style={{ position: 'absolute', left: 7, bottom: 7, zIndex: 1 }}>
+            <AttachButton onPick={att.addFiles} disabled={loading} />
+          </div>
+          <textarea
+            ref={(el) => { ref.current = el; fit(el); }}
+            data-testid={inputTestId}
+            aria-label="Message Norm"
+            value={value}
+            onChange={(e) => { setValue(e.target.value); fit(e.target); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder={placeholder}
+            rows={1}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              minHeight: 50,
+              maxHeight: MAX_HEIGHT,
+              padding: '13px 20px 13px 48px',
+              fontSize: 'var(--fs-md)',
+              lineHeight: 1.4,
+              color: 'var(--text)',
+              background: 'var(--bg)',
+              border: `1px solid ${highlight ? 'var(--accent)' : 'var(--field)'}`,
+              borderRadius: 24,
+              resize: 'none',
+              boxSizing: 'border-box',
+              overflow: 'hidden',
+            }}
+          />
+        </div>
         <button
           type="submit"
           data-testid={sendTestId}

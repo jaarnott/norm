@@ -2,13 +2,20 @@
 
 import Composer from '../chat/Composer';
 import type { SendOptions } from '../chat/AttachmentComposer';
+import Suggestions from './Suggestions';
 
 interface HomePanelProps {
   onSend: (message: string, opts?: SendOptions) => void;
   loading: boolean;
+  /** The team member whose new chat this is ('home' for everyone's). */
+  member?: string;
+  /** The venue the person is working in — suggestions name it. */
+  venueId?: string | null;
+  /** Four suggestions on a desktop, two on a phone. */
+  suggestions?: number;
 }
 
-export default function HomePanel({ onSend, loading }: HomePanelProps) {
+export default function HomePanel({ onSend, loading, member, venueId, suggestions = 4 }: HomePanelProps) {
   return (
     <div style={{
       height: '100%',
@@ -34,6 +41,12 @@ export default function HomePanel({ onSend, loading }: HomePanelProps) {
           loading={loading}
           inputTestId="home-message-input"
           sendTestId="home-send-btn"
+        />
+        <Suggestions
+          member={member}
+          venueId={venueId}
+          limit={suggestions}
+          onPick={s => onSend(s.prompt, { suggestionId: s.id })}
         />
       </div>
     </div>

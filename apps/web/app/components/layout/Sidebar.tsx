@@ -18,12 +18,12 @@ export interface AgentTab {
 // duotone has something to fill (BarChart3's open strokes did not).
 export const AGENTS: AgentTab[] = [
   { id: 'home', label: 'Home', icon: Home, color: colors.home },
-  { id: 'procurement', label: 'Procurement', icon: Package, color: colors.procurement },
-  { id: 'hr', label: 'HR', icon: UserRound, color: colors.hr },
-  { id: 'time_attendance', label: 'Time & Att.', icon: Clock, color: colors.time_attendance },
-  { id: 'marketing', label: 'Marketing', icon: Megaphone, color: colors.marketing },
   { id: 'reports', label: 'Reports', icon: ChartColumnBig, color: colors.reports },
+  { id: 'procurement', label: 'Procurement', icon: Package, color: colors.procurement },
+  { id: 'time_attendance', label: 'Time & Att.', icon: Clock, color: colors.time_attendance },
   { id: 'executive_chef', label: 'Exec Chef', icon: ChefHat, color: colors.executive_chef },
+  { id: 'hr', label: 'HR', icon: UserRound, color: colors.hr },
+  { id: 'marketing', label: 'Marketing', icon: Megaphone, color: colors.marketing },
   // Norm Functions — hired only while the organisation's functions_mode is on.
   // The per-member accents are retired, so no key of its own in lib/theme.ts
   // (which the MCP bundle hashes): the same neutral the others map to.

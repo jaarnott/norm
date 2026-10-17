@@ -26,8 +26,12 @@
 #   - tax: include (default) | exclude — Loaded's figures include tax and
 #     carry the tax inside them (invoicesTax), so exclude subtracts it: the
 #     figure Loaded's own reports call sales excluding tax. Budgets are
-#     tax-inclusive too and are divided by 1 + their sales-tax rate, as
-#     Loaded's own budget worksheet does. Amounts with no tax split (order
+#     tax-inclusive too. Compared with sales, a budget loses the SAME share
+#     of tax the day's sales did (their own ex/incl ratio), so "vs budget" is
+#     the same percent on either basis — dividing by 1.15 overstated it where
+#     some sales carry 0% tax (La Zeppa read +24% ex-GST against +18%,
+#     Oct 2026). With no sales that day, 1 + its sales-tax rate, as Loaded's
+#     own budget worksheet does. Amounts with no tax split (order
 #     values, items, staff, discounts) are divided by 1 + the GST rate, as
 #     Loaded's own reports do,
 #   - interval: daily buckets by default; a sub-day interval (e.g.
@@ -246,24 +250,32 @@ def _vs(row, measure, compare, pct):
                 row["vs_last_year_pct"] = round((a - ly) / ly * 100, 1) if ly else None
 
 
-def _budget_days(payload, tax):
-    """{date: amount} from a get_budgets result; None when tax can't be
-    removed. Loaded's budgets INCLUDE tax — its own budget worksheet divides
-    each day by 1 + that day's sales-tax rate for the ex-tax figure, and
-    'exclude' does the same."""
+def _budget_day_amounts(payload):
+    """{date: (amount, ex-tax amount)} from a get_budgets result — the ex-tax
+    one at the day's own sales-tax rate, None when the day has no rate."""
     out = {}
     days = payload.get("days") if isinstance(payload, dict) else None
     for d in days or []:
         amt = d.get("amount")
         if not isinstance(amt, (int, float)):
             continue
-        if tax == "exclude":
-            rate = d.get("sales_tax_rate")
-            if not isinstance(rate, (int, float)):
-                return None
-            amt = amt / (1 + rate)
-        out[str(d.get("date"))] = amt
+        rate = d.get("sales_tax_rate")
+        ex = amt / (1 + rate) if isinstance(rate, (int, float)) else None
+        out[str(d.get("date"))] = (amt, ex)
     return out
+
+
+def _budget_days(payload, tax):
+    """{date: amount} from a get_budgets result; None when tax can't be
+    removed. Loaded's budgets INCLUDE tax — its own budget worksheet divides
+    each day by 1 + that day's sales-tax rate for the ex-tax figure, and
+    'exclude' does the same."""
+    amounts = _budget_day_amounts(payload)
+    if tax != "exclude":
+        return {date: amt for date, (amt, _) in amounts.items()}
+    if any(ex is None for _, ex in amounts.values()):
+        return None
+    return {date: ex for date, (_, ex) in amounts.items()}
 
 
 def _budget_total(payload, tax):
@@ -272,6 +284,17 @@ def _budget_total(payload, tax):
         return round(float(total), 2) if isinstance(total, (int, float)) else None
     days = _budget_days(payload, tax)
     return None if days is None else round(sum(days.values()), 2)
+
+
+def _ex_tax_ratio(incl, ex):
+    """The share of takings left once tax is off — ex / incl — or None."""
+    if (
+        not incl
+        or not isinstance(incl, (int, float))
+        or not isinstance(ex, (int, float))
+    ):
+        return None
+    return ex / incl
 
 
 def _interval_days(interval):
@@ -606,20 +629,35 @@ def _breakdown_total(
             continue
         if kind == "budget":
             row["budget"] = _budget_total(payload, tax)
-            if row["budget"] is None and tax == "exclude":
-                row.setdefault("errors", []).append(
-                    "budget: no sales-tax rate to remove tax with"
-                )
+            if tax == "exclude":
+                # Taken off below at the sales' own share of tax; the rate is
+                # the fallback (and a missing rate is flagged only then).
+                row["_budget_incl"] = _budget_total(payload, "include")
         else:
             figs = _figures(payload, tax, measure, (factors or {}).get(v, 1.0))
             if kind == "actual":
                 row.update(_measure_fields(figs, measure))
+                if tax == "exclude" and measure == "sales":
+                    incl = _figures(
+                        payload, "include", measure, (factors or {}).get(v, 1.0)
+                    )
+                    row["_incl"] = incl["sales"] if incl else None
             else:
                 row[lyk] = _measure_fields(figs, measure)[pk]
 
     rows = []
     for v in venues:
         row = per_venue[v]
+        # Ex-tax budget at the share of tax the sales actually carried.
+        ratio = _ex_tax_ratio(row.pop("_incl", None), row.get("actual"))
+        fetched = "_budget_incl" in row
+        budget_incl = row.pop("_budget_incl", None)
+        if ratio is not None and isinstance(budget_incl, (int, float)):
+            row["budget"] = round(budget_incl * ratio, 2)
+        elif fetched and row.get("budget") is None and budget_incl is not None:
+            row.setdefault("errors", []).append(
+                "budget: no sales-tax rate to remove tax with"
+            )
         _vs(row, measure, compare, pct=True)
         rows.append(row)
 
@@ -741,15 +779,27 @@ def _breakdown_daily(
         return st[:16], d.isoformat(), st[11:16]
 
     actual = {}  # (venue, key) -> figures
+    actual_incl = {}  # (venue, key) -> figures with tax (tax 'exclude' only)
     info = {}  # (venue, key) -> (trading date, clock time, startTime)
     ly = {}
     budget_days = {}
+    budget_incl_days = {}
     errors = {}
+    effective = tax == "exclude" and measure == "sales" and "budget" in compare
     for (v, kind), payload in zip(meta, results):
         if isinstance(payload, dict) and payload.get("error"):
             errors.setdefault(v, []).append(kind + ": " + str(payload["error"]))
             continue
         if kind == "budget":
+            if effective:
+                # Taken off below at the sales' own share of tax; the day's
+                # rate is the fallback.
+                for date, (amt, ex) in _budget_day_amounts(payload).items():
+                    if _kept(date):
+                        budget_incl_days[(v, date)] = amt
+                        if ex is not None:
+                            budget_days[(v, date)] = ex
+                continue
             days = _budget_days(payload, tax)
             if days is None:
                 errors.setdefault(v, []).append(
@@ -781,6 +831,37 @@ def _breakdown_daily(
             target[(v, key)] = figs
             if kind == "actual":
                 info[(v, key)] = (date, clock, st)
+                if effective:
+                    actual_incl[(v, key)] = _add_figures(
+                        actual_incl.get((v, key)),
+                        row,
+                        "include",
+                        measure,
+                        (factors or {}).get(v, 1.0),
+                    )
+
+    if effective:
+        # Each budget day loses the share of tax its bucket's sales did; a
+        # day with no sales keeps Loaded's own 1 + rate.
+        share = {}
+        for (v, key), figs in actual.items():
+            incl = actual_incl.get((v, key))
+            ratio = _ex_tax_ratio(incl["sales"] if incl else None, figs["sales"])
+            if ratio is None:
+                continue
+            try:
+                d0 = datetime.date.fromisoformat(info[(v, key)][0])
+            except ValueError:
+                continue
+            for i in range(max(span, 1)):
+                share[(v, (d0 + datetime.timedelta(days=i)).isoformat())] = ratio
+        for (v, date), amt in budget_incl_days.items():
+            if (v, date) in share:
+                budget_days[(v, date)] = amt * share[(v, date)]
+            elif (v, date) not in budget_days:
+                flagged = errors.setdefault(v, [])
+                if "budget: no sales-tax rate to remove tax with" not in flagged:
+                    flagged.append("budget: no sales-tax rate to remove tax with")
 
     def _budget_for(v, date):
         # A bucket of several days (interval '7.00:00:00') carries the budget

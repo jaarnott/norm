@@ -234,6 +234,10 @@ class Thread(Base):
     # model-supplied params, so an agent can't talk its way past the cap.
     parent_thread_id = Column(String, nullable=True, index=True)
     delegation_depth = Column(Integer, nullable=False, default=0)
+    # Set when the conversation began from an insight suggestion on Home: every
+    # turn of it is told the insight's facts, and what the person says about it
+    # ("it's a promo") is recorded against it (services/insights).
+    insight_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -1709,3 +1713,125 @@ class AppEmailSetting(Base):
         String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class Insight(Base):
+    """Something Norm noticed in a venue's numbers, worth putting in front of a
+    person as a suggestion (Oct 2026; docs/plans/insights-research.md).
+
+    One row per subject: the daily run updates the row for the same
+    ``subject_key`` (venue, detector, subject) instead of adding another, so
+    "Tuesdays run wages at 70% of sales" is one insight that changes value,
+    not a new one every week.
+    """
+
+    __tablename__ = "insights"
+    __table_args__ = (UniqueConstraint("subject_key", name="uq_insight_subject"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    venue_id = Column(
+        String, ForeignKey("venues.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The detector's name (wage_weekday, price_rise, …) and what it is about
+    #: within the venue ("Tuesday", "CHIP SHOESTRING · Bidfood").
+    detector = Column(String, nullable=False)
+    subject = Column(String, nullable=False)
+    subject_key = Column(String, nullable=False)
+    #: sales | cogs | wages | data — what it is about, for ranking and the member
+    #: whose new chat shows it.
+    area = Column(String, nullable=False)
+    #: Who may see it: a permission scope (reports:read, roster:read, …).
+    audience = Column(String, nullable=False)
+    headline = Column(Text, nullable=False)
+    #: What a click sends: the headline's question with the facts Norm needs.
+    prompt = Column(Text, nullable=False)
+    #: Dollars per week (the common scale insights rank on); 0 when it is not
+    #: about money (a data gap).
+    value = Column(Numeric(12, 2), nullable=False, default=0)
+    data = Column(JSON, nullable=True)
+    #: The last trading day the numbers run to.
+    as_of = Column(String, nullable=False)
+    first_seen_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class InsightRun(Base):
+    """One venue's insight run for one local day: the unique (venue, slot) row
+    is the once-a-day guard, inserted before the run (as AppScheduleRun)."""
+
+    __tablename__ = "insight_runs"
+    __table_args__ = (UniqueConstraint("venue_id", "slot", name="uq_insight_run_slot"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    venue_id = Column(
+        String, ForeignKey("venues.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The venue's local date (YYYY-MM-DD) the run belongs to.
+    slot = Column(String, nullable=False)
+    #: Which detector sets ran: daily, weekly, roster.
+    cadences = Column(JSON, nullable=True)
+    started_at = Column(DateTime(timezone=True), default=_now)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    ok = Column(Boolean, nullable=True)
+    error = Column(Text, nullable=True)
+    summary = Column(JSON, nullable=True)
+
+
+class InsightNote(Base):
+    """What a person said about an insight, so Norm stops (or keeps) raising
+    it: expected ("it's a First Table promo until 30 Nov"), acting ("we'll cut
+    the Tuesday roster"), or not_useful. Recorded by ``norm.note_insight``."""
+
+    __tablename__ = "insight_notes"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    venue_id = Column(
+        String, ForeignKey("venues.id", ondelete="CASCADE"), nullable=True
+    )
+    subject_key = Column(String, nullable=False, index=True)
+    detector = Column(String, nullable=False)
+    verdict = Column(String, nullable=False)  # expected | acting | not_useful
+    reason = Column(Text, nullable=True)
+    #: Quiet (expected) or follow up (acting) until this local date.
+    until = Column(String, nullable=True)
+    #: The insight's value when the note was made — an "expected" insight
+    #: speaks again only if it moves well away from this.
+    baseline = Column(Numeric(12, 2), nullable=True)
+    created_by = Column(
+        String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    thread_id = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+
+class SuggestionEvent(Base):
+    """A suggestion shown, clicked or dismissed — how Home learns what each
+    person finds useful and stops repeating itself."""
+
+    __tablename__ = "suggestion_events"
+    __table_args__ = (Index("ix_suggestion_events_user_time", "user_id", "created_at"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    organization_id = Column(String, nullable=True)
+    suggestion_id = Column(String, nullable=False)
+    #: Set for an insight: repeats are judged per subject, not per row.
+    subject_key = Column(String, nullable=True)
+    event = Column(String, nullable=False)  # shown | clicked | dismissed
+    venue_id = Column(String, nullable=True)
+    #: The insight's value when shown, so a material change can resurface it.
+    value = Column(Numeric(12, 2), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)

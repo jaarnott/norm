@@ -430,7 +430,12 @@ DASHBOARD_TEMPLATES: list[dict] = [
                     "field_formats": {
                         "spend": {"type": "currency"},
                         "unit_cost_last": {"type": "currency", "decimals": 4},
-                        "unit_cost_change_pct": {"type": "percent"},
+                        # A percent (25.0 = +25%), not a fraction (Oct 2026).
+                        "unit_cost_change_pct": {
+                            "type": "number",
+                            "decimals": 1,
+                            "suffix": "%",
+                        },
                     },
                 },
                 "script": {

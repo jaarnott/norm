@@ -194,7 +194,16 @@ class TestPriceMovementIsPerBaseUnit:
         row = run_consolidator(rise, group_by="item_supplier")["rows"][0]
         assert (row["unit_cost_min"], row["unit_cost_max"]) == (4.0, 5.0)
         assert row["unit_cost_last"] == 5.0
-        assert row["unit_cost_change_pct"] == 0.25
+        # A percent: 25.0 is +25% (it was a fraction until Oct 2026, so an
+        # agent read the chips' 25% rise as "up 0.3%").
+        assert row["unit_cost_change_pct"] == 25.0
+        assert row["last_price_change"] == {
+            "date": "2026-08-09",
+            "from": 4.0,
+            "to": 5.0,
+            "unit": "1 Litre",
+            "pct": 25.0,
+        }
 
         once = Api(
             [
@@ -208,6 +217,7 @@ class TestPriceMovementIsPerBaseUnit:
         )
         row = run_consolidator(once, group_by="item_supplier")["rows"][0]
         assert row["unit_cost_change_pct"] is None
+        assert row["last_price_change"] is None
 
     def test_first_and_last_follow_date_not_arrival_order(self):
         api = Api(
@@ -603,6 +613,30 @@ class TestModesReturnPurposeFitShapes:
             "unit_cost_last",
             "unit_cost_change_pct",
         } <= set(rows[0])
+
+    def test_a_line_booked_in_the_wrong_unit_is_not_a_price_rise(self):
+        """Seen on real receipts (Oct 2026): chicken booked as a kilo at a
+        box's price. Compared carton against carton, the price held; the stray
+        line can't make a 1,000% "rise"."""
+        api = Api(
+            [
+                invoice(
+                    "i1", "Bidfood", "2026-08-02", [line(MILK, "6x1L", 6.0, 2, 27.60)]
+                ),
+                invoice(
+                    "i2",
+                    "Bidfood",
+                    "2026-08-05",
+                    [line(MILK, "1 Litre", 1.0, 1, 27.60)],
+                ),
+                invoice(
+                    "i3", "Bidfood", "2026-08-09", [line(MILK, "6x1L", 6.0, 2, 27.60)]
+                ),
+            ]
+        )
+        row = run_consolidator(api, group_by="item_supplier")["rows"][0]
+        assert row["unit_cost_change_pct"] == 0.0
+        assert row["last_price_change"] is None
 
 
 # ── Oct 2026: the purchases-based cost-of-goods dashboard ──────────────────

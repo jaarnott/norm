@@ -468,6 +468,7 @@ export default function Home() {
 
     const pageContext = opts?.pageContext;
     const attachments = opts?.attachments;
+    const suggestionId = opts?.suggestionId;
     // A chat whose first message never reached the server keeps its
     // placeholder id, which the server has never heard of. The next send in it
     // (Try again, or a new message) starts the conversation server-side — in
@@ -651,6 +652,7 @@ export default function Home() {
     try {
       const body: Record<string, unknown> = { message: messageText };
       if (threadIdForRequest) body.thread_id = threadIdForRequest;
+      if (suggestionId && !threadIdForRequest) body.suggestion_id = suggestionId;
       if (attachments && attachments.length > 0) {
         body.attachment_ids = attachments.map(a => a.upload_id);
       }
@@ -1265,7 +1267,7 @@ export default function Home() {
       })() : selectedThread ? (
         <ThreadDetail thread={selectedThread} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} onRetry={retryFailedSend} loading={loading} openThread={openThread || null} />
       ) : (
-        <HomePanel onSend={sendMessage} loading={loading} />
+        <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} />
       );
 
       const title = connectPanel ? 'Reconnect'
@@ -1386,7 +1388,7 @@ export default function Home() {
     }
 
     // Home view (default)
-    return mobileShell('Norm', <HomePanel onSend={sendMessage} loading={loading} />);
+    return mobileShell('Norm', <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} />);
   }
 
   // Choosing something in the tablet drawer closes it.
@@ -1524,6 +1526,9 @@ export default function Home() {
             <HomePanel
               onSend={sendMessage}
               loading={loading}
+              member={activeAgent}
+              venueId={activeVenueId}
+              suggestions={isMobile ? 2 : 4}
             />
           )}
         </div>

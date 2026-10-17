@@ -635,10 +635,14 @@ async def delete_venue(
         InvoiceAutopilotOutcome,
         HiringCriteria,
         HrSetup,
+        Insight,
+        InsightNote,
+        InsightRun,
         InvoicePrewarmAttempt,
         Job,
         OAuthState,
         Report,
+        SuggestionEvent,
         Thread,
         ToolCall,
         UploadedDocument,
@@ -695,6 +699,13 @@ async def delete_venue(
     db.query(AppFile).filter(AppFile.venue_id == venue_id).delete(
         synchronize_session=False
     )
+    # What Norm noticed in this venue's numbers, what people said about it, and
+    # its daily run slots describe THIS venue only (services/insights) — gone
+    # with it, never moved onto another venue.
+    for model in (Insight, InsightNote, InsightRun):
+        db.query(model).filter(model.venue_id == venue_id).delete(
+            synchronize_session=False
+        )
 
     # A background job still working for this venue stops (a running one
     # between invoices); its record of what it did is history, below.
@@ -734,6 +745,9 @@ async def delete_venue(
         AppCall,
         # So is what a background job did for it.
         BackgroundJob,
+        # What a person was shown, clicked or dismissed on Home is their
+        # history (services/suggestions).
+        SuggestionEvent,
     ):
         db.query(model).filter(model.venue_id == venue_id).update(
             {model.venue_id: None}, synchronize_session=False

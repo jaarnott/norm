@@ -56,6 +56,26 @@ async def run_due_tasks_endpoint(
             logger.exception("app schedules failed")
 
     threading.Thread(target=_app_schedules, name="app-schedules", daemon=True).start()
+
+    # Insights ride the same tick: each venue's run claims its (venue, day)
+    # slot first, so overlapping ticks and instances never repeat one
+    # (services/insights/runner.py). Its own thread: a Monday's weekly reads
+    # take a minute or two per venue.
+    def _insights() -> None:
+        from app.config import settings
+
+        if not settings.INSIGHTS_ENABLED:
+            return
+        try:
+            from app.services.insights.runner import run_due_insights
+
+            out = run_due_insights()
+            if out["ran"]:
+                logger.info("insight runs: %s", out["ran"])
+        except Exception:  # noqa: BLE001
+            logger.exception("insight runs failed")
+
+    threading.Thread(target=_insights, name="insights", daemon=True).start()
     if result["claimed"]:
         logger.info(
             "run-due-tasks claimed %d task(s): %s",

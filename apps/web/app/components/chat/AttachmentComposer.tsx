@@ -23,6 +23,9 @@ export interface PendingAttachment {
 export interface SendOptions {
   pageContext?: { page_id: string; agent: string };
   attachments?: PendingAttachment[];
+  /** A suggestion clicked on Home: recorded as a click, and an insight's
+   *  facts follow the conversation it starts. */
+  suggestionId?: string;
 }
 
 // What the file picker offers. PDFs/images go to the model as native blocks;
@@ -103,18 +106,18 @@ export function AttachButton({ onPick, disabled }: {
         style={{ display: 'none' }}
         onChange={e => { onPick(e.target.files); e.target.value = ''; }}
       />
+      {/* Sits inside the message field, at its left edge (Composer). */}
       <button
         type="button"
         data-testid="attach-btn"
+        className="n-icon-btn"
         disabled={disabled}
         title="Attach files"
         onClick={() => ref.current?.click()}
         aria-label="Attach files"
         style={{
-          height: 50, width: 44, flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          backgroundColor: 'var(--bg)', color: disabled ? 'var(--muted-soft)' : 'var(--icon)',
-          border: '1px solid var(--line)', borderRadius: 24,
+          height: 36, width: 36, borderRadius: 18,
+          color: disabled ? 'var(--muted-soft)' : 'var(--icon)',
           cursor: disabled ? 'not-allowed' : 'pointer',
         }}
       >

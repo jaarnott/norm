@@ -533,6 +533,7 @@ def build_tool_definitions(
     page_context: dict | None = None,
     tool_filter: list[str] | None = None,
     automated_task: dict | None = None,
+    insight: dict | None = None,
 ) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
@@ -641,6 +642,10 @@ def build_tool_definitions(
     # while the config rolls over, so guidance never silently vanishes.
     has_automated_tasks = bool({"manage_task", "create_automated_task"} & own_actions)
     system_prompt += automated_tasks_guidance(has_automated_tasks, automated_task)
+    if insight:
+        from app.services.insights.context import guidance as insight_guidance
+
+        system_prompt += insight_guidance(insight)
 
     # What this person lets Norm do without asking — the invoice tools'
     # levels and any always-allowed write — stated rather than fetched.

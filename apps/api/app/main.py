@@ -41,6 +41,7 @@ from app.routers import (  # noqa: E402
     invoice_fixes,
     background_jobs as background_jobs_router,
     approval_preferences,
+    suggestions,
     recipe_editor,
     uploads,
     memories,
@@ -122,6 +123,7 @@ app.include_router(mcp.router)
 app.include_router(well_known.router)  # /.well-known/* — must be at host root
 app.include_router(mcp_admin.router, prefix="/api")
 app.include_router(approval_preferences.router, prefix="/api")
+app.include_router(suggestions.router, prefix="/api")
 from app.routers import functions as functions_router  # noqa: E402
 from app.routers import functions_forms, functions_inbox  # noqa: E402
 from app.routers import public as public_router  # noqa: E402
