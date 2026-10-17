@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { SavedReport } from '../../types';
+import { autoRefreshLabel, cacheIsFresh, tileInterval, tilesRefreshLabel } from '../../lib/dashboardRefresh';
 import { apiFetch } from '../../lib/api';
 import Chart from './Chart';
 import { RefreshCw, Share2, Check, Settings, Maximize2, LayoutGrid } from 'lucide-react';
@@ -46,11 +47,6 @@ const ROW_HEIGHT = 40;
 // Space between tiles: white cards on the cream page need a visible gutter.
 const TILE_GAP = 12;
 
-/** "Refreshes every 5 min" — the auto-refresh interval, in words. */
-function autoRefreshLabel(seconds: number): string {
-  return seconds < 60 ? `Refreshes every ${seconds} sec` : `Refreshes every ${Math.round(seconds / 60)} min`;
-}
-
 export default function DashboardView({ data, props }: DisplayBlockProps) {
   const agentSlug = (data?.agent_slug as string) || (props?.agent_slug as string) || '';
   const directReportId = (data?.report_id as string) || '';
@@ -77,6 +73,10 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   // `period` (the cost-of-goods template). '' = each chart's own default.
   const [selectedPeriod, setSelectedPeriod] = useState<string>('this_month');
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  // When each tile's refresh last STARTED (ms). Stamped at the start so a
+  // slow tile is never fired twice, and seeded from the cache's own time on
+  // open so a fresh tile is next due when its interval elapses from then.
+  const lastStartedRef = useRef<Record<string, number>>({});
   const [showPicker, setShowPicker] = useState(false);
   const { isMobile, isTablet } = useBreakpoint();
 
@@ -119,8 +119,13 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleRefresh = useCallback(async (filters?: { venue_id?: string; period?: string }) => {
+  const handleRefresh = useCallback(async (filters?: { venue_id?: string; period?: string }, only?: string[]) => {
     if (!dashboard?.id || !dashboard.charts?.length) return;
+    // No ids = every tile (the Refresh button, a venue or period change).
+    const chartIds = only ? only.filter(id => dashboard.charts.some(c => c.id === id)) : dashboard.charts.map(c => c.id);
+    if (chartIds.length === 0) return;
+    const now = Date.now();
+    for (const id of chartIds) lastStartedRef.current[id] = now;
     setRefreshing(true);
 
     const globalFilters: Record<string, string> = {};
@@ -135,9 +140,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     globalFilters.period = filters?.period !== undefined ? filters.period : selectedPeriod;
     const body = JSON.stringify({ global_filters: globalFilters });
 
-    // Mark all charts as refreshing
-    const chartIds = dashboard.charts.map(c => c.id);
-    setRefreshingCharts(new Set(chartIds));
+    setRefreshingCharts(prev => new Set([...prev, ...chartIds]));
     const errors: Record<string, string> = {};
 
     // Fire per-chart refreshes in parallel
@@ -168,18 +171,32 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     });
 
     await Promise.all(promises);
-    setChartErrors(errors);
+    // Keep the other tiles' reasons; replace only the ones just refreshed.
+    setChartErrors(prev => {
+      const next = { ...prev };
+      for (const id of chartIds) { if (errors[id]) next[id] = errors[id]; else delete next[id]; }
+      return next;
+    });
     setLastRefreshed(new Date());
     setRefreshing(false);
   }, [dashboard?.id, dashboard?.charts, selectedVenue, selectedPeriod]);
 
-  // Auto-refresh on initial load — show cached data immediately, refresh in background
+  // On open: show the cached rows at once and re-read only the tiles whose
+  // cache is stale for this venue and period (or has nothing in it).
   useEffect(() => {
     if (dashboard && !loading && !initialRefreshDone.current) {
       initialRefreshDone.current = true;
-      handleRefresh();
+      const stale: string[] = [];
+      for (const c of dashboard.charts) {
+        if (cacheIsFresh(c, dashboard.refresh_interval_seconds, selectedVenue, selectedPeriod)) {
+          lastStartedRef.current[c.id] = Date.parse(c.data_meta!.refreshed_at);
+        } else {
+          stale.push(c.id);
+        }
+      }
+      if (stale.length) handleRefresh(undefined, stale);
     }
-  }, [dashboard, loading, handleRefresh]);
+  }, [dashboard, loading, handleRefresh, selectedVenue, selectedPeriod]);
 
   // Re-run when the chosen venue changes after the first load — covers both a
   // manual pick and the programmatic seed from the remembered venue once venues
@@ -193,14 +210,24 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPeriod]);
 
-  // Auto-refresh — handleRefresh in deps so interval always uses the latest venue selection
+  // Auto-refresh, per tile: a 30-second tick refreshes the tiles whose own
+  // interval has elapsed since their last refresh started. One timer firing
+  // every tile at once was the burst that timed the slow reads out.
   useEffect(() => {
-    if (!dashboard?.refresh_interval_seconds || !dashboard.id) return;
-    intervalRef.current = setInterval(() => {
-      handleRefresh();
-    }, dashboard.refresh_interval_seconds * 1000);
+    if (!dashboard?.id) return;
+    const tick = () => {
+      const now = Date.now();
+      const due = dashboard.charts
+        .filter(c => {
+          const interval = tileInterval(c, dashboard.refresh_interval_seconds);
+          return interval > 0 && now - (lastStartedRef.current[c.id] || 0) >= interval * 1000;
+        })
+        .map(c => c.id);
+      if (due.length) handleRefresh(undefined, due);
+    };
+    intervalRef.current = setInterval(tick, 30_000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [dashboard?.id, dashboard?.refresh_interval_seconds, handleRefresh]);
+  }, [dashboard?.id, dashboard?.charts, dashboard?.refresh_interval_seconds, handleRefresh]);
 
   if (loading) {
     return <PageState kind="loading" title="Loading dashboard…" />;
@@ -248,7 +275,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
 
   const meta = [
     dashboard.description,
-    dashboard.refresh_interval_seconds ? autoRefreshLabel(dashboard.refresh_interval_seconds) : null,
+    tilesRefreshLabel(dashboard.charts.map(c => tileInterval(c, dashboard.refresh_interval_seconds))),
   ].filter(Boolean).join(' · ') || undefined;
 
   // '' (all venues) is this view's own value; the picker spells it 'all'.
@@ -384,6 +411,12 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
                 position: 'relative',
               }}
               className="n-card dashboard-chart-tile"
+              title={(() => {
+                const interval = tileInterval(chart, dashboard.refresh_interval_seconds);
+                const cadence = interval > 0 ? autoRefreshLabel(interval).replace('Refreshes', 'refreshes') : 'refreshes manually';
+                const at = chart.data_meta?.refreshed_at ? new Date(chart.data_meta.refreshed_at) : null;
+                return at ? `Refreshed ${at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${cadence}` : cadence;
+              })()}
             >
               {/* Per-chart loading indicator */}
               {refreshingCharts.has(chart.id) && (

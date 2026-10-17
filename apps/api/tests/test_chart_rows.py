@@ -405,3 +405,22 @@ class TestAllVenuesCalendar:
 
         assert _shared_calendar_venue(db_session, [None]) is None
         assert _shared_calendar_venue(db_session, []) is None
+
+
+class TestDataMeta:
+    """A refresh keeps what the rows are FOR beside them, so the page can skip
+    a tile on open whose cache is still good for this venue and period."""
+
+    def test_a_venue_and_period_are_kept_with_the_time(self):
+        from app.routers.reports_crud import _data_meta
+
+        meta = _data_meta({"venue_id": "v1", "period": "this_month"}, "v1")
+        assert meta["venue_id"] == "v1" and meta["period"] == "this_month"
+        assert meta["refreshed_at"].endswith("+00:00")
+
+    def test_all_venues_and_no_period_are_explicit(self):
+        from app.routers.reports_crud import _data_meta
+
+        meta = _data_meta({"venue_id": "__all__"}, None)
+        assert meta["venue_id"] == "__all__" and meta["period"] is None
+        assert _data_meta({}, None)["venue_id"] == "__all__"

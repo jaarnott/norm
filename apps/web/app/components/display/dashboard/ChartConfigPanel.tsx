@@ -208,6 +208,7 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
       // Clean up spec before saving
       const cleanSpec = { ...draft.chart_spec };
       delete cleanSpec.chart_type; // chart_type lives on the model, not the spec
+      if (cleanSpec.refresh_interval_seconds === undefined) delete cleanSpec.refresh_interval_seconds;
       // Tables use hidden_fields/field_labels/field_formats — x_axis and series are redundant
       if (draft.chart_type === 'table') {
         delete cleanSpec.x_axis;
@@ -506,6 +507,30 @@ export default function ChartConfigPanel({ reportId, chart, venues, onClose, onU
                 )}
               </>
             )}
+          </Section>}
+
+          {/* ==== Refresh: this tile's own cadence ==== */}
+          {draft.chart_type !== ('component' as ChartType) && <Section title="Refresh">
+            <FieldGroup label="Refresh every">
+              <select
+                className="n-select"
+                style={fieldStyle}
+                value={typeof draft.chart_spec.refresh_interval_seconds === 'number' ? String(draft.chart_spec.refresh_interval_seconds) : ''}
+                onChange={e => {
+                  const v = e.target.value;
+                  updateSpec({ refresh_interval_seconds: v === '' ? undefined : Number(v) });
+                }}
+              >
+                <option value="">Dashboard default</option>
+                <option value="60">1 minute</option>
+                <option value="300">5 minutes</option>
+                <option value="900">15 minutes</option>
+                <option value="1800">30 minutes</option>
+                <option value="3600">1 hour</option>
+                <option value="0">Manual only</option>
+              </select>
+            </FieldGroup>
+            <div style={hintStyle}>A slow read (a year of daily sales) can refresh less often than the cards beside it. Opening the page only re-reads tiles whose cached data is older than this.</div>
           </Section>}
 
           {/* ==== Section 3: Chart Settings ==== */}

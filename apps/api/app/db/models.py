@@ -1012,6 +1012,9 @@ class ReportChart(Base):
         JSON, nullable=False, default=dict
     )  # {x_axis, y_axis, series, orientation}
     data = Column(JSON, nullable=False, default=list)  # row data
+    # What `data` is for: {"refreshed_at", "venue_id" ("__all__" for every
+    # venue), "period"} — so a page can tell a fresh cache from a stale one.
+    data_meta = Column(JSON, nullable=True)
     script = Column(
         JSON, nullable=False, default=dict
     )  # {connector, action, params} replayable recipe

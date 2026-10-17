@@ -83,6 +83,7 @@ def _chart_to_dict(chart: ReportChart) -> dict:
         "chart_type": chart.chart_type,
         "chart_spec": chart.chart_spec,
         "data": chart.data,
+        "data_meta": chart.data_meta,
         "script": chart.script,
         "position": chart.position,
         "source_thread_id": chart.source_thread_id,
@@ -132,6 +133,21 @@ def _shared_calendar_venue(db, venue_ids):
         for v in venues
     }
     return venues[0] if len(calendars) == 1 else None
+
+
+def _data_meta(gf: dict, venue_id) -> dict:
+    """What a refresh fetched the rows for, kept beside them.
+
+    The page compares this with the tile's venue, period and its own
+    refresh interval to decide whether the cache is still good on open.
+    """
+    import datetime as _dt
+
+    return {
+        "refreshed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "venue_id": venue_id or "__all__",
+        "period": (gf or {}).get("period") or None,
+    }
 
 
 def _rows_from_payload(payload, script: dict) -> list:
@@ -1050,9 +1066,11 @@ async def refresh_report(
 
             if any_success and aggregated_rows:
                 chart.data = aggregated_rows
+                chart.data_meta = _data_meta(gf, venue_id)
                 from sqlalchemy.orm.attributes import flag_modified
 
                 flag_modified(chart, "data")
+                flag_modified(chart, "data_meta")
         except Exception as exc:
             errors.append(
                 {"chart_id": chart.id, "title": chart.title, "error": str(exc)}
@@ -1173,9 +1191,11 @@ def refresh_single_chart(
 
     if any_success and aggregated_rows:
         chart.data = aggregated_rows
+        chart.data_meta = _data_meta(gf, venue_id)
         from sqlalchemy.orm.attributes import flag_modified
 
         flag_modified(chart, "data")
+        flag_modified(chart, "data_meta")
         db.commit()
         db.refresh(chart)
 

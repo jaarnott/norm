@@ -124,6 +124,9 @@ export interface ChartSpec {
   y_axis?: { key: string; label: string; format?: string };
   series: { key: string; label: string; color: string }[];
   orientation?: 'vertical' | 'horizontal';
+  // The tile's own auto-refresh: seconds; 0 = manual only; missing/null =
+  // follow the dashboard's interval.
+  refresh_interval_seconds?: number | null;
   // null: don't pivot a grouping column — the series are the stacks.
   group_by?: string | null;
   value_key?: string;
@@ -175,6 +178,8 @@ export interface SavedReportChart {
   chart_type: ChartType;
   chart_spec: ChartSpec;
   data: Record<string, unknown>[];
+  // What `data` was fetched for (set by a refresh); null before the first.
+  data_meta?: { refreshed_at: string; venue_id: string; period: string | null } | null;
   script: ChartScript;
   position: number;
   created_at: string;

@@ -104,6 +104,10 @@ DASHBOARD_TEMPLATES: list[dict] = [
     # reconciliation and freight cards describe the same invoices as the
     # headline: Loaded's received feed is by RECEIVED date, so a narrower
     # read left out invoices dated this month but received last month.
+    # Each tile refreshes on its own cadence (chart_spec.refresh_interval_seconds):
+    # the cards every 5 min, the one-month breakdowns every 15, the two
+    # twelve-month trends every 30 — those are the ~20 s reads that timed out
+    # when every tile fired at once.
     # Checked against Loaded for September 2026 at Applegum Cafe: Food
     # 7,896.63 + Beverage 2,177.78 + Other 1,383.19 + freight 177.00 =
     # invoice subtotals 11,634.61; sales ex-GST 47,371.13; 24.6%.
@@ -121,6 +125,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Purchases ex-GST",
                 "chart_type": "kpi",
                 "chart_spec": {
+                    "refresh_interval_seconds": 300,
                     "value_key": "purchases",
                     "format": "currency",
                     "prefix": "$",
@@ -139,6 +144,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Sales ex-GST",
                 "chart_type": "kpi",
                 "chart_spec": {
+                    "refresh_interval_seconds": 300,
                     "value_key": "sales",
                     "format": "currency",
                     "prefix": "$",
@@ -157,6 +163,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Cost of goods %",
                 "chart_type": "kpi",
                 "chart_spec": {
+                    "refresh_interval_seconds": 300,
                     "numerator_key": "purchases",
                     "denominator_key": "sales",
                     "previous_numerator_key": "previous.purchases",
@@ -183,6 +190,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Food cost of goods %",
                 "chart_type": "kpi",
                 "chart_spec": {
+                    "refresh_interval_seconds": 300,
                     "numerator_key": "food",
                     "denominator_key": "food_sales",
                     "previous_numerator_key": "previous.food",
@@ -214,6 +222,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Beverage cost of goods %",
                 "chart_type": "kpi",
                 "chart_spec": {
+                    "refresh_interval_seconds": 300,
                     "numerator_key": "beverage",
                     "denominator_key": "beverage_sales",
                     "previous_numerator_key": "previous.beverage",
@@ -246,6 +255,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Freight",
                 "chart_type": "kpi",
                 "chart_spec": {
+                    "refresh_interval_seconds": 300,
                     "value_key": "freight",
                     "format": "currency",
                     "prefix": "$",
@@ -263,6 +273,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Cost of goods % over time",
                 "chart_type": "line",
                 "chart_spec": {
+                    "refresh_interval_seconds": 1800,
                     "x_axis": {"key": "bucket", "label": "Period"},
                     "y_axis": {
                         "key": "cogs_pct",
@@ -299,6 +310,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Purchases by category over time",
                 "chart_type": "stacked_bar",
                 "chart_spec": {
+                    "refresh_interval_seconds": 1800,
                     "x_axis": {"key": "bucket", "label": "Period"},
                     "y_axis": {"key": "spend", "label": "Spend", "format": "currency"},
                     "series": [
@@ -326,6 +338,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Purchases by supplier",
                 "chart_type": "bar",
                 "chart_spec": {
+                    "refresh_interval_seconds": 900,
                     "x_axis": {"key": "supplier_name", "label": "Supplier"},
                     "y_axis": {"key": "spend", "label": "Spend", "format": "currency"},
                     "series": [{"key": "spend", "label": "Spend", "color": "#b07d4f"}],
@@ -347,6 +360,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Purchases by stock group",
                 "chart_type": "table",
                 "chart_spec": {
+                    "refresh_interval_seconds": 900,
                     "x_axis": {"key": "group", "label": "Stock group"},
                     "series": [
                         {"key": "super_group", "label": "Category"},
@@ -383,6 +397,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "title": "Price moves — biggest items, first to last receipt",
                 "chart_type": "table",
                 "chart_spec": {
+                    "refresh_interval_seconds": 900,
                     "x_axis": {"key": "item_name", "label": "Item"},
                     "series": [
                         {"key": "supplier_name", "label": "Supplier"},
