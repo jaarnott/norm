@@ -2323,7 +2323,7 @@ def execute_consolidator(
         return {
             "success": False,
             "data": {},
-            "error": "consolidator_config must contain function_code — see Settings > Connectors to edit",
+            "error": "consolidator_config must contain function_code — see Settings → Connector specs to edit",
         }
 
     # The two invoice tools run at a level — the PERSON's

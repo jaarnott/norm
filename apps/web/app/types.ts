@@ -7,7 +7,7 @@ export interface ConnectorSpecSummary {
   connector_name: string;
   display_name: string;
   category: string | null;
-  execution_mode: 'template' | 'agent' | 'internal';
+  execution_mode: 'template' | 'mcp' | 'internal' | 'agent';
   auth_type: string;
   version: number;
   enabled: boolean;
@@ -42,9 +42,26 @@ export interface ConnectorSpecTool {
   engine_only?: boolean | null;
   read_only?: boolean | null;
   optional_fields?: string[];
+  /** What calling a tool does (approvals, Oct 2026): read changes nothing; draft
+   *  opens an editor whose Save is the approval; write changes data. */
+  effect?: 'read' | 'draft' | 'write' | null;
+  /** A write tool's approval policy (services/approvals.py). */
+  approval?: ToolApproval | null;
   // Editor-only: which stored list the row belongs to (Sep 2026 — tools and
   // API endpoints are two lists). Stripped before the spec is saved.
   _list?: 'tools' | 'endpoints';
+}
+
+export interface ToolApproval {
+  /** Asks a person first, or runs without asking. */
+  default?: 'ask' | 'auto';
+  /** May a person switch it to "always allow" for themselves. */
+  allow_auto?: boolean;
+  /** What it does, for the approval card and Settings → Preferences ("update stock items"). */
+  label?: string;
+  /** A tiered tool's levels, least to most trusting; the first writes nothing. */
+  levels?: { id: string; label?: string; description?: string; writes?: boolean }[];
+  options?: unknown;
 }
 
 /** One row of GET /api/connector-specs/{name}/inventory (services/spec_inventory). */
@@ -57,6 +74,8 @@ export interface SpecInventoryRow {
   used_by: string[];
   calls_30d: number;
   code: string | null;
+  /** A consolidator's reviewed file (config/consolidators/…) — the next sync overwrites edits made here. */
+  reviewed_file?: string | null;
 }
 
 export type PlanId = 'core' | 'pro' | 'max';
@@ -190,7 +209,12 @@ export interface OAuthConfig {
   token_url: string;
   scopes: string;
   client_id: string;
+  /** Masked by the API ("••••••••"); sending the mask back keeps the stored one. */
   client_secret: string;
+  /** Dynamic client registration (MCP servers): the client registers itself. */
+  registration_url?: string;
+  pkce?: boolean;
+  revocation_url?: string;
 }
 
 export interface TestRequest {

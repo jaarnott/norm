@@ -12,7 +12,7 @@ from app.interpreter.llm_interpreter import record_direct_call
 from app.services import caller_scope
 from app.db.engine import get_db, get_config_db, get_config_db_rw, SessionLocal
 from app.db.models import ConnectionSpec, Connection, User
-from app.auth.dependencies import get_current_user, require_permission
+from app.auth.dependencies import require_permission
 from app.services.models import agent_model
 from app.connectors import spec_rows
 
@@ -22,25 +22,6 @@ router = APIRouter(prefix="/connector-specs", tags=["connector-specs"])
 # ---------------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------------
-
-
-class ToolSchema(BaseModel):
-    action: str
-    method: str = "POST"
-    path_template: str = ""
-    headers: dict = {}
-    required_fields: list[str] = []
-    field_mapping: dict = {}
-    field_descriptions: dict = {}
-    field_schema: dict | None = None
-    request_body_template: str | None = None
-    success_status_codes: list[int] = [200, 201]
-    response_ref_path: str | None = None
-    timeout_seconds: int = 30
-    display_component: str | None = None
-    display_props: dict | None = None
-    summary_fields: list[str] | None = None
-    consolidator_config: dict | None = None
 
 
 class ConnectorSpecCreate(BaseModel):
@@ -94,6 +75,32 @@ class GenerateBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+#: OAuth settings that are secret. Never sent to a browser — a save that sends
+#: the mask back keeps the stored value. Until Oct 2026 the read routes also
+#: took any signed-in user, so LoadedHub's client secret was readable by all.
+_OAUTH_SECRETS = ("client_secret",)
+_MASK = "••••••••"
+
+
+def _masked_oauth(oauth_config: dict | None) -> dict | None:
+    if not isinstance(oauth_config, dict):
+        return oauth_config
+    return {
+        k: (_MASK if k in _OAUTH_SECRETS and v else v) for k, v in oauth_config.items()
+    }
+
+
+def _keep_masked_secrets(incoming: dict | None, stored: dict | None) -> dict | None:
+    """An update carrying the mask means "unchanged": keep the stored secret."""
+    if not isinstance(incoming, dict):
+        return incoming
+    stored = stored if isinstance(stored, dict) else {}
+    return {
+        k: (stored.get(k) if k in _OAUTH_SECRETS and v == _MASK else v)
+        for k, v in incoming.items()
+    }
+
+
 def _spec_to_dict(spec: ConnectionSpec) -> dict:
     return {
         "id": spec.id,
@@ -111,7 +118,7 @@ def _spec_to_dict(spec: ConnectionSpec) -> dict:
         "api_documentation": spec.api_documentation,
         "example_requests": spec.example_requests,
         "credential_fields": spec.credential_fields,
-        "oauth_config": spec.oauth_config,
+        "oauth_config": _masked_oauth(spec.oauth_config),
         "test_request": spec.test_request,
         "version": spec.version,
         "enabled": spec.enabled,
@@ -128,7 +135,7 @@ def _spec_to_dict(spec: ConnectionSpec) -> dict:
 @router.get("")
 async def list_specs(
     config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:system")),
 ):
     specs = (
         config_db.query(ConnectionSpec).order_by(ConnectionSpec.connector_name).all()
@@ -141,7 +148,7 @@ def consolidator_coverage(
     days: int = 30,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """The consolidator-migration dashboard — see
     services/consolidator_coverage. Declared BEFORE the /{name} routes so the
@@ -156,7 +163,7 @@ def spec_inventory(
     name: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:system")),
 ):
     """Per row: tool or endpoint, how it's built, which App exposes it, what
     it calls and what calls it — see services/spec_inventory. Plain ``def``:
@@ -210,7 +217,7 @@ async def create_spec(
 async def get_spec(
     name: str,
     config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("admin:system")),
 ):
     spec = (
         config_db.query(ConnectionSpec)
@@ -238,6 +245,10 @@ async def update_spec(
         raise HTTPException(404, f"Spec not found: {name}")
 
     update_data = body.model_dump(exclude_unset=True)
+    if "oauth_config" in update_data:
+        update_data["oauth_config"] = _keep_masked_secrets(
+            update_data["oauth_config"], spec.oauth_config
+        )
     # Endpoints before tools: on a split connector the tools listener routes
     # any endpoint row it is handed into ``endpoints``, so the explicit list
     # must already be in place. An unsplit connector keeps ONE list — the
@@ -607,6 +618,12 @@ class EditConsolidatorBody(BaseModel):
 class TestConsolidatorBody(BaseModel):
     consolidator_config: dict
     params: dict = {}
+    #: The tool's action — the engine resolves a tool's level (the invoice
+    #: tools) and its run mode from it, as the agent loop does.
+    action: str | None = None
+    #: Preview mode (the default): every write is recorded and NOT sent, and
+    #: the tool stops at its preview(...). Off only to run it for real.
+    preview: bool = True
 
 
 class AutoBuildConsolidatorBody(BaseModel):
@@ -640,39 +657,46 @@ _CONSOLIDATOR_GOTCHAS_TEXT = """IMPORTANT — known sandbox restrictions:
 - strftime() FAILS (uses __import__ internally) — format dates manually with dicts e.g. MONTHS = {1: "Jan", ...}
 - f-strings work but date.isoformat() is safe to use for ISO format strings
 - call_api_parallel(calls) for concurrent API calls — max 20 workers, batches of 20 calls
-- Max 20 total API calls per execution — use efficient strategies (fetch monthly hourly data + filter, not per-day calls)
+- 20 API calls per run by default; consolidator_config.max_api_calls raises it (up to 200) — still prefer efficient strategies (fetch a month of hourly data + filter, not per-day calls)
+- A failed call returns {"error": ...} rather than raising — check every result before using it
 - For 4-arg functions: def run(params, call_api, log, call_api_parallel)"""
 
-_CONFIG_SCHEMA_TEXT = """- action: a snake_case name for this consolidator tool
-- description: what this tool does (shown to the LLM)
+_CONFIG_SCHEMA_TEXT = """- action: a snake_case name for this tool
+- description: what this tool does — the LLM reads it to decide when to call it
 - required_fields: array of field names the LLM must provide
 - field_descriptions: object mapping field names to descriptions
+- effect: "read" (changes nothing), "draft" (prepares something a person saves) or "write"
+- approval (writes only): {"default": "ask", "allow_auto": true, "label": "<what it does, e.g. update stock items>"}
 - consolidator_config: object with:
   - function_code: a Python function string that defines run(params, call_api, log)
+  - allowed_write_actions (writes only): the API endpoints it may write to
+  - max_api_calls (optional): default 20, up to 200
 
 The function receives:
 - params: dict with all required_fields values + auto-injected template vars:
   - today, today_iso, one_week_ago, one_week_ago_iso, four_weeks_ago, four_weeks_ago_iso
   - All values from required_fields (passed by the LLM)
-- call_api(connector, action, params): calls any connector tool, returns the result data
-  - Response transforms (field mapping, filters, timezone normalization) are applied automatically
+- call_api(connector, action, params): calls an API endpoint and returns its RAW payload
+  - Endpoints return the outside system's data as-is — pick out and rename the fields you need
   - The venue param is resolved automatically from params
-  - Max 20 API calls per execution
+  - A failed call returns {"error": ...} — check it, and say which call failed
 - log(message): debug output captured and shown in the test UI
+- preview(card) (writes only): call it just before the first write, with what will change —
+  {"title", "target", "changes": [{"field", "before", "after"}]}; Norm shows it on the approval card
 
 Available in function scope: math, json, datetime modules. Standard Python (loops, list comprehensions, try/except, dict/list operations).
 
-Example consolidator_config:
+Example consolidator_config (a read):
 {
-  "function_code": "def run(params, call_api, log):\\n    venue = params['venue']\\n    date = params.get('date', params['today'])\\n    \\n    log(f'Fetching roster for {venue} on {date}')\\n    roster = call_api('loadedhub', 'get_roster', {\\n        'venue': venue,\\n        'start_datetime': f'{date}T00:00:00%2B13:00',\\n        'end_datetime': f'{date}T23:59:59%2B13:00',\\n    })\\n    \\n    shifts = []\\n    for r in (roster if isinstance(roster, list) else [roster]):\\n        for s in r.get('rosteredShifts', []):\\n            if date in str(s.get('clockinTime', '')):\\n                shifts.append(s)\\n    \\n    log(f'Found {len(shifts)} shifts')\\n    return shifts"
+  "function_code": "def run(params, call_api, log):\\n    units = call_api('loadedhub', 'get_stock_units', {'venue': params.get('venue')})\\n    if isinstance(units, dict) and units.get('error'):\\n        return {'error': 'Loaded did not return units: ' + str(units['error'])}\\n    rows = [{'name': u.get('name'), 'type': u.get('type')} for u in units if isinstance(u, dict)]\\n    log(f'{len(rows)} units')\\n    return {'units': rows}"
 }
 
 IMPORTANT:
-- Call connector tools FIRST to explore the APIs and see actual field names and data structures
+- Call the API endpoints FIRST to explore them and see the actual field names and data structures
 - Then write the function using those exact field names
 - Use log() liberally for debugging
 - The function must define run(params, call_api, log) and return the result
-- Use test_consolidator to verify the function works before saving"""
+- Use test_consolidator to verify the function works before saving (it previews: writes are not sent)"""
 
 
 def _parse_ai_json(raw: str) -> dict:
@@ -802,16 +826,27 @@ async def test_consolidator(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("admin:system")),
 ):
-    """Test a consolidator config with real data without saving it."""
-    from app.agents.internal_tools import execute_consolidator
+    """Test a consolidator config with real data, without saving it.
 
+    In preview mode (the default) it reads for real but writes nothing: each
+    write it attempts is returned under ``preview_writes``, and a tool that
+    previews itself returns its card under ``preview``. Until Oct 2026 a test
+    of a write tool here wrote to the venue's Loaded.
+    """
+    from app.agents.internal_tools import execute_consolidator
+    from app.services.previews import new_memo
+
+    config = dict(body.consolidator_config or {})
+    if body.action:
+        config["action"] = body.action
+    if body.preview:
+        config.update(preview=True, _preview_memo=new_memo())
     try:
         # As the signed-in admin's organisation (caller_scope), so a test of
         # venues='all' lists their venues, not every venue in the database.
         with caller_scope.use(caller_scope.for_user(db, user)):
-            result = execute_consolidator(
-                body.consolidator_config, body.params, db, None
-            )
+            result = execute_consolidator(config, body.params, db, None)
+        result["previewed"] = body.preview
         # Cap large step results to prevent browser parse failures
         if isinstance(result.get("data"), dict):
             for step_id, step_data in result["data"].items():

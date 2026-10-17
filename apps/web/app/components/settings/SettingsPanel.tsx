@@ -4,9 +4,8 @@ import { Fragment, useState, useEffect, useCallback, useId, useRef } from 'react
 import type { CSSProperties, ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Info, Plus } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
-import type { AgentConfig, AgentBinding, VenueDetail, Organization, OrgMember } from '../../types';
+import type { VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
-import ConsolidatorCoveragePanel from './ConsolidatorCoveragePanel';
 import BillingTab from './BillingTab';
 import CompanySettingsTab from './CompanySettingsTab';
 import ConnectionsMatrix from './ConnectionsMatrix';
@@ -48,6 +47,8 @@ interface ConnectorField {
   type?: string;
   options?: { id: string; label: string }[];
   default?: string;
+  /** What the setting is for, under its label. */
+  description?: string;
 }
 
 interface ConnectorMeta {
@@ -66,6 +67,33 @@ interface ConnectorMeta {
 }
 
 type TestStatus = 'idle' | 'testing' | 'success' | 'error';
+
+/** Admins only, and only on this browser: show each tool call's request and
+ *  response in a conversation (ThreadDetail reads the same flag). */
+function ToolDetailsToggle() {
+  const [on, setOn] = useState<boolean>(() => {
+    try { return localStorage.getItem('norm_show_tool_details') !== 'false'; } catch { return true; }
+  });
+  return (
+    <div className="n-card" style={{ display: 'flex', alignItems: 'center', gap: '4px 12px', flexWrap: 'wrap', padding: '10px 16px' }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', color: 'var(--text)', cursor: 'pointer' }}>
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={e => {
+            setOn(e.target.checked);
+            try { localStorage.setItem('norm_show_tool_details', String(e.target.checked)); } catch { /* private mode */ }
+          }}
+          style={{ cursor: 'pointer', accentColor: 'var(--accent)' }}
+        />
+        Show tool call details in conversations
+      </label>
+      <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+        Each tool call’s request and response under Norm’s answers — on this browser, for platform admins.
+      </span>
+    </div>
+  );
+}
 
 // --- Shared presentation ---
 
@@ -1397,11 +1425,8 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
   const [testMessage, setTestMessage] = useState<Record<string, string>>({});
   const [testDetail, setTestDetail] = useState<Record<string, { rendered_request?: Record<string, unknown>; response?: Record<string, unknown> } | null>>({});
   const [saving, setSaving] = useState<Record<string, boolean>>({});
-
-  // --- Agent state ---
-  const [agents, setAgents] = useState<AgentConfig[]>([]);
-  const [agentForms, setAgentForms] = useState<Record<string, { system_prompt: string; description: string }>>({});
-  const [agentSaving, setAgentSaving] = useState<Record<string, boolean>>({});
+  // The platform key waiting on its Remove confirmation.
+  const [removingPlatform, setRemovingPlatform] = useState<ConnectorMeta | null>(null);
 
   const fetchConnectors = useCallback(async () => {
     try {
@@ -1427,25 +1452,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
     } catch (e) { console.error(e); }
   }, []);
 
-  const fetchAgents = useCallback(async () => {
-    try {
-      const res = await apiFetch('/api/agents');
-      if (!res.ok) return;
-      const data = await res.json();
-      setAgents(data.agents);
-      const initialForms: Record<string, { system_prompt: string; description: string }> = {};
-      for (const a of data.agents) {
-        initialForms[a.slug] = {
-          system_prompt: a.system_prompt || '',
-          description: a.description || '',
-        };
-      }
-      setAgentForms(initialForms);
-    } catch (e) { console.error(e); }
-  }, []);
-
   useEffect(() => { fetchConnectors(); }, [fetchConnectors]);
-  useEffect(() => { if (activeTab === 'agents') fetchAgents(); }, [activeTab, fetchAgents]);
 
   // --- Connector handlers ---
   const updateField = (connector: string, key: string, value: string) => {
@@ -1466,13 +1473,18 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
         body: JSON.stringify({ config: forms[name] || {} }),
       });
       const data = await res.json();
-      const detail = { rendered_request: data.rendered_request, response: data.response };
-      if (data.success) {
+      const detail = data.rendered_request || data.response
+        ? { rendered_request: data.rendered_request, response: data.response }
+        : null;
+      if (res.ok && data.success) {
         setTestStatus(prev => ({ ...prev, [name]: 'success' }));
         setTestMessage(prev => ({ ...prev, [name]: data.message || 'Connected' }));
       } else {
         setTestStatus(prev => ({ ...prev, [name]: 'error' }));
-        setTestMessage(prev => ({ ...prev, [name]: data.error || 'Test failed' }));
+        setTestMessage(prev => ({
+          ...prev,
+          [name]: data.error || (typeof data.detail === 'string' ? data.detail : '') || `Test failed (${res.status})`,
+        }));
       }
       setTestDetail(prev => ({ ...prev, [name]: detail }));
     } catch (e) {
@@ -1488,7 +1500,13 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
       const res = await apiFetch(`/api/connectors/${name}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: forms[name] || {}, enabled: true }),
+        // Saving keeps the switch where it is; a first save turns it on.
+        body: JSON.stringify({
+          config: forms[name] || {},
+          enabled: connectors.find(c => c.name === name)?.configured
+            ? connectors.find(c => c.name === name)?.enabled ?? true
+            : true,
+        }),
       });
       if (res.ok) {
         await fetchConnectors();
@@ -1504,15 +1522,6 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
       if (res.ok) {
         await fetchConnectors();
       }
-    } catch (e) { console.error(e); }
-  };
-
-  const handleDelete = async (name: string) => {
-    try {
-      await apiFetch(`/api/connectors/${name}`, { method: 'DELETE' });
-      await fetchConnectors();
-      setTestStatus(prev => ({ ...prev, [name]: 'idle' }));
-      setTestMessage(prev => ({ ...prev, [name]: '' }));
     } catch (e) { console.error(e); }
   };
 
@@ -1565,75 +1574,6 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
       await fetchConnectors();
       setTestStatus(prev => ({ ...prev, [name]: 'idle' }));
       setTestMessage(prev => ({ ...prev, [name]: '' }));
-    } catch (e) { console.error(e); }
-  };
-
-  // --- Agent handlers ---
-  const updateAgentField = (slug: string, key: 'system_prompt' | 'description', value: string) => {
-    setAgentForms(prev => ({
-      ...prev,
-      [slug]: { ...prev[slug], [key]: value },
-    }));
-  };
-
-  const handleAgentSave = async (slug: string) => {
-    setAgentSaving(prev => ({ ...prev, [slug]: true }));
-    try {
-      const form = agentForms[slug];
-      const res = await apiFetch(`/api/agents/${slug}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_prompt: form?.system_prompt || null,
-          description: form?.description || null,
-        }),
-      });
-      if (res.ok) {
-        await fetchAgents();
-      }
-    } catch (e) { console.error(e); } finally {
-      setAgentSaving(prev => ({ ...prev, [slug]: false }));
-    }
-  };
-
-  const handleAgentReset = async (slug: string) => {
-    try {
-      const res = await apiFetch(`/api/agents/${slug}/reset-prompt`, { method: 'POST' });
-      if (res.ok) {
-        await fetchAgents();
-      }
-    } catch (e) { console.error(e); }
-  };
-
-  const handleToggleCapability = async (slug: string, binding: AgentBinding, capIndex: number) => {
-    const updated = binding.capabilities.map((c, i) =>
-      i === capIndex ? { ...c, enabled: !c.enabled } : c
-    );
-    try {
-      await apiFetch(`/api/agents/${slug}/bindings/${binding.connector_name}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ capabilities: updated, enabled: binding.enabled }),
-      });
-      await fetchAgents();
-    } catch (e) { console.error(e); }
-  };
-
-  const handleDeleteBinding = async (slug: string, connectorName: string) => {
-    try {
-      await apiFetch(`/api/agents/${slug}/bindings/${connectorName}`, { method: 'DELETE' });
-      await fetchAgents();
-    } catch (e) { console.error(e); }
-  };
-
-  const handleAddConnector = async (slug: string, connectorName: string) => {
-    try {
-      await apiFetch(`/api/agents/${slug}/bindings/${connectorName}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ capabilities: [], enabled: true }),
-      });
-      await fetchAgents();
     } catch (e) { console.error(e); }
   };
 
@@ -1749,6 +1689,12 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
               <ApprovalPreferences />
               <div style={{ height: 32 }} />
               <MemoryTab />
+              {isAdmin && (
+                <div style={{ maxWidth: 720, marginTop: 32 }}>
+                  <SectionHeader title="Admin" />
+                  <ToolDetailsToggle />
+                </div>
+              )}
             </>
           )}
 
@@ -1771,37 +1717,34 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
           )}
           {tab === 'connectors' && (
             <>
+              {/* The list renders its own tools-and-endpoints section under the specs. */}
               <ConnectorSpecsPanel onViewModeChange={setSpecEditing} />
 
-              {!specEditing && <ConsolidatorCoveragePanel />}
-
               {!specEditing && <section style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
-              <SectionHeader
-                title="Platform connectors"
-                meta={connectors.length > 0 ? `${connectors.length} ${connectors.length === 1 ? 'connector' : 'connectors'}` : undefined}
-              />
-              <div className="n-card" style={{
-                display: 'flex', alignItems: 'center', gap: '4px 12px', flexWrap: 'wrap',
-                marginBottom: 16, padding: '10px 16px',
-              }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', color: 'var(--text)', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={(() => { try { return localStorage.getItem('norm_show_tool_details') !== 'false'; } catch { return true; } })()}
-                    onChange={e => {
-                      localStorage.setItem('norm_show_tool_details', String(e.target.checked));
-                      // Force re-render
-                      setConnectors(c => [...c]);
-                    }}
-                    style={{ cursor: 'pointer', accentColor: 'var(--accent)' }}
-                  />
-                  Show tool call details in conversations
-                </label>
-                <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-                  Toggle request/response cards in the chat view
-                </span>
-              </div>
-
+              <SectionHeader title="Platform key and models" />
+              <p style={{ margin: '-4px 0 12px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                The Anthropic key Norm uses everywhere, and which Claude models do the work.
+              </p>
+              {removingPlatform && (
+                <ConfirmDialog
+                  title={`Remove the saved ${removingPlatform.label} settings?`}
+                  confirmLabel="Remove"
+                  busyLabel="Removing…"
+                  danger
+                  onConfirm={async () => {
+                    const res = await apiFetch(`/api/connectors/${removingPlatform.name}`, { method: 'DELETE' });
+                    if (!res.ok) throw new Error(`Couldn't remove them (${res.status})`);
+                    await fetchConnectors();
+                    setTestStatus(prev => ({ ...prev, [removingPlatform.name]: 'idle' }));
+                  }}
+                  onClose={() => setRemovingPlatform(null)}
+                >
+                  <p style={{ margin: 0 }}>
+                    The key and both model choices saved here are deleted, in this environment. Norm falls back to the
+                    server’s own key and default models.
+                  </p>
+                </ConfirmDialog>
+              )}
               {connectors.map(c => {
                 const status = testStatus[c.name] || 'idle';
                 return (
@@ -1838,9 +1781,16 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
                             {c.enabled ? 'Active' : 'Inactive'}
                           </div>
                         )}
-                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{c.domain}</span>
                       </div>
                     </div>
+
+                    {c.configured && (
+                      <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', margin: '-4px 0 12px' }}>
+                        {c.enabled
+                          ? 'Active: Norm uses the key and models saved here.'
+                          : 'Inactive: Norm ignores what is saved here and uses the server’s own key and default models.'}
+                      </div>
+                    )}
 
                     {/* OAuth2 connectors: show Connect button instead of manual fields */}
                     {c.auth_type === 'oauth2' ? (
@@ -1885,17 +1835,26 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
                           <div key={f.key} style={{ marginBottom: 12 }}>
                             <label className="n-label" htmlFor={`${fieldId}-${c.name}-${f.key}`}>{f.label}</label>
                             {f.type === 'select' && f.options ? (
-                              <select
-                                id={`${fieldId}-${c.name}-${f.key}`}
-                                className="n-select"
-                                value={forms[c.name]?.[f.key] || f.default || ''}
-                                onChange={e => updateField(c.name, f.key, e.target.value)}
-                                style={{ width: '100%' }}
-                              >
-                                {f.options.map(opt => (
-                                  <option key={opt.id} value={opt.id}>{opt.label}</option>
-                                ))}
-                              </select>
+                              (() => {
+                                const value = forms[c.name]?.[f.key] || f.default || '';
+                                // A saved model that is no longer offered: say so, rather
+                                // than let the select show the first option instead.
+                                const retired = !!value && !f.options.some(o => o.id === value);
+                                return (
+                                  <select
+                                    id={`${fieldId}-${c.name}-${f.key}`}
+                                    className="n-select"
+                                    value={value}
+                                    onChange={e => updateField(c.name, f.key, e.target.value)}
+                                    style={{ width: '100%' }}
+                                  >
+                                    {retired && <option value={value}>{value} — no longer offered; Norm uses the default</option>}
+                                    {f.options.map(opt => (
+                                      <option key={opt.id} value={opt.id}>{opt.label}</option>
+                                    ))}
+                                  </select>
+                                );
+                              })()
                             ) : (
                               <input
                                 id={`${fieldId}-${c.name}-${f.key}`}
@@ -1906,6 +1865,9 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
                                 placeholder={f.secret ? '••••••••' : `Enter ${f.label.toLowerCase()}`}
                                 style={{ width: '100%' }}
                               />
+                            )}
+                            {f.description && (
+                              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginTop: 4 }}>{f.description}</div>
                             )}
                           </div>
                         ))}
@@ -1974,7 +1936,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
                             {saving[c.name] ? 'Saving…' : 'Save'}
                           </Button>
                           {c.configured && (
-                            <Button variant="danger" size="sm" onClick={() => handleDelete(c.name)}>
+                            <Button variant="danger" size="sm" onClick={() => setRemovingPlatform(c)}>
                               Remove
                             </Button>
                           )}

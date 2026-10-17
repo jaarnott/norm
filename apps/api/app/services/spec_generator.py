@@ -9,15 +9,17 @@ from app.interpreter.llm_interpreter import call_llm
 
 _SPEC_GENERATION_SYSTEM_PROMPT = """\
 You are a connector specification generator. Given API documentation, produce a \
-ConnectionSpec JSON that can be used to configure a config-driven connector.
+ConnectionSpec JSON that configures a connector's API endpoints — one call to the \
+outside system each. Endpoints are building blocks: an LLM never sees them. A \
+person later wraps them in tools (consolidators) that an LLM can call.
 
 You MUST respond with ONLY a valid JSON object matching this schema:
 
 {
   "connector_name": "lowercase_snake_case",
   "display_name": "Human Readable Name",
-  "category": "hr" | "procurement" | "finance" | "communication" | "other",
-  "execution_mode": "template" | "agent",
+  "category": "other",
+  "execution_mode": "template",
   "auth_type": "bearer" | "api_key_header" | "basic" | "oauth2",
   "auth_config": {
     // For bearer: {"token_field": "api_key"}
@@ -30,10 +32,10 @@ You MUST respond with ONLY a valid JSON object matching this schema:
     {"key": "api_key", "label": "API Key", "secret": true},
     {"key": "subdomain", "label": "Subdomain", "secret": false}
   ],
-  "tools": [
+  "endpoints": [
     {
       "action": "action_name",
-      "description": "A clear, concise description of what this tool does — shown to the LLM to help it decide when to use it",
+      "description": "A clear, concise description of what this call does and returns",
       "method": "POST",
       "path_template": "/resource/",
       "headers": {"Accept": "application/json", "Content-Type": "application/json"},
@@ -55,13 +57,14 @@ Available Jinja2 filters for request_body_template:
 - default_if_none(value, default) — safe null handling
 
 Guidelines:
-- Use "template" execution_mode when the API is well-documented with clear endpoints.
-- Use "agent" execution_mode when the API is complex or poorly documented.
-- For template mode, write precise Jinja2 request_body_template strings.
+- Always use "template" execution_mode (an HTTP call per endpoint), with precise \
+Jinja2 request_body_template strings.
+- Use category "other" — except "email" when each person connects their own account \
+(a login per person, like Gmail).
 - Identify all CRUD operations visible in the docs.
-- ALWAYS include a "description" for each tool. Write a concise sentence describing \
-what the tool does (e.g., "Get all rostered shifts for a given date range", \
-"Create a new purchase order"). This is shown to the LLM to help it choose the right tool.
+- ALWAYS include a "description" for each endpoint. Write a concise sentence describing \
+what the call does (e.g., "Get all rostered shifts for a given date range", \
+"Create a new purchase order"). It tells whoever builds a tool on it what it returns.
 - IMPORTANT: required_fields MUST include ALL fields referenced as {{ field_name }} in \
 path_template AND request_body_template. Any Jinja2 variable used in the templates \
 (except those under `creds.`) must appear in required_fields AND field_mapping. For \
@@ -76,8 +79,8 @@ parentheses at the end using "e.g." — for example: "Date in YYYY-MM-DD format 
 (e.g., 2026-03-16)", "Start time in ISO 8601 format with timezone (e.g., \
 2026-03-16T06:00:00+13:00)", "Numeric employee ID (e.g., 12345)", "Timespan in \
 d.HH:mm:ss format (e.g., 0.08:00:00)". The example in parentheses is used to \
-pre-populate test fields in the UI so users can try the tool immediately. These \
-descriptions help the LLM extract values in the correct format from user messages.
+pre-populate test fields in the UI so the endpoint can be tried immediately. These \
+descriptions tell whoever calls the endpoint what format each value takes.
 - Respond with valid JSON only, no markdown fences or explanations.
 """
 
@@ -94,10 +97,16 @@ def generate_connector_spec(api_docs: str, db: Session) -> dict:
         call_type="spec_generation",
     )
 
-    # Ensure required fields have defaults
+    # Ensure required fields have defaults. What it generates are API
+    # endpoints, and a new connector starts split (tools empty): see
+    # app/connectors/spec_rows.py. An older-style answer under "tools" is
+    # moved across.
     parsed.setdefault("execution_mode", "template")
     parsed.setdefault("auth_config", {})
-    parsed.setdefault("tools", [])
+    parsed["endpoints"] = list(parsed.get("endpoints") or []) + list(
+        parsed.pop("tools", None) or []
+    )
+    parsed["tools"] = []
     parsed.setdefault("credential_fields", [])
     parsed.setdefault("example_requests", [])
 
@@ -116,8 +125,8 @@ _TEMPLATE_VAR_RE = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\|[^}]*)?\}
 
 def _backfill_required_fields(spec: dict) -> None:
     """Ensure any Jinja2 variable in path_template or request_body_template
-    is present in the tool's required_fields and field_mapping."""
-    for tool in spec.get("tools", []):
+    is present in the endpoint's required_fields and field_mapping."""
+    for tool in spec.get("endpoints", []):
         required = list(tool.get("required_fields", []))
         required_set = set(required)
         field_mapping = dict(tool.get("field_mapping", {}) or {})

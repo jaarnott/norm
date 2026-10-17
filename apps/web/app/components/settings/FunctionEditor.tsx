@@ -10,9 +10,18 @@ import Icon from '../ui/Icon';
 interface Props {
   functionCode: string;
   onChange: (code: string) => void;
-  requiredFields: string[];
-  connectorName: string;
+  /** The inputs to test with: the tool's required fields, then its optional ones. */
+  fields: string[];
+  /** The rest of the tool's consolidator_config (shapes, allowed_write_actions,
+   *  max_api_calls, wraps…) — a test without it runs different code from production. */
+  config: Record<string, unknown>;
+  /** The tool's action: the engine resolves the invoice tools' level from it. */
+  action: string;
 }
+
+/** What a preview run came back with (POST /connector-specs/norm/test-consolidator). */
+interface PreviewCard { title?: string; target?: string; changes?: { field: string; before?: unknown; after?: unknown }[] }
+interface PreviewWrite { connector: string; action: string; params?: Record<string, unknown> }
 
 // The editor, the run log and the data preview all sit on the warm dark.
 const codeSurface: React.CSSProperties = {
@@ -28,7 +37,7 @@ const logColor = (log: string) =>
   : log.startsWith('Completed') ? onCode('--ok')
   : 'var(--code-text)';
 
-export default function FunctionEditor({ functionCode, onChange, requiredFields, connectorName }: Props) {
+export default function FunctionEditor({ functionCode, onChange, fields, config, action }: Props) {
   const [testParams, setTestParams] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
@@ -36,6 +45,9 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
     data: unknown;
     _logs?: string[];
     error?: string;
+    previewed?: boolean;
+    preview?: { card?: PreviewCard };
+    preview_writes?: PreviewWrite[];
   } | null>(null);
   const [showData, setShowData] = useState(false);
 
@@ -45,9 +57,13 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
     try {
       const res = await apiFetch('/api/connector-specs/norm/test-consolidator', {
         method: 'POST',
+        // The whole config, as the agent runs it, in PREVIEW: it reads for real
+        // and writes nothing — each write it would send comes back instead.
         body: JSON.stringify({
-          consolidator_config: { function_code: functionCode },
+          consolidator_config: { ...config, function_code: functionCode },
           params: testParams,
+          action,
+          preview: true,
         }),
       });
       if (res.ok) {
@@ -60,7 +76,7 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
     } finally {
       setTesting(false);
     }
-  }, [functionCode, testParams]);
+  }, [functionCode, testParams, config, action]);
 
   const dataCount = testResult?.data
     ? Array.isArray(testResult.data) ? testResult.data.length
@@ -105,7 +121,7 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
       {/* Test panel */}
       <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: 10, backgroundColor: 'var(--surface)' }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
-          {requiredFields.map(f => (
+          {fields.map(f => (
             <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <label className="n-label" style={{ marginBottom: 0 }}>{f}:</label>
               <input
@@ -118,9 +134,38 @@ export default function FunctionEditor({ functionCode, onChange, requiredFields,
             </div>
           ))}
           <Button size="sm" icon={Play} onClick={handleTest} disabled={testing}>
-            {testing ? 'Running...' : 'Run test'}
+            {testing ? 'Running…' : 'Run test'}
           </Button>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+            Reads for real; never writes — a write is shown below instead of sent.
+          </span>
         </div>
+
+        {/* What a write tool would have changed */}
+        {testResult?.preview?.card && (
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)', marginBottom: 8 }}>
+            <strong>Stopped at its preview</strong>
+            {testResult.preview.card.title ? ` — ${testResult.preview.card.title}` : ''}
+            {testResult.preview.card.target ? `: ${testResult.preview.card.target}` : ''}
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {(testResult.preview.card.changes || []).map((c, i) => (
+                <li key={i}>
+                  {c.field}: {c.before !== undefined ? `${String(c.before)} → ` : ''}{String(c.after)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {(testResult?.preview_writes || []).length > 0 && (
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)', marginBottom: 8 }}>
+            <strong>Writes it would have sent (not sent):</strong>
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {(testResult?.preview_writes || []).map((w, i) => (
+                <li key={i} style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)' }}>{w.connector}.{w.action}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Logs */}
         {testResult?._logs && testResult._logs.length > 0 && (

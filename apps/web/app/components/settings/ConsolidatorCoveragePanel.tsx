@@ -1,10 +1,6 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useState } from 'react';
-import { ChevronDown, ChevronUp } from 'lucide-react';
-import { apiFetch } from '../../lib/api';
 import Badge from '../ui/Badge';
-import Icon from '../ui/Icon';
 import PageState from '../ui/PageState';
 
 /**
@@ -16,6 +12,10 @@ import PageState from '../ui/PageState';
  * TOOLS — consolidators and built-ins. API ENDPOINTS are building blocks. A
  * LEAK is an endpoint an LLM can still reach (an App claims it, or it is
  * enabled on MCP); "done" is zero leaks.
+ *
+ * The connector specs list fetches the coverage once and hands it in: it also
+ * shows each connector's counts on its own row, so this section keeps only the
+ * totals and anything that needs fixing (leaks, drifted code).
  */
 
 interface Row {
@@ -31,7 +31,7 @@ interface Row {
   leak: boolean;
 }
 
-interface ConnectorRow {
+export interface CoverageConnector {
   connector: string;
   split: boolean;
   counts: { consolidator: number; 'built-in': number; endpoint: number };
@@ -41,10 +41,10 @@ interface ConnectorRow {
   tools: Row[];
 }
 
-interface Coverage {
+export interface Coverage {
   window_days: number;
   totals: { consolidator: number; 'built-in': number; endpoint: number; leaks: number };
-  connectors: ConnectorRow[];
+  connectors: CoverageConnector[];
 }
 
 const section: React.CSSProperties = { borderTop: '1px solid var(--line)', marginTop: 32, paddingTop: 24, lineHeight: 1.45 };
@@ -53,24 +53,8 @@ const title: React.CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWe
 const label: React.CSSProperties = { margin: '20px 0 8px', fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--text-soft)' };
 const mono: React.CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' };
 const meta: React.CSSProperties = { color: 'var(--muted)', whiteSpace: 'nowrap' };
-const srOnly: React.CSSProperties = { position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' };
 
-export default function ConsolidatorCoveragePanel() {
-  const [data, setData] = useState<Coverage | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const res = await apiFetch('/api/connector-specs/coverage');
-      if (!res.ok) throw new Error(`Error ${res.status}`);
-      setData(await res.json());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load coverage');
-    }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
-
+export default function ConsolidatorCoveragePanel({ data, error }: { data: Coverage | null; error?: string | null }) {
   const heading = <h3 style={title}>Tools and endpoints</h3>;
   if (error) {
     return (
@@ -85,25 +69,26 @@ export default function ConsolidatorCoveragePanel() {
   if (!data) return <div style={section}>{heading}<PageState kind="loading" title="Loading tools and endpoints…" /></div>;
 
   const t = data.totals;
+  const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
   const withLeaks = data.connectors.filter(c => c.leaks.length > 0);
   const withDrift = data.connectors.filter(c => c.drift.length > 0);
-  const strong: React.CSSProperties = { fontWeight: 600, color: 'var(--text-soft)' };
   const count: React.CSSProperties = { fontWeight: 600, color: 'var(--text)' };
 
   return (
     <div style={section}>
       {heading}
       <p style={{ margin: '2px 0 0', maxWidth: 760, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-        An LLM only ever sees <strong style={strong}>tools</strong> — consolidators and built-ins. <strong style={strong}>API endpoints</strong> are
-        the building blocks tools are made from. A <strong style={strong}>leak</strong> is an endpoint an LLM can still reach: an App
-        claims it, or it is enabled on MCP. Derived live from the config and the last {data.window_days} days of usage.
+        An LLM only sees tools; endpoints are what tools are built from. A leak is an endpoint an LLM can still reach.
       </p>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 16px', marginTop: 12, fontSize: 'var(--fs-base)', color: 'var(--text-soft)' }}>
-        <span><strong style={count}>{t.consolidator}</strong> consolidators</span>
-        <span><strong style={count}>{t['built-in']}</strong> built-ins</span>
-        <span><strong style={count}>{t.endpoint}</strong> API endpoints</span>
-        <Badge tone={t.leaks ? 'error' : 'ok'}>{t.leaks} leaks</Badge>
+        <span><strong style={count}>{t.consolidator}</strong> {t.consolidator === 1 ? 'consolidator' : 'consolidators'}</span>
+        <span><strong style={count}>{t['built-in']}</strong> {t['built-in'] === 1 ? 'built-in' : 'built-ins'}</span>
+        <span><strong style={count}>{t.endpoint}</strong> API {t.endpoint === 1 ? 'endpoint' : 'endpoints'}</span>
+        <Badge tone={t.leaks ? 'error' : 'ok'}>{n(t.leaks, 'leak')}</Badge>
+        {withDrift.length > 0 && (
+          <Badge tone="warn">{(k => `${n(k, 'consolidator')} out of step with ${k === 1 ? 'its reviewed file' : 'their reviewed files'}`)(withDrift.reduce((k, c) => k + c.drift.length, 0))}</Badge>
+        )}
       </div>
 
       {withLeaks.length > 0 && (
@@ -126,7 +111,7 @@ export default function ConsolidatorCoveragePanel() {
                       {[l.app ? `claimed by the ${l.app} App` : '', l.mcp ? 'enabled on MCP' : ''].filter(Boolean).join(' · ')}
                       {l.superseded_by ? <> · use <strong style={count}>{l.superseded_by}</strong></> : null}
                     </td>
-                    <td className="num" style={meta}>{l.calls_30d} calls</td>
+                    <td className="num" style={meta}>{n(l.calls_30d, 'call')}</td>
                   </tr>
                 )))}
               </tbody>
@@ -137,7 +122,7 @@ export default function ConsolidatorCoveragePanel() {
 
       {withDrift.length > 0 && (
         <>
-          <div style={label}>Drift — config vs canonical files</div>
+          <div style={label}>Consolidator code vs the reviewed files</div>
           <div className="n-card" style={{ overflowX: 'auto' }}>
             <table className="n-table" style={{ minWidth: 560 }}>
               <thead>
@@ -152,8 +137,8 @@ export default function ConsolidatorCoveragePanel() {
                     <td style={mono}>{c.connector}.{d.action}</td>
                     <td style={{ color: d.state === 'differs_from_file' ? 'var(--error)' : 'var(--warn)' }}>
                       {d.state === 'differs_from_file'
-                        ? 'config differs from config/consolidators file'
-                        : 'no canonical file in config/consolidators'}
+                        ? 'Live code differs from its file in config/consolidators — the next sync script overwrites it'
+                        : 'No reviewed file in config/consolidators (edited here only)'}
                     </td>
                   </tr>
                 )))}
@@ -162,52 +147,6 @@ export default function ConsolidatorCoveragePanel() {
           </div>
         </>
       )}
-
-      <div style={label}>By connector</div>
-      <div className="n-card" style={{ overflowX: 'auto' }}>
-        <table className="n-table" style={{ minWidth: 640 }}>
-          <thead>
-            <tr>
-              <th>Connector</th>
-              <th>Tools and endpoints</th>
-              {/* relative: keeps the hidden label inside the card's scroller, not the page's */}
-              <th className="num" style={{ position: 'relative' }}><span style={srOnly}>Unused endpoints</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.connectors.map(c => (
-              <Fragment key={c.connector}>
-                <tr
-                  style={{ cursor: c.unused.length ? 'pointer' : 'default' }}
-                  onClick={() => setOpen(open === c.connector ? null : c.connector)}
-                >
-                  <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{c.connector}</td>
-                  <td style={{ color: 'var(--text-soft)' }}>
-                    {c.counts.consolidator} consolidators · {c.counts['built-in']} built-ins · {c.counts.endpoint} endpoints
-                    {!c.split && <> <Badge tone="warn">Not split yet</Badge></>}
-                    {c.leaks.length > 0 && <> <Badge tone="error">{c.leaks.length} leaks</Badge></>}
-                  </td>
-                  <td className="num" style={{ whiteSpace: 'nowrap' }}>
-                    {c.unused.length > 0 && (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--accent)' }}>
-                        {open === c.connector ? 'Hide' : `${c.unused.length} unused endpoints`}
-                        <Icon icon={open === c.connector ? ChevronUp : ChevronDown} size="dense" />
-                      </span>
-                    )}
-                  </td>
-                </tr>
-                {open === c.connector && c.unused.slice(0, 30).map(u => (
-                  <tr key={u.action} style={{ background: 'var(--surface)' }}>
-                    <td style={{ ...mono, paddingLeft: 28 }}>{u.action}</td>
-                    <td style={{ color: 'var(--muted)' }}>no tool calls it</td>
-                    <td className="num" style={meta}>{u.calls_30d} calls</td>
-                  </tr>
-                ))}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }

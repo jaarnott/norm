@@ -2,7 +2,7 @@
 
 No Claude model ID should be hardcoded at a call site. Every LLM call resolves
 its model through here so the operator's choice in Settings → Anthropic (the
-"Agent Model" and "Router Model" selectors) governs the whole app, with the
+"Norm's model" and "Fast model" selectors) governs the whole app, with the
 environment defaults in ``Settings`` as the fallback.
 
 Resolution order for each role:
@@ -102,7 +102,7 @@ def _resolve(
 
 
 def agent_model(db: Session | None = None, override: str | None = None) -> str:
-    """Primary reasoning model — Settings → "Agent Model" selector.
+    """Primary reasoning model — Settings → "Norm's model".
 
     Used for interpreting user requests and for generation tasks (playbooks,
     connector specs, tests) that need agent-grade reasoning.
@@ -111,7 +111,8 @@ def agent_model(db: Session | None = None, override: str | None = None) -> str:
 
 
 def router_model(db: Session | None = None, override: str | None = None) -> str:
-    """Fast/cheap model for routing and other lightweight steps
-    (e.g. conversation summarisation) — Settings → "Router Model" selector.
+    """Fast/cheap model for lightweight background steps — conversation
+    summaries, invoice-line stock matching — Settings → "Fast model". Stored
+    as ``router_model`` from when it ran the (since removed) router.
     """
     return _resolve(db, "router_model", settings.ROUTER_MODEL, override)

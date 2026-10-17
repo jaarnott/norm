@@ -111,6 +111,28 @@ def _canonical_files() -> dict[str, str]:
     return out
 
 
+def canonical_key(action: str, consolidator_config: dict | None) -> str:
+    """The name a consolidator's reviewed file goes by: every *_for_period
+    wrapper (marked by `wraps`) shares for_period.py, and any action in
+    _SHARED_CANONICAL names its file; otherwise the action itself."""
+    cc = consolidator_config or {}
+    if cc.get("wraps"):
+        return "for_period"
+    return _SHARED_CANONICAL.get(action, action)
+
+
+def reviewed_file(action: str, consolidator_config: dict | None) -> str | None:
+    """``config/consolidators/<file>.py`` holding this consolidator's reviewed
+    code, or None. A sync script copies that file over the live code, so an
+    edit made in Settings is lost at the next sync."""
+    key = canonical_key(action, consolidator_config)
+    candidates = [key] + ([key[4:]] if key.startswith("get_") else [])
+    for stem in candidates:
+        if (_CONSOLIDATORS_DIR / f"{stem}.py").is_file():
+            return f"config/consolidators/{stem}.py"
+    return None
+
+
 def _usage(db: Session, days: int) -> dict[str, int]:
     """tool_name ("connector__action") → call count over the window."""
     from sqlalchemy import func
@@ -216,16 +238,7 @@ def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
             if build == "consolidator":
                 cc = t.get("consolidator_config") or {}
                 code = cc.get("function_code") or ""
-                # Many-to-one canonical sources: every *_for_period wrapper
-                # (marked by `wraps` in its config) shares for_period.py, and
-                # any action in _SHARED_CANONICAL names its file.
-                if cc.get("wraps"):
-                    ckey = "for_period"
-                elif action in _SHARED_CANONICAL:
-                    ckey = _SHARED_CANONICAL[action]
-                else:
-                    ckey = action
-                src = canonical.get(ckey)
+                src = canonical.get(canonical_key(action, cc))
                 if src is None:
                     drift.append({"action": action, "state": "no_canonical_file"})
                 elif src != code:

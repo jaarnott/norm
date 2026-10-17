@@ -128,7 +128,7 @@ def _apply_auth(
                 # real auth failure as a network error.
                 raise ConnectorAuthError(
                     f"{connector} authorization failed: {exc}. "
-                    f"Reconnect {connector} in Settings → Connectors."
+                    f"Reconnect {connector} in Settings → Connections."
                 ) from exc
         else:
             # No spec/db/oauth_config available (e.g. preview paths) — the token
@@ -144,7 +144,7 @@ def _apply_auth(
             else:
                 raise ConnectorAuthError(
                     f"No {connector} access token available. "
-                    f"Reconnect {connector} in Settings → Connectors."
+                    f"Reconnect {connector} in Settings → Connections."
                 )
         headers["Authorization"] = f"Bearer {str(token).strip()}"
 
@@ -726,7 +726,7 @@ def _refresh_and_retry(
             response_payload={},
             error_message=(
                 f"{connector} authorization expired and could not be refreshed: {exc}. "
-                f"Reconnect {connector} in Settings → Connectors."
+                f"Reconnect {connector} in Settings → Connections."
             ),
             auth_failed=True,
         )

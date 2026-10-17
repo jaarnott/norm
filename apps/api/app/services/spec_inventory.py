@@ -123,7 +123,7 @@ def dependency_map(specs: list) -> tuple[dict[str, list[str]], dict[str, list[st
 
 def inventory(name: str, db: Session, config_db: Session) -> dict | None:
     from app.db.config_models import ConnectionSpec, MarketplaceApp
-    from app.services.consolidator_coverage import _usage
+    from app.services.consolidator_coverage import _usage, reviewed_file
     from app.services.entitlements import tool_owners
 
     specs = config_db.query(ConnectionSpec).all()
@@ -162,6 +162,10 @@ def inventory(name: str, db: Session, config_db: Session) -> dict | None:
                 "calls_30d": usage.get(f"{name}__{action}", 0),
                 "code": _handler_location(name, action)
                 if build == "built-in"
+                else None,
+                # Edits made in Settings are overwritten by the next sync of it.
+                "reviewed_file": reviewed_file(action, r.get("consolidator_config"))
+                if build == "consolidator"
                 else None,
             }
         )

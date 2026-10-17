@@ -1,17 +1,37 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Sparkles, X } from 'lucide-react';
+import { Plus, Sparkles, Trash2, X } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { ConnectorSpecSummary, ConnectorSpecFull } from '../../types';
 import ConnectorSpecEditor from './ConnectorSpecEditor';
 import Button from '../ui/Button';
 import IconButton from '../ui/IconButton';
-import Badge, { type BadgeTone } from '../ui/Badge';
+import Badge from '../ui/Badge';
 import PageState from '../ui/PageState';
 import { ConfirmDialog } from '../ui/Dialog';
+import ConsolidatorCoveragePanel, { type Coverage } from './ConsolidatorCoveragePanel';
 
 type ViewMode = 'list' | 'create' | 'edit';
+
+/** How a connector runs, in words. */
+export const MODE_LABEL: Record<string, string> = {
+  template: 'HTTP API',
+  mcp: 'MCP',
+  internal: 'Built into Norm',
+  agent: 'Agent (legacy)',
+};
+
+/** How a connector signs in, in words. */
+export const AUTH_LABEL: Record<string, string> = {
+  none: 'No sign-in',
+  basic: 'Username and password',
+  bearer: 'Bearer token',
+  api_key_header: 'API key in a header',
+  api_key: 'API key',
+  oauth2: 'OAuth',
+  custom: 'Custom',
+};
 
 export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeChange?: (isEditing: boolean) => void } = {}) {
   const [specs, setSpecs] = useState<ConnectorSpecSummary[]>([]);
@@ -63,6 +83,22 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
   // Display only: until the first fetch settles, show "Loading", not "No specs".
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { fetchSpecs().finally(() => setLoaded(true)); }, [fetchSpecs]);
+
+  // Tools and endpoints per connector — each row's counts, and the section
+  // under the list (totals, leaks, drifted code). Fetched again after a save.
+  const [coverage, setCoverage] = useState<Coverage | null>(null);
+  const [coverageError, setCoverageError] = useState<string | null>(null);
+  const fetchCoverage = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/connector-specs/coverage');
+      if (!res.ok) throw new Error(`Error ${res.status}`);
+      setCoverage(await res.json());
+      setCoverageError(null);
+    } catch (e) {
+      setCoverageError(e instanceof Error ? e.message : 'Could not load coverage');
+    }
+  }, []);
+  useEffect(() => { if (viewMode === 'list') void fetchCoverage(); }, [viewMode, fetchCoverage]);
 
   // Throws on failure: the confirmation dialog shows why and stays open.
   const handleDelete = async (name: string) => {
@@ -117,11 +153,12 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
           return;
         }
         const existing: ConnectorSpecFull = await existingRes.json();
-        const newTools = generated.tools ?? [];
-        setEditingSpec({
-          ...existing,
-          tools: [...existing.tools, ...newTools],
-        });
+        // What it generates are API endpoints: they join the endpoints list
+        // (a connector not yet split keeps one list, so they go there).
+        const newRows = generated.endpoints ?? generated.tools ?? [];
+        setEditingSpec(Array.isArray(existing.endpoints)
+          ? { ...existing, endpoints: [...existing.endpoints, ...newRows] }
+          : { ...existing, tools: [...existing.tools, ...newRows] });
         setViewMode('edit');
       } else {
         // Create new connector
@@ -138,13 +175,16 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
           auth_type: 'bearer',
           auth_config: {},
           base_url_template: null,
-          tools: [],
           api_documentation: null,
           example_requests: [],
           credential_fields: [],
           oauth_config: null,
           test_request: null,
           ...generated,
+          // A new connector starts split: the generated calls are endpoints,
+          // and tools are built on them afterwards.
+          tools: [],
+          endpoints: generated.endpoints ?? generated.tools ?? [],
         });
         setViewMode('create');
       }
@@ -229,7 +269,7 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
           <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>
-            Connection specs
+            Connector specs
           </h3>
           {specs.length > 0 && (
             <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
@@ -257,9 +297,14 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
           onClose={() => setDeleting(null)}
         >
           <p style={{ margin: 0 }}>
-            The {deleting.connector_name} connection spec and its endpoints and tools are removed from the shared config,
+            The {deleting.connector_name} connector spec and its endpoints and tools are removed from the shared config,
             so no environment can use them. This can’t be undone.
           </p>
+          {(usedBy[deleting.connector_name] ?? []).length > 0 && (
+            <p style={{ margin: '8px 0 0', color: 'var(--error)' }}>
+              Used by {usedBy[deleting.connector_name].join(', ')} — {usedBy[deleting.connector_name].length === 1 ? 'that App stops' : 'those Apps stop'} working.
+            </p>
+          )}
         </ConfirmDialog>
       )}
 
@@ -267,9 +312,12 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
       {generateOpen && (
         <div className="n-card" style={{ padding: 16, marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-            <span style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)' }}>Generate from API docs</span>
+            <span style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)' }}>Generate endpoints from API docs</span>
             <IconButton icon={X} label="Close" onClick={() => { setGenerateOpen(false); setGenerateTarget(''); setGenerateError(null); }} />
           </div>
+          <p style={{ margin: '0 0 8px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+            Creates API endpoints — one call each. An LLM never sees an endpoint: wrap them in a consolidator to make a tool.
+          </p>
           <textarea
             className="n-input"
             aria-label="API documentation"
@@ -323,277 +371,52 @@ export default function ConnectorSpecsPanel({ onViewModeChange }: { onViewModeCh
       {/* A failed load shows the error above, never "no specs". */}
       {specs.length === 0 && !errorBanner && (
         loaded
-          ? <PageState kind="empty" title="No connection specs defined yet." />
-          : <PageState kind="loading" title="Loading connection specs…" />
+          ? <PageState kind="empty" title="No connector specs yet." />
+          : <PageState kind="loading" title="Loading connector specs…" />
       )}
 
-      {specs.map(spec => (
-        <div key={spec.connector_name} className="n-card" style={{ padding: 16, marginBottom: 12 }}>
-          {/* Header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, minWidth: 0 }}>
-              <span style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)', marginRight: 2 }}>{spec.display_name}</span>
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginRight: 2 }}>{spec.connector_name}</span>
-              {(usedBy[spec.connector_name] ?? []).length > 0 && (
-                <Badge title="marketplace Apps that use this connection">
-                  Used by {usedBy[spec.connector_name].join(', ')}
-                </Badge>
-              )}
-              {spec.category && <Badge>{spec.category}</Badge>}
-              <Badge>{spec.execution_mode}</Badge>
-              {!spec.enabled && <Badge tone="warn">Disabled</Badge>}
-            </div>
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>v{spec.version}</span>
-          </div>
-
-          {/* Info */}
-          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginBottom: 12 }}>
-            Auth: {spec.auth_type}
-          </div>
-
-          {/* OAuth Config (if present) */}
-          {!!(spec as unknown as Record<string, unknown>).oauth_config && (() => {
-            const oauth = (spec as unknown as Record<string, unknown>).oauth_config as Record<string, string>;
+      {specs.length > 0 && (
+        <div className="n-card" style={{ padding: 0, overflow: 'hidden' }}>
+          {specs.map((spec, i) => {
+            const cov = coverage?.connectors.find(c => c.connector === spec.connector_name);
+            const tools = cov ? cov.counts.consolidator + cov.counts['built-in'] : 0;
+            const apps = usedBy[spec.connector_name] ?? [];
+            const perPerson = spec.category === 'email' && spec.auth_type === 'oauth2';
+            const facts = [
+              MODE_LABEL[spec.execution_mode] ?? spec.execution_mode,
+              spec.auth_type === 'none' ? 'no sign-in' : `${AUTH_LABEL[spec.auth_type] ?? spec.auth_type} sign-in`,
+              cov ? `${tools} ${tools === 1 ? 'tool' : 'tools'}` : null,
+              cov && cov.counts.endpoint ? `${cov.counts.endpoint} ${cov.counts.endpoint === 1 ? 'endpoint' : 'endpoints'}` : null,
+            ].filter(Boolean).join(' · ');
             return (
-              <div style={{
-                fontSize: 'var(--fs-sm)',
-                color: 'var(--text)',
-                marginBottom: 12,
-                padding: '10px 12px',
-                backgroundColor: 'var(--surface)',
-                border: '1px solid var(--line)',
-                borderRadius: 'var(--radius)',
-                overflowWrap: 'anywhere',
-              }}>
-                <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>OAuth config</div>
-                {oauth.authorize_url && <div><span style={{ color: 'var(--muted)' }}>Authorize URL:</span> {oauth.authorize_url}</div>}
-                {oauth.token_url && <div><span style={{ color: 'var(--muted)' }}>Token URL:</span> {oauth.token_url}</div>}
-                {oauth.client_id && <div><span style={{ color: 'var(--muted)' }}>Client ID:</span> {oauth.client_id}</div>}
-                {oauth.scopes && <div><span style={{ color: 'var(--muted)' }}>Scopes:</span> {oauth.scopes}</div>}
+              <div key={spec.connector_name} style={{ padding: '12px 16px', borderTop: i ? '1px solid var(--line)' : 'none' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '2px 8px' }}>
+                      <span style={{ fontWeight: 600, fontSize: 'var(--fs-md)', color: 'var(--text)' }}>{spec.display_name}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{spec.connector_name}</span>
+                      {!spec.enabled && <Badge tone="warn">Disabled</Badge>}
+                      {perPerson && <Badge title="Each person connects their own account in Settings → Email">Per person</Badge>}
+                      {spec.category === '_platform' && <Badge title="One Norm-wide key">Platform</Badge>}
+                      {cov && cov.leaks.length > 0 && <Badge tone="error">{cov.leaks.length} {cov.leaks.length === 1 ? 'leak' : 'leaks'}</Badge>}
+                    </div>
+                    <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflowWrap: 'anywhere' }}>
+                      {facts}
+                      {apps.length > 0 && <> · used by <span style={{ color: 'var(--text-soft)' }}>{apps.join(', ')}</span></>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                    <Button size="sm" onClick={() => handleEdit(spec.connector_name)}>Edit</Button>
+                    <IconButton icon={Trash2} iconSize={16} label={`Delete ${spec.display_name || spec.connector_name}`} onClick={() => setDeleting(spec)} />
+                  </div>
+                </div>
               </div>
             );
-          })()}
-
-          {/* Per-venue OAuth connections (only for oauth2 specs) */}
-          {spec.auth_type === 'oauth2' && (
-            <VenueOAuthSection connectorName={spec.connector_name} displayName={spec.display_name || spec.connector_name} />
-          )}
-
-          {/* Actions */}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Button size="sm" onClick={() => handleEdit(spec.connector_name)}>
-              Edit
-            </Button>
-            <Button variant="danger" size="sm" onClick={() => setDeleting(spec)}>
-              Delete
-            </Button>
-          </div>
-
+          })}
         </div>
-      ))}
+      )}
+
+      {loaded && specs.length > 0 && <ConsolidatorCoveragePanel data={coverage} error={coverageError} />}
     </>
-  );
-}
-
-// ─── Per-venue OAuth connection panel ────────────────────────────────────────
-
-interface VenueOAuthRow {
-  venue_id: string;
-  venue_name: string;
-  connected: boolean;
-  expired: boolean;
-  has_refresh_token: boolean;
-  expires_at: string | null;
-}
-
-function VenueOAuthSection({ connectorName, displayName }: { connectorName: string; displayName: string }) {
-  const [rows, setRows] = useState<VenueOAuthRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);  // venue_id currently in flight
-  const [error, setError] = useState<string | null>(null);
-  // The venue whose disconnect is waiting on the confirmation dialog.
-  const [disconnecting, setDisconnecting] = useState<VenueOAuthRow | null>(null);
-
-  const fetchStatus = useCallback(async () => {
-    try {
-      const res = await apiFetch(`/api/oauth/venues/${connectorName}`);
-      if (!res.ok) {
-        setError(`Failed to load venue status (${res.status})`);
-        return;
-      }
-      const data = await res.json();
-      setRows(data.venues || []);
-      setError(null);
-    } catch (err) {
-      setError(`Network error: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [connectorName]);
-
-  useEffect(() => { fetchStatus(); }, [fetchStatus]);
-
-  // Listen for postMessage from the OAuth callback popup
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const msg = event.data;
-      if (msg?.type === 'oauth-complete') {
-        // Refresh status — the callback HTML already closed itself
-        fetchStatus();
-        setBusy(null);
-      }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, [fetchStatus]);
-
-  const handleConnect = async () => {
-    // OAuth flow: no venue_id passed — LoadedHub returns it after the user picks
-    // their venue inside the LoadedHub authorize page. Backend matches it to a
-    // Norm venue via x_loaded_company_id.
-    setBusy('__connecting__');
-    setError(null);
-    try {
-      const res = await apiFetch(`/api/oauth/authorize/${connectorName}`);
-      if (!res.ok) {
-        const text = await res.text();
-        setError(`Failed to start OAuth: ${text.slice(0, 200)}`);
-        setBusy(null);
-        return;
-      }
-      const { authorize_url } = await res.json();
-      const popup = window.open(
-        authorize_url,
-        'oauth-popup',
-        'width=600,height=700,resizable=yes,scrollbars=yes'
-      );
-      if (!popup) {
-        setError('Popup was blocked. Please allow popups for this site.');
-        setBusy(null);
-        return;
-      }
-      const pollClosed = setInterval(() => {
-        if (popup.closed) {
-          clearInterval(pollClosed);
-          fetchStatus();
-          setBusy(null);
-        }
-      }, 1000);
-    } catch (err) {
-      setError(`Error: ${err instanceof Error ? err.message : String(err)}`);
-      setBusy(null);
-    }
-  };
-
-  // Throws on failure: the confirmation dialog shows why and stays open.
-  const handleDisconnect = async (venueId: string) => {
-    setBusy(venueId);
-    try {
-      const res = await apiFetch(
-        `/api/oauth/disconnect/${connectorName}?venue_id=${encodeURIComponent(venueId)}`,
-        { method: 'POST' }
-      );
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(typeof body?.detail === 'string' ? body.detail : `Failed to disconnect (${res.status})`);
-      }
-      await fetchStatus();
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  if (loading) {
-    return (
-      <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginBottom: 12 }}>
-        Loading venue connections...
-      </div>
-    );
-  }
-
-  return (
-    <div style={{
-      fontSize: 'var(--fs-sm)',
-      color: 'var(--text-soft)',
-      marginBottom: 12,
-      padding: '10px 12px',
-      backgroundColor: 'var(--surface)',
-      border: '1px solid var(--line)',
-      borderRadius: 'var(--radius)',
-    }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-        <div style={{ fontWeight: 600, color: 'var(--text)' }}>
-          Per-venue OAuth connections
-        </div>
-        <Button
-          size="sm"
-          onClick={handleConnect}
-          disabled={busy === '__connecting__'}
-          title="Open the OAuth flow. The venue is selected inside LoadedHub during authorization."
-        >
-          {busy === '__connecting__' ? 'Opening OAuth...' : 'Connect a venue'}
-        </Button>
-      </div>
-      {error && (
-        <div role="alert" style={{ color: 'var(--error)', marginBottom: 6 }}>{error}</div>
-      )}
-      {disconnecting && (
-        <ConfirmDialog
-          title={`Disconnect ${disconnecting.venue_name}?`}
-          confirmLabel="Disconnect"
-          busyLabel="Disconnecting…"
-          danger
-          onConfirm={() => handleDisconnect(disconnecting.venue_id)}
-          onClose={() => setDisconnecting(null)}
-        >
-          <p style={{ margin: 0 }}>
-            The saved {displayName} sign-in for {disconnecting.venue_name} is removed, so Norm can’t use {displayName} there
-            until someone connects the venue again.
-          </p>
-        </ConfirmDialog>
-      )}
-      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 8 }}>
-        Click <strong>Connect a venue</strong> to start the OAuth flow.
-        The venue is selected inside LoadedHub; tokens are stored against the matching
-        Norm venue using the x_loaded_company_id mapping.
-      </div>
-      {rows.length === 0 ? (
-        <div style={{ color: 'var(--muted)' }}>No venues found.</div>
-      ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <tbody>
-            {rows.map(r => {
-              const status: { label: string; tone: BadgeTone } = !r.connected
-                ? { label: 'Not connected', tone: 'neutral' }
-                : r.expired && !r.has_refresh_token
-                ? { label: 'Expired', tone: 'error' }
-                : r.expired && r.has_refresh_token
-                ? { label: 'Connected (auto-refresh)', tone: 'warn' }
-                : { label: 'Connected', tone: 'ok' };
-              return (
-                <tr key={r.venue_id} style={{ borderTop: '1px solid var(--line)' }}>
-                  <td style={{ padding: '6px 4px', fontWeight: 500, color: 'var(--text)' }}>{r.venue_name}</td>
-                  <td style={{ padding: '6px 4px' }}>
-                    <Badge tone={status.tone}>{status.label}</Badge>
-                  </td>
-                  <td style={{ padding: '6px 4px', textAlign: 'right' }}>
-                    {r.connected && (
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={() => setDisconnecting(r)}
-                        disabled={busy === r.venue_id}
-                      >
-                        Disconnect
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-    </div>
   );
 }

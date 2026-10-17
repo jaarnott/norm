@@ -138,7 +138,7 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
 
   // A connector whose authorization has died surfaces the same way from every
   // backend path (a data fetch, a working-document load, a component-api call):
-  // the error carries "Reconnect <connector> in Settings → Connectors". Catch it
+  // the error carries "Reconnect <connector> in Settings → Connections". Catch it
   // once, here, and fire an app-wide event so the reconnect card can pop up
   // wherever the user hit it — no per-page wiring, and no persistent banner.
   if (!res.ok && res.status >= 400 && typeof window !== 'undefined') {

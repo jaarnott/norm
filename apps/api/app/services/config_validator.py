@@ -67,7 +67,7 @@ def check_connector_tools(
                     severity="error",
                     where=connector_name,
                     problem=f"tool entry is {type(tool).__name__}, expected an object",
-                    fix="Fix the tools JSON in Settings → Connectors.",
+                    fix="Fix the tools JSON in Settings → Connector specs.",
                 )
             )
             continue
@@ -81,7 +81,7 @@ def check_connector_tools(
                     severity="error",
                     where=connector_name,
                     problem="tool has no 'action' name",
-                    fix="Give the tool an action name in Settings → Connectors.",
+                    fix="Give the tool an action name in Settings → Connector specs.",
                 )
             )
             continue
@@ -143,7 +143,7 @@ def check_connector_tools(
                             severity="error",
                             where=where,
                             problem=f"function_code has a syntax error: {exc}",
-                            fix="Fix the consolidator code in Settings → Connectors.",
+                            fix="Fix the consolidator code in Settings → Connector specs.",
                         )
                     )
             # allowed_write_actions is validated by
@@ -889,7 +889,7 @@ def check_model_selection(
                     where=f"{connector_name}.{key}",
                     problem=f"'{selected}' is not a currently available model",
                     fix=(
-                        "Pick a current model in Settings → Connectors → "
+                        "Pick a current model in Settings → Connector specs → "
                         f"Anthropic. Available: {', '.join(allowed_models)}."
                     ),
                 )

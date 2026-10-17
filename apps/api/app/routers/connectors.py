@@ -32,15 +32,21 @@ def _get_platform_connectors():
                 {"key": "api_key", "label": "API Key", "secret": True},
                 {
                     "key": "interpreter_model",
-                    "label": "Agent Model",
+                    "label": "Norm's model",
+                    "description": "Answers every conversation and runs scheduled "
+                    "tasks; also writes playbooks, specs and tests.",
                     "secret": False,
                     "type": "select",
                     "options": AVAILABLE_MODELS,
                     "default": settings.LLM_INTERPRETER_MODEL,
                 },
                 {
+                    # Stored as router_model: it was the router's until the
+                    # router was removed (28 Sep 2026).
                     "key": "router_model",
-                    "label": "Router Model",
+                    "label": "Fast model",
+                    "description": "Small background jobs: summarising long "
+                    "conversations and matching invoice lines to stock items.",
                     "secret": False,
                     "type": "select",
                     "options": AVAILABLE_MODELS,

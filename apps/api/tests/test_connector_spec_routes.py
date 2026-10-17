@@ -144,3 +144,103 @@ class TestDryRunPreviewsWithoutALiveToken:
         assert rendered["url"] == "https://api.example.com/stock"
         # And it still must not print a token — real or placeholder.
         assert rendered["headers"]["Authorization"] == "••••••••"
+
+
+class TestSpecsAreAdminOnly:
+    """Until Oct 2026 the read routes took any signed-in user — and a spec
+    carries its OAuth client secret (LoadedHub's among them)."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/connector-specs",
+            "/api/connector-specs/coverage",
+            "/api/connector-specs/loadedhub",
+            "/api/connector-specs/loadedhub/inventory",
+        ],
+    )
+    def test_a_non_admin_is_refused(self, config_client, manager_headers, spec, path):
+        assert config_client.get(path, headers=manager_headers).status_code == 403
+
+
+class TestTheClientSecretNeverLeavesTheServer:
+    MASK = "••••••••"
+
+    def test_reads_carry_the_mask(self, config_client, admin_headers, spec):
+        one = config_client.get("/api/connector-specs/loadedhub", headers=admin_headers)
+        assert one.status_code == 200, one.text
+        assert one.json()["oauth_config"]["client_secret"] == self.MASK
+        assert one.json()["oauth_config"]["client_id"] == "cid"
+
+        listed = config_client.get("/api/connector-specs", headers=admin_headers).json()
+        row = next(s for s in listed["specs"] if s["connector_name"] == "loadedhub")
+        assert row["oauth_config"]["client_secret"] == self.MASK
+
+    def test_saving_the_mask_back_keeps_the_stored_secret(
+        self, config_client, db_session, admin_headers, spec
+    ):
+        """The editor sends back what it was given; that must not wipe the secret."""
+        shown = config_client.get(
+            "/api/connector-specs/loadedhub", headers=admin_headers
+        ).json()["oauth_config"]
+        resp = config_client.put(
+            "/api/connector-specs/loadedhub",
+            headers=admin_headers,
+            json={"oauth_config": {**shown, "scopes": "read"}},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["oauth_config"]["client_secret"] == self.MASK
+        db_session.refresh(spec)
+        assert spec.oauth_config["client_secret"] == "secret"
+        assert spec.oauth_config["scopes"] == "read"
+
+    def test_a_new_secret_replaces_it(
+        self, config_client, db_session, admin_headers, spec
+    ):
+        resp = config_client.put(
+            "/api/connector-specs/loadedhub",
+            headers=admin_headers,
+            json={"oauth_config": {**spec.oauth_config, "client_secret": "rotated"}},
+        )
+        assert resp.status_code == 200, resp.text
+        db_session.refresh(spec)
+        assert spec.oauth_config["client_secret"] == "rotated"
+
+
+class TestTestConsolidatorPreviews:
+    """The editor's Test button ran a write tool for real until Oct 2026. It now
+    runs in preview: reads happen, writes are recorded and never sent."""
+
+    def _run(self, config_client, admin_headers, **body):
+        captured = {}
+
+        def fake(config, params, db, _ctx):
+            captured.update(config)
+            return {"success": True, "data": {}}
+
+        with patch("app.agents.internal_tools.execute_consolidator", side_effect=fake):
+            resp = config_client.post(
+                "/api/connector-specs/norm/test-consolidator",
+                headers=admin_headers,
+                json={
+                    "consolidator_config": {"function_code": "def run(p, c, l): ..."},
+                    "params": {},
+                    **body,
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        return resp.json(), captured
+
+    def test_preview_is_the_default(self, config_client, admin_headers):
+        result, config = self._run(
+            config_client, admin_headers, action="manage_stock_item"
+        )
+        assert result["previewed"] is True
+        assert config["preview"] is True
+        assert config["action"] == "manage_stock_item"
+        assert "_preview_memo" in config
+
+    def test_an_explicit_live_run_is_not_previewed(self, config_client, admin_headers):
+        result, config = self._run(config_client, admin_headers, preview=False)
+        assert result["previewed"] is False
+        assert "preview" not in config

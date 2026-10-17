@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { ChevronRight, ChevronDown, Check, X, Plus, GripVertical, CornerDownRight } from 'lucide-react';
-import type { ConnectorSpecFull, ConnectorSpecTool, SpecInventoryRow, TestRequest } from '../../types';
+import { ChevronRight, ChevronDown, Check, X, Plus, GripVertical } from 'lucide-react';
+import type { ConnectorSpecFull, ConnectorSpecTool, SpecInventoryRow, ToolApproval } from '../../types';
 import { apiFetch, getToken } from '../../lib/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -13,6 +13,7 @@ import IconButton from '../ui/IconButton';
 import Icon from '../ui/Icon';
 import Badge from '../ui/Badge';
 import BackLink from '../ui/BackLink';
+import Dialog, { ConfirmDialog } from '../ui/Dialog';
 
 interface Props {
   spec: ConnectorSpecFull | null;
@@ -235,504 +236,6 @@ function AutoResizeTextarea({ value, onChange, placeholder, style }: {
 }
 
 // ---------------------------------------------------------------------------
-// Response Transform helpers
-// ---------------------------------------------------------------------------
-
-function resolveDotPath(obj: Record<string, unknown>, path: string): unknown {
-  let current: unknown = obj;
-  for (const part of path.split('.')) {
-    if (current && typeof current === 'object' && !Array.isArray(current)) {
-      current = (current as Record<string, unknown>)[part];
-    } else {
-      return undefined;
-    }
-  }
-  return current;
-}
-
-function findArray(payload: unknown): unknown[] | null {
-  if (Array.isArray(payload)) return payload;
-  if (payload && typeof payload === 'object') {
-    const p = payload as Record<string, unknown>;
-    // Try common keys first
-    for (const key of ['data', 'items', 'lines', 'results']) {
-      const val = p[key];
-      if (Array.isArray(val)) return val;
-      if (key === 'data' && val && typeof val === 'object') {
-        for (const inner of ['items', 'lines', 'results', 'data']) {
-          const iv = (val as Record<string, unknown>)[inner];
-          if (Array.isArray(iv)) return iv;
-        }
-      }
-    }
-    // Fallback: find the first array value (for consolidator step results)
-    for (const val of Object.values(p)) {
-      if (Array.isArray(val) && val.length > 0) return val;
-    }
-  }
-  return null;
-}
-
-/** Parse "output_name|round:2" into [name, options]. */
-function parseFieldDest(dest: string): [string, Record<string, string>] {
-  const pipeIdx = dest.indexOf('|');
-  if (pipeIdx < 0) return [dest, {}];
-  const name = dest.slice(0, pipeIdx);
-  const opts: Record<string, string> = {};
-  for (const part of dest.slice(pipeIdx + 1).split('|')) {
-    const ci = part.indexOf(':');
-    if (ci >= 0) opts[part.slice(0, ci).trim()] = part.slice(ci + 1).trim();
-  }
-  return [name, opts];
-}
-
-function applyFieldOptions(value: unknown, opts: Record<string, string>): unknown {
-  if ('round' in opts && typeof value === 'number') {
-    const dp = parseInt(opts.round, 10);
-    return dp > 0 ? parseFloat(value.toFixed(dp)) : Math.round(value);
-  }
-  return value;
-}
-
-function transformItem(
-  item: Record<string, unknown>,
-  fields: Record<string, string>,
-  flatten: string[],
-): Record<string, unknown>[] | Record<string, unknown> {
-  // Separate regular fields from array sub-fields
-  const regular: Record<string, string> = {};
-  const arrayFields: Record<string, Record<string, string>> = {};
-  for (const [src, dest] of Object.entries(fields)) {
-    if (!dest) continue;
-    if (src.includes('[].')) {
-      const [arrName, subPath] = src.split('[].', 2);
-      if (!arrayFields[arrName]) arrayFields[arrName] = {};
-      arrayFields[arrName][subPath] = dest;
-    } else {
-      regular[src] = dest;
-    }
-  }
-
-  // Base object from regular fields
-  const base: Record<string, unknown> = {};
-  for (const [src, destRaw] of Object.entries(regular)) {
-    const [dest, opts] = parseFieldDest(destRaw);
-    const val = resolveDotPath(item, src);
-    if (val !== undefined) base[dest] = applyFieldOptions(val, opts);
-  }
-
-  // Array fields
-  for (const [arrName, subFields] of Object.entries(arrayFields)) {
-    const arrData = item[arrName];
-    if (!Array.isArray(arrData)) continue;
-
-    // Separate direct sub-fields from nested array sub-fields
-    const direct: Record<string, string> = {};
-    const nested: Record<string, Record<string, string>> = {};
-    for (const [subSrc, subDest] of Object.entries(subFields)) {
-      if (subSrc.includes('[].')) {
-        const [innerArr, innerSub] = subSrc.split('[].', 2);
-        if (!nested[innerArr]) nested[innerArr] = {};
-        nested[innerArr][innerSub] = subDest;
-      } else {
-        direct[subSrc] = subDest;
-      }
-    }
-    // Remove direct entries that have nested sub-field mappings (nested takes priority)
-    for (const innerArr of Object.keys(nested)) {
-      delete direct[innerArr];
-    }
-
-    const transformed = arrData
-      .filter(el => el && typeof el === 'object')
-      .map(el => {
-        const row: Record<string, unknown> = {};
-        const elObj = el as Record<string, unknown>;
-        // Direct sub-fields
-        for (const [subSrc, subDestRaw] of Object.entries(direct)) {
-          const [subDest, subOpts] = parseFieldDest(subDestRaw);
-          const val = resolveDotPath(elObj, subSrc);
-          if (val !== undefined) row[subDest] = applyFieldOptions(val, subOpts);
-        }
-        // Nested array sub-fields (e.g., breaks[].breakStart)
-        for (const [innerArr, innerFields] of Object.entries(nested)) {
-          const innerData = elObj[innerArr];
-          if (!Array.isArray(innerData)) continue;
-          const innerTransformed = innerData
-            .filter(ie => ie && typeof ie === 'object')
-            .map(ie => {
-              const innerRow: Record<string, unknown> = {};
-              for (const [iSrc, iDestRaw] of Object.entries(innerFields)) {
-                const [iDest, iOpts] = parseFieldDest(iDestRaw);
-                const val = resolveDotPath(ie as Record<string, unknown>, iSrc);
-                if (val !== undefined) innerRow[iDest] = applyFieldOptions(val, iOpts);
-              }
-              return innerRow;
-            })
-            .filter(r => Object.keys(r).length > 0);
-          if (innerTransformed.length > 0) row[innerArr] = innerTransformed;
-        }
-        return row;
-      })
-      .filter(row => Object.keys(row).length > 0);
-    if (flatten.includes(arrName)) {
-      return transformed.map(row => ({ ...base, ...row }));
-    }
-    base[arrName] = transformed;
-  }
-  return base;
-}
-
-function evaluateFilters(item: Record<string, unknown>, filters: { field: string; operator: string; value: string }[]): boolean {
-  for (const f of filters) {
-    const fieldVal = resolveDotPath(item, f.field);
-    const op = f.operator;
-    const target = f.value || '';
-    if (op === 'is_empty') {
-      if (fieldVal != null && fieldVal !== '' && !(Array.isArray(fieldVal) && fieldVal.length === 0)) return false;
-    } else if (op === 'is_not_empty') {
-      if (fieldVal == null || fieldVal === '' || (Array.isArray(fieldVal) && fieldVal.length === 0)) return false;
-    } else if (op === 'equals') {
-      if (String(fieldVal ?? '').toLowerCase() !== target.toLowerCase()) return false;
-    } else if (op === 'not_equals') {
-      if (String(fieldVal ?? '').toLowerCase() === target.toLowerCase()) return false;
-    } else if (op === 'contains') {
-      if (!String(fieldVal ?? '').toLowerCase().includes(target.toLowerCase())) return false;
-    } else if (op === 'gt') {
-      if (Number(fieldVal ?? 0) <= Number(target)) return false;
-    } else if (op === 'lt') {
-      if (Number(fieldVal ?? 0) >= Number(target)) return false;
-    }
-  }
-  return true;
-}
-
-function applyTransformPreview(
-  payload: unknown,
-  fields: Record<string, string>,
-  flatten: string[] = [],
-  filters: { field: string; operator: string; value: string }[] = [],
-): unknown {
-  if (!payload || !fields || Object.keys(fields).length === 0) return payload;
-  let arr = findArray(payload);
-  // Apply filters before field mapping
-  if (arr && filters.length > 0) {
-    arr = arr.filter(item => typeof item === 'object' && item != null && evaluateFilters(item as Record<string, unknown>, filters));
-  }
-  if (arr && arr.length > 0 && typeof arr[0] === 'object') {
-    const out: Record<string, unknown>[] = [];
-    for (const item of arr) {
-      const result = transformItem(item as Record<string, unknown>, fields, flatten);
-      if (Array.isArray(result)) out.push(...result);
-      else out.push(result);
-    }
-    return out;
-  }
-  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-    return transformItem(payload as Record<string, unknown>, fields, flatten);
-  }
-  return payload;
-}
-
-/** Extract all leaf paths from an object, recursing into nested objects and arrays. */
-function extractLeafPaths(obj: Record<string, unknown>, prefix = '', siblingItems?: Record<string, unknown>[]): string[] {
-  const paths: string[] = [];
-  for (const [key, val] of Object.entries(obj)) {
-    const path = prefix ? `${prefix}.${key}` : key;
-    if (Array.isArray(val)) {
-      // Collect all elements of this array across siblings to find one with data
-      const allElements: Record<string, unknown>[] = [];
-      // From current item
-      for (const el of val) {
-        if (el && typeof el === 'object' && !Array.isArray(el)) allElements.push(el as Record<string, unknown>);
-      }
-      // From sibling items (other roster entries / other shifts)
-      if (allElements.length === 0 && siblingItems) {
-        for (const sib of siblingItems) {
-          const sibVal = sib[key];
-          if (Array.isArray(sibVal)) {
-            for (const el of sibVal) {
-              if (el && typeof el === 'object' && !Array.isArray(el)) allElements.push(el as Record<string, unknown>);
-            }
-            if (allElements.length > 0) break;
-          }
-        }
-      }
-
-      if (allElements.length > 0) {
-        // Recurse into the first object element, passing all elements as siblings
-        paths.push(...extractLeafPaths(allElements[0], `${path}[]`, allElements));
-      } else if (val.length === 0) {
-        paths.push(path); // empty array, no siblings have data
-      } else {
-        paths.push(path); // array of primitives
-      }
-    } else if (val && typeof val === 'object') {
-      paths.push(...extractLeafPaths(val as Record<string, unknown>, path, siblingItems));
-    } else {
-      paths.push(path);
-    }
-  }
-  return paths;
-}
-
-// ---------------------------------------------------------------------------
-// FieldMappingEditor — renders fields with nesting and array expand/flatten
-// ---------------------------------------------------------------------------
-
-function FieldMappingEditor({
-  fieldEntries,
-  flattenList,
-  updateField,
-  toggleFlatten,
-}: {
-  fieldEntries: [string, string][];
-  flattenList: string[];
-  updateField: (oldSrc: string, newSrc: string, newDest: string) => void;
-  toggleFlatten: (arrName: string) => void;
-}) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-
-  // Identify array parent names (e.g. "lines" from "lines[].stockCode")
-  const arrayParents = new Set<string>();
-  for (const [src] of fieldEntries) {
-    const bracketIdx = src.indexOf('[].');
-    if (bracketIdx >= 0) arrayParents.add(src.slice(0, bracketIdx));
-  }
-
-  // Group: top-level fields, then array groups
-  const topLevel = fieldEntries.filter(([src]) => !src.includes('[].') && !src.includes('.'));
-  const nestedObj = fieldEntries.filter(([src]) => !src.includes('[]') && src.includes('.'));
-  const arrayEntries = fieldEntries.filter(([src]) => src.includes('[].'));
-
-  // Group array entries by top-level parent (first []. segment only)
-  const arrayGroups: Record<string, [string, string][]> = {};
-  for (const entry of arrayEntries) {
-    const firstBracket = entry[0].indexOf('[].') ;
-    const arrName = entry[0].slice(0, firstBracket);
-    if (!arrayGroups[arrName]) arrayGroups[arrName] = [];
-    arrayGroups[arrName].push(entry);
-  }
-
-  const toggleCollapse = (name: string) => {
-    setCollapsed(prev => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name); else next.add(name);
-      return next;
-    });
-  };
-
-  const renderFieldRow = (src: string, dest: string, indent: number) => {
-    // Parse pipe-separated options: "output_name|round:2|tz|dow" → name + options
-    const pipeIdx = dest.indexOf('|');
-    const destName = pipeIdx >= 0 ? dest.slice(0, pipeIdx) : dest;
-    const optionStr = pipeIdx >= 0 ? dest.slice(pipeIdx + 1) : '';
-    const roundMatch = optionStr.match(/round:(\d+)/);
-    const roundVal = roundMatch ? roundMatch[1] : '';
-    const hasTz = /\btz\b/.test(optionStr);
-    const hasDow = /\bdow\b/.test(optionStr);
-    const dtVal = hasTz && hasDow ? 'tz+dow' : hasTz ? 'tz' : hasDow ? 'dow' : '';
-
-    const included = dest !== '';
-    const leaf = src.includes('[].') ? src.split('[].').pop() || src : (src.split('.').pop() || src);
-
-    const rebuildDest = (name: string, round: string, dt: string) => {
-      if (!name) return '';
-      const parts = [name];
-      if (round) parts.push(`round:${round}`);
-      if (dt === 'tz' || dt === 'tz+dow') parts.push('tz');
-      if (dt === 'dow' || dt === 'tz+dow') parts.push('dow');
-      return parts.join('|');
-    };
-
-    return (
-      <div key={src} style={{
-        display: 'grid', gridTemplateColumns: 'auto 1fr 1fr auto auto', gap: 6, marginBottom: 2,
-        paddingLeft: indent, opacity: included ? 1 : 0.4,
-      }}>
-        <label style={{ display: 'flex', alignItems: 'center', width: 20, justifyContent: 'center' }}>
-          <input
-            type="checkbox"
-            checked={included}
-            onChange={e => updateField(src, src, e.target.checked ? leaf : '')}
-            style={{ margin: 0 }}
-          />
-        </label>
-        <div style={{ display: 'flex', alignItems: 'center' }}>
-          {indent > 0 && <Icon icon={CornerDownRight} size="meta" tone="muted" style={{ marginRight: 4 }} />}
-          <span style={{ fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--text-soft)' }}>
-            {src.includes('[].') ? src.split('[].').pop() : src}
-          </span>
-        </div>
-        <input
-          value={destName}
-          onChange={e => updateField(src, src, rebuildDest(e.target.value, roundVal, dtVal))}
-          placeholder="(excluded)"
-          disabled={!included}
-          className="n-input"
-          style={{ ...fieldStyle, height: 30, fontSize: 'var(--fs-sm)', opacity: included ? 1 : 0.5 }}
-        />
-        <select
-          value={roundVal}
-          onChange={e => updateField(src, src, rebuildDest(destName || leaf, e.target.value, dtVal))}
-          disabled={!included}
-          style={{
-            width: 48, fontSize: 'var(--fs-xs)', padding: '2px 2px', border: '1px solid var(--line-strong)',
-            borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg)', color: roundVal ? 'var(--text)' : 'var(--muted)',
-            fontFamily: 'inherit', opacity: included ? 1 : 0.4, cursor: included ? 'pointer' : 'default',
-          }}
-        >
-          <option value="">dp</option>
-          <option value="0">0dp</option>
-          <option value="1">1dp</option>
-          <option value="2">2dp</option>
-          <option value="3">3dp</option>
-          <option value="4">4dp</option>
-        </select>
-        <select
-          value={dtVal}
-          onChange={e => updateField(src, src, rebuildDest(destName || leaf, roundVal, e.target.value))}
-          disabled={!included}
-          style={{
-            width: 62, fontSize: 'var(--fs-xs)', padding: '2px 2px', border: '1px solid var(--line-strong)',
-            borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg)', color: dtVal ? 'var(--text)' : 'var(--muted)',
-            fontFamily: 'inherit', opacity: included ? 1 : 0.4, cursor: included ? 'pointer' : 'default',
-          }}
-        >
-          <option value="">date</option>
-          <option value="tz">tz</option>
-          <option value="dow">dow</option>
-          <option value="tz+dow">tz+dow</option>
-        </select>
-      </div>
-    );
-  };
-
-  return (
-    <div style={{ marginBottom: '0.5rem' }}>
-      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 4 }}>
-        Fetch a sample response to generate field mappings. Toggle fields to include/exclude, and edit output names.
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr auto', gap: '0 6px', marginBottom: 4 }}>
-        <div style={{ width: 20 }} />
-        <div style={{ ...groupLabel, marginBottom: 0, padding: '0 2px' }}>Source field</div>
-        <div style={{ ...groupLabel, marginBottom: 0, padding: '0 2px' }}>Output name</div>
-        <div style={{ ...groupLabel, marginBottom: 0, width: 48, textAlign: 'center' }}>Round</div>
-      </div>
-
-      {/* Top-level fields */}
-      {topLevel.map(([src, dest]) => renderFieldRow(src, dest, 0))}
-
-      {/* Nested object fields */}
-      {nestedObj.length > 0 && (() => {
-        let lastParent = '';
-        return nestedObj.map(([src, dest]) => {
-          const parent = src.split('.')[0];
-          const showHeader = parent !== lastParent;
-          lastParent = parent;
-          return (
-            <div key={src}>
-              {showHeader && (
-                <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, color: 'var(--muted)', padding: '4px 0 2px 0', marginTop: 4, borderTop: '1px solid var(--line-soft)', paddingLeft: 26 }}>
-                  {parent}
-                </div>
-              )}
-              {renderFieldRow(src, dest, 16)}
-            </div>
-          );
-        });
-      })()}
-
-      {/* Array groups */}
-      {Object.entries(arrayGroups).map(([arrName, entries]) => {
-        const isCollapsed = collapsed.has(arrName);
-        const isFlattened = flattenList.includes(arrName);
-        return (
-          <div key={arrName} style={{ marginTop: 4, borderTop: '1px solid var(--line-soft)', paddingTop: 4 }}>
-            {/* Array parent header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-              <button
-                type="button"
-                onClick={() => toggleCollapse(arrName)}
-                aria-label={isCollapsed ? `Show ${arrName} fields` : `Hide ${arrName} fields`}
-                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'none', cursor: 'pointer', padding: 0, color: 'var(--icon)', width: 20 }}
-              ><Icon icon={isCollapsed ? ChevronRight : ChevronDown} size="dense" /></button>
-              <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--text-soft)' }}>
-                {arrName}[]
-              </span>
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{entries.length} fields</span>
-              <button
-                type="button"
-                onClick={() => toggleFlatten(arrName)}
-                title={isFlattened ? 'Flattened into parent rows — click to keep nested' : 'Click to flatten into parent rows'}
-                aria-pressed={isFlattened}
-                style={{
-                  border: '1px solid ' + (isFlattened ? 'var(--brand-soft)' : 'var(--line-strong)'),
-                  borderRadius: 999,
-                  backgroundColor: isFlattened ? 'var(--accent-soft)' : 'var(--bg)',
-                  color: isFlattened ? 'var(--accent)' : 'var(--text-soft)',
-                  padding: '1px 8px',
-                  fontSize: 'var(--fs-2xs)',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
-              >{isFlattened ? 'Flattened' : 'Flatten'}</button>
-            </div>
-            {/* Array sub-fields — split into direct and nested sub-arrays */}
-            {!isCollapsed && (() => {
-              // Separate direct fields from nested array fields within this group
-              const prefix = `${arrName}[].`;
-              const directEntries: [string, string][] = [];
-              const subArrayGroups: Record<string, [string, string][]> = {};
-
-              for (const [src, dest] of entries) {
-                const rest = src.slice(prefix.length);
-                if (rest.includes('[].')) {
-                  // Nested array: e.g., "breaks[].breakStart"
-                  const subArrName = rest.split('[].')[0];
-                  if (!subArrayGroups[subArrName]) subArrayGroups[subArrName] = [];
-                  subArrayGroups[subArrName].push([src, dest]);
-                } else {
-                  directEntries.push([src, dest]);
-                }
-              }
-
-              return (
-                <>
-                  {directEntries.map(([src, dest]) => renderFieldRow(src, dest, 24))}
-                  {Object.entries(subArrayGroups).map(([subArrName, subEntries]) => {
-                    const subKey = `${arrName}.${subArrName}`;
-                    const subCollapsed = collapsed.has(subKey);
-                    return (
-                      <div key={subKey} style={{ marginTop: 2, marginLeft: 24 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                          <button
-                            type="button"
-                            onClick={() => toggleCollapse(subKey)}
-                            aria-label={subCollapsed ? `Show ${subArrName} fields` : `Hide ${subArrName} fields`}
-                            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'none', cursor: 'pointer', padding: 0, color: 'var(--icon)', width: 16 }}
-                          ><Icon icon={subCollapsed ? ChevronRight : ChevronDown} size="meta" /></button>
-                          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--muted)' }}>
-                            {subArrName}[]
-                          </span>
-                          <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--muted)' }}>{subEntries.length} fields</span>
-                        </div>
-                        {!subCollapsed && subEntries.map(([src, dest]) => renderFieldRow(src, dest, 40))}
-                      </div>
-                    );
-                  })}
-                </>
-              );
-            })()}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -741,28 +244,19 @@ interface ChatMessage {
 }
 
 function ConsolidatorToolEditor({
-  op, idx, updateTool, setForm,
+  op, idx, updateTool, reviewedFile,
 }: {
   op: ConnectorSpecTool;
   idx: number;
   updateTool: (index: number, field: keyof ConnectorSpecTool, value: unknown) => void;
-  setForm: React.Dispatch<React.SetStateAction<ConnectorSpecFull>>;
+  /** config/consolidators/… when this code has a reviewed file. */
+  reviewedFile?: string | null;
 }) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [streamingEvents, setStreamingEvents] = useState<ChatMessage['toolEvents']>([]);
-  const [showConfig, setShowConfig] = useState(false);
-  const [showTest, setShowTest] = useState(false);
-  const [chatHeight] = useState(320);
-  const [testParams, setTestParams] = useState<Record<string, string>>(() => {
-    const params: Record<string, string> = {};
-    for (const f of op.required_fields || []) params[f] = '';
-    return params;
-  });
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<Record<string, unknown> | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll within the chat container only (not the page)
@@ -772,26 +266,6 @@ function ConsolidatorToolEditor({
       el.parentElement.scrollTop = el.parentElement.scrollHeight;
     }
   }, [chatMessages, streamingText, streamingEvents]);
-
-  const handleTest = async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const res = await apiFetch('/api/connector-specs/norm/test-consolidator', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          consolidator_config: op.consolidator_config,
-          params: testParams,
-        }),
-      });
-      setTestResult(await res.json());
-    } catch (err) {
-      setTestResult({ success: false, error: String(err) });
-    } finally {
-      setTesting(false);
-    }
-  };
 
   const handleSend = async () => {
     const msg = chatInput.trim();
@@ -947,7 +421,7 @@ function ConsolidatorToolEditor({
       return (
         <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', color: 'var(--ok)', padding: '4px 8px', backgroundColor: 'var(--ok-bg)', borderRadius: 'var(--radius-sm)', marginBottom: 4 }}>
           <Icon icon={Check} size="dense" />
-          Config saved to tool
+          Applied — press Update spec to save
         </div>
       );
     }
@@ -956,6 +430,12 @@ function ConsolidatorToolEditor({
 
   return (
     <div>
+      {reviewedFile && (
+        <div role="note" style={{ ...resultBox(false), background: 'var(--warn-bg)', fontSize: 'var(--fs-sm)', marginBottom: '0.75rem' }}>
+          This code has a reviewed file, <code>{reviewedFile}</code>. Its sync script copies that file over what is
+          saved here — change the file (and run its sync) rather than editing here.
+        </div>
+      )}
       {/* Action + Description: 1:2 on a wide card, stacked on a phone. */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '0.75rem' }}>
         <div style={{ flex: '1 1 180px', minWidth: 0 }}>
@@ -975,7 +455,7 @@ function ConsolidatorToolEditor({
             type="text"
             value={op.description || ''}
             onChange={e => updateTool(idx, 'description', e.target.value || undefined)}
-            placeholder="What this consolidator does"
+            placeholder="What it does — the LLM reads this to decide when to call it"
             className="n-input"
             style={fieldStyle}
           />
@@ -985,7 +465,7 @@ function ConsolidatorToolEditor({
       {/* Chat area */}
       <div style={{
         border: '1px solid var(--line)', borderRadius: 'var(--radius)',
-        height: chatHeight, minHeight: 120, overflowY: 'auto', padding: '10px 12px',
+        height: 320, minHeight: 120, overflowY: 'auto', padding: '10px 12px',
         backgroundColor: 'var(--surface)', userSelect: 'text', resize: 'vertical',
       }}>
         {chatMessages.length === 0 && !streamingText && (
@@ -1048,74 +528,6 @@ function ConsolidatorToolEditor({
         </Button>
       </div>
 
-      {/* Manual test */}
-      <div style={{ borderTop: '1px solid var(--line)', paddingTop: '0.75rem', marginBottom: '0.75rem' }}>
-        <button
-          type="button"
-          onClick={() => setShowTest(!showTest)}
-          aria-expanded={showTest}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6, padding: 0, border: 'none', background: 'none',
-            fontFamily: 'inherit', cursor: 'pointer', userSelect: 'none', marginBottom: showTest ? '0.5rem' : 0,
-          }}
-        >
-          <Icon icon={showTest ? ChevronDown : ChevronRight} size="dense" tone="muted" />
-          <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)' }}>Manual test</span>
-        </button>
-        {showTest && (
-          <div>
-            {(op.required_fields || []).length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                {(op.required_fields || []).map(key => (
-                  <div key={key} style={{ flex: '1 1 160px' }}>
-                    <label className="n-label">{key}</label>
-                    <input
-                      type="text"
-                      value={testParams[key] || ''}
-                      onChange={e => setTestParams(prev => ({ ...prev, [key]: e.target.value }))}
-                      placeholder={(op.field_descriptions || {})[key] || key}
-                      className="n-input"
-                      style={fieldStyle}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-            <Button size="sm" onClick={handleTest} disabled={testing}>
-              {testing ? 'Testing...' : 'Test'}
-            </Button>
-            {testResult ? (
-              <div style={{ ...resultBox(Boolean(testResult.success)), marginTop: '0.5rem' }}>
-                {(testResult._steps as { id: string; status: string; error?: string; duration_ms?: number; result_preview?: Record<string, unknown> }[] || []).map((s, i) => (
-                  <div key={i} style={{ marginBottom: 4 }}>
-                    <div style={{ fontSize: 'var(--fs-sm)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <Icon icon={s.status === 'success' ? Check : X} size="dense" style={{ color: s.status === 'success' ? 'var(--ok)' : 'var(--error)' }} />
-                      <span style={{ fontWeight: 500 }}>{s.id}</span>
-                      {s.duration_ms != null && <span style={{ color: 'var(--muted)' }}>({s.duration_ms}ms)</span>}
-                      {s.error && <span style={{ color: 'var(--error)' }}>— {s.error}</span>}
-                    </div>
-                    {s.result_preview && (
-                      <details style={{ marginLeft: 18, marginTop: 2 }}>
-                        <summary style={detailsSummary}>Step result</summary>
-                        <pre style={{ ...codeBlock, ...wrapCode, margin: '2px 0 0', maxHeight: 120, padding: '6px 8px' }}>
-                          {JSON.stringify(s.result_preview, null, 2)}
-                        </pre>
-                      </details>
-                    )}
-                  </div>
-                ))}
-                <details style={{ marginTop: 4 }}>
-                  <summary style={detailsSummary}>Raw JSON</summary>
-                  <pre style={{ ...codeBlock, margin: '4px 0 0', maxHeight: 150 }}>
-                    {JSON.stringify(testResult, null, 2)}
-                  </pre>
-                </details>
-              </div>
-            ) : null}
-          </div>
-        )}
-      </div>
-
       {/* Function Editor — always shown for consolidator tools */}
       <div style={{ borderTop: '1px solid var(--line)', paddingTop: '0.75rem', marginBottom: '0.5rem' }}>
         <FunctionEditor
@@ -1123,17 +535,326 @@ function ConsolidatorToolEditor({
           // Keep the rest of the config (max_api_calls, allowed_write_actions,
           // wraps, shapes) — replacing it with just the code silently dropped them.
           onChange={(code) => updateTool(idx, 'consolidator_config', { ...(op.consolidator_config || {}), function_code: code })}
-          requiredFields={op.required_fields || []}
-          connectorName="norm"
+          fields={[...(op.required_fields || []), ...(op.optional_fields || [])]}
+          config={(op.consolidator_config || {}) as Record<string, unknown>}
+          action={op.action}
         />
       </div>
-
-      {/* Config JSON removed — function editor is the only way to edit consolidator config */}
-
-      {/* Endpoints return raw data (Sep 2026): shaping lives in the consolidator's shapes. */}
     </div>
   );
 }
+
+/** Every field a row takes — required, optional, and old field_mapping keys. */
+function rowFields(t: ConnectorSpecTool): string[] {
+  return Array.from(new Set([
+    ...(t.required_fields || []),
+    ...(t.optional_fields || []),
+    ...Object.keys(t.field_mapping || {}),
+  ]));
+}
+
+/** Calling this endpoint would change data: anything but GET, unless marked read-only. */
+function isWriteRow(t: ConnectorSpecTool): boolean {
+  if (t.read_only === true) return false;
+  return (t.method || 'GET').toUpperCase() !== 'GET';
+}
+
+const hint: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 4 };
+
+/**
+ * A row's fields as one table. Tools and MCP endpoints list theirs in
+ * required_fields / optional_fields; an HTTP endpoint keys them in
+ * field_mapping (field → API parameter). This edits whichever the row uses —
+ * the old table read only field_mapping, so every tool showed "No fields".
+ */
+function FieldsEditor({ op, onPatch, withMapping, note }: {
+  op: ConnectorSpecTool;
+  onPatch: (patch: Partial<ConnectorSpecTool>) => void;
+  withMapping: boolean;
+  note: string;
+}) {
+  const fields = rowFields(op);
+  const required = op.required_fields || [];
+  const schema = (op.field_schema || {}) as Record<string, { description?: string } | undefined>;
+  const columns = withMapping ? '1fr 1fr 1.5fr 70px 40px' : '1fr 2fr 70px 40px';
+
+  const rekey = <T,>(obj: Record<string, T> | null | undefined, from: string, to: string | null) => {
+    if (!obj || !(from in obj)) return obj;
+    return Object.fromEntries(Object.entries(obj).flatMap(([k, v]) => (k !== from ? [[k, v]] : to === null ? [] : [[to, v]])));
+  };
+  const rename = (from: string, to: string) => {
+    if (to !== from && fields.includes(to)) return; // would merge two fields
+    onPatch({
+      required_fields: required.map(f => (f === from ? to : f)),
+      optional_fields: op.optional_fields?.map(f => (f === from ? to : f)),
+      field_mapping: rekey(op.field_mapping, from, to) || {},
+      field_descriptions: rekey(op.field_descriptions, from, to) || {},
+      field_schema: rekey(op.field_schema, from, to) ?? op.field_schema,
+    });
+  };
+  const remove = (key: string) => onPatch({
+    required_fields: required.filter(f => f !== key),
+    optional_fields: op.optional_fields?.filter(f => f !== key),
+    field_mapping: rekey(op.field_mapping, key, null) || {},
+    field_descriptions: rekey(op.field_descriptions, key, null) || {},
+    field_schema: rekey(op.field_schema, key, null) ?? op.field_schema,
+  });
+  const setRequired = (key: string, on: boolean) => {
+    const optional = (op.optional_fields || []).filter(f => f !== key);
+    if (on) {
+      onPatch({ required_fields: [...required, key], optional_fields: op.optional_fields && optional });
+    } else {
+      // A mapped field stays listed through field_mapping; anything else moves to optional.
+      onPatch({
+        required_fields: required.filter(f => f !== key),
+        optional_fields: key in (op.field_mapping || {}) ? op.optional_fields : [...optional, key],
+      });
+    }
+  };
+  const add = () => {
+    let key = 'new_field';
+    for (let n = 1; fields.includes(key); n++) key = `new_field_${n}`;
+    onPatch(withMapping
+      ? { field_mapping: { ...(op.field_mapping || {}), [key]: '' } }
+      : { optional_fields: [...(op.optional_fields || []), key] });
+  };
+
+  return (
+    <div style={{ marginTop: '1rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 12, marginBottom: 6 }}>
+        <div>
+          <label className="n-label" style={{ marginBottom: 0 }}>Fields</label>
+          <div style={{ ...hint, marginTop: 0 }}>{note}</div>
+        </div>
+        <Button size="sm" icon={Plus} onClick={add}>Add field</Button>
+      </div>
+      {fields.length === 0 ? (
+        <p style={{ ...emptyNote, margin: '0 0 0.25rem' }}>No fields — it takes no input.</p>
+      ) : (
+        <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflowX: 'auto', backgroundColor: 'var(--bg)' }}>
+          {/* Scrolls sideways on a phone rather than squeezing the columns. */}
+          <div style={{ minWidth: withMapping ? 560 : 440 }}>
+            <div style={{
+              display: 'grid', gridTemplateColumns: columns, backgroundColor: 'var(--surface-alt)',
+              padding: '8px 10px', borderBottom: '1px solid var(--line-strong)',
+            }}>
+              <span style={{ ...groupLabel, marginBottom: 0, paddingLeft: 6 }}>Field</span>
+              {withMapping && <span style={{ ...groupLabel, marginBottom: 0, paddingLeft: 6 }}>API parameter</span>}
+              <span style={{ ...groupLabel, marginBottom: 0, paddingLeft: 6 }}>Description</span>
+              <span style={{ ...groupLabel, marginBottom: 0, textAlign: 'center' }}>Required</span>
+              <span />
+            </div>
+            {fields.map((key, i) => (
+              <div key={i} style={{
+                display: 'grid', gridTemplateColumns: columns, alignItems: 'center', padding: '4px 10px',
+                borderBottom: i < fields.length - 1 ? '1px solid var(--line-soft)' : 'none',
+              }}>
+                <input type="text" value={key} aria-label="Field name" onChange={e => rename(key, e.target.value)}
+                  placeholder="field_name" style={{ ...cellInputStyle, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' }} />
+                {withMapping && (
+                  <input type="text" value={(op.field_mapping || {})[key] ?? ''} aria-label={`API parameter for ${key}`}
+                    onChange={e => onPatch({ field_mapping: { ...(op.field_mapping || {}), [key]: e.target.value } })}
+                    placeholder="apiFieldName" style={{ ...cellInputStyle, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' }} />
+                )}
+                <input type="text" value={(op.field_descriptions || {})[key] || ''} aria-label={`Description of ${key}`}
+                  onChange={e => onPatch({ field_descriptions: { ...(op.field_descriptions || {}), [key]: e.target.value } })}
+                  placeholder={schema[key]?.description || 'What to pass, e.g. a date as YYYY-MM-DD'}
+                  style={{ ...cellInputStyle, color: 'var(--text-soft)' }} />
+                <div style={{ textAlign: 'center' }}>
+                  <input type="checkbox" aria-label={`${key} is required`} checked={required.includes(key)}
+                    onChange={e => setRequired(key, e.target.checked)} style={{ cursor: 'pointer' }} />
+                </div>
+                <IconButton icon={X} label={`Remove field ${key}`} iconSize={14} style={{ justifySelf: 'center' }} onClick={() => remove(key)} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ marginTop: '0.75rem' }}>
+        <label className="n-label">Field schema (JSON)</label>
+        <div style={{ ...hint, marginTop: 0, marginBottom: 4 }}>
+          Types for fields that aren&rsquo;t plain text — lists, numbers, choices. Without it every field is sent as a string.
+        </div>
+        <JsonTextarea
+          value={op.field_schema}
+          onChange={v => onPatch({ field_schema: v as ConnectorSpecTool['field_schema'] })}
+          autoResize
+          placeholder='{"lines": {"type": "array", "items": {"type": "object", "properties": {...}, "required": [...]}}}'
+          style={codeFieldStyle}
+        />
+      </div>
+    </div>
+  );
+}
+
+const EFFECT_HINT: Record<string, string> = {
+  read: 'Changes nothing, so it runs without asking.',
+  draft: 'Opens an editor for a person to finish — their Save on it is the approval.',
+  write: 'Changes data. The approval decides whether a person is asked first.',
+};
+
+/** A tool's declared effect and, for a write, its approval policy. */
+function ToolEffectEditor({ op, onPatch, claimed }: {
+  op: ConnectorSpecTool;
+  onPatch: (patch: Partial<ConnectorSpecTool>) => void;
+  claimed: boolean;
+}) {
+  const approval = op.approval || {};
+  const setApproval = (patch: Partial<ToolApproval>) => onPatch({ approval: { ...approval, ...patch } });
+  const levels = approval.levels || [];
+  return (
+    <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--line-soft)' }}>
+      <div style={twoColGrid}>
+        <div>
+          <label className="n-label">What it does</label>
+          <select
+            value={op.effect || ''}
+            onChange={e => {
+              const effect = (e.target.value || null) as ConnectorSpecTool['effect'];
+              onPatch(effect === 'write' && !op.approval
+                ? { effect, approval: { default: 'ask', allow_auto: true } }
+                : { effect });
+            }}
+            className="n-select"
+            style={fieldStyle}
+          >
+            <option value="">Not declared</option>
+            <option value="read">Read</option>
+            <option value="draft">Draft</option>
+            <option value="write">Write</option>
+          </select>
+          <div style={{ ...hint, color: !op.effect && claimed ? 'var(--warn)' : 'var(--muted)' }}>
+            {op.effect
+              ? EFFECT_HINT[op.effect]
+              : claimed
+                ? 'An App claims this tool, so it must declare one. Until then a GET runs and anything else asks.'
+                : 'Not declared: a GET runs and anything else asks.'}
+          </div>
+        </div>
+        {op.effect === 'write' && (
+          <div>
+            <label className="n-label">Approval</label>
+            <select
+              value={approval.default || 'ask'}
+              onChange={e => setApproval({ default: e.target.value as 'ask' | 'auto' })}
+              className="n-select"
+              style={fieldStyle}
+            >
+              <option value="ask">Asks a person first</option>
+              <option value="auto">Runs without asking</option>
+            </select>
+            {approval.default !== 'auto' && levels.length === 0 && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!approval.allow_auto} onChange={e => setApproval({ allow_auto: e.target.checked })} />
+                Each person may switch it to &ldquo;always allow&rdquo;
+              </label>
+            )}
+          </div>
+        )}
+        {op.effect === 'write' && (
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label className="n-label">Label</label>
+            <input
+              type="text"
+              value={approval.label || ''}
+              onChange={e => setApproval({ label: e.target.value || undefined })}
+              placeholder="update stock items"
+              className="n-input"
+              style={fieldStyle}
+            />
+            <div style={hint}>
+              Completes &ldquo;Always allow Norm to …&rdquo; on the approval card and in Settings → Preferences.
+            </div>
+          </div>
+        )}
+      </div>
+      {op.effect === 'write' && levels.length > 0 && (
+        <p style={{ ...hint, marginTop: 8 }}>
+          {levels.length} levels — {levels.map(l => l.label || l.id).join(' · ')}. Each person picks theirs in
+          Settings → Preferences; the levels themselves are set by the config scripts.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Settings for how a tool's result reaches the chat — only a tool's result is ever shown. */
+function ToolDisplayEditor({ op, onPatch }: {
+  op: ConnectorSpecTool;
+  onPatch: (patch: Partial<ConnectorSpecTool>) => void;
+}) {
+  const set = [op.display_component, op.display_props, op.working_document, op.summary_fields?.length].filter(Boolean).length;
+  return (
+    <details style={{ marginTop: '1rem' }}>
+      <summary style={{ ...detailsSummary, fontSize: 'var(--fs-sm)' }}>
+        How the result is shown{set ? ` (${set} set)` : ''}
+      </summary>
+      <div style={{ marginTop: '0.75rem' }}>
+        <label className="n-label">Display component</label>
+        <input
+          value={op.display_component || ''}
+          onChange={e => onPatch({ display_component: e.target.value || null })}
+          placeholder="e.g. recipe_editor"
+          className="n-input"
+          style={fieldStyle}
+        />
+        <div style={hint}>The card the result opens as in chat. Leave empty for a plain answer.</div>
+      </div>
+      <div style={{ marginTop: '0.75rem' }}>
+        <label className="n-label">Display props (JSON)</label>
+        <JsonTextarea
+          value={op.display_props}
+          onChange={v => onPatch({ display_props: v as ConnectorSpecTool['display_props'] })}
+          rows={2}
+          placeholder='{"title": "Results"}'
+          style={codeFieldStyle}
+        />
+      </div>
+      <div style={{ marginTop: '0.75rem' }}>
+        <label className="n-label">Working document (JSON)</label>
+        <JsonTextarea
+          value={op.working_document}
+          onChange={v => onPatch({ working_document: v as ConnectorSpecTool['working_document'] })}
+          rows={2}
+          placeholder='{"doc_type": "roster", "sync_mode": "auto", "ref_fields": ["search_date"]}'
+          style={codeFieldStyle}
+        />
+        <div style={hint}>Keeps the result as a document the card edits and Norm reads back.</div>
+      </div>
+      <div style={{ marginTop: '0.75rem' }}>
+        <label className="n-label">Summary fields</label>
+        <input
+          value={(op.summary_fields || []).join(', ')}
+          onChange={e => {
+            const val = e.target.value.trim();
+            onPatch({ summary_fields: val ? val.split(',').map(f => f.trim()).filter(Boolean) : null });
+          }}
+          placeholder="name, id, sku, price"
+          className="n-input"
+          style={fieldStyle}
+        />
+        <div style={hint}>
+          When a list result is too big for the model, keep only these fields of each item. Empty: the model gets a
+          sample item and searches the rest.
+        </div>
+      </div>
+    </details>
+  );
+}
+
+/** How Norm signs in to the outside system — the spec's auth_type. */
+const AUTH_OPTIONS: [string, string][] = [
+  ['none', 'None'],
+  ['bearer', 'Bearer token'],
+  ['api_key_header', 'API key in a header'],
+  ['api_key', 'API key'],
+  ['basic', 'Username and password (basic)'],
+  ['oauth2', 'OAuth'],
+  ['custom', 'Custom'],
+];
+
+// A heading inside the connection dialog.
+const dialogSection: React.CSSProperties = { margin: '22px 0 10px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' };
 
 export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: Props) {
   const [form, setForm] = useState<ConnectorSpecFull>(() => withListMarkers(spec ?? { ...EMPTY_SPEC }));
@@ -1142,12 +863,18 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
   const [saving, setSaving] = useState(false);
   // What each row is, who exposes it, what it calls and what calls it.
   const [inventory, setInventory] = useState<Record<string, SpecInventoryRow>>({});
+  // Until it arrives a row's kind is unknown — a tool without code may be a
+  // built-in, so it isn't labelled a direct call before the inventory says so.
+  const [inventoryLoaded, setInventoryLoaded] = useState(false);
   useEffect(() => {
     if (isNew || !spec?.connector_name) return;
     apiFetch(`/api/connector-specs/${spec.connector_name}/inventory`)
       .then(r => (r.ok ? r.json() : null))
       .then((d: { rows?: SpecInventoryRow[] } | null) => {
-        if (d?.rows) setInventory(Object.fromEntries(d.rows.map(r => [r.action, r])));
+        if (d?.rows) {
+          setInventory(Object.fromEntries(d.rows.map(r => [r.action, r])));
+          setInventoryLoaded(true);
+        }
       })
       .catch(() => {});
   }, [isNew, spec?.connector_name]);
@@ -1161,6 +888,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
   const [consolidatorTestParams, setConsolidatorTestParams] = useState<Record<string, string>>({});
   const [consolidatorTestResult, setConsolidatorTestResult] = useState<Record<string, unknown> | null>(null);
   const [consolidatorTesting, setConsolidatorTesting] = useState(false);
+  const [builderEffect, setBuilderEffect] = useState<'' | 'read' | 'draft' | 'write'>('');
+  const [builderLabel, setBuilderLabel] = useState('');
 
   // Base URL mode state
   const [baseUrlMode, setBaseUrlMode] = useState<'fixed' | 'dynamic'>(() =>
@@ -1202,6 +931,36 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
     }));
   };
 
+  // The connection dialog edits the form in place; Cancel puts back what was
+  // there when it opened (the base-URL helpers keep some of it in local state).
+  const [connectionSnapshot, setConnectionSnapshot] = useState<{
+    form: Pick<ConnectorSpecFull, 'auth_type' | 'auth_config' | 'base_url_template' | 'oauth_config' | 'credential_fields'>;
+    baseUrlMode: 'fixed' | 'dynamic';
+    domainFieldKey: string;
+    domainFieldLabel: string;
+  } | null>(null);
+  const openConnection = () => setConnectionSnapshot({
+    form: {
+      auth_type: form.auth_type,
+      auth_config: form.auth_config,
+      base_url_template: form.base_url_template,
+      oauth_config: form.oauth_config,
+      credential_fields: form.credential_fields,
+    },
+    baseUrlMode,
+    domainFieldKey,
+    domainFieldLabel,
+  });
+  const cancelConnection = () => {
+    if (connectionSnapshot) {
+      setForm(prev => ({ ...prev, ...connectionSnapshot.form }));
+      setBaseUrlMode(connectionSnapshot.baseUrlMode);
+      setDomainFieldKey(connectionSnapshot.domainFieldKey);
+      setDomainFieldLabel(connectionSnapshot.domainFieldLabel);
+    }
+    setConnectionSnapshot(null);
+  };
+
   // Try Tool state
   const [tryToolAction, setTryToolAction] = useState('');
   const [tryToolFields, setTryToolFields] = useState<Record<string, string>>({});
@@ -1218,9 +977,19 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
     }).catch(() => {});
   }, []);
 
+  const [confirmLiveWrite, setConfirmLiveWrite] = useState(false);
+  const [removingIdx, setRemovingIdx] = useState<number | null>(null);
+
+
+  // Only endpoints can be tried: the dry-run and test routes call one row
+  // directly, which for a consolidator or built-in would skip its code.
+  const tryRows = useMemo(
+    () => form.tools.filter(t => (split ? t._list === 'endpoints' : !t.consolidator_config?.function_code) && t.action),
+    [form.tools, split],
+  );
   const selectedTool = useMemo(
-    () => form.tools.find(t => t.action === tryToolAction) ?? null,
-    [form.tools, tryToolAction],
+    () => tryRows.find(t => t.action === tryToolAction) ?? null,
+    [tryRows, tryToolAction],
   );
 
   const toggleTool = (index: number) => {
@@ -1256,6 +1025,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
       ...prev,
       tools: prev.tools.filter((_, i) => i !== index),
     }));
+    // Rows are tracked by position: the ones after the removed row move up one.
+    setCollapsedTools(prev => new Set(Array.from(prev).filter(i => i !== index).map(i => (i > index ? i - 1 : i))));
   };
 
   // Drag-to-reorder tools
@@ -1353,6 +1124,42 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
 
   return (
     <div>
+      {confirmLiveWrite && selectedTool && (
+        <ConfirmDialog
+          title={`Call ${selectedTool.action} for real?`}
+          confirmLabel="Call it"
+          busyLabel="Calling…"
+          danger
+          onConfirm={() => handleTryRun('test')}
+          onClose={() => setConfirmLiveWrite(false)}
+        >
+          <p style={{ margin: 0 }}>
+            This is a write. It sends the request to {form.display_name || form.connector_name} and changes
+            data for {venues.find(v => v.id === tryVenueId)?.name ?? 'the first connected venue'}.
+            {form.execution_mode === 'template' ? ' Use Render to check the request without sending it.' : ''}
+          </p>
+        </ConfirmDialog>
+      )}
+      {removingIdx !== null && form.tools[removingIdx] && (() => {
+        const row = form.tools[removingIdx];
+        const file = inventory[row.action]?.reviewed_file;
+        return (
+          <ConfirmDialog
+            title={`Remove ${row.action || 'this row'}?`}
+            confirmLabel="Remove"
+            danger
+            onConfirm={async () => { removeTool(removingIdx); }}
+            onClose={() => setRemovingIdx(null)}
+          >
+            <p style={{ margin: 0 }}>
+              It leaves the spec when you press Update spec.
+              {row.consolidator_config?.function_code
+                ? file ? ` Its code goes with it; ${file} keeps the reviewed copy.` : ' Its code goes with it, and there is no other copy.'
+                : ''}
+            </p>
+          </ConfirmDialog>
+        );
+      })()}
       {/* Consolidator Builder Modal */}
       {showConsolidatorBuilder && (
         <div style={{
@@ -1402,6 +1209,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     const data = await res.json();
                     if (res.ok) {
                       setConsolidatorResult(data);
+                      setBuilderEffect(['read', 'draft', 'write'].includes(data.effect) ? data.effect : '');
+                      setBuilderLabel(data.approval?.label || '');
                       // Pre-fill test params
                       const fields = (data.required_fields || []) as string[];
                       const params: Record<string, string> = {};
@@ -1439,6 +1248,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                   <label className="n-label">
                     Test with sample inputs
                   </label>
+                  <div style={{ ...hint, marginTop: 0, marginBottom: 6 }}>Reads for real; never writes — any write it tries is shown, not sent.</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
                     {Object.keys(consolidatorTestParams).map(key => (
                       <div key={key} style={{ flex: '1 1 200px' }}>
@@ -1464,6 +1274,8 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                           body: JSON.stringify({
                             consolidator_config: consolidatorResult?.consolidator_config || {},
                             params: consolidatorTestParams,
+                            action: String(consolidatorResult?.action || ''),
+                            preview: true,
                           }),
                         });
                         const data = await res.json();
@@ -1494,10 +1306,44 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                 )}
 
                 {/* Step 4: Save */}
-                <div style={{ marginTop: '1rem', display: 'flex', gap: 8 }}>
+                <div style={{ marginTop: '1rem', ...twoColGrid }}>
+                  <div>
+                    <label className="n-label" htmlFor="builder-effect">What it does</label>
+                    <select
+                      id="builder-effect"
+                      value={builderEffect}
+                      onChange={e => setBuilderEffect(e.target.value as typeof builderEffect)}
+                      className="n-select"
+                      style={fieldStyle}
+                    >
+                      <option value="">Choose…</option>
+                      <option value="read">Read</option>
+                      <option value="draft">Draft</option>
+                      <option value="write">Write</option>
+                    </select>
+                    <div style={hint}>{builderEffect ? EFFECT_HINT[builderEffect] : 'Every tool declares one; it decides whether a person is asked.'}</div>
+                  </div>
+                  {builderEffect === 'write' && (
+                    <div>
+                      <label className="n-label" htmlFor="builder-label">Approval label</label>
+                      <input
+                        id="builder-label"
+                        value={builderLabel}
+                        onChange={e => setBuilderLabel(e.target.value)}
+                        placeholder="update stock items"
+                        className="n-input"
+                        style={fieldStyle}
+                      />
+                      <div style={hint}>Asks a person first; completes &ldquo;Always allow Norm to …&rdquo;.</div>
+                    </div>
+                  )}
+                </div>
+                <div style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <Button
                     variant="primary"
+                    disabled={!builderEffect || (builderEffect === 'write' && !builderLabel.trim())}
                     onClick={() => {
+                      const generated = (consolidatorResult?.approval || {}) as ToolApproval;
                       // Add as a new tool to the form
                       const newTool: ConnectorSpecTool = {
                         ...EMPTY_TOOL,
@@ -1505,8 +1351,13 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                         method: 'GET',
                         description: String(consolidatorResult?.description || ''),
                         required_fields: (consolidatorResult?.required_fields || []) as string[],
+                        optional_fields: (consolidatorResult?.optional_fields || []) as string[],
                         field_descriptions: (consolidatorResult?.field_descriptions || {}) as Record<string, string>,
                         consolidator_config: (consolidatorResult?.consolidator_config || {}) as Record<string, unknown>,
+                        effect: builderEffect || null,
+                        ...(builderEffect === 'write'
+                          ? { approval: { default: 'ask', allow_auto: true, ...generated, label: builderLabel.trim() } }
+                          : {}),
                       };
                       setForm(prev => {
                         const tools = [...prev.tools];
@@ -1520,10 +1371,13 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                       setConsolidatorResult(null);
                       setConsolidatorTestResult(null);
                       setConsolidatorPrompt('');
+                      setBuilderEffect('');
+                      setBuilderLabel('');
                     }}
                   >
-                    Add to spec
+                    Add to tools
                   </Button>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>Saved when you press Update spec</span>
                 </div>
               </div>
             ) : null}
@@ -1575,336 +1429,355 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
             />
           </div>
           <div>
-            <label className="n-label">Category</label>
-            <input
-              type="text"
-              value={form.category || ''}
-              onChange={e => update('category', e.target.value || null)}
-              placeholder="e.g. hr, procurement"
-              className="n-input"
+            <label className="n-label">Who signs in</label>
+            {/* Stored as the spec's category: "email" makes each person sign in
+                with their own account (oauth.py), "_platform" is one Norm-wide
+                key. Any other value is an old per-agent category and means
+                "each venue". */}
+            <select
+              value={form.category === 'email' ? 'person' : form.category === '_platform' ? 'platform' : 'venue'}
+              onChange={e => {
+                const v = e.target.value;
+                const legacy = form.category === 'email' || form.category === '_platform' ? null : form.category;
+                update('category', v === 'person' ? 'email' : v === 'platform' ? '_platform' : legacy);
+              }}
+              className="n-select"
               style={fieldStyle}
-            />
+            >
+              <option value="venue">Each venue</option>
+              <option value="person">Each person, with their own account</option>
+              <option value="platform">Norm-wide (one key)</option>
+            </select>
           </div>
           <div>
             <label className="n-label">Execution mode</label>
             <select
               value={form.execution_mode}
-              onChange={e => update('execution_mode', e.target.value as 'template' | 'agent' | 'internal')}
+              onChange={e => update('execution_mode', e.target.value as ConnectorSpecFull['execution_mode'])}
               className="n-select"
               style={fieldStyle}
             >
-              <option value="template">Template</option>
-              <option value="agent">Agent</option>
-              <option value="internal">Internal</option>
+              <option value="template">HTTP API (one request per endpoint)</option>
+              <option value="mcp">MCP server (Orbit / Cook Brothers App)</option>
+              <option value="internal">Built into Norm</option>
+              {form.execution_mode === 'agent' && <option value="agent">Agent (legacy)</option>}
             </select>
           </div>
         </div>
+        {(() => {
+          // One line per fact; the dialog holds the fields themselves.
+          const oauth = form.oauth_config;
+          const scopes = (oauth?.scopes || '').split(/\s+/).filter(Boolean).length;
+          const signIn = AUTH_OPTIONS.find(([v]) => v === form.auth_type)?.[1] ?? form.auth_type;
+          const oauthBits = form.auth_type !== 'oauth2' ? [] : [
+            oauth?.registration_url ? 'client registers itself' : oauth?.client_id ? `client ${oauth.client_id}` : 'no client ID yet',
+            scopes ? `${scopes} ${scopes === 1 ? 'scope' : 'scopes'}` : 'no scopes',
+          ];
+          const address = form.execution_mode === 'internal' ? null
+            : baseUrlMode === 'dynamic' ? `${displayPattern(form.base_url_template || '')} — each connection gives its ${domainFieldLabel || 'domain'}`
+            : form.base_url_template || null;
+          const asks = form.credential_fields.map(cf => cf.label || cf.key).filter(Boolean);
+          const term: React.CSSProperties = { color: 'var(--muted)', whiteSpace: 'nowrap' };
+          const desc: React.CSSProperties = { margin: 0, color: 'var(--text)', minWidth: 0, overflowWrap: 'anywhere' };
+          return (
+            <div style={{
+              marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line-soft)',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap',
+            }}>
+              <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 14px', fontSize: 'var(--fs-sm)', flex: '1 1 320px', minWidth: 0 }}>
+                <dt style={term}>Sign-in</dt>
+                <dd style={desc}>{[signIn, ...oauthBits].join(' · ')}</dd>
+                {form.execution_mode !== 'internal' && (
+                  <>
+                    <dt style={term}>{form.execution_mode === 'mcp' ? 'MCP server' : 'Address'}</dt>
+                    <dd style={{ ...desc, color: address ? 'var(--text)' : 'var(--warn)' }}>{address || 'Not set'}</dd>
+                  </>
+                )}
+                <dt style={term}>Asks for</dt>
+                <dd style={{ ...desc, color: asks.length ? 'var(--text)' : 'var(--muted)' }}>{asks.length ? asks.join(', ') : 'Nothing'}</dd>
+              </dl>
+              <Button size="sm" onClick={openConnection}>Edit connection</Button>
+            </div>
+          );
+        })()}
       </div>
 
-      {/* Auth */}
-      <div className="n-card" style={sectionStyle}>
-        <h4 style={{ ...sectionTitle, marginBottom: 16 }}>Authentication</h4>
-        <div style={twoColGrid}>
-          <div>
-            <label className="n-label">Auth type</label>
-            <select
-              value={form.auth_type}
-              onChange={e => update('auth_type', e.target.value)}
-              className="n-select"
-              style={fieldStyle}
-            >
-              <option value="none">None (Internal)</option>
-              <option value="bearer">Bearer token</option>
-              <option value="api_key_header">API key header</option>
-              <option value="basic">Basic auth</option>
-              <option value="oauth2">OAuth2</option>
-            </select>
-          </div>
-          <div>
-            <label className="n-label">Base URL mode</label>
-            <select
-              value={baseUrlMode}
-              onChange={e => {
-                const mode = e.target.value as 'fixed' | 'dynamic';
-                if (mode === 'fixed' && baseUrlMode === 'dynamic') {
-                  // Strip template vars for a clean starting point
-                  const clean = (form.base_url_template || '').replace(/\{\{[^}]*\}\}/g, '').replace(/\/+$/, '');
-                  update('base_url_template', clean || null);
-                  removeDomainCredField(domainFieldKey);
-                } else if (mode === 'dynamic' && baseUrlMode === 'fixed') {
-                  update('base_url_template', '');
-                  syncDomainCredField(domainFieldKey, domainFieldLabel);
-                }
-                setBaseUrlMode(mode);
-              }}
-              className="n-select"
-              style={fieldStyle}
-            >
-              <option value="fixed">Fixed URL</option>
-              <option value="dynamic">User-provided domain</option>
-            </select>
-          </div>
-        </div>
-        {baseUrlMode === 'fixed' ? (
-          <div style={{ marginTop: '0.75rem' }}>
-            <label className="n-label">Base URL</label>
-            <input
-              type="text"
-              value={form.base_url_template || ''}
-              onChange={e => update('base_url_template', e.target.value || null)}
-              placeholder="https://api.example.com/v1"
-              className="n-input"
-              style={fieldStyle}
-            />
-          </div>
-        ) : (
-          <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            <div>
-              <label className="n-label">URL pattern (use {'{{ domain }}'} as placeholder)</label>
-              <input
-                type="text"
-                value={displayPattern(form.base_url_template || '')}
-                onChange={e => {
-                  const stored = storagePattern(e.target.value, domainFieldKey);
-                  update('base_url_template', stored || null);
-                }}
-                placeholder="https://{{ domain }}.bamboohr.com/api"
-                className="n-input"
-                style={codeFieldStyle}
-              />
-            </div>
-            <div style={twoColGrid}>
-              <div>
-                <label className="n-label">Field key</label>
-                <input
-                  type="text"
-                  value={domainFieldKey}
-                  onChange={e => {
-                    const newKey = e.target.value;
-                    const oldKey = domainFieldKey;
-                    setDomainFieldKey(newKey);
-                    // Update the template to use the new key
-                    if (form.base_url_template) {
-                      update('base_url_template', form.base_url_template.replace(
-                        new RegExp(`\\{\\{\\s*creds\\.${oldKey}\\s*\\}\\}`, 'g'),
-                        `{{ creds.${newKey} }}`
-                      ));
-                    }
-                    syncDomainCredField(newKey, domainFieldLabel, oldKey);
-                  }}
-                  placeholder="subdomain"
-                  className="n-input"
-                  style={fieldStyle}
-                />
-              </div>
-              <div>
-                <label className="n-label">Field label</label>
-                <input
-                  type="text"
-                  value={domainFieldLabel}
-                  onChange={e => {
-                    setDomainFieldLabel(e.target.value);
-                    syncDomainCredField(domainFieldKey, e.target.value);
-                  }}
-                  placeholder="BambooHR Subdomain (e.g. mycompany)"
-                  className="n-input"
-                  style={fieldStyle}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-        <div style={{ marginTop: '0.75rem' }}>
-          <label className="n-label">Auth config (JSON)</label>
-          <JsonTextarea
-            value={form.auth_config}
-            onChange={v => update('auth_config', (v ?? {}) as Record<string, unknown>)}
-            rows={3}
-            style={codeFieldStyle}
-          />
-        </div>
-      </div>
+      {/* Sign-in, address and what each connection asks for — set once, so
+          they live in a dialog behind the summary in the Basic card. */}
+      {connectionSnapshot && (
+        <Dialog title="Connection" width={680} onClose={cancelConnection} closeButton>
+          <p style={{ ...sectionNote, margin: '-8px 0 4px' }}>
+            How Norm reaches {form.display_name || 'this system'} and signs in. Changes are saved with Update spec.
+          </p>
 
-      {/* OAuth Config (shown when auth_type is oauth2) */}
-      {form.auth_type === 'oauth2' && (
-        <div className="n-card" style={sectionStyle}>
-          <h4 style={{ ...sectionTitle, marginBottom: 16 }}>OAuth 2.0 configuration</h4>
-          <div style={{
-            marginBottom: '0.75rem',
-            padding: '8px 10px',
-            backgroundColor: 'var(--info-bg)',
-            borderRadius: 'var(--radius)',
-            fontSize: 'var(--fs-sm)',
-            color: 'var(--info)',
-            wordBreak: 'break-all',
-          }}>
-            <span style={{ fontWeight: 600 }}>Redirect URI: </span>
-            {typeof window !== 'undefined' ? `${window.location.origin}/api/oauth/callback` : '(loading...)'}
-          </div>
+          <h4 style={{ ...dialogSection, marginTop: 16 }}>Sign-in and address</h4>
           <div style={twoColGrid}>
             <div>
-              <label className="n-label">Authorize URL</label>
-              <input
-                type="text"
-                value={form.oauth_config?.authorize_url || ''}
-                onChange={e => update('oauth_config', { ...form.oauth_config, authorize_url: e.target.value } as ConnectorSpecFull['oauth_config'])}
-                placeholder="https://provider.com/oauth/authorize"
-                className="n-input"
-                style={fieldStyle}
-              />
-            </div>
-            <div>
-              <label className="n-label">Token URL</label>
-              <input
-                type="text"
-                value={form.oauth_config?.token_url || ''}
-                onChange={e => update('oauth_config', { ...form.oauth_config, token_url: e.target.value } as ConnectorSpecFull['oauth_config'])}
-                placeholder="https://provider.com/oauth/token"
-                className="n-input"
-                style={fieldStyle}
-              />
-            </div>
-            <div>
-              <label className="n-label">Client ID</label>
-              <input
-                type="text"
-                value={form.oauth_config?.client_id || ''}
-                onChange={e => update('oauth_config', { ...form.oauth_config, client_id: e.target.value } as ConnectorSpecFull['oauth_config'])}
-                placeholder="your-client-id"
-                className="n-input"
-                style={fieldStyle}
-              />
-            </div>
-            <div>
-              <label className="n-label">Client secret</label>
-              <input
-                type="password"
-                value={form.oauth_config?.client_secret || ''}
-                onChange={e => update('oauth_config', { ...form.oauth_config, client_secret: e.target.value } as ConnectorSpecFull['oauth_config'])}
-                placeholder="your-client-secret"
-                className="n-input"
-                style={fieldStyle}
-              />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <label className="n-label">Scopes</label>
-              <input
-                type="text"
-                value={form.oauth_config?.scopes || ''}
-                onChange={e => update('oauth_config', { ...form.oauth_config, scopes: e.target.value } as ConnectorSpecFull['oauth_config'])}
-                placeholder="e.g. core:time:rw"
-                className="n-input"
-                style={fieldStyle}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Credential Fields */}
-      <div className="n-card" style={sectionStyle}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-          <h4 style={sectionTitle}>Credential fields</h4>
-          <Button size="sm" icon={Plus} onClick={addCredentialField}>
-            Add
-          </Button>
-        </div>
-        {form.credential_fields.map((cf, idx) => (
-          <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '0.5rem' }}>
-            <input
-              type="text"
-              value={cf.key}
-              onChange={e => updateCredentialField(idx, 'key', e.target.value)}
-              placeholder="key"
-              className="n-input"
-              style={{ flex: 1, minWidth: 0 }}
-            />
-            <input
-              type="text"
-              value={cf.label}
-              onChange={e => updateCredentialField(idx, 'label', e.target.value)}
-              placeholder="label"
-              className="n-input"
-              style={{ flex: 1, minWidth: 0 }}
-            />
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', whiteSpace: 'nowrap' }}>
-              <input
-                type="checkbox"
-                checked={cf.secret}
-                onChange={e => updateCredentialField(idx, 'secret', e.target.checked)}
-              />
-              Secret
-            </label>
-            <IconButton icon={X} label="Remove credential field" onClick={() => removeCredentialField(idx)} />
-          </div>
-        ))}
-      </div>
-
-      {/* Connection Test */}
-      <div className="n-card" style={sectionStyle}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-          <h4 style={sectionTitle}>Connection test</h4>
-          {!form.test_request ? (
-            <Button
-              size="sm"
-              icon={Plus}
-              onClick={() => update('test_request', { method: 'GET', path_template: '', headers: {}, success_status_codes: [200], timeout_seconds: 15 })}
-            >
-              Add test
-            </Button>
-          ) : (
-            <Button variant="danger" size="sm" onClick={() => update('test_request', null)}>
-              Remove
-            </Button>
-          )}
-        </div>
-        {!form.test_request ? (
-          <p style={emptyNote}>
-            No test configured. Add a lightweight API call (e.g. a GET to a health or list endpoint) to verify credentials from the Connectors tab.
-          </p>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '0.75rem', alignItems: 'start' }}>
-            <div>
-              <label className="n-label">Method</label>
+              <label className="n-label">Sign-in</label>
               <select
-                value={form.test_request.method}
-                onChange={e => update('test_request', { ...form.test_request, method: e.target.value } as TestRequest)}
+                value={form.auth_type}
+                onChange={e => update('auth_type', e.target.value)}
                 className="n-select"
                 style={fieldStyle}
               >
-                <option value="GET">GET</option>
-                <option value="POST">POST</option>
-                <option value="HEAD">HEAD</option>
+                {AUTH_OPTIONS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
               </select>
             </div>
-            <div>
-              <label className="n-label">Path</label>
-              <input
-                type="text"
-                value={form.test_request.path_template}
-                onChange={e => update('test_request', { ...form.test_request, path_template: e.target.value } as TestRequest)}
-                placeholder="/api/v1/ping"
-                className="n-input"
+            {form.execution_mode !== 'internal' && <div>
+              <label className="n-label">Base URL mode</label>
+              <select
+                value={baseUrlMode}
+                onChange={e => {
+                  const mode = e.target.value as 'fixed' | 'dynamic';
+                  if (mode === 'fixed' && baseUrlMode === 'dynamic') {
+                    // Strip template vars for a clean starting point
+                    const clean = (form.base_url_template || '').replace(/\{\{[^}]*\}\}/g, '').replace(/\/+$/, '');
+                    update('base_url_template', clean || null);
+                    removeDomainCredField(domainFieldKey);
+                  } else if (mode === 'dynamic' && baseUrlMode === 'fixed') {
+                    update('base_url_template', '');
+                    syncDomainCredField(domainFieldKey, domainFieldLabel);
+                  }
+                  setBaseUrlMode(mode);
+                }}
+                className="n-select"
                 style={fieldStyle}
-              />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <label className="n-label">Success status codes (comma-separated)</label>
-              <input
-                type="text"
-                value={(form.test_request.success_status_codes || [200]).join(', ')}
-                onChange={e => update('test_request', {
-                  ...form.test_request,
-                  success_status_codes: e.target.value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)),
-                } as TestRequest)}
-                placeholder="200"
-                className="n-input"
-                style={fieldStyle}
-              />
-            </div>
+              >
+                <option value="fixed">Fixed URL</option>
+                <option value="dynamic">User-provided domain</option>
+              </select>
+            </div>}
           </div>
-        )}
-      </div>
+          {form.execution_mode === 'internal' ? (
+            <p style={{ ...emptyNote, marginTop: '0.75rem' }}>Built into Norm — no URL; its tools run Norm’s own code.</p>
+          ) : baseUrlMode === 'fixed' ? (
+            <div style={{ marginTop: '0.75rem' }}>
+              <label className="n-label">{form.execution_mode === 'mcp' ? 'MCP server URL' : 'Base URL'}</label>
+              <input
+                type="text"
+                value={form.base_url_template || ''}
+                onChange={e => update('base_url_template', e.target.value || null)}
+                placeholder={form.execution_mode === 'mcp' ? 'https://example.com/mcp' : 'https://api.example.com/v1'}
+                className="n-input"
+                style={fieldStyle}
+              />
+            </div>
+          ) : (
+            <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div>
+                <label className="n-label">URL pattern (use {'{{ domain }}'} as placeholder)</label>
+                <input
+                  type="text"
+                  value={displayPattern(form.base_url_template || '')}
+                  onChange={e => {
+                    const stored = storagePattern(e.target.value, domainFieldKey);
+                    update('base_url_template', stored || null);
+                  }}
+                  placeholder="https://{{ domain }}.bamboohr.com/api"
+                  className="n-input"
+                  style={codeFieldStyle}
+                />
+              </div>
+              <div style={twoColGrid}>
+                <div>
+                  <label className="n-label">Field key</label>
+                  <input
+                    type="text"
+                    value={domainFieldKey}
+                    onChange={e => {
+                      const newKey = e.target.value;
+                      const oldKey = domainFieldKey;
+                      setDomainFieldKey(newKey);
+                      // Update the template to use the new key
+                      if (form.base_url_template) {
+                        update('base_url_template', form.base_url_template.replace(
+                          new RegExp(`\\{\\{\\s*creds\\.${oldKey}\\s*\\}\\}`, 'g'),
+                          `{{ creds.${newKey} }}`
+                        ));
+                      }
+                      syncDomainCredField(newKey, domainFieldLabel, oldKey);
+                    }}
+                    placeholder="subdomain"
+                    className="n-input"
+                    style={fieldStyle}
+                  />
+                </div>
+                <div>
+                  <label className="n-label">Field label</label>
+                  <input
+                    type="text"
+                    value={domainFieldLabel}
+                    onChange={e => {
+                      setDomainFieldLabel(e.target.value);
+                      syncDomainCredField(domainFieldKey, e.target.value);
+                    }}
+                    placeholder="BambooHR Subdomain (e.g. mycompany)"
+                    className="n-input"
+                    style={fieldStyle}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {form.auth_type === 'oauth2' && (
+            <>
+              <h4 style={dialogSection}>OAuth</h4>
+              <div style={{
+                marginBottom: '0.75rem',
+                padding: '8px 10px',
+                backgroundColor: 'var(--info-bg)',
+                borderRadius: 'var(--radius)',
+                fontSize: 'var(--fs-sm)',
+                color: 'var(--info)',
+                wordBreak: 'break-all',
+              }}>
+                <span style={{ fontWeight: 600 }}>Redirect URI: </span>
+                {typeof window !== 'undefined' ? `${window.location.origin}/api/oauth/callback` : '(loading...)'}
+                <div style={{ color: 'var(--text-soft)', marginTop: 2 }}>
+                  This environment’s. The spec is shared, so each environment (production, staging, local) uses its own
+                  /api/oauth/callback — register every one with the provider.
+                </div>
+              </div>
+              {form.oauth_config?.registration_url && (
+                <p style={{ ...emptyNote, marginBottom: '0.75rem' }}>
+                  This client registers itself (dynamic registration at {String(form.oauth_config.registration_url)}): the client ID
+                  is filled in automatically and there is no secret. Leave them alone — editing them breaks the connection.
+                </p>
+              )}
+              <div style={twoColGrid}>
+                <div>
+                  <label className="n-label">Authorize URL</label>
+                  <input
+                    type="text"
+                    value={form.oauth_config?.authorize_url || ''}
+                    onChange={e => update('oauth_config', { ...form.oauth_config, authorize_url: e.target.value } as ConnectorSpecFull['oauth_config'])}
+                    placeholder="https://provider.com/oauth/authorize"
+                    className="n-input"
+                    style={fieldStyle}
+                  />
+                </div>
+                <div>
+                  <label className="n-label">Token URL</label>
+                  <input
+                    type="text"
+                    value={form.oauth_config?.token_url || ''}
+                    onChange={e => update('oauth_config', { ...form.oauth_config, token_url: e.target.value } as ConnectorSpecFull['oauth_config'])}
+                    placeholder="https://provider.com/oauth/token"
+                    className="n-input"
+                    style={fieldStyle}
+                  />
+                </div>
+                <div>
+                  <label className="n-label">Client ID</label>
+                  <input
+                    type="text"
+                    value={form.oauth_config?.client_id || ''}
+                    onChange={e => update('oauth_config', { ...form.oauth_config, client_id: e.target.value } as ConnectorSpecFull['oauth_config'])}
+                    placeholder={form.oauth_config?.registration_url ? 'filled in automatically' : 'your-client-id'}
+                    readOnly={!!form.oauth_config?.registration_url}
+                    className="n-input"
+                    style={fieldStyle}
+                  />
+                </div>
+                {!form.oauth_config?.registration_url && (
+                  <div>
+                    <label className="n-label">Client secret</label>
+                    <input
+                      type="password"
+                      value={form.oauth_config?.client_secret || ''}
+                      onChange={e => update('oauth_config', { ...form.oauth_config, client_secret: e.target.value } as ConnectorSpecFull['oauth_config'])}
+                      placeholder="your-client-secret"
+                      className="n-input"
+                      style={fieldStyle}
+                    />
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 4 }}>
+                      Never shown once saved. Leave the dots to keep it; type a new one to replace it.
+                    </div>
+                  </div>
+                )}
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label className="n-label">Scopes</label>
+                  <AutoResizeTextarea
+                    value={form.oauth_config?.scopes || ''}
+                    onChange={e => update('oauth_config', { ...form.oauth_config, scopes: e.target.value.replace(/\s*\n\s*/g, ' ') } as ConnectorSpecFull['oauth_config'])}
+                    placeholder="e.g. core:time:rw"
+                    style={codeFieldStyle}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 12, margin: '22px 0 10px' }}>
+            <div>
+              <h4 style={{ ...dialogSection, margin: 0 }}>What each connection asks for</h4>
+              <p style={{ ...sectionNote, margin: '2px 0 0' }}>
+                Typed in when a venue or person connects. {'{{ creds.KEY }}'} and the auth config read each one by its key.
+              </p>
+            </div>
+            <Button size="sm" icon={Plus} onClick={addCredentialField}>Add</Button>
+          </div>
+          {form.credential_fields.length === 0 && <p style={emptyNote}>None — the sign-in needs nothing typed in.</p>}
+          {form.credential_fields.map((cf, idx) => (
+            <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '0.5rem' }}>
+              <input
+                type="text"
+                value={cf.key}
+                onChange={e => updateCredentialField(idx, 'key', e.target.value)}
+                aria-label="Key"
+                placeholder="key, e.g. api_key"
+                className="n-input"
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <input
+                type="text"
+                value={cf.label}
+                onChange={e => updateCredentialField(idx, 'label', e.target.value)}
+                aria-label="Label shown when connecting"
+                placeholder="label, e.g. API key"
+                className="n-input"
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', whiteSpace: 'nowrap' }}>
+                <input
+                  type="checkbox"
+                  checked={cf.secret}
+                  onChange={e => updateCredentialField(idx, 'secret', e.target.checked)}
+                />
+                Secret
+              </label>
+              <IconButton icon={X} label="Remove credential field" onClick={() => removeCredentialField(idx)} />
+            </div>
+          ))}
+
+          <details style={{ marginTop: 20 }}>
+            <summary style={{ ...detailsSummary, fontSize: 'var(--fs-sm)' }}>Advanced — auth config (JSON)</summary>
+            <p style={{ ...sectionNote, margin: '8px 0 6px' }}>
+              Where the sign-in reads its values, e.g. {'{"header_name": "X-API-Key"}'}. Most specs leave it as it is.
+            </p>
+            <JsonTextarea
+              value={form.auth_config}
+              onChange={v => update('auth_config', (v ?? {}) as Record<string, unknown>)}
+              rows={3}
+              style={codeFieldStyle}
+            />
+          </details>
+
+          {/* Pinned to the bottom of the dialog, which scrolls when the OAuth fields are open. */}
+          <div style={{
+            position: 'sticky', bottom: -24, margin: '24px -24px -24px', padding: '12px 24px 24px',
+            display: 'flex', justifyContent: 'flex-end', gap: 8,
+            backgroundColor: 'var(--bg)', borderTop: '1px solid var(--line)',
+          }}>
+            <Button onClick={cancelConnection}>Cancel</Button>
+            <Button variant="primary" onClick={() => setConnectionSnapshot(null)}>Done</Button>
+          </div>
+        </Dialog>
+      )}
+
+      {/* No "Connection test" card: nothing in the app runs a spec's
+          test_request (Oct 2026), so it is left as stored and not offered. */}
 
       {/* Operations */}
       <div className="n-card" style={sectionStyle}>
@@ -1913,7 +1786,7 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
             <h4 style={sectionTitle}>Tools</h4>
             <p style={sectionNote}>
               {split
-                ? 'What an LLM can see — consolidators and built-ins. A tool reaches the agent only when an App claims it.'
+                ? 'What an LLM can see — consolidators and built-ins. A tool reaches Norm or MCP only when an App claims it (Settings → App map).'
                 : 'Not split yet: tools and API endpoints are still one list.'}
             </p>
           </div>
@@ -1923,189 +1796,38 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
             </Button>
             {!split && (
               <Button size="sm" icon={Plus} onClick={addTool}>
-                Add tool
+                Endpoint
               </Button>
             )}
           </div>
         </div>
-        {form.tools.length > 0 && !isNew && (
-          <div style={{
-            border: '1px solid var(--line)',
-            borderRadius: 'var(--radius)',
-            padding: '14px 16px',
-            marginBottom: 16,
-            backgroundColor: 'var(--surface)',
-          }}>
-            <h5 style={{ margin: '0 0 10px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Try tool</h5>
-            <div style={{ marginBottom: '0.5rem' }}>
-              <label className="n-label">Tool</label>
-              <select
-                value={tryToolAction}
-                onChange={e => {
-                  const action = e.target.value;
-                  setTryToolAction(action);
-                  setTryDryRunResult(null);
-                  setTryTestResult(null);
-                  setTryError(null);
-                  // Pre-populate field inputs for the selected tool
-                  const tool = form.tools.find(t => t.action === action);
-                  if (tool) {
-                    const fields: Record<string, string> = {};
-                    for (const key of Object.keys(tool.field_mapping)) {
-                      // Extract example from format hint e.g. "(e.g., 2026-03-16T06:00:00+13:00)"
-                      const hint = tool.field_descriptions?.[key] || '';
-                      const exampleMatch = hint.match(/\(e\.g\.?,?\s*(.+?)\)\s*$/);
-                      fields[key] = exampleMatch ? exampleMatch[1].trim() : '';
-                    }
-                    setTryToolFields(fields);
-                  } else {
-                    setTryToolFields({});
-                  }
-                }}
-                className="n-select"
-                style={fieldStyle}
-              >
-                <option value="">Select a tool...</option>
-                {form.tools.map((t, i) => (
-                  <option key={`${t.action}-${i}`} value={t.action}>
-                    {t.action} ({t.method} {t.path_template})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {venues.length > 0 && (
-              <div style={{ marginBottom: '0.5rem' }}>
-                <label className="n-label">Venue</label>
-                <select value={tryVenueId} onChange={e => setTryVenueId(e.target.value)} className="n-select" style={fieldStyle}>
-                  <option value="">Any venue</option>
-                  {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
-              </div>
-            )}
-
-            {selectedTool && (
-              <>
-                <div style={{ marginBottom: '0.5rem' }}>
-                  <label className="n-label" style={{ marginBottom: 6 }}>Fields</label>
-                  {Object.keys(selectedTool.field_mapping).length === 0 && (
-                    <p style={emptyNote}>
-                      No fields defined for this tool.
-                    </p>
-                  )}
-                  {Object.keys(selectedTool.field_mapping).map(fieldKey => (
-                    <div key={fieldKey} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      <label className="n-label" style={{ width: 130, flexShrink: 0, marginBottom: 0, overflowWrap: 'anywhere' }}>
-                        {fieldKey}
-                        {selectedTool.required_fields.includes(fieldKey) && (
-                          <span style={{ color: 'var(--error)', marginLeft: 2 }}>*</span>
-                        )}
-                      </label>
-                      <input
-                        type="text"
-                        value={tryToolFields[fieldKey] ?? ''}
-                        onChange={e => setTryToolFields(prev => ({ ...prev, [fieldKey]: e.target.value }))}
-                        placeholder={selectedTool.field_descriptions?.[fieldKey] || selectedTool.field_mapping[fieldKey] || fieldKey}
-                        className="n-input"
-                        style={{ flex: 1, minWidth: 0 }}
-                      />
-                    </div>
-                  ))}
-                </div>
-
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => handleTryRun('render')}
-                    disabled={tryLoading !== null}
-                  >
-                    {tryLoading === 'render' ? 'Rendering...' : 'Render'}
-                  </Button>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => handleTryRun('test')}
-                    disabled={tryLoading !== null}
-                  >
-                    {tryLoading === 'test' ? 'Testing...' : 'Test (live)'}
-                  </Button>
-                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
-                    Test makes a real HTTP call
-                  </span>
-                </div>
-
-                {tryError && (
-                  <p role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', marginTop: '0.5rem', marginBottom: 0 }}>
-                    {tryError}
-                  </p>
-                )}
-
-                {tryDryRunResult && (
-                  <div style={{ marginTop: '0.75rem' }}>
-                    <div style={groupLabel}>Rendered request</div>
-                    <pre style={codeBlock}>
-                      {JSON.stringify(tryDryRunResult, null, 2)}
-                    </pre>
-                  </div>
-                )}
-
-                {tryTestResult && (() => {
-                  const rendered = tryTestResult.rendered_request as Record<string, unknown> | undefined;
-                  const payload = tryTestResult.response_payload;
-                  const preStyle: React.CSSProperties = { ...codeBlock, maxHeight: 300 };
-                  return (
-                    <div style={{ marginTop: '0.75rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: '0.5rem' }}>
-                        <Badge tone={tryTestResult.success ? 'ok' : 'error'}>
-                          {tryTestResult.success ? 'Success' : 'Failed'}
-                        </Badge>
-                        {'error' in tryTestResult && Boolean(tryTestResult.error) && (
-                          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>{String(tryTestResult.error)}</span>
-                        )}
-                      </div>
-                      {rendered && rendered.url ? (
-                        <div style={{ marginBottom: '0.75rem' }}>
-                          <div style={groupLabel}>Request</div>
-                          <pre style={preStyle}>
-                            {`${rendered.method} ${rendered.url}\n`}
-                            {!!(rendered.headers && Object.keys(rendered.headers as Record<string, string>).length > 0) &&
-                              `${Object.entries(rendered.headers as Record<string, string>).map(([k, v]) => `${k}: ${v}`).join('\n')}\n`}
-                            {rendered.body ? `\n${typeof rendered.body === 'string' ? rendered.body : JSON.stringify(rendered.body, null, 2)}` : ''}
-                          </pre>
-                        </div>
-                      ) : (
-                        <div style={{ marginBottom: '0.75rem' }}>
-                          <div style={groupLabel}>Request</div>
-                          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-                            No request was sent — check that required fields are filled in above.
-                          </div>
-                        </div>
-                      )}
-                      <div style={{ marginBottom: '0.5rem' }}>
-                        <div style={groupLabel}>Response</div>
-                        <pre style={preStyle}>
-                          {payload ? JSON.stringify(payload, null, 2) : '(empty)'}
-                        </pre>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </>
-            )}
-          </div>
-        )}
-
         {(() => {
         const renderRow = (op: ConnectorSpecTool, idx: number) => {
           const isCollapsed = collapsedTools.has(idx);
           const inv = inventory[op.action];
           const isEndpoint = split ? op._list === 'endpoints' : inv?.kind === 'endpoint';
-          const build = inv?.build ?? (op.consolidator_config ? 'consolidator' : null);
+          // A consolidator is a row with code; a built-in is Norm code registered
+          // under the row's name. A tool that is neither makes its HTTP call raw.
+          const build = isEndpoint ? 'endpoint'
+            : op.consolidator_config?.function_code ? 'consolidator'
+            : inv?.build === 'built-in' || (!inv && form.execution_mode === 'internal') ? 'built-in'
+            : inventoryLoaded || isNew ? 'raw'
+            : null;
+          const isMcp = form.execution_mode === 'mcp';
+          const showHttp = (build === 'endpoint' || build === 'raw') && form.execution_mode === 'template';
+          const approval = op.approval || {};
+          const effectBadge = isEndpoint ? null
+            : op.effect === 'write'
+              ? approval.levels?.length ? 'Write · by level' : approval.default === 'auto' ? 'Write · runs' : 'Write · asks'
+              : op.effect === 'draft' ? 'Draft' : op.effect === 'read' ? 'Read' : null;
           const removeBlocked = isEndpoint
             ? (inv?.used_by.length ? `Used by ${inv.used_by.join(', ')} — change those first` : '')
             : (inv?.app ? `The ${inv.app.name} App claims this tool — remove the claim first` : '');
           const isDragOver = dragOverIdx === idx && dragIdx !== idx;
+          const patch = (p: Partial<ConnectorSpecTool>) => setForm(prev => ({
+            ...prev,
+            tools: prev.tools.map((o, i) => (i === idx ? { ...o, ...p } : o)),
+          }));
           return (
             <div
               key={idx}
@@ -2146,32 +1868,44 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                   ><Icon icon={GripVertical} size="dense" /></span>
                   <Icon icon={isCollapsed ? ChevronRight : ChevronDown} size="dense" tone="muted" />
                   <span style={{ fontWeight: 500, fontSize: 'var(--fs-base)', color: 'var(--text)', overflowWrap: 'anywhere' }}>
-                    {op.action || (isEndpoint ? `Endpoint ${idx + 1}` : `Tool ${idx + 1}`)}
+                    {op.action || (isEndpoint ? 'New endpoint' : 'New tool')}
                   </span>
-                  {!isEndpoint && build === 'built-in' ? (
-                    <Badge title={inv?.code ? `Norm code runs instead of this row: ${inv.code}` : 'Norm code'}>Built-in</Badge>
-                  ) : !isEndpoint && build === 'consolidator' ? (
-                    <Badge>Consolidator</Badge>
-                  ) : (
-                    <>
-                      {op.method && (
-                        <Badge>{op.method}</Badge>
-                      )}
-                      {op.path_template && (
-                        <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', overflowWrap: 'anywhere' }}>
-                          {op.path_template}
-                        </span>
-                      )}
-                    </>
+                  {build === 'built-in' && (
+                    <Badge title={inv?.code ? `Norm code runs when this tool is called: ${inv.code}` : 'Norm code runs when this tool is called'}>Built-in</Badge>
                   )}
+                  {build === 'consolidator' && <Badge>Consolidator</Badge>}
+                  {build === 'raw' && (
+                    <Badge tone="warn" title="Neither a consolidator nor a built-in: an LLM calling it makes this HTTP call directly">Direct call</Badge>
+                  )}
+                  {effectBadge && (
+                    <Badge
+                      tone={op.effect === 'write' ? 'warn' : op.effect === 'draft' ? 'info' : 'neutral'}
+                      title={op.effect === 'write' ? (approval.label ? `Approval: ${approval.label}` : 'Changes data') : EFFECT_HINT[op.effect || '']}
+                    >{effectBadge}</Badge>
+                  )}
+                  {(isEndpoint || build === 'raw') && (isMcp
+                    ? <Badge>{isWriteRow(op) ? 'Write' : 'Read'}</Badge>
+                    : (
+                      <>
+                        {op.method && <Badge>{op.method}</Badge>}
+                        {op.path_template && (
+                          <span title={op.path_template} style={{
+                            fontSize: 'var(--fs-sm)', color: 'var(--muted)', maxWidth: 'min(440px, 100%)',
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>
+                            {op.path_template}
+                          </span>
+                        )}
+                      </>
+                    ))}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 10px' }}>
                   {!isEndpoint && inv && (
                     <Badge
                       tone={inv.app ? 'ok' : 'neutral'}
                       title={inv.app
-                        ? `The ${inv.app.name} App puts this tool in front of the agent`
-                        : 'No App claims this tool: the agent never sees it — other tools may use it'}>
+                        ? `The ${inv.app.name} App puts this tool in front of Norm and MCP`
+                        : 'No App claims this tool, so no LLM sees it'}>
                       {inv.app ? inv.app.name : 'Not exposed'}
                     </Badge>
                   )}
@@ -2185,21 +1919,22 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
                     </span>
                   )}
                   {isEndpoint && inv && inv.used_by.length === 0 && (
-                    <span style={rowMeta} title="No tool calls this endpoint">unused</span>
+                    <span style={rowMeta} title="No consolidator calls this endpoint">unused</span>
                   )}
                   {!isEndpoint && inv && inv.calls_30d > 0 && (
-                    <span style={rowMeta} title="Direct calls in the last 30 days">{inv.calls_30d} calls</span>
+                    <span style={rowMeta} title="Calls in the last 30 days">{inv.calls_30d} calls</span>
                   )}
-                  <span style={rowMeta}
-                    title="When this row was first added to the spec">
-                    {op.added_at ? `added ${new Date(op.added_at).toLocaleDateString()}` : 'added —'}
-                  </span>
+                  {op.added_at && (
+                    <span style={rowMeta} title="When this row was first added to the spec">
+                      added {new Date(op.added_at).toLocaleDateString()}
+                    </span>
+                  )}
                   <Button
                     variant="danger"
                     size="sm"
                     disabled={!!removeBlocked}
                     title={removeBlocked || 'Remove (saved when you press Update spec)'}
-                    onClick={(e) => { e.stopPropagation(); if (!removeBlocked) removeTool(idx); }}
+                    onClick={(e) => { e.stopPropagation(); if (!removeBlocked) setRemovingIdx(idx); }}
                   >
                     Remove
                   </Button>
@@ -2207,326 +1942,164 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
               </div>
               {!isCollapsed && (
                 <div style={{ padding: '14px 16px' }}>
-                  {!isEndpoint && build === 'built-in' && (
-                    <p style={{ margin: '0 0 0.75rem', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
-                      Built-in: Norm code{inv?.code ? <> at <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', background: 'var(--surface-alt)', padding: '1px 4px', borderRadius: 'var(--radius-sm)' }}>{inv.code}</code></> : ''} runs instead of this row.
-                      The description and fields below are what the agent sees; the behaviour lives in code.
-                    </p>
-                  )}
-                  {op.consolidator_config ? (
+                  {build === 'consolidator' ? (
                     <ConsolidatorToolEditor
                       op={op}
                       idx={idx}
                       updateTool={updateTool}
-                      setForm={setForm}
+                      reviewedFile={inv?.reviewed_file}
                     />
                   ) : (
-                  <>
-                  <div style={twoColGrid}>
-                    <div>
-                      <label className="n-label">Action</label>
-                      <input
-                        type="text"
-                        value={op.action}
-                        onChange={e => updateTool(idx, 'action', e.target.value)}
-                        placeholder="create_employee"
-                        className="n-input"
-                        style={fieldStyle}
-                      />
-                    </div>
-                    <div>
-                      <label className="n-label">Method</label>
-                      <select
-                        value={op.method}
-                        onChange={e => updateTool(idx, 'method', e.target.value)}
-                        className="n-select"
-                        style={fieldStyle}
-                      >
-                        <option value="GET">GET</option>
-                        <option value="POST">POST</option>
-                        <option value="PUT">PUT</option>
-                        <option value="PATCH">PATCH</option>
-                        <option value="DELETE">DELETE</option>
-                      </select>
-                    </div>
-                    <div style={{ gridColumn: '1 / -1' }}>
-                      <label className="n-label">Description</label>
-                      <input
-                        type="text"
-                        value={op.description || ''}
-                        onChange={e => updateTool(idx, 'description', e.target.value || undefined)}
-                        placeholder="e.g. Get a roster by date"
-                        className="n-input"
-                        style={fieldStyle}
-                      />
-                    </div>
-                    <div style={{ gridColumn: '1 / -1' }}>
-                      <label className="n-label">Path template</label>
-                      <input
-                        type="text"
-                        value={op.path_template}
-                        onChange={e => updateTool(idx, 'path_template', e.target.value)}
-                        placeholder="/api/v1/employees"
-                        className="n-input"
-                        style={fieldStyle}
-                      />
-                    </div>
-                    <div>
-                      <label className="n-label">Success status codes (comma-separated)</label>
-                      <input
-                        type="text"
-                        value={(op.success_status_codes || [200]).join(', ')}
-                        onChange={e => updateTool(idx, 'success_status_codes', e.target.value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)))}
-                        placeholder="200, 201"
-                        className="n-input"
-                        style={fieldStyle}
-                      />
-                    </div>
-                    <div>
-                      <label className="n-label">Response ref path</label>
-                      <input
-                        type="text"
-                        value={op.response_ref_path || ''}
-                        onChange={e => updateTool(idx, 'response_ref_path', e.target.value || null)}
-                        placeholder="body.id"
-                        className="n-input"
-                        style={fieldStyle}
-                      />
-                    </div>
-                    <div>
-                      <label className="n-label">Timeout (seconds)</label>
-                      <input
-                        type="number"
-                        value={op.timeout_seconds || 30}
-                        onChange={e => updateTool(idx, 'timeout_seconds', parseInt(e.target.value, 10) || 30)}
-                        className="n-input"
-                        style={fieldStyle}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Fields */}
-                  <div style={{ marginTop: '1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                      <label className="n-label" style={{ marginBottom: 0 }}>Fields</label>
-                      <Button
-                        size="sm"
-                        icon={Plus}
-                        onClick={() => {
-                          let newKey = 'new_field';
-                          let suffix = 1;
-                          while (newKey in (op.field_mapping || {})) { newKey = `new_field_${suffix++}`; }
-                          const updated = { ...(op.field_mapping || {}), [newKey]: '' };
-                          updateTool(idx, 'field_mapping', updated);
-                        }}
-                      >
-                        Add field
-                      </Button>
-                    </div>
-                    {Object.keys(op.field_mapping || {}).length === 0 && (
-                      <p style={{ ...emptyNote, margin: '0 0 0.25rem' }}>
-                        No fields defined. Add fields to map source data to API parameters.
-                      </p>
-                    )}
-                    {Object.keys(op.field_mapping || {}).length > 0 && (
-                      <div style={{
-                        border: '1px solid var(--line)',
-                        borderRadius: 'var(--radius)',
-                        overflowX: 'auto',
-                        backgroundColor: 'var(--bg)',
-                      }}>
-                        {/* Scrolls sideways on a phone rather than squeezing five columns. */}
-                        <div style={{ minWidth: 560 }}>
-                          {/* Header row in the .n-table look: 12px/600 on the hover fill, strong rule. */}
-                          <div style={{
-                            display: 'grid',
-                            gridTemplateColumns: '1fr 1fr 1.5fr 70px 40px',
-                            gap: 0,
-                            backgroundColor: 'var(--surface-alt)',
-                            padding: '8px 10px',
-                            borderBottom: '1px solid var(--line-strong)',
-                          }}>
-                            <span style={{ ...groupLabel, marginBottom: 0, paddingLeft: 6 }}>Field name</span>
-                            <span style={{ ...groupLabel, marginBottom: 0, paddingLeft: 6 }}>API mapping</span>
-                            <span style={{ ...groupLabel, marginBottom: 0, paddingLeft: 6 }}>Format hint</span>
-                            <span style={{ ...groupLabel, marginBottom: 0, textAlign: 'center' }}>Required</span>
-                            <span />
-                          </div>
-                          {Object.entries(op.field_mapping || {}).map(([fieldKey, apiMapping], fieldIdx) => (
-                            <div
-                              key={fieldIdx}
-                              style={{
-                                display: 'grid',
-                                gridTemplateColumns: '1fr 1fr 1.5fr 70px 40px',
-                                gap: 0,
-                                alignItems: 'center',
-                                padding: '4px 10px',
-                                borderBottom: fieldIdx < Object.keys(op.field_mapping || {}).length - 1 ? '1px solid var(--line-soft)' : 'none',
-                              }}
+                    <>
+                      {build === 'built-in' && (
+                        <p style={{ margin: '0 0 0.75rem', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                          Built-in: Norm code{inv?.code ? <> at <code style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', background: 'var(--surface-alt)', padding: '1px 4px', borderRadius: 'var(--radius-sm)' }}>{inv.code}</code></> : ''} runs
+                          when it is called. What you edit here is what the LLM sees — the description and fields; the behaviour lives in code.
+                        </p>
+                      )}
+                      {build === 'raw' && (
+                        <p style={{ margin: '0 0 0.75rem', fontSize: 'var(--fs-sm)', color: 'var(--warn)' }}>
+                          This tool has no code, so an LLM calling it makes the HTTP call below directly. Tools should be
+                          consolidators: give it code with the Consolidator builder, or keep the call as an API endpoint.
+                        </p>
+                      )}
+                      <div style={twoColGrid}>
+                        <div>
+                          <label className="n-label">Action</label>
+                          <input
+                            type="text"
+                            value={op.action}
+                            onChange={e => updateTool(idx, 'action', e.target.value)}
+                            disabled={build === 'built-in'}
+                            title={build === 'built-in' ? 'The name ties this row to its Norm code, so it can’t be changed here' : undefined}
+                            placeholder={isEndpoint ? 'get_stock_items' : 'get_stock'}
+                            className="n-input"
+                            style={fieldStyle}
+                          />
+                        </div>
+                        {(showHttp || (isEndpoint && isMcp)) && (
+                          <div>
+                            <label className="n-label">{isMcp ? 'Read or write' : 'Method'}</label>
+                            <select
+                              value={op.method}
+                              onChange={e => (isMcp
+                                ? patch({ method: e.target.value, read_only: e.target.value === 'GET' })
+                                : updateTool(idx, 'method', e.target.value))}
+                              className="n-select"
+                              style={fieldStyle}
                             >
+                              {isMcp ? (
+                                <>
+                                  <option value="GET">Read</option>
+                                  <option value="POST">Write</option>
+                                </>
+                              ) : ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => <option key={m} value={m}>{m}</option>)}
+                            </select>
+                          </div>
+                        )}
+                        <div style={{ gridColumn: '1 / -1' }}>
+                          <label className="n-label">Description</label>
+                          <input
+                            type="text"
+                            value={op.description || ''}
+                            onChange={e => updateTool(idx, 'description', e.target.value || undefined)}
+                            placeholder={isEndpoint
+                              ? 'What it returns — for whoever writes a consolidator'
+                              : 'What it does — the LLM reads this to decide when to call it'}
+                            className="n-input"
+                            style={fieldStyle}
+                          />
+                        </div>
+                        {showHttp && (
+                          <>
+                            <div style={{ gridColumn: '1 / -1' }}>
+                              <label className="n-label">Path template</label>
                               <input
                                 type="text"
-                                value={fieldKey}
-                                onChange={e => {
-                                  const newKey = e.target.value;
-                                  const entries = Object.entries(op.field_mapping || {});
-                                  entries[fieldIdx] = [newKey, apiMapping];
-                                  const newMapping = Object.fromEntries(entries);
-                                  const newRequired = op.required_fields.map(f => f === fieldKey ? newKey : f);
-                                  const newDescs = { ...(op.field_descriptions || {}) };
-                                  if (fieldKey in newDescs) {
-                                    newDescs[newKey] = newDescs[fieldKey];
-                                    delete newDescs[fieldKey];
-                                  }
-                                  setForm(prev => ({
-                                    ...prev,
-                                    tools: prev.tools.map((o, i) =>
-                                      i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired, field_descriptions: newDescs } : o
-                                    ),
-                                  }));
-                                }}
-                                placeholder="field_name"
-                                style={cellInputStyle}
-                              />
-                              <input
-                                type="text"
-                                value={apiMapping}
-                                onChange={e => {
-                                  const entries = Object.entries(op.field_mapping || {});
-                                  entries[fieldIdx] = [fieldKey, e.target.value];
-                                  updateTool(idx, 'field_mapping', Object.fromEntries(entries));
-                                }}
-                                placeholder="apiFieldName"
-                                style={{ ...cellInputStyle, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' }}
-                              />
-                              <input
-                                type="text"
-                                value={(op.field_descriptions || {})[fieldKey] || ''}
-                                onChange={e => {
-                                  const newDescs = { ...(op.field_descriptions || {}), [fieldKey]: e.target.value };
-                                  updateTool(idx, 'field_descriptions', newDescs);
-                                }}
-                                placeholder="e.g. Date in YYYY-MM-DD"
-                                style={{ ...cellInputStyle, color: 'var(--muted)' }}
-                              />
-                              <div style={{ textAlign: 'center' }}>
-                                <input
-                                  type="checkbox"
-                                  checked={op.required_fields.includes(fieldKey)}
-                                  onChange={e => {
-                                    const newRequired = e.target.checked
-                                      ? [...op.required_fields, fieldKey]
-                                      : op.required_fields.filter(f => f !== fieldKey);
-                                    updateTool(idx, 'required_fields', newRequired);
-                                  }}
-                                  style={{ cursor: 'pointer' }}
-                                />
-                              </div>
-                              <IconButton
-                                icon={X}
-                                label={`Remove field ${fieldKey}`}
-                                iconSize={14}
-                                style={{ justifySelf: 'center' }}
-                                onClick={() => {
-                                  const newMapping = { ...(op.field_mapping || {}) };
-                                  delete newMapping[fieldKey];
-                                  const newDescs = { ...(op.field_descriptions || {}) };
-                                  delete newDescs[fieldKey];
-                                  const newRequired = op.required_fields.filter(f => f !== fieldKey);
-                                  setForm(prev => ({
-                                    ...prev,
-                                    tools: prev.tools.map((o, i) =>
-                                      i === idx ? { ...o, field_mapping: newMapping, required_fields: newRequired, field_descriptions: newDescs } : o
-                                    ),
-                                  }));
-                                }}
+                                value={op.path_template}
+                                onChange={e => updateTool(idx, 'path_template', e.target.value)}
+                                placeholder="/api/v1/employees"
+                                className="n-input"
+                                style={fieldStyle}
                               />
                             </div>
-                          ))}
-                        </div>
+                            <div>
+                              <label className="n-label">Success status codes (comma-separated)</label>
+                              <input
+                                type="text"
+                                value={(op.success_status_codes || [200]).join(', ')}
+                                onChange={e => updateTool(idx, 'success_status_codes', e.target.value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)))}
+                                placeholder="200, 201"
+                                className="n-input"
+                                style={fieldStyle}
+                              />
+                            </div>
+                            <div>
+                              <label className="n-label">Response ref path</label>
+                              <input
+                                type="text"
+                                value={op.response_ref_path || ''}
+                                onChange={e => updateTool(idx, 'response_ref_path', e.target.value || null)}
+                                placeholder="body.id"
+                                className="n-input"
+                                style={fieldStyle}
+                              />
+                            </div>
+                            <div>
+                              <label className="n-label">Timeout (seconds)</label>
+                              <input
+                                type="number"
+                                value={op.timeout_seconds || 30}
+                                onChange={e => updateTool(idx, 'timeout_seconds', parseInt(e.target.value, 10) || 30)}
+                                className="n-input"
+                                style={fieldStyle}
+                              />
+                            </div>
+                          </>
+                        )}
                       </div>
-                    )}
-                  </div>
+                    </>
+                  )}
 
-                  <div style={{ marginTop: '0.75rem' }}>
-                    <label className="n-label">Headers (JSON)</label>
-                    <JsonTextarea
-                      value={op.headers}
-                      onChange={v => updateTool(idx, 'headers', v ?? {})}
-                      autoResize
-                      style={codeFieldStyle}
-                    />
-                  </div>
-                  <div style={{ marginTop: '0.75rem' }}>
-                    <label className="n-label">Field schema (JSON)</label>
-                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 4 }}>
-                      Define JSON Schema for complex fields (e.g., arrays with required properties). Overrides the default string type.
-                    </div>
-                    <JsonTextarea
-                      value={op.field_schema}
-                      onChange={v => updateTool(idx, 'field_schema', v)}
-                      autoResize
-                      placeholder='{"lines": {"type": "array", "items": {"type": "object", "properties": {...}, "required": [...]}}}'
-                      style={codeFieldStyle}
-                    />
-                  </div>
-                  <div style={{ marginTop: '0.75rem' }}>
-                    <label className="n-label">Request body template (JSON)</label>
-                    <AutoResizeTextarea
-                      value={op.request_body_template || ''}
-                      onChange={e => updateTool(idx, 'request_body_template', e.target.value || null)}
-                      placeholder=""
-                      style={codeFieldStyle}
-                    />
-                  </div>
-                  <div style={{ marginTop: '0.75rem' }}>
-                    <label className="n-label">Display component</label>
-                    <input
-                      value={op.display_component || ''}
-                      onChange={e => updateTool(idx, 'display_component', e.target.value || null)}
-                      placeholder="e.g. generic_table"
-                      className="n-input"
-                      style={fieldStyle}
-                    />
-                  </div>
-                  <div style={{ marginTop: '0.75rem' }}>
-                    <label className="n-label">Display props (JSON)</label>
-                    <JsonTextarea
-                      value={op.display_props}
-                      onChange={v => updateTool(idx, 'display_props', v)}
-                      rows={2}
-                      placeholder='{"title": "Results"}'
-                      style={codeFieldStyle}
-                    />
-                  </div>
-                  <div style={{ marginTop: '0.75rem' }}>
-                    <label className="n-label">Working document (JSON)</label>
-                    <JsonTextarea
-                      value={op.working_document}
-                      onChange={v => updateTool(idx, 'working_document', v)}
-                      rows={2}
-                      placeholder='{"doc_type": "roster", "sync_mode": "auto", "ref_fields": ["search_date"]}'
-                      style={codeFieldStyle}
-                    />
-                  </div>
-                  <div style={{ marginTop: '0.75rem' }}>
-                    <label className="n-label">Summary fields</label>
-                    <input
-                      value={(op.summary_fields || []).join(', ')}
-                      onChange={e => {
-                        const val = e.target.value.trim();
-                        updateTool(idx, 'summary_fields', val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : null);
-                      }}
-                      placeholder="name, id, sku, price"
-                      className="n-input"
-                      style={fieldStyle}
-                    />
-                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: 4 }}>
-                      Comma-separated field names to show when result is too large. Leave empty to use search-only mode.
-                    </div>
-                  </div>
+                  <FieldsEditor
+                    op={op}
+                    onPatch={patch}
+                    withMapping={showHttp}
+                    note={!isEndpoint
+                      ? 'What the LLM passes; it reads each description.'
+                      : isMcp
+                        ? 'From the MCP server’s input schema.'
+                        : 'What a caller passes, and the API parameter each fills.'}
+                  />
 
-                  </>
+                  {showHttp && (
+                    <>
+                      <div style={{ marginTop: '0.75rem' }}>
+                        <label className="n-label">Headers (JSON)</label>
+                        <JsonTextarea
+                          value={op.headers}
+                          onChange={v => updateTool(idx, 'headers', v ?? {})}
+                          autoResize
+                          style={codeFieldStyle}
+                        />
+                      </div>
+                      <div style={{ marginTop: '0.75rem' }}>
+                        <label className="n-label">Request body template (JSON)</label>
+                        <AutoResizeTextarea
+                          value={op.request_body_template || ''}
+                          onChange={e => updateTool(idx, 'request_body_template', e.target.value || null)}
+                          placeholder={'{"name": "{{ name }}"}'}
+                          style={codeFieldStyle}
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {!isEndpoint && (
+                    <>
+                      <ToolEffectEditor op={op} onPatch={patch} claimed={!!inv?.app} />
+                      <ToolDisplayEditor op={op} onPatch={patch} />
+                    </>
                   )}
                 </div>
               )}
@@ -2558,6 +2131,173 @@ export default function ConnectorSpecEditor({ spec, isNew, onSave, onCancel }: P
             {endpointIdxs.map(i => renderRow(form.tools[i], i))}
             {split && endpointIdxs.length === 0 && (
               <p style={emptyNote}>No endpoints.</p>
+            )}
+            {tryRows.length > 0 && !isNew && (
+              <div style={{
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--radius)',
+                padding: '14px 16px',
+                marginTop: 16,
+                backgroundColor: 'var(--surface)',
+              }}>
+                <h5 style={{ margin: '0 0 4px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Try an endpoint</h5>
+                <p style={{ ...sectionNote, margin: '0 0 10px' }}>
+                  Runs the saved spec — press Update spec first if you changed the endpoint.
+                  {form.execution_mode === 'template' ? ' Render shows the request without sending it.' : ''}
+                </p>
+                <div style={{ marginBottom: '0.5rem' }}>
+                  <label className="n-label" htmlFor="try-endpoint">Endpoint</label>
+                  <select
+                    id="try-endpoint"
+                    value={tryToolAction}
+                    onChange={e => {
+                      const action = e.target.value;
+                      setTryToolAction(action);
+                      setTryDryRunResult(null);
+                      setTryTestResult(null);
+                      setTryError(null);
+                      // Pre-fill each field with the example in its hint, e.g. "(e.g., 2026-03-16)".
+                      const row = tryRows.find(t => t.action === action);
+                      const fields: Record<string, string> = {};
+                      for (const key of row ? rowFields(row) : []) {
+                        const exampleMatch = (row?.field_descriptions?.[key] || '').match(/\(e\.g\.?,?\s*(.+?)\)\s*$/);
+                        fields[key] = exampleMatch ? exampleMatch[1].trim() : '';
+                      }
+                      setTryToolFields(fields);
+                    }}
+                    className="n-select"
+                    style={fieldStyle}
+                  >
+                    <option value="">Select an endpoint…</option>
+                    {tryRows.map((t, i) => (
+                      <option key={`${t.action}-${i}`} value={t.action}>
+                        {t.action}{form.execution_mode === 'template' ? ` — ${t.method}` : isWriteRow(t) ? ' — write' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {venues.length > 0 && (
+                  <div style={{ marginBottom: '0.5rem' }}>
+                    <label className="n-label" htmlFor="try-venue">Venue</label>
+                    <select id="try-venue" value={tryVenueId} onChange={e => setTryVenueId(e.target.value)} className="n-select" style={fieldStyle}>
+                      <option value="">First connected venue</option>
+                      {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                    </select>
+                  </div>
+                )}
+
+                {selectedTool && (
+                  <>
+                    <div style={{ marginBottom: '0.5rem' }}>
+                      <label className="n-label" style={{ marginBottom: 6 }}>Fields</label>
+                      {rowFields(selectedTool).length === 0 && (
+                        <p style={emptyNote}>This endpoint takes no fields.</p>
+                      )}
+                      {rowFields(selectedTool).map(fieldKey => (
+                        <div key={fieldKey} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 8px', marginBottom: 6 }}>
+                          <label className="n-label" style={{ width: 130, flexShrink: 0, marginBottom: 0, overflowWrap: 'anywhere' }}>
+                            {fieldKey}
+                            {selectedTool.required_fields.includes(fieldKey) && (
+                              <span style={{ color: 'var(--error)', marginLeft: 2 }}>*</span>
+                            )}
+                          </label>
+                          <input
+                            type="text"
+                            aria-label={fieldKey}
+                            value={tryToolFields[fieldKey] ?? ''}
+                            onChange={e => setTryToolFields(prev => ({ ...prev, [fieldKey]: e.target.value }))}
+                            placeholder={selectedTool.field_descriptions?.[fieldKey] || selectedTool.field_mapping?.[fieldKey] || fieldKey}
+                            className="n-input"
+                            style={{ flex: '1 1 200px', minWidth: 0 }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {form.execution_mode === 'template' && (
+                        <Button
+                          size="sm"
+                          onClick={() => handleTryRun('render')}
+                          disabled={tryLoading !== null}
+                        >
+                          {tryLoading === 'render' ? 'Rendering…' : 'Render'}
+                        </Button>
+                      )}
+                      <Button
+                        variant={isWriteRow(selectedTool) ? 'danger' : 'primary'}
+                        size="sm"
+                        onClick={() => { if (isWriteRow(selectedTool)) setConfirmLiveWrite(true); else void handleTryRun('test'); }}
+                        disabled={tryLoading !== null}
+                      >
+                        {tryLoading === 'test' ? 'Calling…' : 'Call it (live)'}
+                      </Button>
+                      <span style={{ fontSize: 'var(--fs-xs)', color: isWriteRow(selectedTool) ? 'var(--error)' : 'var(--muted)' }}>
+                        {isWriteRow(selectedTool)
+                          ? `A write: this changes data in ${form.display_name || 'the outside system'}`
+                          : `A real call to ${form.display_name || 'the outside system'}`}
+                      </span>
+                    </div>
+                    {tryError && (
+                      <p role="alert" style={{ color: 'var(--error)', fontSize: 'var(--fs-sm)', marginTop: '0.5rem', marginBottom: 0 }}>
+                        {tryError}
+                      </p>
+                    )}
+
+                    {tryDryRunResult && (
+                      <div style={{ marginTop: '0.75rem' }}>
+                        <div style={groupLabel}>Rendered request</div>
+                        <pre style={codeBlock}>
+                          {JSON.stringify(tryDryRunResult, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+
+                    {tryTestResult && (() => {
+                      const rendered = tryTestResult.rendered_request as Record<string, unknown> | undefined;
+                      const payload = tryTestResult.response_payload;
+                      const preStyle: React.CSSProperties = { ...codeBlock, maxHeight: 300 };
+                      return (
+                        <div style={{ marginTop: '0.75rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                            <Badge tone={tryTestResult.success ? 'ok' : 'error'}>
+                              {tryTestResult.success ? 'Success' : 'Failed'}
+                            </Badge>
+                            {'error' in tryTestResult && Boolean(tryTestResult.error) && (
+                              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>{String(tryTestResult.error)}</span>
+                            )}
+                          </div>
+                          {rendered && rendered.url ? (
+                            <div style={{ marginBottom: '0.75rem' }}>
+                              <div style={groupLabel}>Request</div>
+                              <pre style={preStyle}>
+                                {`${rendered.method} ${rendered.url}\n`}
+                                {!!(rendered.headers && Object.keys(rendered.headers as Record<string, string>).length > 0) &&
+                                  `${Object.entries(rendered.headers as Record<string, string>).map(([k, v]) => `${k}: ${v}`).join('\n')}\n`}
+                                {rendered.body ? `\n${typeof rendered.body === 'string' ? rendered.body : JSON.stringify(rendered.body, null, 2)}` : ''}
+                              </pre>
+                            </div>
+                          ) : (
+                            <div style={{ marginBottom: '0.75rem' }}>
+                              <div style={groupLabel}>Request</div>
+                              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                                No request was sent — check that required fields are filled in above.
+                              </div>
+                            </div>
+                          )}
+                          <div style={{ marginBottom: '0.5rem' }}>
+                            <div style={groupLabel}>Response</div>
+                            <pre style={preStyle}>
+                              {payload ? JSON.stringify(payload, null, 2) : '(empty)'}
+                            </pre>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
+              </div>
             )}
           </>
         );
