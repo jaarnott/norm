@@ -1031,13 +1031,15 @@ class TestAppAgent:
                 {
                     "name": "Nowhere",
                     "slug": "nowhere",
-                    "agent": "finance",
+                    # Any slug that is not a team member. ("finance" was the
+                    # example until Finance became one, Oct 2026.)
+                    "agent": "astronomy",
                     "spec": READ_SPEC,
                     "ui_source": "<div/>",
                 },
             )
         assert e.value.status_code == 400
-        assert "finance" in str(e.value.detail)
+        assert "astronomy" in str(e.value.detail)
         assert "hr" in str(e.value.detail)  # names the valid set
 
     def test_omitting_the_agent_keeps_the_old_home(self, db_session, org, author):

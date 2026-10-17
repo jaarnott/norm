@@ -1404,6 +1404,11 @@ def receive_from_draft(
             working_document_id=doc.id,
             thread_id=doc.thread_id,
         )
+        # The venue may post its received bills to Xero (Finance → Bills
+        # settings). Best effort, recorded on the document either way.
+        from app.services.xero_bills import push_bill_after_receive
+
+        push_bill_after_receive(db, config_db, venue_id, invoice_id, data, doc=doc)
     return out, doc
 
 

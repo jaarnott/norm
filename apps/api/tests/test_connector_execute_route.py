@@ -63,7 +63,9 @@ def _connection(db_session, venue_id, marker):
 
 
 def _ok_spec_call():
-    result = SimpleNamespace(success=True, response_payload={"ok": 1}, error_message=None)
+    result = SimpleNamespace(
+        success=True, response_payload={"ok": 1}, error_message=None
+    )
     return MagicMock(return_value=(result, {}))
 
 
@@ -199,7 +201,9 @@ class TestConfigSessionIsPassed:
                 "_get_mapping",
                 return_value={"target_action": "delete_shift", "method": "DELETE"},
             ),
-            patch.object(document_sync, "_build_params", return_value={"shift_id": "s1"}),
+            patch.object(
+                document_sync, "_build_params", return_value={"shift_id": "s1"}
+            ),
             patch("app.agents.tool_loop._execute_tool_call", side_effect=fake_execute),
             patch("app.services.document_sync.flag_modified"),
         ):
@@ -207,3 +211,76 @@ class TestConfigSessionIsPassed:
 
         assert captured["config_db"] is cdb
         assert doc.sync_status == "synced"
+
+
+class TestConsolidators:
+    """A GET consolidator (the Bills page's xero.get_bills) runs through the
+    shared executor — strictly for the requested venue — not execute_spec,
+    which can only render raw HTTP rows."""
+
+    CONSOLIDATOR = {
+        "action": "get_bills",
+        "method": "GET",
+        "read_only": True,
+        "required_fields": [],
+        "consolidator_config": {"function_code": "def run(p, c, l):\n    return {}"},
+    }
+
+    @pytest.fixture()
+    def cspec(self, db_session):
+        row = ConnectionSpec(
+            connector_name="xero",
+            display_name="Xero",
+            execution_mode="template",
+            auth_type="oauth2",
+            auth_config={},
+            base_url_template="https://api.xero.com/api.xro/2.0",
+            tools=[self.CONSOLIDATOR],
+        )
+        db_session.add(row)
+        db_session.flush()
+        return row
+
+    def test_runs_through_the_shared_executor_for_the_venue(
+        self, client, db_session, manager_user, manager_headers, cspec
+    ):
+        venue = _make_venue(db_session, name="Glass Goose")
+        _make_venue_access(db_session, manager_user, venue)
+        doc = {
+            "summary": {"count": 2},
+            "bills": [{"invoice_id": "a"}, {"invoice_id": "b"}],
+        }
+        result = SimpleNamespace(success=True, payload=doc, error=None)
+        run = MagicMock(return_value=result)
+        with (
+            patch("app.connectors.tool_executor.execute_connector_tool", run),
+            patch("app.connectors.spec_executor.execute_spec") as spec_call,
+        ):
+            resp = client.post(
+                "/api/connectors/xero/execute/get_bills",
+                json={"params": {"venue_id": venue.id, "status": "unpaid"}},
+                headers=manager_headers,
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"success": True, "data": doc, "error": None}
+        spec_call.assert_not_called()
+        kwargs = run.call_args.kwargs
+        assert kwargs["connector_name"] == "xero"
+        assert kwargs["action"] == "get_bills"
+        assert kwargs["venue_id"] == venue.id
+        assert kwargs["strict_venue"] is True
+        # The venue rides inside params too (the sandbox resolves per call).
+        assert kwargs["params"] == {"status": "unpaid", "venue_id": venue.id}
+
+    def test_a_venue_the_caller_cannot_see_is_refused(
+        self, client, db_session, manager_headers, cspec
+    ):
+        other = _make_venue(db_session, name="Someone Else's Venue")
+        with patch("app.connectors.tool_executor.execute_connector_tool") as run:
+            resp = client.post(
+                "/api/connectors/xero/execute/get_bills",
+                json={"params": {"venue_id": other.id}},
+                headers=manager_headers,
+            )
+        assert resp.status_code == 403
+        run.assert_not_called()

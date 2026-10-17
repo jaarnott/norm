@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { Home, Package, UserRound, Clock, ChartColumnBig, Megaphone, ChefHat, PartyPopper, Blocks, Settings, LogOut, UserRoundPlus, type LucideIcon } from 'lucide-react';
+import { Home, Package, UserRound, Clock, ChartColumnBig, Megaphone, ChefHat, PartyPopper, Landmark, Blocks, Settings, LogOut, UserRoundPlus, type LucideIcon } from 'lucide-react';
 import { colors } from '../../lib/theme';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import Icon from '../ui/Icon';
@@ -28,6 +28,8 @@ export const AGENTS: AgentTab[] = [
   // The per-member accents are retired, so no key of its own in lib/theme.ts
   // (which the MCP bundle hashes): the same neutral the others map to.
   { id: 'functions', label: 'Functions', icon: PartyPopper, color: colors.textSecondary },
+  // Finance — hired per organisation (the Xero App). Same neutral as Functions.
+  { id: 'finance', label: 'Finance', icon: Landmark, color: colors.textSecondary },
   { id: 'app_builder', label: 'App Builder', icon: Blocks, color: colors.app_builder },
 ];
 

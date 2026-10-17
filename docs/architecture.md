@@ -60,7 +60,9 @@ A connector is a configuration-driven definition of an external API. Connectors 
 - Credential fields (what the user needs to provide per venue)
 - OAuth configuration (authorize URL, token URL, scopes, client ID/secret)
 
-**Current connectors:** LoadedHub, BambooHR, Deputy, Gmail, Microsoft Outlook, Bidfood + internal connectors (norm, norm_reports, norm_email)
+**Current connectors:** LoadedHub, Xero, BambooHR, Deputy, Gmail, Microsoft Outlook, Bidfood + internal connectors (norm, norm_reports, norm_email)
+
+**Xero (Oct 2026):** OAuth2 web app, one global connector for NZ and AU organisations. Each venue connects separately; the callback hook (`app/connectors/xero_hooks.py`) reads the consent's `authentication_event_id` from the access token, asks `GET /connections` which organisation it covered, and writes the tenant id, country, currency and short code into the venue's `Connection.config` — every endpoint row's `xero-tenant-id` header renders from it. Tools are consolidators in `config/consolidators/xero_*.py` (reads: bills, contacts, accounts, P&L; one write: `create_bill`), installed by `scripts/sync_xero_connector.py`; each calls `norm.get_connection_settings` first so a venue without its own connection is refused rather than served another venue's books. `services/xero_bills.py` creates the bill for an invoice Norm receives into Loaded when the venue's mapping says so. Plan and verification record: `docs/plans/xero-connector.md`.
 
 **Example:** The LoadedHub connector has 34 tools including `get_roster`, `get_sales_data`, `get_stock_items`, `get_purchase_orders_summary`, `get_roster_summary` (consolidator). Each tool defines the HTTP method, URL path template, required fields, and response transform.
 

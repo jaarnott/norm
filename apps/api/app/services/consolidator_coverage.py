@@ -133,6 +133,15 @@ def reviewed_file(action: str, consolidator_config: dict | None) -> str | None:
     return None
 
 
+def _matches_canonical(code: str, src: str, prefixes: list[str]) -> bool:
+    """The row holds the file verbatim — or the file with a shared
+    ``*_common.py`` helper prepended by its installer (the Xero tools: the
+    sandbox allows no imports, so sharing code means concatenation)."""
+    if code == src:
+        return True
+    return any(code == pre + "\n\n" + src for pre in prefixes)
+
+
 def _usage(db: Session, days: int) -> dict[str, int]:
     """tool_name ("connector__action") → call count over the window."""
     from sqlalchemy import func
@@ -191,6 +200,8 @@ def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
     from app.services.spec_inventory import dependency_map
 
     canonical = _canonical_files()
+    # Helper files an installer may prepend to a canonical source (xero_common.py).
+    shared_prefixes = sorted({v for k, v in canonical.items() if k.endswith("_common")})
     owners, mcp = _exposed(config_db)
     usage = _usage(db, days)
     specs = (
@@ -241,7 +252,7 @@ def coverage_report(db: Session, config_db: Session, *, days: int = 30) -> dict:
                 src = canonical.get(canonical_key(action, cc))
                 if src is None:
                     drift.append({"action": action, "state": "no_canonical_file"})
-                elif src != code:
+                elif not _matches_canonical(code, src, shared_prefixes):
                     drift.append({"action": action, "state": "differs_from_file"})
         rows.sort(key=lambda r: (-r["calls_30d"], r["action"]))
         counts = {"consolidator": 0, "built-in": 0, "endpoint": 0}

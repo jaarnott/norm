@@ -21,6 +21,7 @@ sync overwrites it.
 | `reconcile_received_invoices.py` | `loadedhub` spec → tool `reconcile_received_invoices` | `scripts/sync_invoice_receiving_config.py` |
 | `calculate_template_stock_requirements.py` | `loadedhub` spec → tool `calculate_template_stock_requirements` | `scripts/sync_stock_requirements_config.py` |
 | `received_items_for_period.py` | `loadedhub` spec → tool `get_received_items_for_period` | `scripts/sync_received_items_config.py` |
+| `get_bills.py`, `get_contacts.py`, `get_accounts.py`, `get_profit_and_loss.py`, `create_bill.py` | `xero` spec → the Xero tools (Oct 2026). `xero_common.py` is NOT a tool: the installer prepends it to each file's function_code (the sandbox allows no imports), and every tool calls `norm.get_connection_settings` first so a venue without its own Xero connection is refused rather than served another venue's books | `scripts/sync_xero_connector.py` |
 | `for_period.py` | `loadedhub` spec → the 11 `*_for_period` tools (one function_code, per-tool `wraps`/`start_param`/`end_param`; the invoice/statement wrappers were retired for `get_invoices`) | `scripts/sync_for_period_config.py` |
 
 ## Interactive Receive Invoice cards (chat fan-out)

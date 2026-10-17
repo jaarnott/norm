@@ -108,6 +108,10 @@ const COMPONENT_META: Record<string, { label?: string; description?: string; int
     label: 'Tool Approval Card',
     description: 'Inline approval UI for write tool actions. Shows action summary with approve/reject buttons.',
   },
+  xero_bills: {
+    label: 'Xero Bills',
+    description: 'Bills in Xero for a venue — outstanding, overdue, due soon, by supplier, with links into Xero. Renders xero.get_bills in chat and self-loads on the Finance → Bills page.',
+  },
   invoices_dashboard: {
     label: 'Invoices Dashboard',
     description: 'Outstanding supplier invoices for a venue (self-loading from /invoice-fixes/outstanding). Opens each invoice in the Receive Invoice Editor.',

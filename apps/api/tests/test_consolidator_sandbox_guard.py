@@ -29,6 +29,13 @@ def test_production_accepts_and_can_call_it(name):
     _reject_unsafe_source(code)  # raises ValueError naming the construct
     ns = harness.namespace()
     exec(compile(code, f"{name}.py", "exec"), ns)
+    if name.endswith("_common"):
+        # A shared helper an installer prepends to its consolidators
+        # (xero_common.py — the sandbox allows no imports, so sharing code
+        # means concatenation). Production execs it as part of each tool, so
+        # it must pass the same check; it is not a tool and defines no run().
+        assert "run" not in ns, f"{name}.py is a helper, not a consolidator"
+        return
     run = ns.get("run")
     assert callable(run), f"{name}.py defines no run()"
     assert len(inspect.signature(run).parameters) >= 3, (

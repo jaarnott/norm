@@ -1436,6 +1436,106 @@ def _show_connect(params: dict, db: Session, thread_id: str | None) -> dict:
     return {"success": True, "data": {"connector_name": connector}}
 
 
+@register("norm", "get_connection_settings")
+def _get_connection_settings(params: dict, db: Session, thread_id: str | None) -> dict:  # noqa: ARG001
+    """The non-secret settings on ONE venue's connection row — what a
+    consolidator may know about its venue's connector without seeing tokens
+    (Xero: the organisation, country, currency, short code, account mapping).
+
+    Strict on purpose: the named venue's own row, never the in-organisation
+    fallback the executor uses when resolving credentials. For Xero that
+    fallback would answer a venue that has no connection with another venue's
+    books under this venue's name, so every xero tool calls this first and
+    stops when ``connected`` is false. Secrets never leave: keys the spec
+    marks ``secret`` and anything token-shaped are dropped. Engine-only (the
+    row is ``engine_only``); not a tool the model sees.
+    """
+    from app.db.models import Connection, Venue
+    from app.services.caller_scope import venue_query
+    from app.services.venue_service import resolve_venue_id
+
+    connector = str(
+        params.get("connector") or params.get("connector_name") or ""
+    ).strip()
+    if not connector:
+        return {"success": False, "data": {}, "error": "connector is required"}
+    venue_id = params.get("venue_id")
+    venue_name = params.get("venue") or params.get("venue_name")
+    if not venue_id and venue_name:
+        venue_id = resolve_venue_id(str(venue_name), db)
+    if not venue_id:
+        return {
+            "success": True,
+            "data": {"connected": False, "connector": connector, "reason": "no venue"},
+        }
+    scoped = venue_query(db)
+    if scoped is not None and not scoped.filter(Venue.id == venue_id).first():
+        return {
+            "success": True,
+            "data": {"connected": False, "connector": connector, "venue_id": venue_id},
+        }
+
+    row = (
+        db.query(Connection)
+        .filter(Connection.connector_name == connector, Connection.venue_id == venue_id)
+        .first()
+    )
+    from app.db.config_models import ConnectionSpec
+    from app.db.engine import _ConfigSessionLocal
+
+    config_db = _ConfigSessionLocal()
+    try:
+        spec = (
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == connector)
+            .first()
+        )
+        auth_type = spec.auth_type if spec else ""
+        secret_keys = {
+            f.get("key")
+            for f in ((spec.credential_fields if spec else None) or [])
+            if isinstance(f, dict) and f.get("secret")
+        }
+    finally:
+        config_db.close()
+
+    connected = bool(row and row.enabled == "true")
+    if connected and auth_type == "oauth2":
+        connected = bool(row.access_token) and not bool(row.needs_reconnect)
+    if not connected:
+        return {
+            "success": True,
+            "data": {
+                "connected": False,
+                "connector": connector,
+                "venue_id": venue_id,
+                "needs_reconnect": bool(row and row.needs_reconnect),
+            },
+        }
+
+    tokenish = ("secret", "token", "password", "api_key", "apikey", "credential")
+    settings = {
+        k: v
+        for k, v in (row.config or {}).items()
+        if k not in secret_keys and not any(t in str(k).lower() for t in tokenish)
+    }
+    meta = row.oauth_metadata or {}
+    connected_as = (
+        meta.get("tenant_name") or meta.get("venue_name") or meta.get("userName")
+    )
+    if connected_as:
+        settings.setdefault("organisation", connected_as)
+    return {
+        "success": True,
+        "data": {
+            "connected": True,
+            "connector": connector,
+            "venue_id": venue_id,
+            "settings": settings,
+        },
+    }
+
+
 @register("norm", "open_app")
 def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
     """Open one of the org's App-platform apps in the conversation — Norm

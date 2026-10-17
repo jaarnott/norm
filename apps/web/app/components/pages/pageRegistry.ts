@@ -33,6 +33,20 @@ function getCurrentWeekRange(): { start_datetime: string; end_datetime: string }
 }
 
 export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
+  {
+    // Finance → Bills: bills in Xero for a venue. Self-loading — the page
+    // loader runs raw GET rows only, and xero.get_bills is a consolidator, so
+    // the component calls /connectors/xero/execute/get_bills itself. Declared
+    // in the Xero App's marketplace composition (sync_marketplace_catalog.py).
+    id: 'xero-bills',
+    app: 'xero',
+    connections: ['xero'],
+    label: 'Bills',
+    icon: Receipt,
+    agent: 'finance',
+    component: 'xero_bills',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
   // Dashboards (one per agent)
   {
     id: 'dashboard-hr',

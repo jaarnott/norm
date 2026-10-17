@@ -136,8 +136,9 @@ def _member(
     price=AGENT_PRICE_CENTS,
     key=AGENT_PRICE_KEY,
     tagline="",
+    bundled=None,
 ):
-    return {
+    row = {
         "slug": slug,
         "name": name,
         "description": description,
@@ -147,6 +148,11 @@ def _member(
         "stripe_price_key": key,
         "composition": {"owns_agents": [owns], "tagline": tagline},
     }
+    if bundled is not None:
+        # bundled=False: hired per organisation from the Team page (and billed
+        # as an agent) instead of on for everyone the moment it is seeded.
+        row["bundled"] = bundled
+    return row
 
 
 def _app(
@@ -243,6 +249,20 @@ APPS = [
     ),
     # Shown only to organisations whose functions_mode is on (shadow or live).
     _member(**FUNCTIONS_MEMBER),
+    # Finance (Oct 2026): hired per organisation, not bundled — the Xero App
+    # is its only App, and a Xero connection is a per-organisation decision.
+    _member(
+        "finance-agent",
+        owns="finance",
+        name="Finance",
+        icon="🧾",
+        description=(
+            "Watches the books when you ask: bills, suppliers, chart of accounts "
+            "and profit and loss from Xero."
+        ),
+        tagline="Bills, suppliers, accounts and P&L from Xero.",
+        bundled=False,
+    ),
     # ── Apps (tier='app'): one member each (Norm Core: all) ──────────────
     _app(
         "norm-core",
@@ -557,6 +577,40 @@ APPS = [
     # `app: 'functions'`, data in Norm's own fn_* tables.
     _app(**FUNCTIONS_APP),
     _app(
+        "xero",
+        note=(
+            "Amounts, due dates and accounts come from the xero tools — never "
+            "quote one you haven't read. Creating a bill goes through an "
+            "approval card and lands in Xero as a draft."
+        ),
+        name="Xero",
+        member="finance",
+        icon="📒",
+        description=(
+            "Bills, contacts, chart of accounts and profit and loss from Xero; "
+            "creates supplier bills from reviewed invoices."
+        ),
+        tools=[
+            "xero.get_bills",
+            "xero.get_contacts",
+            "xero.get_accounts",
+            "xero.get_profit_and_loss",
+            "xero.create_bill",
+        ],
+        components=[
+            _c(
+                "xero_bills",
+                page=_p("xero-bills", "Bills", "Receipt"),
+                full_width=True,
+                description=(
+                    "Bills in Xero for a venue: outstanding, overdue, by supplier, "
+                    "with links into Xero."
+                ),
+                connections=["xero"],
+            ),
+        ],
+    ),
+    _app(
         "app-builder",
         note="To build or change an App, open the build_an_app skill first.",
         name="App Builder",
@@ -582,7 +636,29 @@ APPS = [
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--only",
+        help=(
+            "comma-separated catalog slugs: validate and upsert ONLY these rows "
+            "and skip everything else this seed does (the rollout moves, the "
+            "engine-only audit, binding cleanup, retirements). For landing one "
+            "App while another's rows are still invalid — e.g. a member whose "
+            "config hasn't been synced yet — without touching anything pending."
+        ),
+    )
     args = parser.parse_args()
+    selected = (
+        {x.strip() for x in args.only.split(",") if x.strip()} if args.only else None
+    )
+    apps = [a for a in APPS if selected is None or a["slug"] in selected]
+    if selected is not None:
+        unknown = selected - {a["slug"] for a in apps}
+        if unknown:
+            sys.exit(f"unknown catalog slug(s): {', '.join(sorted(unknown))}")
+        print(f"--only {', '.join(sorted(selected))}: other rows and moves untouched")
+    engine_only = ENGINE_ONLY if selected is None else {}
+    retired_slugs = RETIRED_SLUGS if selected is None else []
+    retired_binding_connectors = RETIRED_BINDING_CONNECTORS if selected is None else []
 
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -627,7 +703,7 @@ def main() -> None:
         # ── invariants ───────────────────────────────────────────────────
         errors: list[str] = []
         claimed: dict[str, str] = {}
-        for app in APPS:
+        for app in apps:
             comp = app["composition"]
             declared = (comp.get("connections") or []) + (
                 comp.get("component_connections") or []
@@ -688,7 +764,7 @@ def main() -> None:
         changes: list[str] = []
 
         # ── rollout move 1: the base assistant's agent_configs row ───────
-        if "base" not in agent_slugs:
+        if selected is None and "base" not in agent_slugs:
             changes.append("create agent_configs row 'base' (Norm Assistant)")
             if not args.dry_run:
                 db.add(
@@ -711,7 +787,7 @@ def main() -> None:
             )
             .first()
         )
-        if wild is not None and not (wild.capabilities or []):
+        if selected is None and wild is not None and not (wild.capabilities or []):
             already = (
                 db.query(AgentConnectionBinding)
                 .filter(
@@ -730,7 +806,7 @@ def main() -> None:
                     db.delete(wild)
 
         # ── upsert the target catalog ────────────────────────────────────
-        for app in APPS:
+        for app in apps:
             desired = {
                 "name": app["name"],
                 "description": app["description"],
@@ -762,7 +838,7 @@ def main() -> None:
 
         # ── tool audit: move backends/duplicates/unused raws off the menu ─
         for spec in all_specs:
-            wanted = ENGINE_ONLY.get(spec.connector_name)
+            wanted = engine_only.get(spec.connector_name)
             if not wanted:
                 continue
             changed = []
@@ -793,14 +869,14 @@ def main() -> None:
             if isinstance(t, dict) and t.get("engine_only")
         }
         for spec in all_specs:
-            wanted = ENGINE_ONLY.get(spec.connector_name)
+            wanted = engine_only.get(spec.connector_name)
             if wanted:
                 for t in spec_rows.rows(spec):
                     if isinstance(t, dict) and (
                         wanted == "*" or t.get("action") in wanted
                     ):
                         hidden.add((spec.connector_name, t.get("action")))
-        for b in db.query(AgentConnectionBinding).all():
+        for b in db.query(AgentConnectionBinding).all() if selected is None else []:
             caps = [dict(c) for c in b.capabilities or []]
             off = [
                 c["action"]
@@ -826,7 +902,7 @@ def main() -> None:
         for b in (
             db.query(AgentConnectionBinding)
             .filter(
-                AgentConnectionBinding.connector_name.in_(RETIRED_BINDING_CONNECTORS)
+                AgentConnectionBinding.connector_name.in_(retired_binding_connectors)
             )
             .all()
         ):
@@ -835,7 +911,7 @@ def main() -> None:
                 db.delete(b)
 
         # ── delete the retired rows LAST (components already re-homed) ───
-        for slug in RETIRED_SLUGS:
+        for slug in retired_slugs:
             row = db.query(MarketplaceApp).filter(MarketplaceApp.slug == slug).first()
             if row is not None:
                 changes.append(f"delete {slug} ({row.tier})")

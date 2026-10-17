@@ -3059,6 +3059,11 @@ def review_invoices(
                     mode=mode,
                     actor="norm",
                 )
+                # The venue may post its received bills to Xero (Finance →
+                # Bills settings). Best effort; the receive stands either way.
+                from app.services.xero_bills import push_bill_after_receive
+
+                push_bill_after_receive(db, config_db, venue_id, iid, data)
                 invalidate_conflicting_drafts(
                     db,
                     venue_id,

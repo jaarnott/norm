@@ -20,6 +20,8 @@ MEMBERS = (
     # Norm Functions' coordinator — works when asked in chat; no scheduled runs
     # of its own (owner decision, Oct 2026), so it has no Tasks page.
     "functions",
+    # Finance — bills, suppliers, accounts and P&L from Xero (Oct 2026).
+    "finance",
     "app_builder",
 )
 

@@ -223,10 +223,15 @@ async def connector_connect_info(
         # of hiding behind a green "Connected" tick.
         if not cfg or not cfg.access_token:
             return None, False
+        # LoadedHub stores venue_id/venue_name; Xero's hook stores
+        # tenant_id/tenant_name against config.xero_tenant_id.
         meta = cfg.oauth_metadata or {}
-        name = meta.get("venue_name") or meta.get("userName")
-        token_company = str(meta.get("venue_id") or "").strip()
-        stored = str((cfg.config or {}).get("x_loaded_company_id") or "").strip()
+        name = meta.get("venue_name") or meta.get("tenant_name") or meta.get("userName")
+        token_company = str(meta.get("venue_id") or meta.get("tenant_id") or "").strip()
+        config = cfg.config or {}
+        stored = str(
+            config.get("x_loaded_company_id") or config.get("xero_tenant_id") or ""
+        ).strip()
         wrong = bool(token_company and stored and token_company != stored)
         return (str(name) if name else None), wrong
 
@@ -518,6 +523,28 @@ async def execute_connector_action(
     params.pop("venue_name", None)
     if venue_id and not user_can_access_venue(db, user.id, venue_id):
         raise HTTPException(403, "You don't have access to that venue.")
+
+    if (tool_def.get("consolidator_config") or {}).get("function_code"):
+        # A GET consolidator (the Bills page's xero.get_bills): run it the way
+        # dashboards and MCP do — the shared executor resolves this venue's
+        # credentials strictly and runs the sandbox. execute_spec below is for
+        # raw HTTP rows only.
+        from app.connectors.tool_executor import execute_connector_tool
+
+        tool_result = execute_connector_tool(
+            connector_name=name,
+            action=action,
+            params={**params, **({"venue_id": venue_id} if venue_id else {})},
+            db=db,
+            config_db=config_db,
+            venue_id=venue_id,
+            strict_venue=True,
+        )
+        return {
+            "success": tool_result.success,
+            "data": tool_result.payload,
+            "error": tool_result.error,
+        }
 
     config_row = _resolve_credentials(name, venue_id, db, strict_venue=True)
     if not config_row:

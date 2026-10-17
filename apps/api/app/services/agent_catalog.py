@@ -222,6 +222,8 @@ REGISTERED_COMPONENTS = frozenset(
         "functions_contacts",
         "functions_reports",
         "functions_settings",
+        # Xero App (Finance member): bills in Xero, chat block + Bills page
+        "xero_bills",
     }
 )
 

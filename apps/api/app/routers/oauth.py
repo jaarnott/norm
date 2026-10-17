@@ -20,6 +20,7 @@ from app.auth.dependencies import get_current_user, require_role, require_permis
 from app.services.oauth_service import (
     build_authorize_url,
     exchange_code,
+    get_valid_access_token,
     needs_reconnect,
     register_client,
 )
@@ -420,6 +421,29 @@ async def oauth_callback(
         if failure_page is not None:
             return failure_page
 
+    # Xero: the token response names no organisation. Bind the one the person
+    # just authorised to THIS venue (app/connectors/xero_hooks.py), and let the
+    # page name that organisation instead of echoing the token response.
+    xero_message: str | None = None
+    if connector_name == "xero" and token_data.get("access_token"):
+        from app.connectors.xero_hooks import (
+            XeroConnectError,
+            bind_tenant,
+            connected_message,
+        )
+
+        try:
+            xero_message = connected_message(
+                bind_tenant(db, oauth_state_venue_id, token_data)
+            )
+        except XeroConnectError as exc:
+            return HTMLResponse(
+                content=_result_page(
+                    success=False, connector=spec.display_name, message=str(exc)
+                ),
+                status_code=400,
+            )
+
     # For Google connectors, fetch user email from userinfo endpoint
     if connector_name == "gmail" and token_data.get("access_token"):
         try:
@@ -455,9 +479,17 @@ async def oauth_callback(
         except Exception:
             pass  # Non-critical — email display is nice-to-have
 
-    # Build a success message including any extra metadata
+    # Build a success message including any extra metadata. Never echo a
+    # token: an openid provider (Xero) returns an id_token JWT alongside.
     meta_parts = []
-    known_keys = {"access_token", "refresh_token", "expires_in", "token_type", "scope"}
+    known_keys = {
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "expires_in",
+        "token_type",
+        "scope",
+    }
     for k, v in token_data.items():
         if k not in known_keys and v:
             meta_parts.append(f"{k}: {v}")
@@ -467,7 +499,7 @@ async def oauth_callback(
         content=_result_page(
             success=True,
             connector=spec.display_name,
-            message=f"Connected successfully{meta_msg}",
+            message=xero_message or f"Connected successfully{meta_msg}",
         ),
     )
 
@@ -566,6 +598,7 @@ async def oauth_disconnect(
     connector: str,
     venue_id: str | None = None,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(require_role("admin")),
 ):
     """Remove stored OAuth tokens for a connector (optionally scoped to a venue)."""
@@ -576,12 +609,38 @@ async def oauth_disconnect(
     if not config_row:
         raise HTTPException(404, f"No config for connector: {connector}")
 
+    revoked: bool | None = None
+    if connector == "xero":
+        # Revoke at Xero too — otherwise the organisation keeps counting
+        # against the app's connection cap — and drop the tenant binding so a
+        # reconnect may choose another organisation. Best effort: a refresh
+        # failure or a Xero error still ends with the tokens cleared here.
+        from app.connectors.xero_hooks import disconnect as xero_disconnect
+
+        token = config_row.access_token
+        spec = (
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == connector)
+            .first()
+        )
+        if spec:
+            try:
+                token = get_valid_access_token(
+                    spec, db, venue_id=config_row.venue_id, user_id=config_row.user_id
+                )
+            except Exception as exc:
+                logger.info("Xero disconnect: refresh skipped (%s)", exc)
+        revoked = xero_disconnect(config_row, token)
+
     config_row.access_token = None
     config_row.refresh_token = None
     config_row.token_expires_at = None
     config_row.oauth_metadata = None
     db.commit()
-    return {"disconnected": True}
+    out: dict = {"disconnected": True}
+    if revoked is not None:
+        out["revoked"] = revoked
+    return out
 
 
 def _result_page(success: bool, connector: str, message: str) -> str:

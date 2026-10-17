@@ -22,6 +22,7 @@ import MenuEditor from './MenuEditor';
 import RecipeEditor from './RecipeEditor';
 import MenuEngineering from './MenuEngineering';
 import SupplierTenders from './SupplierTenders';
+import XeroBills from './XeroBills';
 import DashboardView from './DashboardView';
 import VenuePicker from './VenuePicker';
 import StockPicker from './StockPicker';
@@ -55,7 +56,7 @@ export interface DisplayBlockProps {
 // block (the latest), and a draft_recipe call opens one card per recipe —
 // they need to sit inline, each its own card. The Recipes page is unaffected
 // (it is a functional page, not a block).
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'menu_engineering', 'supplier_tenders', 'dashboard_view', 'apps_dashboard', 'app_runner', 'functions_dashboard', 'functions_enquiries', 'functions_events', 'functions_inbox', 'functions_contacts', 'functions_reports', 'functions_settings']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'menu_engineering', 'supplier_tenders', 'dashboard_view', 'apps_dashboard', 'app_runner', 'functions_dashboard', 'functions_enquiries', 'functions_events', 'functions_inbox', 'functions_contacts', 'functions_reports', 'functions_settings', 'xero_bills']);
 
 // The single source of truth for which display components EXIST. The admin
 // Settings → Components panel derives its catalogue from these keys (with a
@@ -88,6 +89,7 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   functions_contacts: FunctionsContacts,
   functions_reports: FunctionsReports,
   functions_settings: FunctionsSettings,
+  xero_bills: XeroBills,
   tool_approval: ToolApprovalCard,
   receive_invoice_editor: ReceiveInvoiceEditor,
   venue_picker: VenuePicker,

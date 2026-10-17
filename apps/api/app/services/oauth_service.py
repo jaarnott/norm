@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 # enough that a leaked/abandoned state doesn't linger.
 OAUTH_STATE_TTL_MIN = 15
 
+# refresh_policy "expiring" (see refresh_all_tokens): redeem when this close to
+# the access token's expiry. Wider than the 15-minute keep-alive cadence, so a
+# 30-minute Xero token is renewed by the run before the one that would find it
+# dead, and never left to the lazy on-demand refresh.
+REFRESH_EXPIRING_WITHIN = timedelta(minutes=20)
+
 
 def _uses_pkce(oauth: dict) -> bool:
     """Whether this connector's OAuth flow uses PKCE.
@@ -542,6 +548,26 @@ def refresh_all_tokens(
                 skipped.append(label)
                 continue
 
+            # ``oauth_config.refresh_policy``: "force" (the default, below) or
+            # "expiring" — for a provider like Xero whose refresh tokens live 60
+            # days but rotate on EVERY use, a forced redemption every 15 minutes
+            # is ~96 rotations a day for nothing, each one a chance to lose the
+            # chain if the DB write fails. Such rows are redeemed only when the
+            # access token is within REFRESH_EXPIRING_WITHIN of expiry, which
+            # still keeps the refresh token far inside its 60-day life.
+            if (spec.oauth_config or {}).get("refresh_policy") == "expiring":
+                expires_at = row.token_expires_at
+                if expires_at is not None and expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if (
+                    row.access_token
+                    and expires_at is not None
+                    and expires_at - datetime.now(timezone.utc)
+                    > REFRESH_EXPIRING_WITHIN
+                ):
+                    skipped.append(label)
+                    continue
+
             try:
                 # Always a real redemption (force=True): a lazy check would skip
                 # rows whose access token still looks valid — and with Loaded's
@@ -613,7 +639,16 @@ def _store_tokens(
     # would wipe the stored venue binding that the connect card's
     # "connected as X / wrong company" display depends on (and Gmail/Outlook's
     # stored "email") on the first keep-alive redemption after a connect.
-    known_keys = {"access_token", "refresh_token", "expires_in", "token_type", "scope"}
+    # id_token (openid providers such as Xero) is a JWT nobody reads back —
+    # keep it out of the row rather than re-storing ~1 KB on every refresh.
+    known_keys = {
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "expires_in",
+        "token_type",
+        "scope",
+    }
     extra = {k: v for k, v in token_data.items() if k not in known_keys}
     if extra:
         merged = dict(config_row.oauth_metadata or {})

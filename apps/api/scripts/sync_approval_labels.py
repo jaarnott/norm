@@ -73,6 +73,11 @@ READS = [
     "norm_functions.find_threads",
     "norm_functions.read_thread",
     "norm_functions.get_venue_profile",
+    # Xero (Oct 2026)
+    "xero.get_bills",
+    "xero.get_contacts",
+    "xero.get_accounts",
+    "xero.get_profit_and_loss",
 ]
 
 #: Drafts — prepare something a person finishes in an editor; the editor's
@@ -129,6 +134,8 @@ WRITES = {
         "send proposals to function customers", allow_auto=False
     ),
     "norm.note_insight": _auto("note what you tell it about an insight"),
+    # Xero (Oct 2026): a bill lands as a draft; a person may let it through.
+    "xero.create_bill": _ask("create bills in Xero"),
     "loadedhub.review_and_receive_invoices": {
         "default": "ask",
         "allow_auto": True,
