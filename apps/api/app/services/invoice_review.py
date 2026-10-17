@@ -775,37 +775,7 @@ def build_suggestions(
             _line_suggestions(suggestions, rl, lines_by_id[lid], lid)
 
     for rl in unpaired_rep:
-        rid = str(rl.get("id"))
-        desc = rl.get("description") or rl.get("code") or "line"
-        payload = {k: v for k, v in rl.items() if k not in _REPLICA_ONLY_KEYS}
-        explanation = (
-            f"the invoice bills '{rl.get('description')}' "
-            f"(qty {rl.get('quantity_received')} at {rl.get('unit_cost')}) "
-            "but Loaded's draft has no such line"
-        )
-        if rl.get("unit_guess"):
-            # Adding a line is applied unattended; a guessed unit is not, so
-            # it is the added line's own decision (below).
-            payload.update(
-                rl.get("unit_read")
-                or {"unit": None, "linked_unit_id": None, "unit_ratio": None}
-            )
-        elif rl.get("unit_by") == "resolver" and rl.get("linked_unit_id"):
-            # A copy-only line never met a Loaded unit, so a decisive resolver
-            # pick rides in with it — accepting the line is accepting the unit
-            # (Aitkens 173670 freight, 19 Aug 2026).
-            explanation += f" — delivered as '{rl.get('unit')}' ({rl.get('unit_why')})"
-        _sugg(
-            suggestions,
-            "add_line",
-            line_id=rid,
-            proposed=rl.get("description"),
-            explanation=explanation,
-            payload=payload,
-        )
-        # What the added line still needs, as its own decisions on that line.
-        _unit_suggestion(suggestions, rl, None, rid, desc)
-        _create_item_suggestion(suggestions, rl, rid, desc)
+        _add_line_suggestions(suggestions, rl)
 
     for ln in unpaired_loaded:
         lid = str(ln.get("id"))
@@ -892,6 +862,50 @@ def _supplier_details_text(details: dict) -> str:
         details.get("account_number") and f"account {details['account_number']}",
     ]
     return " · ".join(p for p in parts if p)
+
+
+def _add_line_suggestions(
+    suggestions: list[dict],
+    rl: dict,
+    *,
+    why: str | None = None,
+    fixes: str | None = None,
+) -> None:
+    """A Replica line Loaded's draft lacks: add it, plus what it still needs
+    (its unit, its stock item) as decisions of its own on that line. ``why``
+    replaces the explanation when something other than the read found the
+    line (the totals work-out, which also names it a ``fixes``)."""
+    rid = str(rl.get("id"))
+    desc = rl.get("description") or rl.get("code") or "line"
+    payload = {k: v for k, v in rl.items() if k not in _REPLICA_ONLY_KEYS}
+    explanation = why or (
+        f"the invoice bills '{rl.get('description')}' "
+        f"(qty {rl.get('quantity_received')} at {rl.get('unit_cost')}) "
+        "but Loaded's draft has no such line"
+    )
+    if rl.get("unit_guess"):
+        # Adding a line is applied unattended; a guessed unit is not, so
+        # it is the added line's own decision (below).
+        payload.update(
+            rl.get("unit_read")
+            or {"unit": None, "linked_unit_id": None, "unit_ratio": None}
+        )
+    elif rl.get("unit_by") == "resolver" and rl.get("linked_unit_id"):
+        # A copy-only line never met a Loaded unit, so a decisive resolver
+        # pick rides in with it — accepting the line is accepting the unit
+        # (Aitkens 173670 freight, 19 Aug 2026).
+        explanation += f" — delivered as '{rl.get('unit')}' ({rl.get('unit_why')})"
+    _sugg(
+        suggestions,
+        "add_line",
+        line_id=rid,
+        proposed=rl.get("description"),
+        explanation=explanation,
+        payload=payload,
+        fixes=fixes,
+    )
+    _unit_suggestion(suggestions, rl, None, rid, desc)
+    _create_item_suggestion(suggestions, rl, rid, desc)
 
 
 def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> None:
@@ -1213,6 +1227,10 @@ def _work_out_the_lines(
     ask,
     db,
     document=None,
+    *,
+    issues: list[dict] | None = None,
+    resolve_lines=None,
+    on_unresolved=None,
 ) -> None:
     """With every suggestion applied the invoice still doesn't come to its
     total, so Norm works out which lines are wrong
@@ -1223,7 +1241,14 @@ def _work_out_the_lines(
     (``totals_balance``), with every other suggestion applied — then its
     changes are sure fixes. One that doesn't goes back with what it came to,
     for another try. Runs only here, so an invoice that adds up costs
-    nothing extra."""
+    nothing extra.
+
+    Beyond a line's figures the answer may add a line the invoice prints
+    that no line covers, remove one it doesn't print, or keep one Norm was
+    going to strike — so any gap visible on the copy can be closed (the
+    owner, 17 Oct 2026). An added line is matched like any line the read
+    found (``resolve_lines``: the Replica built for just those lines). When
+    no answer adds up, ``on_unresolved`` is told, so the cause gets fixed."""
     if ask is None and db is None:
         return
     from app.services import invoice_arbiter
@@ -1231,25 +1256,34 @@ def _work_out_the_lines(
     post = _all_applied(data, suggestions)
     _, _, came_to, declared = _totals_view(post)
     printed = {wid: _line(replica, rid) or {} for rid, wid in pairs.items()}
-    live = [
-        ln
-        for ln in post.get("lines") or []
-        if isinstance(ln, dict) and not ln.get("struck")
-    ]
+    rows = [ln for ln in post.get("lines") or [] if isinstance(ln, dict)]
+    live = [ln for ln in rows if not ln.get("struck")]
     # GST "charged" is the rate the invoice's lines already carry.
     gst = max((_f(ln.get("sale_tax_rate")) or 0.0 for ln in live), default=0.0)
     lines = []
-    for ln in live:
+    for ln in rows:
         lid = str(ln.get("id"))
-        rl = printed.get(lid) or {}
+        held = bool(ln.get("struck"))
+        # A strike someone already decided stays decided; only the ones
+        # Norm is suggesting are the model's to keep.
+        if held and (_line(data, lid) or {}).get("struck"):
+            continue
+        rl = printed.get(lid) or _line(replica, lid) or {}
         lines.append(
             {
                 "id": lid,
                 "description": ln.get("description"),
                 "code": ln.get("code"),
+                # What the line is received against: a price put on a merged
+                # line of Loaded's ('5x3 Welcome Mat\nLaundry Bag Stand…')
+                # lands on that line's item, not the product its text names.
+                "item": (ln.get("item_name") or rl.get("item_name"))
+                if ln.get("linked_item_id")
+                else None,
                 "quantity": _f(ln.get("quantity_received")),
                 "unit_price": _f(ln.get("unit_cost")),
                 "gst_rate": _f(ln.get("sale_tax_rate")),
+                "receive": not held,
                 "printed": {
                     "quantity": rl.get("quantity_received"),
                     "unit_price": rl.get("unit_cost"),
@@ -1259,26 +1293,79 @@ def _work_out_the_lines(
                 else None,
             }
         )
+    added_by_read = {
+        str(s.get("line_id")) for s in suggestions if s.get("kind") == "add_line"
+    }
 
-    def with_answer(answer: dict) -> list[dict]:
-        trial = copy.deepcopy(suggestions)
-        by_id = {str(s.get("id")): s for s in trial}
-        why = (
+    def rate_for(gst_word: object) -> float | None:
+        return {"charged": gst or None, "free": 0.0}.get(gst_word)  # type: ignore[arg-type]
+
+    def why_for(answer: dict) -> str:
+        return (
             f"with every other suggestion applied the invoice comes to "
             f"{came_to:.2f}, not its total {declared:.2f} — {answer.get('why')}"
         )
+
+    def with_answer(answer: dict) -> list[dict]:
+        trial = copy.deepcopy(suggestions)
+        why = why_for(answer)
+        # A line Norm's own read added that the invoice doesn't print goes
+        # with everything hanging off it; a line of Loaded's draft is struck.
+        dropped = {lid for lid in answer.get("remove") or [] if lid in added_by_read}
+        trial[:] = [s for s in trial if str(s.get("line_id")) not in dropped]
+        for lid in answer.get("remove") or []:
+            if lid in dropped:
+                continue
+            ln = _line(post, lid) or {}
+            zero = abs(_f(ln.get("total_cost")) or 0.0) <= _MONEY_TOL
+            _sugg(
+                trial,
+                "strike",
+                line_id=lid,
+                current=ln.get("description"),
+                explanation=why,
+                apply={"struck": True},
+                gate=None if zero else _VA.AUTO_STRIKE_PHANTOM_LINES,
+                fixes=issue_id,
+            )
+        kept = set(answer.get("keep") or [])
+        trial[:] = [
+            s
+            for s in trial
+            if not (s.get("kind") == "strike" and str(s.get("line_id")) in kept)
+        ]
+        for i, new in enumerate(answer.get("add") or []):
+            rid = f"totals-{i}"
+            qty, price = new["quantity"], new["unit_price"]
+            rate = rate_for(new.get("gst"))
+            _sugg(
+                trial,
+                "add_line",
+                line_id=rid,
+                proposed=new["description"],
+                explanation=why,
+                payload={
+                    "id": rid,
+                    "code": new.get("code"),
+                    "description": new["description"],
+                    "quantity_received": qty,
+                    "unit_cost": price,
+                    "total_cost": round(qty * price, 4),
+                    "sale_tax_rate": gst if rate is None else rate,
+                    "linked_item_id": None,
+                },
+                fixes=issue_id,
+            )
+        by_id = {str(s.get("id")): s for s in trial}
         changes = [
             (str(c["line_id"]), field, value)
             for c in answer.get("lines") or []
             for field, value in (
                 ("quantity_received", c.get("quantity")),
                 ("unit_cost", c.get("unit_price")),
-                (
-                    "sale_tax_rate",
-                    {"charged": gst or None, "free": 0.0}.get(c.get("gst")),
-                ),
+                ("sale_tax_rate", rate_for(c.get("gst"))),
             )
-            if value is not None
+            if value is not None and str(c["line_id"]) not in dropped
         ]
         if answer.get("total") is not None:
             changes.append((None, "total", answer["total"]))
@@ -1324,6 +1411,7 @@ def _work_out_the_lines(
     except Exception as exc:  # noqa: BLE001 — the figures alone, then
         logger.info("invoice copy unavailable for the totals: %s", exc)
         block = None
+    tried: list[dict] = []
     answer = invoice_arbiter.work_out_totals(
         lines,
         {
@@ -1336,14 +1424,120 @@ def _work_out_the_lines(
         document=block,
         ask_llm=ask,
         db=db,
+        tried=tried,
     )
-    if answer:
-        suggestions[:] = with_answer(answer)
-    else:
+    if not answer:
         logger.warning(
             "totals don't balance and Norm couldn't work out the lines on %s",
             data.get("invoice_id"),
         )
+        if on_unresolved is not None:
+            try:
+                on_unresolved(
+                    {
+                        "invoice_id": data.get("invoice_id"),
+                        "reference_number": data.get("reference_number"),
+                        "supplier_name": data.get("supplier_name"),
+                        "came_to": came_to,
+                        "total": declared,
+                        "tried": tried,
+                    }
+                )
+            except Exception:  # noqa: BLE001 — an alert never fails a review
+                logger.exception("totals alert failed for %s", data.get("invoice_id"))
+        return
+    suggestions[:] = with_answer(answer)
+    if issues is not None:
+        # What the answer settled stops standing in the way: a line kept is
+        # on the invoice after all; a line of Norm's that went is gone.
+        gone = set(answer.get("keep") or []) | (
+            set(answer.get("remove") or []) & added_by_read
+        )
+        issues[:] = [
+            i
+            for i in issues
+            if not (
+                str(i.get("line_id")) in gone
+                and (
+                    i.get("code") == "loaded_line_not_on_copy"
+                    or str(i.get("line_id")) in added_by_read
+                )
+            )
+        ]
+    if answer.get("add"):
+        _match_added_lines(
+            answer, suggestions, issues, issue_id, why_for(answer), resolve_lines
+        )
+
+
+def _match_added_lines(
+    answer: dict,
+    suggestions: list[dict],
+    issues: list[dict] | None,
+    issue_id: str,
+    why: str,
+    resolve_lines,
+) -> None:
+    """The lines the totals answer adds, matched like any line the read
+    found: ``resolve_lines`` builds the Replica for just those lines, and
+    each comes back with its stock item, unit and GST — or a create — in
+    place of the bare figures the check ran on. Without a match the line
+    stands blocked rather than going to Loaded unlinked."""
+    added = answer.get("add") or []
+    resolved: dict = {}
+    if resolve_lines is not None:
+        try:
+            resolved = (
+                resolve_lines(
+                    [
+                        {
+                            "code": new.get("code"),
+                            "description": new["description"],
+                            "quantity": new["quantity"],
+                            "unit_price_ex_tax": new["unit_price"],
+                            "line_total_ex_tax": round(
+                                new["quantity"] * new["unit_price"], 4
+                            ),
+                            "gst": new.get("gst"),
+                        }
+                        for new in added
+                    ]
+                )
+                or {}
+            )
+        except Exception as exc:  # noqa: BLE001 — the bare line stays, blocked
+            logger.info("matching the added lines failed: %s", exc)
+            resolved = {}
+    rep_lines = resolved.get("lines") or []
+    for i, _new in enumerate(added):
+        rid = f"totals-{i}"
+        rl = rep_lines[i] if i < len(rep_lines) else None
+        if rl is not None:
+            suggestions[:] = [s for s in suggestions if s.get("line_id") != rid]
+            _add_line_suggestions(
+                suggestions, {**rl, "id": rid}, why=why, fixes=issue_id
+            )
+        if issues is None:
+            continue
+        line_issues = [
+            {**ri, "line_id": rid, "id": f"{ri.get('code')}:{rid}"}
+            for ri in resolved.get("issues") or []
+            if ri.get("line_id") == f"rep-{i}"
+        ]
+        if rl is None or not rl.get("linked_item_id"):
+            if not any(ri.get("code") == "item_unmatched" for ri in line_issues):
+                line_issues.append(
+                    {
+                        "id": f"item_unmatched:{rid}",
+                        "code": "item_unmatched",
+                        "blocking": True,
+                        "line_id": rid,
+                        "message": (
+                            f"'{_new['description']}' isn't linked to a stock item"
+                        ),
+                    }
+                )
+        issues.extend(_finalise_issues(line_issues, [], {}, require_valid_po=False))
 
 
 def balance_after_suggestions(
@@ -1356,6 +1550,8 @@ def balance_after_suggestions(
     ask=None,
     db=None,
     document=None,
+    resolve_lines=None,
+    on_unresolved=None,
 ) -> None:
     """The totals check, on the values the suggestions leave — not the copy's
     own printed figures (the user, 14 Oct 2026: "the goal is autoreceive so we
@@ -1366,7 +1562,12 @@ def balance_after_suggestions(
       Norm works out which lines are wrong (``_work_out_the_lines``) — never
       an adjustment line, never the difference spread over every price (the
       owner, 16 Oct 2026: "it should work out the lines"; the spread cut 64
-      Applegum invoices' costs to force a GST mismatch).
+      Applegum invoices' costs to force a GST mismatch). Loaded's draft is
+      never the fallback, however well it adds up as it stands: of four
+      drafts that "added up" (Oct 2026), three had no total at all and the
+      fourth hit its total with three prices wrong and a line missing — the
+      owner, 17 Oct 2026: "the point of the replica is to replace what
+      loaded is doing".
     - The totals blocker stands whenever the WORKING values don't come to the
       total, and clears only when they do (``clears_when`` ``balances``) —
       however they got there. Its fix is every suggestion that moves the
@@ -1374,31 +1575,33 @@ def balance_after_suggestions(
       is on), so a check on "everything applied" alone would let it receive
       an invoice that doesn't add up; and Fresh Connection 30049130 read
       "Ready to receive" at $138.32 on a $179.40 invoice because accepting the
-      fixes used to be enough to clear the blocker."""
+      fixes used to be enough to clear the blocker. It is raised, too, when
+      the working values add up but Norm's own figures don't — the receive
+      would apply those figures."""
     if any(s.get("kind") == "delete_invoice" for s in suggestions):
         return  # nothing will be received
     existing = next((i for i in issues if i.get("code") == TOTALS_ISSUE), None)
     issue_id = (existing or {}).get("id") or TOTALS_ISSUE
 
     if not totals_balance(_all_applied(data, suggestions)):
-        if totals_balance(data):
-            # Loaded's figures add up as they stand: the suggestions that
-            # would break them go, and Loaded's figures stay.
-            suggestions[:] = [s for s in suggestions if not _moves_money(data, s)]
-        else:
-            _work_out_the_lines(
-                data,
-                suggestions,
-                issue_id,
-                replica or {},
-                pairs or {},
-                ask,
-                db,
-                document,
-            )
+        _work_out_the_lines(
+            data,
+            suggestions,
+            issue_id,
+            replica or {},
+            pairs or {},
+            ask,
+            db,
+            document,
+            issues=issues,
+            resolve_lines=resolve_lines,
+            on_unresolved=on_unresolved,
+        )
 
-    if totals_balance(data):
-        # As it stands it adds up: nothing to stop the receive.
+    applied = _all_applied(data, suggestions)
+    if totals_balance(data) and totals_balance(applied):
+        # It adds up as it stands and with every suggestion accepted:
+        # nothing to stop the receive.
         if existing is not None:
             issues.remove(existing)
         for s in suggestions:
@@ -1406,7 +1609,9 @@ def balance_after_suggestions(
                 s["fixes"] = None
         return
 
-    _, _, came_to, declared = _totals_view(data)
+    _, _, came_to, declared = _totals_view(
+        data if not totals_balance(data) else applied
+    )
     issue = existing or {"id": issue_id, "code": TOTALS_ISSUE, "line_id": None}
     # No switch: Loaded won't receive an invoice that doesn't add up, so
     # there is nothing for one to allow (the owner, 16 Oct 2026).
@@ -2482,6 +2687,32 @@ def review_invoice(
                         name, details, candidates, ask_llm=supplier_ask, db=db
                     )
 
+            def resolve_added(lines: list[dict]) -> dict:
+                # A line the totals work-out found on the copy is matched like
+                # any line the read found: the Replica for just those lines.
+                mini = build_replica(
+                    db,
+                    config_db,
+                    venue_id,
+                    {**extraction, "lines": lines},
+                    lh=lh,
+                    own_invoice_id=invoice_id,
+                    loaded_supplier_name=data.get("supplier_name"),
+                    **_with_suppliers(reference, suppliers),
+                )
+                return {
+                    "lines": mini.get("lines") or [],
+                    "issues": mini.get("issues") or [],
+                }
+
+            totals_unresolved = None
+            if db is not None:
+
+                def totals_unresolved(info: dict) -> None:
+                    from app.services.totals_alert import alert_totals_unresolved
+
+                    alert_totals_unresolved(venue_id, info)
+
             def finish(pairs: dict[str, str]) -> None:
                 # The order the invoice names is evidence for the rules (which
                 # item an ambiguous code is), so its rows are read first.
@@ -2626,6 +2857,8 @@ def review_invoice(
                 ask=totals_ask,
                 db=db,
                 document=invoice_copy,
+                resolve_lines=resolve_added,
+                on_unresolved=totals_unresolved,
             )
             link_fixes(data, replica, issues, suggestions)
             data["suggestions"] = suggestions

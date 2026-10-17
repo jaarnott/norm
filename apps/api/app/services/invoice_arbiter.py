@@ -75,24 +75,41 @@ _PAIRING_PROMPT = (
 _WORK_OUT_PROMPT = (
     "A supplier invoice is about to be received into a venue's stock system, "
     "but the values it will be received with don't come to the invoice's "
-    "total. You are given each line as it will be received, beside what was "
-    "read off the invoice for it ('printed'), the invoice's printed subtotal, "
-    "GST and total, and the attached invoice itself when there is one. Work "
-    "out which lines are wrong and what they should be, so the invoice comes "
-    "to its total.\n"
+    "total. You are given each line as it will be received (receive: true), "
+    "any line that will NOT be received because it wasn't found on the "
+    "invoice (receive: false), what was read off the invoice for each line "
+    "('printed'), the invoice's printed subtotal, GST and total, and the "
+    "attached invoice itself when there is one. Work out which lines are "
+    "wrong and what they should be, so the invoice comes to its total.\n"
     "Rules:\n"
     "- Look at the invoice: a misread quantity or price, a line charged "
-    "GST or GST-free the other way, or a misread total.\n"
+    "GST or GST-free the other way, a misread total, a line the invoice "
+    "prints that no listed line covers, or a listed line it doesn't print.\n"
     "- Change only what the invoice shows is wrong. Never spread a "
-    "difference over the lines or invent a line.\n"
+    "difference over the lines, and never add a line the invoice doesn't "
+    "print.\n"
+    "- Each line is received against its stock item ('item'). Put a "
+    "printed product's figures only on a line whose item is that product; "
+    "when no line's item is, add it — even if a line's description "
+    "mentions it.\n"
+    "- add: a line the invoice prints that is missing from the list — its "
+    "description and code as printed, quantity, unit price ex GST and GST.\n"
+    "- remove: a line that will be received but isn't on the invoice (a "
+    "duplicate, a line from another invoice). keep: a line marked receive "
+    "false that IS on the invoice.\n"
+    "- A charge printed as a single amount with no quantity is quantity 1 "
+    "at that amount.\n"
     "- A line's value is quantity x unit price ex GST, plus GST when "
-    "charged. The total is every line plus its GST.\n"
+    "charged. The total is every received line plus its GST.\n"
     "- 'earlier_answers' are answers that didn't add up, with what they came "
     "to. Don't repeat one.\n"
     "- why: ONE sentence naming what the invoice shows. A person reads it.\n\n"
     'Return ONLY JSON: {"lines": [{"line_id": "<id>", "quantity": <number, '
     'optional>, "unit_price": <number, optional>, "gst": "charged|free, '
-    'optional"}], "total": <number or null>, "why": "<evidence>"}'
+    'optional"}], "add": [{"description": "<as printed>", "code": "<as '
+    'printed, or null>", "quantity": <number>, "unit_price": <number>, '
+    '"gst": "charged|free"}], "remove": ["<line_id>"], "keep": '
+    '["<line_id>"], "total": <number or null>, "why": "<evidence>"}'
 )
 
 _SAME_BUSINESS_PROMPT = (
@@ -242,11 +259,14 @@ def diagnose_totals(
 WORK_OUT_ATTEMPTS = 3
 
 
-def _clean_work_out(raw: object, ids: set[str]) -> dict:
+def _clean_work_out(raw: object, received: set[str], held: set[str]) -> dict:
     """The model's answer, kept to lines that exist and fields that mean
-    something; {} when there's nothing in it."""
+    something; {} when there's nothing in it. ``received``: the ids of lines
+    that will be received (changed or removed); ``held``: those that won't be
+    (kept, then changed if need be)."""
     if not isinstance(raw, dict):
         return {}
+    ids = received | held
     lines = []
     for ln in raw.get("lines") or []:
         if not isinstance(ln, dict) or str(ln.get("line_id")) not in ids:
@@ -259,10 +279,35 @@ def _clean_work_out(raw: object, ids: set[str]) -> dict:
             out["gst"] = ln["gst"]
         if len(out) > 1:
             lines.append(out)
+    # A line the invoice prints and the list misses: only with a description
+    # and both figures — anything less can't be received.
+    add = []
+    for ln in raw.get("add") or []:
+        if not isinstance(ln, dict) or not str(ln.get("description") or "").strip():
+            continue
+        qty, price = _f(ln.get("quantity")), _f(ln.get("unit_price"))
+        if qty is None or price is None or qty == 0:
+            continue
+        add.append(
+            {
+                "description": str(ln["description"]).strip(),
+                "code": str(ln.get("code") or "").strip() or None,
+                "quantity": qty,
+                "unit_price": price,
+                "gst": ln.get("gst") if ln.get("gst") in ("charged", "free") else None,
+            }
+        )
+    remove = sorted({str(i) for i in raw.get("remove") or [] if str(i) in received})
+    keep = sorted({str(i) for i in raw.get("keep") or [] if str(i) in held})
     total = _f(raw.get("total"))
-    if not lines and total is None:
+    if not (lines or add or remove or keep) and total is None:
         return {}
-    return {"lines": lines, "total": total, "why": str(raw.get("why") or "").strip()}
+    answer: dict = {"lines": lines, "total": total}
+    for key, value in (("add", add), ("remove", remove), ("keep", keep)):
+        if value:
+            answer[key] = value
+    answer["why"] = str(raw.get("why") or "").strip()
+    return answer
 
 
 def work_out_totals(
@@ -273,23 +318,30 @@ def work_out_totals(
     document: dict | None = None,
     ask_llm=None,
     db=None,
+    tried: list | None = None,
 ) -> dict:
     """Up to WORK_OUT_ATTEMPTS calls → an answer the caller's ``check``
     accepts, or {}.
 
-    ``lines``: [{id, description, quantity, unit_price, gst_rate, printed}];
-    ``header``: {subtotal, tax, total, came_to}. ``check(answer)`` returns
-    None when the invoice adds up with the answer applied, else what it then
-    comes to — which goes back to the model with the answer, for another
-    try. ``document``: the invoice copy as a content block, when there is one.
+    ``lines``: [{id, description, quantity, unit_price, gst_rate, printed,
+    receive}] — ``receive`` False for a line that won't be received (struck
+    as not on the invoice), which the answer may keep; every other line it
+    may change or remove, and it may add a line the invoice prints that the
+    list misses. ``header``: {subtotal, tax, total, came_to}.
+    ``check(answer)`` returns None when the invoice adds up with the answer
+    applied, else what it then comes to — which goes back to the model with
+    the answer, for another try. ``document``: the invoice copy as a content
+    block, when there is one. ``tried`` collects every answer that didn't add
+    up, so a caller can say what was tried.
     """
     if not lines:
         return {}
     ask = ask_llm or _default_ask(
         db, _WORK_OUT_PROMPT, [document] if document else None
     )
-    ids = {str(ln.get("id")) for ln in lines}
-    earlier: list[dict] = []
+    received = {str(ln.get("id")) for ln in lines if ln.get("receive", True)}
+    held = {str(ln.get("id")) for ln in lines if not ln.get("receive", True)}
+    earlier: list[dict] = tried if tried is not None else []
     for _ in range(WORK_OUT_ATTEMPTS):
         payload = {"lines": lines, "header": header, "earlier_answers": list(earlier)}
         try:
@@ -297,7 +349,7 @@ def work_out_totals(
         except Exception as exc:  # noqa: BLE001 — the blocker stands, as before
             logger.info("working out the totals failed: %s", exc)
             return {}
-        answer = _clean_work_out(raw, ids)
+        answer = _clean_work_out(raw, received, held)
         came_to = check(answer) if answer else None
         if answer and came_to is None:
             return answer
@@ -307,7 +359,7 @@ def work_out_totals(
                 "problem": (
                     f"with it the invoice comes to {came_to:.2f}"
                     if answer
-                    else "it names no line that exists and no total"
+                    else "it names no line that exists, no line to add and no total"
                 ),
             }
         )

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>An invoice doesn't add up</h1>
+<p>Norm couldn't work out why <strong>{{ supplier_name }} {{ reference_number }}</strong> at {{ venue_name }} doesn't add up, so Autopilot has stopped on it.</p>
+<p>With every suggestion applied it comes to <strong>{{ came_to }}</strong>, not its total of <strong>{{ total }}</strong>.</p>
+{% if tried %}
+<p>What Norm tried:</p>
+<ul>
+{% for t in tried %}<li>{{ t }}</li>{% endfor %}
+</ul>
+{% endif %}
+<p style="font-size:12px; color:#888;">Loaded invoice id: {{ invoice_id }}</p>
+{% endblock %}

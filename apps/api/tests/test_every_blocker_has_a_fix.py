@@ -848,32 +848,216 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
 
         IR.balance_after_suggestions(data, [], [], ask=ask, document=document)
 
-    def test_a_suggestion_that_would_unbalance_a_matching_invoice_goes(self):
-        # Loaded's 2 x 10.00 already comes to 23.00: a list price that would
-        # break it is dropped, and Loaded's figures stay.
-        data = {
-            "invoice_id": "inv-1",
-            "total": 23.0,
-            "lines": [
-                {
-                    "id": "ld-1",
-                    "quantity_received": 2,
-                    "unit_cost": 10.0,
-                    "sale_tax_rate": 0.15,
-                }
-            ],
-        }
-        price = {
-            "id": "line_value:unit_cost:ld-1",
-            "kind": "line_value",
-            "field": "unit_cost",
-            "line_id": "ld-1",
-            "proposed": 11.5,
-            "apply": {"unit_cost": 11.5},
+    def test_loadeds_draft_adding_up_never_stands_in_for_norms_figures(self):
+        # Loaded's 2 x 10.00 comes to its own 23.00 but the copy reads 11.50.
+        # Loaded's draft used to win here; of four drafts that "added up" none
+        # was right (17 Oct 2026). Now the model works the lines out, and when
+        # it can't the receive stops rather than taking Loaded's figures.
+        data, price = self._off()
+        data["total"] = 23.0
+        suggestions, issues = [price], []
+        ask = self._answer(14.0)
+        IR.balance_after_suggestions(data, suggestions, issues, ask=ask)
+        assert len(ask.asked) == 3
+        [s] = suggestions
+        assert s["proposed"] == 11.5
+        [issue] = issues
+        assert issue["message"] == "the invoice comes to 26.45, not its total 23.00"
+        received = IR._all_applied(dict(data, issues=issues), suggestions)
+        assert IR.compute_confidence(received) == "needs_review"
+
+    def test_a_draft_with_no_total_never_stands_in_either(self):
+        # Alsco CCTN3779394 and two Lion Nathan credits: Loaded had no total,
+        # so its $0 lines "added up" and Norm's own total was withdrawn.
+        data, price = self._off()
+        data["total"] = None
+        data["lines"][0]["unit_cost"] = 0.0
+        total = {
+            "id": "header_value:total",
+            "kind": "header_value",
+            "field": "total",
+            "proposed": 23.0,
+            "apply": {"total": 23.0},
             "sure": True,
         }
-        suggestions, issues = self._balance(data, [price], [])
+        suggestions = [price, total]
+        IR.balance_after_suggestions(data, suggestions, [], ask=self._answer(10.0))
+        assert {s["id"]: s["proposed"] for s in suggestions} == {
+            price["id"]: 10.0,
+            "header_value:total": 23.0,
+        }
+        assert IR.totals_balance(IR._all_applied(data, suggestions))
+
+    # -- any gap visible on the copy can be closed (the owner, 17 Oct 2026) --
+
+    @staticmethod
+    def _two_lines(total):
+        # 2 x 10.00 and 1 x 5.00, both charged 15%.
+        return {
+            "invoice_id": "inv-1",
+            "total": total,
+            "lines": [
+                {
+                    "id": lid,
+                    "description": desc,
+                    "quantity_received": qty,
+                    "unit_cost": cost,
+                    "total_cost": qty * cost,
+                    "sale_tax_rate": 0.15,
+                }
+                for lid, desc, qty, cost in (
+                    ("ld-1", "Salmon", 2, 10.0),
+                    ("ld-2", "Salmon", 1, 5.0),
+                )
+            ],
+        }
+
+    FREIGHT = {
+        "description": "Freight",
+        "code": "FRT",
+        "quantity": 1,
+        "unit_price": 10.0,
+        "gst": "charged",
+    }
+
+    def test_a_line_the_read_missed_is_added_and_matched_like_any_other(self):
+        # The copy bills $10 freight that neither read caught: 2 x 10 + 1 x 5
+        # + 10 = 35.00 + 15% = 40.25.
+        data = self._two_lines(40.25)
+        issues: list = []
+        asked: list = []
+        matched = {
+            "id": "rep-0",
+            "description": "Freight",
+            "code": "FRT",
+            "quantity_received": 1,
+            "unit_cost": 10.0,
+            "total_cost": 10.0,
+            "sale_tax_rate": 0.15,
+            "linked_item_id": "item-freight",
+            "item_name": "Freight",
+        }
+        suggestions: list = []
+        IR.balance_after_suggestions(
+            data,
+            suggestions,
+            issues,
+            ask=lambda p: {"add": [self.FREIGHT], "why": "freight is printed"},
+            resolve_lines=lambda lines: (
+                asked.extend(lines) or {"lines": [matched], "issues": []}
+            ),
+        )
+        assert asked[0]["unit_price_ex_tax"] == 10.0 and asked[0]["gst"] == "charged"
+        [add] = suggestions
+        assert add["id"] == "add_line:totals-0"
+        assert add["payload"]["linked_item_id"] == "item-freight"
+        [issue] = issues  # the draft as it stands is $11.50 short
+        assert add["fixes"] == issue["id"]
+        received = IR._all_applied(dict(data, issues=issues), suggestions)
+        assert IR.compute_confidence(received) == "ready"
+
+    def test_an_added_line_nothing_matches_never_goes_to_loaded_unlinked(self):
+        data = self._two_lines(40.25)
+        issues: list = []
+        suggestions: list = []
+        IR.balance_after_suggestions(
+            data,
+            suggestions,
+            issues,
+            ask=lambda p: {"add": [self.FREIGHT], "why": "freight is printed"},
+        )
+        assert IR.totals_balance(IR._all_applied(data, suggestions))
+        assert "item_unmatched:totals-0" in {i["id"] for i in issues}
+
+    def test_a_line_loadeds_draft_bills_twice_is_struck(self):
+        # The copy bills only the 2 x 10.00: 23.00.
+        data = self._two_lines(23.0)
+        suggestions: list = []
+        IR.balance_after_suggestions(
+            data,
+            suggestions,
+            [],
+            ask=lambda p: {"remove": ["ld-2"], "why": "the salmon is billed once"},
+        )
+        [strike] = suggestions
+        assert (strike["kind"], strike["line_id"]) == ("strike", "ld-2")
+        assert strike["gate"] == VA.AUTO_STRIKE_PHANTOM_LINES
+        assert IR.totals_balance(IR._all_applied(data, suggestions))
+
+    def test_a_line_norms_read_added_goes_with_what_hangs_off_it(self):
+        data = self._two_lines(23.0)
+        data["lines"].pop()
+        added = {
+            "id": "add_line:rep-1",
+            "kind": "add_line",
+            "line_id": "rep-1",
+            "payload": {
+                "id": "rep-1",
+                "quantity_received": 1,
+                "unit_cost": 5.0,
+                "sale_tax_rate": 0.15,
+            },
+        }
+        create = {"id": "create_item:linked_item_id:rep-1", "kind": "create_item"}
+        create["line_id"] = "rep-1"
+        issues = [{"id": "item_unmatched:rep-1", "line_id": "rep-1", "blocking": True}]
+        suggestions = [added, create]
+        IR.balance_after_suggestions(
+            data,
+            suggestions,
+            issues,
+            ask=lambda p: {"remove": ["rep-1"], "why": "read twice"},
+        )
         assert suggestions == [] and issues == []
+
+    def test_a_line_norm_would_strike_is_kept_when_the_invoice_bills_it(self):
+        # Norm's read missed the 1 x 5.00 that Loaded's draft has, so it
+        # would strike it; the invoice does bill it: 28.75.
+        data = self._two_lines(28.75)
+        strike = {
+            "id": "strike:ld-2",
+            "kind": "strike",
+            "line_id": "ld-2",
+            "apply": {"struck": True},
+            "gate": VA.AUTO_STRIKE_PHANTOM_LINES,
+        }
+        issues = [
+            {
+                "id": "loaded_line_not_on_copy:ld-2",
+                "code": "loaded_line_not_on_copy",
+                "line_id": "ld-2",
+                "blocking": True,
+            }
+        ]
+        seen: list = []
+        suggestions = [strike]
+        IR.balance_after_suggestions(
+            data,
+            suggestions,
+            issues,
+            ask=lambda p: (
+                seen.append(p) or {"keep": ["ld-2"], "why": "the 5.00 salmon is billed"}
+            ),
+        )
+        assert {ln["id"]: ln["receive"] for ln in seen[0]["lines"]} == {
+            "ld-1": True,
+            "ld-2": False,
+        }
+        assert suggestions == [] and issues == []
+
+    def test_an_invoice_nothing_makes_add_up_is_reported(self):
+        data, price = self._off()
+        told: list = []
+        IR.balance_after_suggestions(
+            data, [price], [], ask=self._answer(14.0), on_unresolved=told.append
+        )
+        [info] = told
+        assert (info["invoice_id"], info["came_to"], info["total"]) == (
+            "inv-1",
+            26.45,
+            34.5,
+        )
+        assert len(info["tried"]) == 3
 
     def test_a_total_correction_is_a_fix_of_the_totals(self):
         data = {

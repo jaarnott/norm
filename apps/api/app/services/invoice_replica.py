@@ -935,6 +935,16 @@ def build_replica(
                 pass
         if total is None and qty is not None and cost is not None:
             total = round(float(qty) * float(cost), 4)
+        # And the other way: a charge printed as a line total with no unit
+        # price ('Environment & Energy Charge … 14.33') kept a blank price, so
+        # Loaded's $0 line was never corrected and the invoice came up $31.53
+        # short (Alsco CCTN3779394, 17 Oct 2026).
+        if cost is None and total is not None:
+            try:
+                if float(qty):
+                    cost = round(float(total) / float(qty), 4)
+            except (TypeError, ValueError):
+                pass
         out_lines.append(
             {
                 "id": f"rep-{i}",

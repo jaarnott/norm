@@ -195,6 +195,20 @@ class TestDeterministicResolution:
         assert mys["suggested_name"] == "Mystery Product"
         assert mys["suggested_group_id"] == "g-1"
 
+    def test_a_line_printed_with_only_its_total_gets_a_price(self):
+        # Alsco printed its two charges as line totals with no unit price, so
+        # Loaded's $0 lines were never corrected and the invoice came up
+        # $31.53 short (CCTN3779394, 17 Oct 2026).
+        base = dict(EXTRACTION["lines"][0], unit_price_ex_tax=None)
+        lines = [
+            dict(base, quantity=1, line_total_ex_tax=14.33),
+            dict(base, quantity=3, line_total_ex_tax=10.0),
+            dict(base, quantity=1, line_total_ex_tax=None),  # free: stays blank
+        ]
+        doc = _build(dict(EXTRACTION, lines=lines))
+        assert [ln["unit_cost"] for ln in doc["lines"]] == [14.33, 3.3333, None]
+        assert [ln["total_cost"] for ln in doc["lines"]] == [14.33, 10.0, None]
+
     def test_unit_resolves_from_text_when_no_variant(self):
         assert _resolve_unit_record("kilo", UNITS)["id"] == "u-kilo"
         assert _resolve_unit_record("6x 750ml", UNITS)["id"] == "u-6x750"

@@ -246,8 +246,54 @@ class TestWorkOutTotals:
         assert work_out_totals(self.LINES, {}, lambda a: None, ask_llm=ask) == {}
         assert len(asked) == 3
         assert asked[1]["earlier_answers"][0]["problem"] == (
-            "it names no line that exists and no total"
+            "it names no line that exists, no line to add and no total"
         )
+
+    def test_an_answer_may_add_remove_and_keep_lines(self):
+        # So any gap visible on the copy can be closed (the owner, 17 Oct
+        # 2026) — but only a line that will be received can be removed, only
+        # one that won't can be kept, and an added line needs its figures.
+        lines = [
+            *self.LINES,
+            {"id": "ld-2", "quantity": 1.0, "unit_price": 4.0},
+            {"id": "ld-3", "quantity": 1.0, "unit_price": 9.0, "receive": False},
+        ]
+        answer = work_out_totals(
+            lines,
+            {},
+            lambda a: None,
+            ask_llm=lambda p: {
+                "add": [
+                    {
+                        "description": "Freight",
+                        "code": "FRT",
+                        "quantity": 1,
+                        "unit_price": "8.5",
+                        "gst": "charged",
+                    },
+                    {"description": "Fuel levy"},  # no figures
+                ],
+                "remove": ["ld-2", "ld-3", "ld-99"],
+                "keep": ["ld-3", "ld-1"],
+                "why": "freight is printed",
+            },
+        )
+        assert answer == {
+            "lines": [],
+            "total": None,
+            "add": [
+                {
+                    "description": "Freight",
+                    "code": "FRT",
+                    "quantity": 1.0,
+                    "unit_price": 8.5,
+                    "gst": "charged",
+                }
+            ],
+            "remove": ["ld-2"],
+            "keep": ["ld-3"],
+            "why": "freight is printed",
+        }
 
     def test_the_first_answer_that_adds_up_is_kept(self):
         answer = work_out_totals(
