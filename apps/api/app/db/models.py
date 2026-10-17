@@ -243,9 +243,6 @@ class Thread(Base):
         order_by="Message.created_at",
         cascade="all, delete-orphan",
     )
-    order = relationship(
-        "Order", back_populates="thread", uselist=False, cascade="all, delete-orphan"
-    )
     hr_setup = relationship(
         "HrSetup", back_populates="thread", uselist=False, cascade="all, delete-orphan"
     )
@@ -321,36 +318,6 @@ class Message(Base):
     created_at = Column(DateTime(timezone=True), default=_now)
 
     thread = relationship("Thread", back_populates="messages")
-
-
-class Order(Base):
-    __tablename__ = "orders"
-
-    id = Column(String, primary_key=True, default=_uuid)
-    thread_id = Column(String, ForeignKey("threads.id"), nullable=False)
-    venue_id = Column(String, ForeignKey("venues.id"))
-    supplier_id = Column(String, ForeignKey("suppliers.id"))
-    status = Column(String, default="draft")
-    created_at = Column(DateTime(timezone=True), default=_now)
-    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
-
-    thread = relationship("Thread", back_populates="order")
-    venue = relationship("Venue")
-    supplier = relationship("Supplier")
-    lines = relationship("OrderLine", back_populates="order")
-
-
-class OrderLine(Base):
-    __tablename__ = "order_lines"
-
-    id = Column(String, primary_key=True, default=_uuid)
-    order_id = Column(String, ForeignKey("orders.id"), nullable=False)
-    product_id = Column(String, ForeignKey("products.id"), nullable=False)
-    quantity_cases = Column(Integer)
-    quantity_units = Column(Integer)
-
-    order = relationship("Order", back_populates="lines")
-    product = relationship("Product")
 
 
 class Approval(Base):

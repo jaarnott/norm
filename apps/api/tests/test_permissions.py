@@ -41,7 +41,8 @@ class TestRequirePermission:
         assert resp.status_code == 200
 
     def test_team_member_limited_perms(self, client, db_session):
-        """team_member should not have write perms like orders:approve."""
+        """team_member reads conversations but holds no settings permissions
+        like settings:connectors."""
         roles = seed_system_roles(db_session)
         user = _make_user(db_session, role="user")
         org = _make_organization(db_session)
@@ -49,12 +50,14 @@ class TestRequirePermission:
         mem.role_id = roles["team_member"].id
         db_session.flush()
 
-        # orders:read should pass
-        resp = client.get("/api/orders", headers=auth_headers(user))
+        # tasks:read should pass
+        resp = client.get("/api/threads", headers=auth_headers(user))
         assert resp.status_code == 200
 
-        # orders:approve should fail
-        resp = client.post("/api/orders/fake-id/approve", headers=auth_headers(user))
+        # settings:connectors should fail
+        resp = client.get(
+            "/api/connectors/loadedhub/connect-info", headers=auth_headers(user)
+        )
         assert resp.status_code == 403
 
     def test_platform_admin_bypasses_org_checks(self, client, db_session):

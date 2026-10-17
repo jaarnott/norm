@@ -46,7 +46,6 @@ from app.routers import (
     automated_tasks,
     reports_crud,
     working_documents,
-    orders,
     agents,
     roles,
     component_apis,
@@ -78,7 +77,6 @@ _test_app.include_router(billing.router, prefix="/api")
 _test_app.include_router(automated_tasks.router, prefix="/api")
 _test_app.include_router(reports_crud.router, prefix="/api")
 _test_app.include_router(working_documents.router, prefix="/api")
-_test_app.include_router(orders.router, prefix="/api")
 _test_app.include_router(agents.router, prefix="/api")
 _test_app.include_router(roles.router, prefix="/api")
 _test_app.include_router(component_apis.router, prefix="/api")

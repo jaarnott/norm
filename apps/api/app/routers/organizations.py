@@ -604,7 +604,7 @@ async def delete_venue(
 ):
     """Delete a venue, its access grants and its connector configs.
 
-    Thirteen tables carry a venues.id foreign key, and none of them cascade
+    Many tables carry a venues.id foreign key, and none of them cascade
     (``ON DELETE NO ACTION``). Clearing only some of them means the final
     ``DELETE FROM venues`` raises a FK violation and the venue can't be removed
     at all — which is exactly what happened: a venue with tool_call history was
@@ -615,8 +615,8 @@ async def delete_venue(
     * **Venue-scoped config is deleted** — access grants and connector configs
       (including OAuth tokens) are meaningless once the venue is gone, and the
       tokens should not outlive it.
-    * **History keeps its rows and drops the reference** — threads, orders, tool
-      calls, reports, email logs. Deleting a venue is not a reason to erase the
+    * **History keeps its rows and drops the reference** — threads, tool calls,
+      reports, email logs. Deleting a venue is not a reason to erase the
       record of what was ordered or what an agent did; those columns are all
       nullable precisely so the history can outlive the venue.
     * **Norm Functions' records refuse it** (409, ``_functions_records``) —
@@ -638,7 +638,6 @@ async def delete_venue(
         InvoicePrewarmAttempt,
         Job,
         OAuthState,
-        Order,
         Report,
         Thread,
         ToolCall,
@@ -712,7 +711,6 @@ async def delete_venue(
     # History and user-owned records — keep the row, drop the venue reference.
     for model in (
         Thread,
-        Order,
         ToolCall,
         Report,
         EmailLog,

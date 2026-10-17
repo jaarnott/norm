@@ -1,5 +1,11 @@
 # Ordering Flow -- API Contract
 
+> **Retired (17 Oct 2026).** This describes Norm's first ordering flow: a draft order
+> kept in Norm's own `orders` table, approved in the chat and submitted through
+> `/api/orders`. Those endpoints and tables are gone — production never held an
+> order in them. Stock orders are now placed from the purchase-order card, which
+> writes straight to LoadedHub. Kept for history only.
+
 ## POST /api/messages
 
 Accepts a natural-language message. Returns a structured draft order.

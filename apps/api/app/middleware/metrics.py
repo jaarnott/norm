@@ -61,7 +61,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
         # Normalize path to avoid high-cardinality labels
         endpoint = request.url.path
-        for prefix in ("/api/threads/", "/api/messages/", "/api/orders/"):
+        for prefix in ("/api/threads/", "/api/messages/"):
             if endpoint.startswith(prefix) and len(endpoint) > len(prefix):
                 endpoint = prefix + "{id}"
                 break

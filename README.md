@@ -304,11 +304,6 @@ All endpoints except `/health` and `/api/auth/*` require authentication.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/orders` | Bearer | List orders scoped to current user |
-| GET | `/api/orders/{id}` | Bearer | Order detail |
-| POST | `/api/orders/{id}/approve` | Bearer | Approve an order |
-| POST | `/api/orders/{id}/reject` | Bearer | Reject an order |
-| POST | `/api/orders/{id}/submit` | Bearer | Submit an approved order |
 
 ### Reference data
 
