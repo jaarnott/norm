@@ -113,6 +113,10 @@ exist.
 3. Flip to `unified` in the shared config DB. Keep the per-agent prompts one
    release as the rollback.
 4. Delete the per-agent prompts and the switch.
+   *(17 Oct 2026: the switch is gone from the code — every conversation gets
+   the unified prompt, and the Agents settings tab edits only the Norm prompt
+   and personalities. The old per-agent prompt text still sits in
+   `agent_configs`, read by nothing.)*
 
 ## Verification
 

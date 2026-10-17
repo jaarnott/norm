@@ -6,26 +6,10 @@ from app.db.models import AgentConfig, AgentConnectionBinding
 from app.connectors import spec_rows
 
 
-def get_system_prompt(agent_slug: str, db: Session) -> str:
-    """Return the system prompt stored in the DB for this agent."""
-    row = db.query(AgentConfig).filter(AgentConfig.agent_slug == agent_slug).first()
-    if row and row.system_prompt is not None:
-        return row.system_prompt
-    return ""
-
-
 # App notes are standing rules for one App, added to every conversation while
 # that App is on — so they must stay short (validator enforces both caps).
 APP_NOTE_MAX_CHARS = 300
 APP_NOTES_TOTAL_MAX_CHARS = 1500
-
-
-def unified_prompt_active(db: Session) -> bool:
-    """One Norm prompt instead of per-agent prompts — on once the Norm (base)
-    row carries a system prompt. That emptiness is the switch, so the change
-    flips in the shared config DB without a deploy, and back by clearing it."""
-    row = db.query(AgentConfig).filter(AgentConfig.agent_slug == "base").first()
-    return bool(row and (row.system_prompt or "").strip())
 
 
 def build_unified_prompt(
@@ -129,34 +113,9 @@ def get_connector_bindings(agent_slug: str, db: Session) -> list[dict]:
     ]
 
 
-def get_agent_actions(agent_slug: str, db: Session) -> set[str]:
-    """The connector actions THIS agent can actually call.
-
-    "What can this agent do" was being re-derived inline wherever it was
-    needed; this is the one answer (unattended task scope, the admin pages).
-
-    Enabled capabilities on enabled bindings only — a disabled binding is a
-    tool the agent cannot reach, and counting it would answer the question
-    wrongly in the direction that hurts (claiming reach it hasn't got).
-    """
-    # Apps v3: a member's reach is the tools of the Apps bound to it (the
-    # App Map), not its legacy binding rows.
-    from app.services.entitlements import _catalog, app_member
-
-    apps = _catalog(db)
-    if any((a.composition or {}).get("tools") for a in apps):
-        agent_rows = [a for a in apps if a.tier == "agent"]
-        return {
-            key.split(".", 1)[-1]
-            for a in apps
-            if a.tier in ("app", "user") and app_member(a, agent_rows) == agent_slug
-            for key in (a.composition or {}).get("tools") or []
-        }
-    return _binding_actions(agent_slug, db)
-
-
 def _binding_actions(agent_slug: str, db: Session) -> set[str]:
-    """Enabled capabilities on the agent's enabled legacy binding rows."""
+    """Enabled capabilities on the agent's enabled legacy binding rows — a
+    disabled binding or capability is a tool the agent never had."""
     actions: set[str] = set()
     rows = (
         db.query(AgentConnectionBinding)
@@ -177,50 +136,42 @@ def _binding_actions(agent_slug: str, db: Session) -> set[str]:
 
 def default_tool_filter(agent_slug: str, config_db: Session) -> list[str] | None:
     """The toolset an UNATTENDED run falls back to when its task carries no
-    explicit tool_filter: the agent's own bound actions (the pre-one-agent
-    domain scope).
+    explicit tool_filter: the agent's own scope.
 
     Interactive chat gets the full entitled union (a human is present to approve
     any write). An unattended run (a scheduled task, a "Run Now") must NOT —
     several state-changing tools are registered as GET and execute without an
     approval card, so handing an unfiltered scheduled run the whole union would
-    let a report task auto-fire a purchase order. Materialising the agent's own
-    scope here keeps an unfiltered run exactly as capable as it was before the
-    one-agent change. Returns None when the agent has no curated bindings, which
-    leaves the union in place — matching the old no-narrowing behaviour.
+    let a report task auto-fire a purchase order. Returns None when nothing is
+    in scope, which leaves the union in place.
 
     A task filed under no team member — created in a Norm thread, once the
     router went (Sep 2026) — gets ``_read_only_scope`` instead.
     """
-    # Apps v3: once Apps own tools, an unattended run's scope is the tools of
-    # its member's own Apps plus Norm Core's — the same ownership the tool
-    # filter uses, so a report task still can't reach create_purchase_order —
-    # UNIONED with the member's legacy bindings. Shared reads moved to other
-    # members' Apps (get_labour to Reports' Loaded Reports, get_stock to
-    # Procurement's Loaded Stock), and a time_attendance or chef task that
-    # could read them before must still be able to. Retire the union with the
-    # bindings, not before.
+    # Apps v3: an unattended run's scope is the tools of its member's own Apps
+    # plus Norm Core's — the same ownership the tool filter uses, so a report
+    # task still can't reach create_purchase_order — UNIONED with the member's
+    # legacy bindings. Shared reads moved to other members' Apps (get_labour
+    # to Reports' Loaded Reports, get_stock to Procurement's Loaded Stock), and
+    # a time_attendance or chef task that could read them before must still be
+    # able to. Retire the union with the bindings, not before.
     from app.agents.registry import MEMBERS
     from app.services.entitlements import ALL_MEMBERS, _catalog, app_member
 
     apps = _catalog(config_db)
-    if any((a.composition or {}).get("tools") for a in apps):
-        if agent_slug not in MEMBERS:
-            return _read_only_scope(apps, config_db)
-        agent_rows = [a for a in apps if a.tier == "agent"]
-        scoped: set[str] = set()
-        for a in apps:
-            if a.tier not in ("app", "user"):
-                continue
-            if app_member(a, agent_rows) in (agent_slug, ALL_MEMBERS):
-                scoped.update(
-                    key.split(".", 1)[-1]
-                    for key in (a.composition or {}).get("tools") or []
-                )
-        scoped |= _binding_actions(agent_slug, config_db)
-        return sorted(scoped) if scoped else None
-    actions = get_agent_actions(agent_slug, config_db)
-    return sorted(actions) if actions else None
+    if agent_slug not in MEMBERS:
+        return _read_only_scope(apps, config_db)
+    scoped: set[str] = set()
+    for a in apps:
+        if a.tier not in ("app", "user"):
+            continue
+        if app_member(a) in (agent_slug, ALL_MEMBERS):
+            scoped.update(
+                key.split(".", 1)[-1]
+                for key in (a.composition or {}).get("tools") or []
+            )
+    scoped |= _binding_actions(agent_slug, config_db)
+    return sorted(scoped) if scoped else None
 
 
 def _read_only_scope(apps, config_db: Session) -> list[str]:
@@ -234,12 +185,11 @@ def _read_only_scope(apps, config_db: Session) -> list[str]:
     from app.db.config_models import ConnectionSpec
     from app.services.entitlements import ALL_MEMBERS, app_member
 
-    agent_rows = [a for a in apps if a.tier == "agent"]
     owned: dict[str, bool] = {}  # "connector.action" -> is Norm Core's
     for a in apps:
         if a.tier not in ("app", "user"):
             continue
-        core = app_member(a, agent_rows) == ALL_MEMBERS
+        core = app_member(a) == ALL_MEMBERS
         for key in (a.composition or {}).get("tools") or []:
             owned[key] = owned.get(key, False) or core
     read_only: set[str] = set()

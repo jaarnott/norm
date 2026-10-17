@@ -7,29 +7,27 @@ The rule, in one place so every filter agrees:
     explicit row        -> its `enabled` value wins
     no row              -> the app's `bundled` default applies
     app not in catalog  -> allowed (the catalog is a curation layer, not a
-                           lockout; an unclaimed connector keeps working)
+                           lockout)
 
 Fail-open is deliberate throughout: entitlement is a billing/visibility act,
 and a marketplace hiccup must never take tools away from a venue mid-service.
-The three enforcement points all resolve through here (the "three filters" of
-docs/lite-apps-architecture.md Part 4, docs/apps-marketplace-plan.md Phase 1):
+The enforcement points all resolve through here:
 
     1. agent entry            -> agent_entitled()
-    2. prompt_builder tools   -> unentitled_connectors()  (skipped bindings)
+    2. prompt_builder tools   -> tool_owners() + apps_on(): a tool reaches the
+                                 agent iff the App that owns it is on
     3. mcp projection         -> inherits (2): project_tools gates through
                                  _collect_tools, so no third code path exists.
 
-Hierarchy v2 (Sep 2026 — AI Team Members -> Apps -> Components -> Connections):
-the catalog now carries two more tiers. ``tier='agent'`` rows are the hireable
-team members (owns_agents joins them to agent_configs; hiring one is the
-entitlement); ``tier='app'`` rows are the Apps a member uses
-(composition["unlocks"] on the agent row names them). Every App has an enabled
-state: hiring a member enables its bundled Apps by default, individual Apps
-can be switched off (an explicit entitlement row), and a priced App ships
-bundled=false until enabled. ``hired_agent_slugs``/``apps_on`` resolve those
-two levels; both return None while no tier='agent' rows exist, which is the
-dark-launch switch — code deploys everywhere before the shared config DB
-changes shape.
+Hierarchy v2 (Sep 2026 — AI Team Members -> Apps -> Components -> Connections)
+and Apps v3 (28 Sep 2026): ``tier='agent'`` rows are the hireable team members
+(owns_agents joins them to agent_configs; hiring one is the entitlement);
+``tier='app'`` rows are the Apps, each naming its ONE member in
+composition["member"]. Every App has an enabled state: hiring a member enables
+its bundled Apps by default, individual Apps can be switched off (an explicit
+entitlement row), and a priced App ships bundled=false until enabled.
+``hired_agent_slugs``/``apps_on`` resolve those two levels; both return None
+while no tier='agent' rows exist (or there is no org) — gating inactive.
 
 Norm Functions (Oct 2026) adds a switch of its own, the organisation's
 ``functions_mode``: ``off`` wins over anything the catalog says, and while its
@@ -118,68 +116,10 @@ def _functions_off_wins(
     return entitled
 
 
-def _declared_connections(app) -> set[str]:
-    comp = app.composition or {}
-    conns = set(comp.get("connections") or [])
-    # transitional: rows seeded before the connections/apps split carried a
-    # single `spec` key.
-    if comp.get("spec"):
-        conns.add(comp["spec"])
-    return conns
-
-
-def unentitled_connectors(
-    organization_id: str | None, db: Session, config_db: Session
-) -> set[str]:
-    """Connection names this org has NO entitled App for.
-
-    Apps declare the connections they consume (composition["connections"], one
-    or many — the connections/apps split). A connection stays available while
-    ANY entitled app declares it; it is blocked only when every declaring app
-    is disabled. An undeclared connection is never filtered, and an empty
-    catalog filters nothing (the dark-launch property).
-    """
-    apps = _catalog(config_db)
-    if not apps or not organization_id:
-        return set()
-    entitled = entitled_slugs(organization_id, db, config_db)
-    declared: set[str] = set()
-    kept: set[str] = set()
-    for a in apps:
-        conns = _declared_connections(a)
-        declared |= conns
-        if a.slug in entitled:
-            kept |= conns
-    return declared - kept
-
-
-def unentitled_tool_actions(
-    organization_id: str | None, db: Session, config_db: Session
-) -> set[str]:
-    """``connector.action`` keys claimed only by disabled Apps.
-
-    ``composition["tool_actions"]`` entries are exact keys or a per-connector
-    wildcard ``connector.*``. Same claim semantics as connections: available
-    while any entitled app claims it; unclaimed actions are never filtered.
-    """
-    apps = _catalog(config_db)
-    if not apps or not organization_id:
-        return set()
-    entitled = entitled_slugs(organization_id, db, config_db)
-    claimed: set[str] = set()
-    kept: set[str] = set()
-    for a in apps:
-        keys = set((a.composition or {}).get("tool_actions") or [])
-        claimed |= keys
-        if a.slug in entitled:
-            kept |= keys
-    return claimed - kept
-
-
 # The team members every organisation gets for free, always on: the base
-# assistant, the router (an internal identity, never a product), Reports and
-# App Builder (owner decision 27 Sep 2026: separate free tabs, not hireable).
-ALWAYS_INCLUDED_AGENTS = frozenset({"base", "router", "reports", "app_builder"})
+# assistant, Reports and App Builder (owner decision 27 Sep 2026: separate free
+# tabs, not hireable).
+ALWAYS_INCLUDED_AGENTS = frozenset({"base", "reports", "app_builder"})
 
 
 def _agent_rows(apps) -> list:
@@ -242,30 +182,16 @@ def custom_app_owner(app) -> str:
 ALL_MEMBERS = "*"
 
 
-def app_member(app_row, agent_rows=None) -> str | None:
-    """The ONE team member an App is bound to (Apps v3, 28 Sep 2026).
-
-    Reads composition["member"]; "*" means every member (Norm Core only).
-    Transitional fallback for catalogs seeded before v3: the first member
-    whose agent row `unlocks` the App, else the first always-included slug
-    in its `agents` list."""
-    comp = app_row.composition or {}
-    if comp.get("member"):
-        return comp["member"]
-    for a in agent_rows or []:
-        if app_row.slug in ((a.composition or {}).get("unlocks") or []):
-            owns = (a.composition or {}).get("owns_agents") or []
-            if owns:
-                return owns[0]
-    for slug in comp.get("agents") or []:
-        return slug
-    return None
+def app_member(app_row) -> str | None:
+    """The ONE team member an App is bound to (Apps v3, 28 Sep 2026): its
+    composition["member"]; "*" means every member (Norm Core only)."""
+    return (app_row.composition or {}).get("member") or None
 
 
-def _catalog_app_members(app_row, agent_rows) -> set[str]:
+def _catalog_app_members(app_row) -> set[str]:
     """Member slugs an App counts as bound to, for hire checks. Norm Core
     ("*") is bound to the always-hired base assistant, so it's always on."""
-    m = app_member(app_row, agent_rows)
+    m = app_member(app_row)
     if m == ALL_MEMBERS:
         return {"base"}
     return {m} if m else set()
@@ -278,9 +204,9 @@ def is_switchable(app_row) -> bool:
 
 
 def tool_owners(config_db: Session) -> dict[str, str]:
-    """``connector.action`` -> the ONE App slug that owns the tool. Empty
-    until some App declares ``tools`` — that emptiness is the dark-launch
-    switch for the tool-ownership filter."""
+    """``connector.action`` -> the ONE App slug that owns the tool. This is
+    the App Map, the only tool-exposure list: a tool no App owns never
+    reaches the agent or MCP."""
     owners: dict[str, str] = {}
     for a in _catalog(config_db):
         if a.tier in ("app", "user"):
@@ -330,7 +256,7 @@ def apps_on(
             pointers[ptr] = a.slug
         if a.tier == "app":
             entitled_or_fixed = (not is_switchable(a)) or a.slug in entitled
-            if entitled_or_fixed and _catalog_app_members(a, agent_rows) & hired:
+            if entitled_or_fixed and _catalog_app_members(a) & hired:
                 on.add(a.slug)
         elif a.tier == "user" and a.slug in entitled:
             on.add(a.slug)
@@ -384,7 +310,7 @@ def agent_entitled(
 ) -> bool:
     """False only when team-member gating is active, some tier='agent' row
     owns this domain, and the org hasn't hired it. Always-included members
-    (base, router, reports, app_builder) and unowned domains are always
+    (base, reports, app_builder) and unowned domains are always
     allowed; gating inactive (hired_agent_slugs -> None) allows everything —
     the fail-open contract every enforcement point shares."""
     if not domain or not organization_id:

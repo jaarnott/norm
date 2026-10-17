@@ -207,7 +207,6 @@ def _apps_by_thread(
     if not owners:
         return {}
     catalog = {a.slug: a for a in _catalog(config_db)}
-    agent_rows = [a for a in catalog.values() if a.tier == "agent"]
     rows = (
         db.query(ToolCall.thread_id, ToolCall.connector_name, ToolCall.action)
         .filter(ToolCall.thread_id.in_(thread_ids))
@@ -219,7 +218,7 @@ def _apps_by_thread(
         app = catalog.get(owners.get(f"{connector}.{action}") or "")
         if app is None:
             continue
-        member = app_member(app, agent_rows)
+        member = app_member(app)
         if member == ALL_MEMBERS:
             continue
         used = out.setdefault(thread_id, [])

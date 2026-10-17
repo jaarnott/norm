@@ -95,11 +95,10 @@ _RETIRED_ACTIONS = {"delegate_to_agent"}
 # an agent's own tools take `period` in plain English and apply the venue's
 # trading day themselves.
 #
-# Unbinding it from every agent is NOT enough on its own: a binding with an
-# empty capabilities list exposes every action on its connector, and
-# executive_chef/norm is exactly that. So the removal has to live here.
-# projection.ALWAYS_EXPOSE re-adds it for MCP after this filter, which is why
-# that had to stop depending on a binding first.
+# The removal lives here, not in the catalog, so no App claim can put it back
+# on an agent's menu (when bindings were the exposure list, a wildcard binding
+# did exactly that). projection.ALWAYS_EXPOSE re-adds it for MCP after this
+# filter, which is why that had to stop depending on exposure first.
 _ENGINE_AND_MCP_ONLY = {"resolve_dates"}
 
 # Email connectors that act AS a person: each user connects their own mailbox,
@@ -113,15 +112,15 @@ def _collect_tools(
     user_id: str | None = None,
     config_db: Session | None = None,
 ) -> list[dict]:
-    """Collect all enabled tools from all connector specs.
+    """Collect every tool the App Map exposes to this user.
 
     Returns a deduplicated list of dicts with keys: action, connector,
     required_fields, field_mapping, method, description.
 
-    config_db is used for AgentConnectionBinding and ConnectionSpec queries.
+    config_db is used for the catalog and ConnectionSpec queries.
     db is used for Connection (credentials) queries.
     """
-    from app.db.models import AgentConnectionBinding, Connection, ConnectionSpec
+    from app.db.models import Connection, ConnectionSpec
 
     _cdb = config_db
     if _cdb is None:
@@ -129,98 +128,37 @@ def _collect_tools(
             "config_db is required — check that config_db is passed through the call chain"
         )
 
-    # Apps v3: once Apps own tools, THE APP MAP is the exposure list — a tool
-    # reaches the agent iff some App owns it (and, below, that App is on).
-    # Agent bindings stop mattering; they are synthesised here, one per
-    # connector, so the per-connector machinery below (spec, credentials,
-    # per-user connections, engine_only) runs unchanged. The validator keeps
-    # "unowned tools" at zero, so nothing that was exposed goes dark.
-    from app.services.entitlements import tool_owners as _tool_owners
-
-    _owned = _tool_owners(_cdb)
-    if _owned:
-        from types import SimpleNamespace
-
-        _by_conn: dict[str, list[str]] = {}
-        for _key in _owned:
-            _conn, _, _act = _key.partition(".")
-            _by_conn.setdefault(_conn, []).append(_act)
-        bindings = [
-            SimpleNamespace(
-                agent_slug="*",
-                connector_name=_conn,
-                capabilities=[{"action": a, "enabled": True} for a in sorted(_acts)],
-                enabled=True,
-            )
-            for _conn, _acts in sorted(_by_conn.items())
-        ]
-    else:
-        bindings = (
-            _cdb.query(AgentConnectionBinding)
-            .filter(
-                AgentConnectionBinding.enabled == True,  # noqa: E712
-            )
-            .all()
-        )
-
-    if not bindings:
-        return []
-
-    # Marketplace entitlement filter (docs/apps-marketplace-plan.md, the
-    # connections/apps split). A connection stays available while ANY entitled
-    # App declares it; tool actions can additionally be claimed per-app via
-    # composition["tool_actions"] ("connector.action" or "connector.*").
+    # Apps v3: THE APP MAP is the exposure list — a tool reaches the agent iff
+    # some App owns it and that App is on (its member hired ∧ the App switched
+    # on). No App owning a tool means no tools at all; agent bindings play no
+    # part. The validator and the admin App Map's Unassigned panel
+    # (ownership_findings) keep "unowned tools" at zero.
     # project_tools() gates through this same function, so the MCP surface
-    # honors marketplace toggles with no second code path. Inert until the
-    # catalog is seeded (empty sets), and fail-open by design.
-    from app.services.entitlements import (
-        hired_agent_slugs,
-        org_id_for_user,
-        unentitled_connectors,
-        unentitled_tool_actions,
-    )
+    # honors App switches with no second code path. apps_on None (no org, or
+    # no tier='agent' rows) = gating inactive = every owned tool stays on.
+    from app.services.entitlements import apps_on, org_id_for_user, tool_owners
 
-    _org = org_id_for_user(user_id, db)
-    # Hierarchy v2, filter one: is the team member hired? A binding belongs to
-    # a member (agent_slug); the org's tool surface is the union over HIRED
-    # members' bindings (always-included ones ride along). None = gating
-    # inactive (no tier='agent' catalog rows yet, or no org) = keep everything
-    # — the dark-launch/fail-open contract.
-    # Apps v3: once any App declares `tools`, OWNERSHIP decides — every tool
-    # belongs to exactly one App and is on iff that App is on (its member
-    # hired ∧ the App switched on). That supersedes both older filters below.
-    # Bindings above are synthesised from owned tools only, so a tool no App
-    # owns never gets here — the validator and the admin App Map's Unassigned
-    # panel (ownership_findings, computed from the legacy bindings) keep that
-    # set at zero. No App declaring tools = not armed = the v2 filters run
-    # unchanged.
-    from app.services.entitlements import apps_on, tool_owners
+    owners = tool_owners(_cdb)
+    if not owners:
+        return []
+    owned_by_conn: dict[str, set[str]] = {}
+    for _key in owners:
+        _conn, _, _act = _key.partition(".")
+        owned_by_conn.setdefault(_conn, set()).add(_act)
 
-    _owners = tool_owners(_cdb)
-    _apps_on = apps_on(_org, db, _cdb) if _owners else None
+    _apps_on = apps_on(org_id_for_user(user_id, db), db, _cdb)
     _owner_blocked: set[str] = (
-        {k for k, app in _owners.items() if app not in _apps_on}
+        {k for k, app in owners.items() if app not in _apps_on}
         if _apps_on is not None
         else set()
     )
-    _blocked_actions: set[str] = set()
-    if not _owners:
-        _hired = hired_agent_slugs(_org, db, _cdb)
-        if _hired is not None:
-            bindings = [b for b in bindings if b.agent_slug in _hired]
-        # Filter two: is the App on? A disabled App's claimed connections /
-        # tool_actions drop out unless another entitled App claims them.
-        _blocked = unentitled_connectors(_org, db, _cdb)
-        if _blocked:
-            bindings = [b for b in bindings if b.connector_name not in _blocked]
-        _blocked_actions = unentitled_tool_actions(_org, db, _cdb)
 
     tools: list[dict] = []
-    for binding in bindings:
+    for connector_name, owned_actions in sorted(owned_by_conn.items()):
         spec = (
             _cdb.query(ConnectionSpec)
             .filter(
-                ConnectionSpec.connector_name == binding.connector_name,
+                ConnectionSpec.connector_name == connector_name,
             )
             .first()
         )
@@ -232,7 +170,7 @@ def _collect_tools(
             has_config = (
                 db.query(Connection)
                 .filter(
-                    Connection.connector_name == binding.connector_name,
+                    Connection.connector_name == connector_name,
                     Connection.enabled == "true",
                 )
                 .count()
@@ -257,32 +195,17 @@ def _collect_tools(
             if not has_user_config:
                 continue
 
-        # Build an enabled-action set from binding capabilities
-        enabled_actions: set[str] | None = None
-        if binding.capabilities:
-            enabled_actions = {
-                cap["action"]
-                for cap in binding.capabilities
-                if cap.get("enabled", True)
-            }
-
         # Only TOOLS reach an LLM (Sep 2026) — never an endpoint.
         for tool in spec_rows.tools(spec):
             action = tool.get("action", "")
-            if enabled_actions is not None and action not in enabled_actions:
+            if action not in owned_actions:
                 continue
-            if _blocked_actions and (
-                f"{binding.connector_name}.{action}" in _blocked_actions
-                or f"{binding.connector_name}.*" in _blocked_actions
-            ):
-                continue
-            if f"{binding.connector_name}.{action}" in _owner_blocked:
+            if f"{connector_name}.{action}" in _owner_blocked:
                 continue
             # Demoted tools ([consolidator-only]/[engine-only]) are for the
             # engine's own call_api, never the agent's menu — the structured
             # flag makes that machine-checked instead of a description
-            # convention, and holds even for a binding with an empty
-            # capabilities list (which otherwise exposes everything).
+            # convention, and holds even when an App claims the tool.
             if tool.get("engine_only"):
                 continue
             # Retired internal tools whose handler no longer exists. The config
@@ -313,7 +236,7 @@ def _collect_tools(
                 }
             )
 
-    # Deduplicate — same connector+action may appear in multiple agent bindings
+    # Deduplicate — a spec may list the same action twice
     seen: set[tuple[str, str]] = set()
     unique_tools: list[dict] = []
     for t in tools:
@@ -610,7 +533,6 @@ def build_tool_definitions(
     page_context: dict | None = None,
     tool_filter: list[str] | None = None,
     automated_task: dict | None = None,
-    prompt_mode: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Build a system prompt AND Anthropic-format tool definitions for the agentic loop.
 
@@ -620,7 +542,7 @@ def build_tool_definitions(
     tool_filter (an automated task's own toolset) narrows the tools; without
     it the agent holds every tool the user is entitled to.
 
-    Returns ("", []) if no tools are bound.
+    Returns ("", []) if the App Map exposes no tool to this user.
     """
     _cdb = config_db
     if _cdb is None:
@@ -665,26 +587,15 @@ def build_tool_definitions(
     else:
         own_actions = set(_all_actions)
 
-    # System prompt. Unified mode (the Norm base row carries a prompt): ONE
-    # Norm prompt + this member's personality + notes for Apps that are on.
-    # Otherwise the legacy per-agent prompt. `prompt_mode` forces either — the
-    # replay eval compares both on the same conversations.
-    from app.services.agent_config_service import (
-        build_unified_prompt,
-        get_system_prompt,
-        unified_prompt_active,
+    # System prompt: ONE Norm prompt (the base row) + this member's
+    # personality + notes for Apps that are on (Apps v3, 28 Sep 2026).
+    from app.services.agent_config_service import build_unified_prompt
+    from app.services.entitlements import apps_on as _apps_on_fn
+    from app.services.entitlements import org_id_for_user as _org_for
+
+    system_prompt = build_unified_prompt(
+        domain, _cdb, _apps_on_fn(_org_for(user_id, db), db, _cdb)
     )
-
-    _mode = prompt_mode or ("unified" if unified_prompt_active(_cdb) else "per_agent")
-    if _mode == "unified":
-        from app.services.entitlements import apps_on as _apps_on_fn
-        from app.services.entitlements import org_id_for_user as _org_for
-
-        system_prompt = build_unified_prompt(
-            domain, _cdb, _apps_on_fn(_org_for(user_id, db), db, _cdb)
-        )
-    else:
-        system_prompt = get_system_prompt(domain, _cdb)
     if not system_prompt:
         system_prompt = (
             f"You are the {domain} agent for Norm, a hospitality operations platform."

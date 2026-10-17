@@ -1,7 +1,7 @@
 """Apps v3 (28 Sep 2026): one App -> one team member; every tool, component
 and skill -> exactly one App; Norm Core is the one App shared by every member.
 
-Pins: the tool-ownership filter (armed only once Apps declare tools), apps
+Pins: the tool-ownership filter (the App Map is the only exposure list), apps
 that are always on, skills gating, unattended-run scope, ownership findings
 (shared by the admin App Map and the validator), the admin endpoint, and the
 seed data's own consistency against the web component registry."""
@@ -178,11 +178,14 @@ class TestToolOwnership:
         r = client.post("/api/marketplace/core/disable", headers=admin_headers)
         assert r.status_code == 400
 
-    def test_filter_dormant_until_apps_declare_tools(self, db_session):
-        from app.services.entitlements import tool_owners
-
+    def test_no_app_owning_a_tool_means_no_tools(self, db_session):
+        """No fallback to bindings: a catalog whose Apps own no tools exposes
+        nothing, however much is bound."""
+        user = _make_user(db_session)
+        _tool_spec(db_session, "lh", ["get_stock"])
+        _bind(db_session, "procurement", "lh", ["get_stock"])
         _row(db_session, "old", "app", {"member": "procurement"})
-        assert tool_owners(db_session) == {}
+        assert _tools(db_session, user) == set()
 
 
 class TestSkillsFollowTheirApp:
@@ -226,16 +229,6 @@ class TestUnattendedScope:
         _bind(db_session, "time_attendance", "lh", ["get_sales"])
         scope = set(default_tool_filter("time_attendance", db_session))
         assert "get_sales" in scope and "get_stock" not in scope
-
-
-class TestAgentReachFollowsItsApps:
-    def test_get_agent_actions_reads_the_app_map(self, db_session):
-        from app.services.agent_config_service import get_agent_actions
-
-        _world(db_session)
-        # procurement's legacy binding also lists loose_tool — ignored now
-        assert get_agent_actions("procurement", db_session) == {"get_stock"}
-        assert get_agent_actions("reports", db_session) == {"get_sales"}
 
 
 class TestOwnershipFindings:

@@ -159,6 +159,9 @@ connect. Components/tools/playbooks are never shown.
   `{"owns_agents": ["procurement"], "tagline": "...",
     "unlocks": ["purchasing", "receiving", "supplier-tenders"]}`.
   NO components on agent rows — Apps sit in the middle.
+  *(Superseded by Apps v3, 28 Sep 2026: each App names its one member in
+  `composition.member`; `unlocks` is no longer read — the fallback that read
+  it was removed 17 Oct 2026.)*
 - **`tier='app'`** — Apps, the user-facing unit. ONE concept, two
   implementation shapes a composition may carry (both exist today):
   - `{"components": [{key, page:{id,label,icon}, full_width, description,

@@ -171,12 +171,7 @@ async def list_agents(
                 slug, configs.get(slug), bindings_by_slug.get(slug, []), specs_by_name
             )
         )
-    from app.services.agent_config_service import unified_prompt_active
-
-    # unified_prompt: one Norm prompt (the base row) + member personalities;
-    # the admin tab then edits the Norm prompt and personas, not per-agent
-    # prompts.
-    return {"agents": agents, "unified_prompt": unified_prompt_active(config_db)}
+    return {"agents": agents}
 
 
 @router.get("/agents/capabilities")

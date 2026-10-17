@@ -146,16 +146,23 @@ class TestTeamPayload:
             "bamboohr-app",
             "app",
             {
+                "member": "hr",
                 "components": [
                     {
                         "key": "hiring_board",
                         "page": {"id": "hiring", "label": "Hiring", "icon": "Users"},
                     }
-                ]
+                ],
             },
             name="BambooHR",
         )
-        _row(db, "norm-hr", "app", {"app_slug": "hiring"}, name="Norm HR")
+        _row(
+            db,
+            "norm-hr",
+            "app",
+            {"member": "hr", "app_slug": "hiring"},
+            name="Norm HR",
+        )
         _row(
             db,
             "hr-agent",
@@ -163,7 +170,6 @@ class TestTeamPayload:
             {
                 "owns_agents": ["hr"],
                 "tagline": "Runs hiring and employee records.",
-                "unlocks": ["norm-hr", "bamboohr-app"],
             },
             price=1000,
             name="HR",
@@ -317,7 +323,7 @@ class TestEveryAppIsBoundToAMember:
             db_session,
             "sales-snapshot",
             "app",
-            {"app_slug": "sales-snapshot", "agents": ["reports"]},
+            {"app_slug": "sales-snapshot", "member": "reports"},
         )
         payload = agent_catalog.team_payload(org.id, db_session, db_session)
         reports = next(m for m in payload["included"] if m["slug"] == "reports")

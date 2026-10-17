@@ -122,9 +122,7 @@ def required_connections_for_app(app_row, config_db: Session) -> set[str]:
     """
     comp = app_row.composition or {}
     # Two spellings feed DISPLAY requirements: legacy top-level `connections`
-    # and `component_connections` — the latter exists so a requirement can be
-    # declared without also feeding the unentitled_connectors BLOCKING filter
-    # (single-claimer rows would let one App switch black-hole a connector).
+    # and `component_connections`.
     required: set[str] = set(comp.get("connections") or [])
     required |= set(comp.get("component_connections") or [])
     by_component = _component_api_connectors(config_db)
@@ -411,14 +409,12 @@ def _custom_required_connections(app, db: Session, config_db: Session) -> set[st
     return {c for c in conns if not _is_internal(c, internal) or c in INTERNAL_BRANDS}
 
 
-def _catalog_app_entry(
-    row, agent_rows, ctx, config_db, db=None, organization_id=None
-) -> dict:
+def _catalog_app_entry(row, ctx, config_db, db=None, organization_id=None) -> dict:
     """One catalog App, described: who it's bound to and what it unlocks."""
     from app.services.entitlements import ALL_MEMBERS, app_member, is_switchable
 
     comp = row.composition or {}
-    member = app_member(row, agent_rows)
+    member = app_member(row)
     required = required_connections_for_app(row, config_db)
     components = [
         _component_entry(e) for e in comp.get("components") or [] if isinstance(e, dict)
@@ -515,7 +511,7 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
     for row in rows:
         if row.tier not in ("app", "user"):
             continue
-        entry = _catalog_app_entry(row, agent_rows, ctx, config_db, db, organization_id)
+        entry = _catalog_app_entry(row, ctx, config_db, db, organization_id)
         entry["enabled"] = is_on(row.slug)
         if row.slug in stand_ins:
             entry["switchable"] = False  # no catalog row to switch yet
@@ -612,7 +608,7 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
 
     return {
         "gating_active": gating_active,
-        "always_included": sorted(ALWAYS_INCLUDED_AGENTS - {"base", "router"}),
+        "always_included": sorted(ALWAYS_INCLUDED_AGENTS - {"base"}),
         "included": included,
         "members": members,
         "apps": all_apps,
@@ -675,7 +671,6 @@ def ownership_findings(config_db: Session) -> dict:
     )
 
     rows = _catalog_rows(config_db)
-    agent_rows = [a for a in rows if a.tier == "agent"]
     app_rows = [a for a in rows if a.tier in ("app", "user")]
     armed = any((a.composition or {}).get("tools") for a in app_rows)
 
@@ -702,7 +697,7 @@ def ownership_findings(config_db: Session) -> dict:
 
     bad_members = []
     for a in app_rows:
-        m = app_member(a, agent_rows)
+        m = app_member(a)
         if m == ALL_MEMBERS and a.slug != "norm-core":
             bad_members.append(
                 {
@@ -771,10 +766,8 @@ def app_map_payload(
     for row in rows:
         if row.tier not in ("app", "user"):
             continue
-        entry = _catalog_app_entry(row, agent_rows, ctx, config_db, db, organization_id)
-        entry["member_name"] = member_names.get(
-            app_member(row, agent_rows) or "", app_member(row, agent_rows)
-        )
+        entry = _catalog_app_entry(row, ctx, config_db, db, organization_id)
+        entry["member_name"] = member_names.get(app_member(row) or "", app_member(row))
         apps.append(entry)
     order = {
         "*": 0,

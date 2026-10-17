@@ -1,17 +1,14 @@
 """One Norm prompt (Apps v3 prompt consolidation, 28 Sep 2026).
 
 Every conversation gets ONE Norm prompt (the base row) + its member's light
-personality + short notes for the Apps that are on. Writing the base prompt is
-the switch; clearing it rolls back to per-agent prompts."""
+personality + short notes for the Apps that are on. A member's old per-agent
+system prompt is never read."""
 
 import uuid
 
 from app.db.config_models import AgentConfig, MarketplaceApp
-from app.db.models import AgentConnectionBinding, ConnectionSpec
-from app.services.agent_config_service import (
-    build_unified_prompt,
-    unified_prompt_active,
-)
+from app.db.models import ConnectionSpec
+from app.services.agent_config_service import build_unified_prompt
 
 
 def _agent(db, slug, prompt=None, persona=None, description=None):
@@ -39,17 +36,6 @@ def _app(db, slug, member, note=None, tools=None):
         )
     )
     db.flush()
-
-
-class TestTheSwitch:
-    def test_off_until_the_norm_prompt_exists(self, db_session):
-        assert unified_prompt_active(db_session) is False
-        _agent(db_session, "base", prompt="You are Norm.")
-        assert unified_prompt_active(db_session) is True
-
-    def test_clearing_it_rolls_back(self, db_session):
-        _agent(db_session, "base", prompt="  ")
-        assert unified_prompt_active(db_session) is False
 
 
 class TestAssembly:
@@ -113,18 +99,9 @@ class TestBuildToolDefinitionsUsesIt:
                 enabled=True,
             )
         )
-        db.add(
-            AgentConnectionBinding(
-                id=str(uuid.uuid4()),
-                agent_slug="procurement",
-                connector_name=name,
-                capabilities=[{"action": "noop", "enabled": True}],
-                enabled=True,
-            )
-        )
-        db.flush()
+        _app(db, f"app-{name}", "procurement", tools=[f"{name}.noop"])
 
-    def test_unified_when_the_norm_prompt_exists(self, db_session):
+    def test_the_norm_prompt_never_the_old_member_prompt(self, db_session):
         from app.agents.prompt_builder import build_tool_definitions
 
         self._tools(db_session)
@@ -134,10 +111,12 @@ class TestBuildToolDefinitionsUsesIt:
             prompt="OLD PROCUREMENT PROMPT",
             persona="In here you're the buyer.",
         )
+        # No Norm prompt yet: still the persona, never the old prompt.
         prompt, _ = build_tool_definitions(
             "procurement", db_session, config_db=db_session
         )
-        assert "OLD PROCUREMENT PROMPT" in prompt  # no Norm prompt yet: legacy
+        assert "In here you're the buyer." in prompt
+        assert "OLD PROCUREMENT PROMPT" not in prompt
         _agent(db_session, "base", prompt="You are Norm, today is {{today}}.")
         prompt, _ = build_tool_definitions(
             "procurement", db_session, config_db=db_session
@@ -145,17 +124,6 @@ class TestBuildToolDefinitionsUsesIt:
         assert "You are Norm" in prompt and "In here you're the buyer." in prompt
         assert "OLD PROCUREMENT PROMPT" not in prompt
         assert "{{today}}" not in prompt  # date still substituted
-
-    def test_mode_can_be_forced_for_the_replay_eval(self, db_session):
-        from app.agents.prompt_builder import build_tool_definitions
-
-        self._tools(db_session)
-        _agent(db_session, "procurement", prompt="OLD PROCUREMENT PROMPT")
-        _agent(db_session, "base", prompt="You are Norm.")
-        legacy, _ = build_tool_definitions(
-            "procurement", db_session, config_db=db_session, prompt_mode="per_agent"
-        )
-        assert "OLD PROCUREMENT PROMPT" in legacy
 
 
 class TestNoteCaps:

@@ -54,8 +54,7 @@ def get_agent_apps(db: Session, org_id: str, config_db=None) -> list[dict]:
     """The catalog's agent-bundle apps with this org's entitlement state.
 
     Hierarchy v2: the billable team members are the ``tier='agent'`` catalog
-    rows (with an ``owns_agents``-only fallback for pre-rollout catalogs).
-    The marketplace entitlement drives BOTH access (the hired-member gates)
+    rows. The marketplace entitlement drives BOTH access (the hired-member gates)
     and the charge, so they can never disagree — it replaced the three
     ``Organization.*_agent_enabled`` booleans. Prices live on the rows.
     """
@@ -75,10 +74,6 @@ def get_agent_apps(db: Session, org_id: str, config_db=None) -> list[dict]:
             .all()
         )
         rows = [a for a in active if a.tier == "agent"]
-        if not rows:
-            # Transition fallback: catalogs seeded before the team rollout
-            # mark billable agents by owns_agents alone. Dies in cleanup.
-            rows = [a for a in active if (a.composition or {}).get("owns_agents")]
         entitled = entitled_slugs(org_id, db, config_db)
         return [
             {

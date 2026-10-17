@@ -386,42 +386,14 @@ class TestUnattendedRunsStayScoped:
     to its agent's OWN scope, never the union — otherwise a report task could
     reach the GET-method writes (`create_purchase_order`, `send_report_email`)
     that auto-fire without an approval card. `default_tool_filter` is that
-    fallback; these pin its binding-based (pre-Apps-v3) path, beside
-    TestUnattendedScope's App-based one.
+    fallback; TestUnattendedScope pins its App half, this its binding half
+    (a member's legacy bindings are still unioned in).
     """
-
-    def test_default_tool_filter_is_the_agents_own_scope_not_the_union(
-        self, db_session
-    ):
-        from app.services.agent_config_service import default_tool_filter
-
-        db_session.add(
-            AgentConnectionBinding(
-                agent_slug="reports",
-                connector_name="norm",
-                capabilities=[
-                    {"action": "get_sales", "enabled": True},
-                    {"action": "get_labour", "enabled": True},
-                ],
-                enabled=True,
-            )
-        )
-        db_session.flush()
-
-        # Scoped to reports' own bound actions, sorted — NOT every agent's tools.
-        assert default_tool_filter("reports", db_session) == ["get_labour", "get_sales"]
-
-    def test_default_tool_filter_is_none_for_an_unbound_agent(self, db_session):
-        from app.services.agent_config_service import default_tool_filter
-
-        # No curated bindings → None, which leaves the union in place (matching
-        # the old no-narrowing behaviour for an agent the binding layer isn't
-        # curating).
-        assert default_tool_filter("no_such_agent", db_session) is None
 
     def test_a_disabled_capability_is_not_in_the_fallback_scope(self, db_session):
         from app.services.agent_config_service import default_tool_filter
 
+        _catalog(db_session)
         db_session.add(
             AgentConnectionBinding(
                 agent_slug="marketing",
@@ -435,5 +407,6 @@ class TestUnattendedRunsStayScoped:
         )
         db_session.flush()
         tf = default_tool_filter("marketing", db_session)
-        assert tf == ["get_marketing"]
+        # Norm Core's tool + the enabled capability — nothing disabled.
+        assert tf == ["get_marketing", "send_email"]
         assert "create_purchase_order" not in tf

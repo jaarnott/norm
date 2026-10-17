@@ -278,9 +278,10 @@ class TestResponseFormat:
 class TestBindingActions:
     """A binding capability that resolves to nothing vanishes SILENTLY.
 
-    ``_collect_tools`` intersects spec tools with the capability set, so a
-    stale action name just contributes nothing. The executive chef lost its
-    recipe write this way on 29 Aug 2026 — the CB App consolidated its tools
+    Bindings still feed an unattended run's scope (``default_tool_filter``)
+    and the App Map's unowned-tools check, so a stale action name just
+    contributes nothing. When bindings were the exposure list, the executive
+    chef lost its recipe write this way on 29 Aug 2026 — the CB App consolidated its tools
     and ``kitchen_loadedhub_update_recipe`` stopped existing, but the binding
     kept naming it in every environment until a human noticed Save was broken.
     """
@@ -319,7 +320,7 @@ class TestBindingActions:
         assert issues == []
 
     def test_missing_enabled_key_means_enabled(self):
-        # _collect_tools reads cap.get("enabled", True) — mirror it.
+        # _binding_actions reads cap.get("enabled", True) — mirror it.
         issues = check_binding_actions(
             "executive_chef", "cook_brothers_app", [{"action": "gone_tool"}], self.SPEC
         )
@@ -650,9 +651,8 @@ class TestTaskToolFilters:
 
 
 class TestTeamCatalog:
-    """Hierarchy-v2 graph checks: members join agent_configs, bindings belong
-    to someone hireable, wildcards stay on always-included slugs, advertised
-    Apps exist, and priced rows can actually charge."""
+    """Hierarchy-v2 / Apps v3 graph checks: members join agent_configs, Apps
+    with pages are bound to a member, and priced rows can actually charge."""
 
     def _row(self, slug, tier, composition=None, price=0, key=None):
         from types import SimpleNamespace
@@ -666,94 +666,51 @@ class TestTeamCatalog:
             status="active",
         )
 
-    ALWAYS = {"base", "router", "reports", "app_builder"}
-
     def test_clean_graph_passes(self):
-        from app.services.config_validator import check_team_catalog
+        from app.services.config_validator import (
+            check_app_pages_reachable,
+            check_team_catalog,
+        )
 
-        agent = self._row(
-            "hr-agent", "agent", {"owns_agents": ["hr"], "unlocks": ["norm-hr"]}
+        agent = self._row("hr-agent", "agent", {"owns_agents": ["hr"]})
+        app = self._row(
+            "norm-hr",
+            "app",
+            {
+                "member": "hr",
+                "components": [{"key": "hiring_board", "page": {"id": "hiring"}}],
+            },
         )
-        app = self._row("norm-hr", "app", {"app_slug": "hiring"})
-        issues = check_team_catalog(
-            [agent], [app], {"hr", "base"}, self.ALWAYS, [("hr", True, 3)]
-        )
-        assert issues == []
+        assert check_team_catalog([agent], {"hr", "base"}) == []
+        assert check_app_pages_reachable([app]) == []
 
     def test_owns_agents_without_config_row_is_flagged(self):
         from app.services.config_validator import check_team_catalog
 
         agent = self._row("hr-agent", "agent", {"owns_agents": ["hrr"]})
-        issues = check_team_catalog([agent], [], set(), self.ALWAYS, [])
+        issues = check_team_catalog([agent], set())
         assert any("no agent_configs row" in i.problem for i in issues)
 
-    def test_unlocks_naming_a_missing_app_is_flagged(self):
-        from app.services.config_validator import check_team_catalog
-
-        agent = self._row(
-            "hr-agent", "agent", {"owns_agents": ["hr"], "unlocks": ["ghost-app"]}
-        )
-        issues = check_team_catalog([agent], [], {"hr"}, self.ALWAYS, [])
-        assert any("ghost-app" in i.problem for i in issues)
-
-    def test_unowned_binding_is_dead_weight(self):
-        from app.services.config_validator import check_team_catalog
-
-        agent = self._row("hr-agent", "agent", {"owns_agents": ["hr"]})
-        issues = check_team_catalog(
-            [agent], [], {"hr"}, self.ALWAYS, [("marketing", True, 5)]
-        )
-        assert any("unreachable" in i.problem for i in issues)
-
-    def test_wildcard_on_a_hireable_member_is_flagged(self):
-        from app.services.config_validator import check_team_catalog
-
-        agent = self._row("chef-agent", "agent", {"owns_agents": ["executive_chef"]})
-        issues = check_team_catalog(
-            [agent], [], {"executive_chef"}, self.ALWAYS, [("executive_chef", True, 0)]
-        )
-        assert any("empty capability list" in i.problem for i in issues)
-
-    def test_wildcard_on_base_is_fine(self):
-        from app.services.config_validator import check_team_catalog
-
-        agent = self._row("hr-agent", "agent", {"owns_agents": ["hr"]})
-        issues = check_team_catalog(
-            [agent], [], {"hr"}, self.ALWAYS, [("base", True, 0)]
-        )
-        assert issues == []
-
-    def test_pre_rollout_catalog_holds_bindings_to_nothing(self):
-        from app.services.config_validator import check_team_catalog
-
-        # No agent rows: gating is dormant, stray bindings are allowed.
-        issues = check_team_catalog(
-            [], [], set(), self.ALWAYS, [("anything", True, 0)]
-        )
-        assert issues == []
-
-    def test_app_with_pages_nobody_unlocks_is_flagged(self):
+    def test_app_with_pages_and_no_member_is_flagged(self):
         from app.services.config_validator import check_app_pages_reachable
 
-        agent = self._row("hr-agent", "agent", {"owns_agents": ["hr"], "unlocks": []})
         app = self._row(
             "bamboohr-app",
             "app",
             {"components": [{"key": "hiring_board", "page": {"id": "hiring"}}]},
         )
-        issues = check_app_pages_reachable([agent], [app])
+        issues = check_app_pages_reachable([app])
         assert any("unreachable" in i.problem for i in issues)
 
     def test_community_apps_are_exempt_from_reachability(self):
         from app.services.config_validator import check_app_pages_reachable
 
-        agent = self._row("hr-agent", "agent", {"owns_agents": ["hr"]})
         app = self._row(
             "team-tracker",
             "user",
             {"components": [{"key": "x", "page": {"id": "p"}}]},
         )
-        assert check_app_pages_reachable([agent], [app]) == []
+        assert check_app_pages_reachable([app]) == []
 
     def test_priced_row_without_stripe_key_is_flagged(self):
         from app.services.config_validator import check_priced_rows_have_stripe_keys

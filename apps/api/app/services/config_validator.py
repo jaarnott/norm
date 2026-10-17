@@ -464,10 +464,11 @@ def check_binding_capabilities(
 ) -> list[ConfigIssue]:
     """Binding capability entries must be dicts with an 'action' key.
 
-    The agents router and prompt_builder index into each entry
+    The agents router and the capabilities summary index into each entry
     (``cap["action"]``, ``cap.get("enabled")``) — a bare string 500s the
-    Agents settings tab AND breaks tool building for every chat with that
-    agent. This shipped as a real incident on 17 Jul 2026.
+    Agents settings tab. This shipped as a real incident on 17 Jul 2026, when
+    bindings were also the tool-exposure list and it broke tool building for
+    every chat with that agent.
     """
     issues: list[ConfigIssue] = []
     for cap in capabilities or []:
@@ -499,10 +500,12 @@ def check_binding_actions(
     """Every enabled capability on an enabled binding must resolve to an
     agent-visible tool on the bound connector's spec.
 
-    Both failure modes are SILENT — ``_collect_tools`` intersects the spec's
-    tools with the capability set, so a capability naming nothing simply
-    contributes nothing and the agent loses the tool without any error. This
-    is how the executive chef lost its recipe write on 29 Aug 2026: the Cook
+    Both failure modes are SILENT. Since Apps v3 the App Map decides what the
+    agent sees, but bindings still feed an unattended run's scope
+    (``default_tool_filter`` unions them in) and the App Map's unowned-tools
+    check, so a capability naming nothing simply contributes nothing, without
+    any error. When bindings were the exposure list this is how the executive
+    chef lost its recipe write on 29 Aug 2026: the Cook
     Brothers App consolidated 114 tools down to 45, the re-discovered spec no
     longer had ``kitchen_loadedhub_update_recipe``, and the binding capability
     kept pointing at the old name in every environment until a human noticed
@@ -566,27 +569,13 @@ def check_binding_actions(
 
 
 def check_team_catalog(
-    agent_rows: list,
-    app_rows: list,
-    known_agent_slugs: set[str],
-    always_included: set[str],
-    bindings: list[tuple[str, bool, int]],
+    agent_rows: list, known_agent_slugs: set[str]
 ) -> list[ConfigIssue]:
-    """Hierarchy-v2 shape checks: team members join agent_configs, every
-    binding belongs to someone hireable, and wildcards stay on the base.
-
-    ``bindings`` entries are (agent_slug, enabled, capability_count).
-    Silent-loss class: once member gating is live, a binding whose slug no
-    agent row owns is dead weight — its tools vanish for every org the day
-    the first tier='agent' rows appear, with no error anywhere.
-    """
+    """Every team member joins agent_configs: an ``owns_agents`` slug with no
+    agent config row means hiring that member configures nothing."""
     issues: list[ConfigIssue] = []
-    owned: set[str] = set()
     for row in agent_rows:
-        owns = (row.composition or {}).get("owns_agents") or []
-        unlocks = (row.composition or {}).get("unlocks") or []
-        owned.update(owns)
-        for slug in owns:
+        for slug in (row.composition or {}).get("owns_agents") or []:
             if slug not in known_agent_slugs:
                 issues.append(
                     ConfigIssue(
@@ -600,73 +589,18 @@ def check_team_catalog(
                         fix="Fix the slug, or create the agent config.",
                     )
                 )
-        app_slugs = {a.slug for a in app_rows}
-        for app_slug in unlocks:
-            if app_slug not in app_slugs:
-                issues.append(
-                    ConfigIssue(
-                        severity="error",
-                        where=f"catalog.{row.slug}",
-                        problem=(
-                            f"unlocks names '{app_slug}', which is not a "
-                            "tier='app' catalog row — the member's card "
-                            "advertises an App that doesn't exist"
-                        ),
-                        fix="Create the App row, or remove the entry.",
-                    )
-                )
-    if not agent_rows:
-        return issues  # pre-rollout catalog: nothing else to hold it to
-
-    for agent_slug, enabled, cap_count in bindings:
-        if not enabled:
-            continue
-        if agent_slug not in owned and agent_slug not in always_included:
-            issues.append(
-                ConfigIssue(
-                    severity="error",
-                    where=f"binding.{agent_slug}",
-                    problem=(
-                        f"binding belongs to '{agent_slug}', which no "
-                        "tier='agent' row owns and which is not always "
-                        "included — its tools are unreachable for every org"
-                    ),
-                    fix=(
-                        "Add the member to a tier='agent' row's owns_agents, "
-                        "or move/disable the binding."
-                    ),
-                )
-            )
-        if cap_count == 0 and agent_slug not in always_included:
-            issues.append(
-                ConfigIssue(
-                    severity="error",
-                    where=f"binding.{agent_slug}",
-                    problem=(
-                        "empty capability list (= every action on the "
-                        "connector) on a hireable member — hire/retire would "
-                        "toggle a whole connector surface for everyone"
-                    ),
-                    fix=(
-                        "Move the wildcard binding to an always-included slug "
-                        "(base), or curate its capabilities."
-                    ),
-                )
-            )
     return issues
 
 
-def check_app_pages_reachable(agent_rows: list, app_rows: list) -> list[ConfigIssue]:
+def check_app_pages_reachable(app_rows: list) -> list[ConfigIssue]:
     """Every App carrying a page must be bound to a team member — an App with
     no member can never be on, so its pages are unreachable dead config
     (tier='user' rows are exempt: they gate on entitlement alone)."""
     from app.services.entitlements import app_member
 
     issues: list[ConfigIssue] = []
-    if not agent_rows:
-        return issues
     for app in app_rows:
-        if app.tier != "app" or app_member(app, agent_rows):
+        if app.tier != "app" or app_member(app):
             continue
         has_page = any(
             isinstance(e, dict) and e.get("page")
@@ -1352,10 +1286,9 @@ def validate_config(db=None, config_db=None) -> dict:
                     )
                 )
 
-            # Hierarchy v2: team members <-> agent configs <-> bindings <->
-            # Apps must stay a closed graph, and money must be chargeable.
+            # Hierarchy v2 / Apps v3: team members <-> agent configs <-> Apps
+            # must stay a closed graph, and money must be chargeable.
             from app.db.config_models import AgentConfig
-            from app.services.entitlements import ALWAYS_INCLUDED_AGENTS
 
             active_rows = [a for a in catalog_rows if a.status == "active"]
             agent_rows = [a for a in active_rows if a.tier == "agent"]
@@ -1363,20 +1296,8 @@ def validate_config(db=None, config_db=None) -> dict:
             known_agent_slugs = {
                 r[0] for r in config_db.query(AgentConfig.agent_slug).all()
             }
-            binding_shapes = [
-                (b.agent_slug, bool(b.enabled), len(b.capabilities or []))
-                for b in config_db.query(AgentConnectionBinding).all()
-            ]
-            issues.extend(
-                check_team_catalog(
-                    agent_rows,
-                    app_rows,
-                    known_agent_slugs,
-                    set(ALWAYS_INCLUDED_AGENTS),
-                    binding_shapes,
-                )
-            )
-            issues.extend(check_app_pages_reachable(agent_rows, app_rows))
+            issues.extend(check_team_catalog(agent_rows, known_agent_slugs))
+            issues.extend(check_app_pages_reachable(app_rows))
             from app.services.agent_catalog import ownership_findings
 
             issues.extend(check_app_ownership(ownership_findings(config_db)))

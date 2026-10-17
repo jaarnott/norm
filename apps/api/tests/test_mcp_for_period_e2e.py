@@ -26,7 +26,7 @@ import uuid
 
 import pytest
 
-from app.db.config_models import AgentConnectionBinding, ConnectionSpec, McpCapability
+from app.db.config_models import ConnectionSpec, MarketplaceApp, McpCapability
 from app.db.models import Connection, Organization, User, UserVenueAccess, Venue
 from app.mcp.principal import McpPrincipal
 
@@ -159,20 +159,20 @@ def wired(db_session, monkeypatch):
                 tools=[RESOLVE_DATES],
                 enabled=True,
             ),
-            AgentConnectionBinding(
-                agent_slug="ops",
-                connector_name="loadedhub",
-                capabilities=[
-                    {"action": "get_sales_data", "enabled": True},
-                    {"action": "get_pos_orders_for_period", "enabled": True},
-                ],
-                enabled=True,
-            ),
-            AgentConnectionBinding(
-                agent_slug="ops",
-                connector_name="norm",
-                capabilities=[{"action": "resolve_dates", "enabled": True}],
-                enabled=True,
+            MarketplaceApp(
+                slug="ops-app",
+                name="Ops",
+                description="",
+                tier="app",
+                bundled=True,
+                composition={
+                    "member": "ops",
+                    "tools": [
+                        "loadedhub.get_sales_data",
+                        "loadedhub.get_pos_orders_for_period",
+                        "norm.resolve_dates",
+                    ],
+                },
             ),
             McpCapability(
                 kind="connector",

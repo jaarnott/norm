@@ -15,17 +15,15 @@ import { ConfirmDialog } from '../ui/Dialog';
 // The small help line under a field label.
 const helpStyle: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)' };
 
-// In unified mode only these rows carry a real prompt: the Norm prompt (base)
-// and the router's classifier prompt. Everyone else has a personality line.
-const PROMPT_OWNERS = new Set(['base', 'router']);
+// Only the Norm prompt (base) is a real prompt — every conversation gets it.
+// Everyone else has a personality line.
+const PROMPT_OWNER = 'base';
 
 export default function AgentsPanel() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<AgentConfig | null>(null);
   const [form, setForm] = useState({ description: '', system_prompt: '', persona: '' });
-  // Unified mode: one Norm prompt (the base row) + a personality per member.
-  const [unified, setUnified] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
   // Apps v3: an agent's reach is the Apps bound to it (the App Map), not the
@@ -46,7 +44,6 @@ export default function AgentsPanel() {
       if (res.ok) {
         const data = await res.json();
         setAgents(data.agents || []);
-        setUnified(!!data.unified_prompt);
       }
     } catch { /* ignore */ }
     setLoading(false);
@@ -66,7 +63,7 @@ export default function AgentsPanel() {
       const res = await apiFetch(`/api/agents/${editing.slug}`, {
         method: 'PUT',
         body: JSON.stringify(
-          unified && !PROMPT_OWNERS.has(editing.slug)
+          editing.slug !== PROMPT_OWNER
             ? { description: form.description || null, persona: form.persona }
             : { system_prompt: form.system_prompt || null, description: form.description || null },
         ),
@@ -92,8 +89,8 @@ export default function AgentsPanel() {
 
   const handleReset = () => {
     if (!editing) return;
-    // Clearing the base row's prompt switches EVERY conversation back to the
-    // per-agent prompts, in every environment — worth a second click.
+    // Clearing the base row's prompt takes the Norm prompt out of EVERY
+    // conversation, in every environment — worth a second click.
     if (editing.slug === 'base') { setConfirmingClear(true); return; }
     resetPrompt(editing.slug).catch(() => { /* ignore */ });
   };
@@ -121,7 +118,7 @@ export default function AgentsPanel() {
             value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="What this agent does..." />
         </div>
 
-        {unified && !PROMPT_OWNERS.has(editing.slug) && (
+        {editing.slug !== PROMPT_OWNER && (
           <div style={{ marginBottom: 16 }}>
             <label className="n-label" htmlFor="agent-persona">Personality</label>
             <input id="agent-persona" className="n-input" style={{ width: '100%' }}
@@ -133,10 +130,10 @@ export default function AgentsPanel() {
           </div>
         )}
 
-        {/* System Prompt (legacy per-agent mode, or the Norm/router prompt in unified mode) */}
-        {(!unified || PROMPT_OWNERS.has(editing.slug)) && (
+        {/* The Norm prompt (base row only) */}
+        {editing.slug === PROMPT_OWNER && (
         <div style={{ marginBottom: 16 }}>
-          <label className="n-label" htmlFor="agent-system-prompt">{unified && editing.slug === 'base' ? 'Norm prompt (every conversation)' : 'System prompt'}</label>
+          <label className="n-label" htmlFor="agent-system-prompt">Norm prompt (every conversation)</label>
           <textarea
             id="agent-system-prompt"
             className="n-input"
@@ -210,7 +207,7 @@ export default function AgentsPanel() {
             onClose={() => setConfirmingClear(false)}
           >
             <p style={{ margin: 0 }}>
-              Every conversation, in every environment, falls back to the old per-agent prompts.
+              Every conversation, in every environment, runs without it — only the personality lines and App notes remain.
             </p>
           </ConfirmDialog>
         )}
@@ -219,9 +216,9 @@ export default function AgentsPanel() {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <Button variant="primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
           <Button onClick={() => setEditing(null)}>Cancel</Button>
-          {/* In unified mode a member's old prompt is the rollback copy — nothing
-              reads it, so there's nothing to clear from here. */}
-          {editing.has_prompt && (!unified || PROMPT_OWNERS.has(editing.slug)) && (
+          {/* A member's old prompt is a leftover nothing reads, so there's
+              nothing to clear from here. */}
+          {editing.has_prompt && editing.slug === PROMPT_OWNER && (
             <Button variant="danger" onClick={handleReset} style={{ marginLeft: 'auto' }}>Clear prompt</Button>
           )}
         </div>

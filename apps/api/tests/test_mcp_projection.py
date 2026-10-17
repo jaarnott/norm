@@ -251,20 +251,38 @@ class TestToMcpToolDict:
         assert "[GET]" not in d["description"]
 
 
-class TestAlwaysExposeIgnoresBindings:
-    """ALWAYS_EXPOSE must not depend on an in-app agent binding.
+def _own(db, tools):
+    """One App owning these ``connector.action`` keys — the App Map is what
+    exposes a tool."""
+    from app.db.config_models import MarketplaceApp
 
-    Step 1 of project_tools gates on `_collect_tools`, which walks agent
-    bindings. So an action no agent binds vanished from MCP however
+    db.add(
+        MarketplaceApp(
+            slug="owner-app",
+            name="Owner",
+            description="",
+            tier="app",
+            bundled=True,
+            composition={"member": "procurement", "tools": tools},
+        )
+    )
+
+
+class TestAlwaysExposeIgnoresExposure:
+    """ALWAYS_EXPOSE must not depend on the in-app agents' exposure.
+
+    Step 1 of project_tools gates on `_collect_tools` — the agents' own tool
+    list. So an action the agents don't get vanished from MCP however
     ALWAYS_EXPOSE was set — a documented promise made quietly conditional on
     an unrelated config row. It went live the day resolve_dates left the
     agents' menus (Sep 2026): their own tools take `period` in plain English
     now, while an MCP client has no Norm prompt telling it today's date, and
     the MCP instructions tell every client to call exactly this tool.
+    (Written when bindings were the exposure list; the App Map is now.)
     """
 
-    def _seed(self, db, *, bind_resolve_dates: bool):
-        from app.db.models import AgentConnectionBinding, ConnectionSpec, McpCapability
+    def _seed(self, db, *, own_resolve_dates: bool):
+        from app.db.models import ConnectionSpec, McpCapability
 
         db.add(
             ConnectionSpec(
@@ -292,18 +310,11 @@ class TestAlwaysExposeIgnoresBindings:
                 ],
             )
         )
-        caps = [{"action": "get_working_document", "enabled": True}]
-        if bind_resolve_dates:
-            caps.append({"action": "resolve_dates", "enabled": True})
-        db.add(
-            AgentConnectionBinding(
-                agent_slug="procurement",
-                connector_name="norm",
-                capabilities=caps,
-                enabled=True,
-            )
-        )
-        # get_attachment is curated but bound to NO agent: the control.
+        owned = ["norm.get_working_document"]
+        if own_resolve_dates:
+            owned.append("norm.resolve_dates")
+        _own(db, owned)
+        # get_attachment is curated but owned by NO App: the control.
         for action in ("resolve_dates", "get_working_document", "get_attachment"):
             db.add(
                 McpCapability(
@@ -330,77 +341,43 @@ class TestAlwaysExposeIgnoresBindings:
             )
         }
 
-    def test_survives_having_no_binding_at_all(self, db_session):
-        self._seed(db_session, bind_resolve_dates=False)
+    def test_survives_having_no_owner_at_all(self, db_session):
+        self._seed(db_session, own_resolve_dates=False)
         assert "resolve_dates" in self._actions(db_session)
 
-    def test_a_normal_tool_still_needs_its_binding(self, db_session):
+    def test_a_normal_tool_still_needs_its_owner(self, db_session):
         """The negative control: get_attachment is curated and its scope is
-        granted, but no agent binds it. This lifts the binding requirement
+        granted, but no App owns it. This lifts the exposure requirement
         for ALWAYS_EXPOSE alone, not for everything."""
-        self._seed(db_session, bind_resolve_dates=False)
+        self._seed(db_session, own_resolve_dates=False)
         actions = self._actions(db_session)
         assert "get_attachment" not in actions
-        assert "get_working_document" in actions, "a bound tool is unaffected"
-
-    def test_bound_case_is_unchanged(self, db_session):
-        self._seed(db_session, bind_resolve_dates=True)
-        assert {"resolve_dates", "get_working_document"} <= self._actions(db_session)
+        assert "get_working_document" in actions, "an owned tool is unaffected"
 
     def test_scope_bypass_still_holds_too(self, db_session):
         """The older promise: exposed regardless of granted scopes. Both
         bypasses have to hold at once, or an unscoped client loses it."""
-        self._seed(db_session, bind_resolve_dates=False)
+        self._seed(db_session, own_resolve_dates=False)
         assert self._actions(db_session, scopes=()) == {"resolve_dates"}
 
-    def test_a_wildcard_binding_cannot_put_it_back_on_an_agent_menu(self, db_session):
-        """Unbinding is not enough on its own.
+    def test_an_app_claim_cannot_put_it_back_on_an_agent_menu(self, db_session):
+        """Removing it from the agents' exposure is not enough on its own.
 
-        A binding with an EMPTY capabilities list exposes every action on its
-        connector — executive_chef/norm is exactly that — so removing the
-        capability from the other five bindings left resolve_dates on the
-        agent menu anyway. _ENGINE_AND_MCP_ONLY is what actually takes it off,
-        and MCP has to survive that removal too.
+        When bindings were the exposure list, a binding with an EMPTY
+        capabilities list exposed every action on its connector —
+        executive_chef/norm was exactly that — so unbinding left resolve_dates
+        on the agent menu anyway. An App claim is the same risk today.
+        _ENGINE_AND_MCP_ONLY is what actually takes it off, and MCP has to
+        survive that removal too.
         """
         from app.agents.prompt_builder import _collect_tools
-        from app.db.models import AgentConnectionBinding, ConnectionSpec, McpCapability
 
-        db_session.add(
-            ConnectionSpec(
-                connector_name="norm",
-                display_name="Norm",
-                auth_type="none",
-                execution_mode="internal",
-                enabled=True,
-                tools=[
-                    {"action": "resolve_dates", "method": "GET", "description": "d"},
-                    {"action": "get_attachment", "method": "GET", "description": "a"},
-                ],
-            )
-        )
-        db_session.add(
-            AgentConnectionBinding(
-                agent_slug="executive_chef",
-                connector_name="norm",
-                capabilities=[],  # the wildcard: every action on this connector
-                enabled=True,
-            )
-        )
-        db_session.add(
-            McpCapability(
-                kind="connector",
-                target="norm",
-                action="resolve_dates",
-                scopes=["mcp:reports:read"],
-                enabled=True,
-            )
-        )
-        db_session.flush()
-
+        self._seed(db_session, own_resolve_dates=True)
         collected = {
             t["action"]
             for t in _collect_tools(db_session, user_id=None, config_db=db_session)
         }
-        assert "get_attachment" in collected, "the wildcard binding still works"
+        assert "get_working_document" in collected, "the App's other tool works"
         assert "resolve_dates" not in collected, "but it cannot re-expose this one"
-        assert "resolve_dates" in self._actions(db_session), "MCP keeps it"
+        # MCP keeps it, beside the owned tool (the owned case is unchanged)
+        assert {"resolve_dates", "get_working_document"} <= self._actions(db_session)

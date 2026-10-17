@@ -13,12 +13,13 @@ name of this app" was answered with "which app do you mean?".
 import uuid
 
 from app.agents.prompt_builder import build_tool_definitions
-from app.db.models import AgentConnectionBinding, ConnectionSpec
+from app.db.config_models import MarketplaceApp
+from app.db.models import ConnectionSpec
 
 
-def _bind_one_tool(db, domain):
+def _own_one_tool(db, domain):
     """The minimum for build_tool_definitions to proceed: one internal spec
-    with one action, bound to the domain."""
+    with one action, owned by an App bound to the domain."""
     name = f"t-{uuid.uuid4().hex[:8]}"
     db.add(
         ConnectionSpec(
@@ -41,12 +42,13 @@ def _bind_one_tool(db, domain):
         )
     )
     db.add(
-        AgentConnectionBinding(
-            id=str(uuid.uuid4()),
-            agent_slug=domain,
-            connector_name=name,
-            capabilities=[{"action": "noop", "label": "Noop", "enabled": True}],
-            enabled=True,
+        MarketplaceApp(
+            slug=f"app-{name}",
+            name=name,
+            description="",
+            tier="app",
+            bundled=True,
+            composition={"member": domain, "tools": [f"{name}.noop"]},
         )
     )
     db.flush()
@@ -54,11 +56,11 @@ def _bind_one_tool(db, domain):
 
 def _prompt(db, page_context):
     domain = f"d-{uuid.uuid4().hex[:6]}"
-    _bind_one_tool(db, domain)
+    _own_one_tool(db, domain)
     system_prompt, tools = build_tool_definitions(
         domain, db, config_db=db, page_context=page_context
     )
-    assert tools, "the harness must bind at least one tool"
+    assert tools, "the harness must expose at least one tool"
     return system_prompt
 
 

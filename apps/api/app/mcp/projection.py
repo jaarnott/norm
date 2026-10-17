@@ -12,10 +12,10 @@ the two surfaces cannot drift.
 Five filters narrow the surface, each strictly. A tool is exposed only if it
 passes all of them:
 
-1. **Bound and credentialed** — ``_collect_tools`` gates on an enabled
-   ``AgentConnectionBinding`` capability plus a working ``Connection``
-   (per-venue, and per-user for gmail/outlook). Free reuse of the gating the
-   in-app agents already trust.
+1. **Owned and credentialed** — ``_collect_tools`` gates on an App that owns
+   the tool and is on (the App Map) plus a working ``Connection`` (per-venue,
+   and per-user for gmail/outlook). Free reuse of the gating the in-app
+   agents already trust.
 2. **Curated** — an enabled ``McpCapability`` row. No row means not exposed.
 3. **Not denylisted** — conversation-scoped tools can't work here (below).
 4. **Actually a read** — see ``write_signals``. This one is not a formality:
@@ -69,7 +69,7 @@ MCP_DENYLIST: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-# Exposed to every principal regardless of scope OR binding. Norm owns business
+# Exposed to every principal regardless of scope OR App ownership. Norm owns business
 # date logic and an MCP client has no Norm prompt behind it, so it must always
 # be able to ask what "last week" means here — the MCP instructions tell every
 # client to call exactly this. It no longer mirrors
@@ -350,7 +350,7 @@ def project_tools(
     granted = frozenset(granted_scopes or ())
     venue_names = venue_names or []
 
-    # 1. Bound + credentialed — reuses the gating the in-app agents rely on.
+    # 1. Owned + credentialed — reuses the gating the in-app agents rely on.
     gated: set[tuple[str, str]] = {
         (t["connector"], t["action"])
         for t in _collect_tools(db, user_id=user_id, config_db=config_db)
@@ -360,13 +360,13 @@ def project_tools(
     available = {k: v for k, v in _raw_defs.items() if k in gated}
 
     # ALWAYS_EXPOSE has to mean what it says. Step 1 gates on the in-app
-    # agents' bindings, so an action no agent binds vanished from MCP however
+    # agents' exposure, so an action they never get vanished from MCP however
     # the flag was set — a documented promise made quietly conditional on an
     # unrelated config row. resolve_dates is exactly that case: the MCP
     # instructions tell every client to call it, while Norm's own agents
     # stopped needing it once the domain tools began taking `period` in plain
-    # English (Sep 2026), so it is bound to no agent. Engine-only backends
-    # stay hidden — this lifts the binding requirement, not the curation.
+    # English (Sep 2026), so _collect_tools drops it. Engine-only backends
+    # stay hidden — this lifts the exposure requirement, not the curation.
     for _key in ALWAYS_EXPOSE:
         _def = _raw_defs.get(_key)
         if _key not in available and _def and not _def.get("engine_only"):

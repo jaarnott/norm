@@ -437,7 +437,7 @@ export interface AvailableConnector {
 }
 
 export interface AgentConfig {
-  /** unified-prompt mode: the member's light personality line (tone only) */
+  /** the member's light personality line (tone only), added to the Norm prompt */
   persona?: string | null;
   slug: string;
   display_name: string;
