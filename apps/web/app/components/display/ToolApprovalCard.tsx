@@ -20,6 +20,9 @@ import {
 /** Rows a group shows before "Show all". */
 const FIRST_ROWS = 8;
 
+/** Changes a row lists before "Show N more changes" (the server sends them all, up to 1,000). */
+const FIRST_CHANGES = 40;
+
 const BADGE_TONE: Record<Tone, BadgeTone> = {
   pending: 'accent',
   good: 'ok',
@@ -43,9 +46,12 @@ function Row({ row, cardStatus, pending, ticked, onTick, isAdmin }: {
   isAdmin: boolean;
 }) {
   const [details, setDetails] = useState(false);
+  const [allChanges, setAllChanges] = useState(false);
   const p = row.preview;
   const state = rowState(row, cardStatus);
   const changes = p?.changes ?? [];
+  const shownChanges = allChanges ? changes : changes.slice(0, FIRST_CHANGES);
+  const hiddenChanges = changes.length - shownChanges.length;
 
   return (
     <div style={{
@@ -76,7 +82,7 @@ function Row({ row, cardStatus, pending, ticked, onTick, isAdmin }: {
             display: 'grid', gridTemplateColumns: 'minmax(90px, max-content) 1fr',
             columnGap: '0.75rem', rowGap: '0.2rem', marginTop: '0.35rem', fontSize: 'var(--fs-sm)',
           }}>
-            {changes.map((c, i) => (
+            {shownChanges.map((c, i) => (
               <div key={i} style={{ display: 'contents' }}>
                 <span style={{ color: 'var(--muted)', overflowWrap: 'anywhere' }}>{c.field}</span>
                 <span style={{ color: 'var(--text)', overflowWrap: 'anywhere' }}>
@@ -92,9 +98,23 @@ function Row({ row, cardStatus, pending, ticked, onTick, isAdmin }: {
             ))}
           </div>
         )}
+        {changes.length > FIRST_CHANGES && (
+          <button
+            onClick={() => setAllChanges(v => !v)}
+            aria-expanded={allChanges}
+            style={{
+              background: 'none', border: 'none', padding: '0.3rem 0 0', cursor: 'pointer',
+              fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--accent)',
+            }}
+          >
+            {allChanges ? 'Show fewer' : `Show ${hiddenChanges} more change${hiddenChanges === 1 ? '' : 's'}`}
+          </button>
+        )}
+        {/* Only rows the server didn't send: past its 1,000, or a card saved
+            before it sent them all (it kept 40 until Oct 2026). */}
         {p?.more_changes ? (
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginTop: '0.2rem' }}>
-            and {p.more_changes} more change{p.more_changes === 1 ? '' : 's'}
+            and {p.more_changes} more change{p.more_changes === 1 ? '' : 's'} not listed
           </div>
         ) : null}
         {p?.note && (

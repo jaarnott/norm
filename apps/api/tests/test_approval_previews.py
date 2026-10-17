@@ -694,6 +694,36 @@ class TestTheCard:
         (card,) = [b for b in msg.display_blocks if b["component"] == "tool_approval"]
         assert card["data"]["tool_calls"][0]["preview"]["title"] == "Change a price"
 
+    def test_the_card_carries_every_row_so_it_can_expand(self):
+        """It carried 40 and said "and 76 more changes" with no way to see
+        them — a 116-item set_revenue_group pass at Applegum Cafe, 17 Oct
+        2026. The card shows the first rows and expands to the rest."""
+        rows = [
+            {"field": f"Item {n}", "before": "Unassigned", "after": "Beverage"}
+            for n in range(116)
+        ]
+        card = previews.normalise(
+            {"changes": rows},
+            title="Set revenue groups",
+            venue=None,
+            source="tool",
+            fp=None,
+        )
+        assert len(card["changes"]) == 116 and "more_changes" not in card
+
+        many = [
+            {"field": f"Item {n}", "after": "Food"}
+            for n in range(previews.MAX_ROWS + 5)
+        ]
+        card = previews.normalise(
+            {"changes": many},
+            title="Set revenue groups",
+            venue=None,
+            source="tool",
+            fp=None,
+        )
+        assert len(card["changes"]) == previews.MAX_ROWS and card["more_changes"] == 5
+
     def test_a_call_that_would_fail_goes_back_to_norm_not_to_a_card(
         self, db_session, admin_user, monkeypatch
     ):

@@ -39,8 +39,11 @@ from app.connectors.function_executor import fingerprint
 
 logger = logging.getLogger(__name__)
 
-#: Rows a card shows per call; the rest are counted, not listed.
-MAX_ROWS = 40
+#: Rows a card CARRIES per call. The card shows the first few and expands to
+#: the rest on a click — it used to carry only 40 and say "and 76 more
+#: changes" with no way to see them (a 116-item set_revenue_group pass, 17 Oct
+#: 2026). A whole venue's POS items is ~800; past this the rest are counted.
+MAX_ROWS = 1000
 
 _VENUE_KEYS = ("venue", "venue_name", "venue_id", "_all_venues")
 
