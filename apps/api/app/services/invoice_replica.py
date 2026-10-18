@@ -516,12 +516,18 @@ def build_replica(
             )
 
     # ---- Supplier ----
-    # Ordered by authority: the copy first, then whatever Loaded itself
-    # records. Loaded's name earns its place because an invoice raised from a
-    # purchase order carries the supplier a HUMAN chose at order time — the
-    # one piece of supplier evidence on the page that isn't OCR.
+    # The copy decides which business this is. Loaded's supplier says whose
+    # other names to look at (the account's own record of how a business is
+    # known), may choose between records that ARE the printed business, and
+    # answers on its own only when the copy prints no supplier at all. It used
+    # to answer whenever the printed name found nothing: 19 Sydney Waste
+    # Services bills ($12,170) went in under St. Malo Bakery at Somewhere
+    # North, where Loaded had filed them and no Sydney Waste record existed
+    # yet (17 Oct 2026). A printed business with no record is a supplier to
+    # create, not Loaded's guess to keep.
     supplier_printed = extraction.get("supplier_name")
     hints = [supplier_printed, loaded_supplier_name]
+    deciding = [supplier_printed] if supplier_printed else [loaded_supplier_name]
     if aliases_by_id is None:
         aliases_by_id = {}
         # Loaded's per-supplier aliases are the account's own spellings of one
@@ -541,13 +547,12 @@ def build_replica(
             except Exception:  # noqa: BLE001 — aliases are hints
                 pass
 
-    supplier, sup_by = resolve_supplier(hints, suppliers, aliases_by_id)
-    if supplier is None:
-        # Last deterministic hop: a spec's alias list is a global statement
-        # that several names mean ONE business ('Ellesmere Butchery' is Tamar
-        # Farming Company). If the printed name lands on a spec, every name
-        # that spec knows becomes a hint. Tried only after direct evidence
-        # fails, so a spec can never overrule the account's own records.
+    supplier, sup_by = resolve_supplier(deciding, suppliers, aliases_by_id)
+    # A spec's alias list is a global statement that several names mean ONE
+    # business ('Ellesmere Butchery' is Tamar Farming Company): the names
+    # the printed one stands for when it matches no record directly.
+    spec_names: list = []
+    if supplier is None and supplier_printed:
         try:
             from app.db.config_models import SupplierInvoiceSpec
             from app.services.invoice_extraction import MAIN_PROMPT_NAME
@@ -556,16 +561,36 @@ def build_replica(
                 config_db.query(SupplierInvoiceSpec)
                 .filter(SupplierInvoiceSpec.enabled.is_(True))
                 .all(),
-                hints,
+                deciding,
                 main_prompt_name=MAIN_PROMPT_NAME,
             )
             if spec is not None:
-                supplier, _ = resolve_supplier(
-                    [spec.name, *(spec.aliases or [])], suppliers, aliases_by_id
-                )
-                sup_by = "spec_alias" if supplier else None
+                spec_names = [spec.name, *(spec.aliases or [])]
         except Exception:  # noqa: BLE001 — hints only
             pass
+    if supplier is None and supplier_printed and loaded_supplier_name:
+        # The printed name can fit more than one record — a business the
+        # account keeps as several (Bessie's two Bidfood divisions under one
+        # printed 'Bidfood Limited'). Loaded's pick is kept only when it is one
+        # of them: it may choose between the records the copy names, never
+        # name a different business.
+        drafted, _ = resolve_supplier([loaded_supplier_name], suppliers, aliases_by_id)
+        if drafted is not None:
+            own = [drafted.get("name"), *aliases_by_id.get(str(drafted.get("id")), [])]
+            printed_fits = (
+                resolve_supplier([supplier_printed], [drafted], aliases_by_id)[0]
+                is not None
+            )
+            spec_names_it = bool(
+                {_norm(n) for n in own if n} & {_norm(n) for n in spec_names if n}
+            )
+            if printed_fits or spec_names_it:
+                supplier, sup_by = drafted, "draft_is_printed"
+    if supplier is None and spec_names:
+        # Tried only after direct evidence fails, so a spec can never
+        # overrule the account's own records.
+        supplier, _ = resolve_supplier(spec_names, suppliers, aliases_by_id)
+        sup_by = "spec_alias" if supplier else None
     if supplier is None and supplier_printed:
         try:
             from app.services.item_match import suggest_supplier_match

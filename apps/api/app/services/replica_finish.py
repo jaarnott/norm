@@ -436,9 +436,12 @@ def settle_supplier(
     read_details=None,
     same_business=None,
 ) -> None:
-    """The supplier, when the printed name matches no Loaded record and
-    Loaded's draft has none either: an existing one, or a new supplier under
-    the printed name — either way the invoice can go on.
+    """The supplier, when the printed name matches no Loaded record: an
+    existing one, or a new supplier under the printed name — either way the
+    invoice can go on. Whatever supplier Loaded's draft carries plays no part:
+    Loaded filed 19 Sydney Waste Services bills under St. Malo Bakery, and
+    this rule used to stand aside whenever the draft had a supplier at all
+    (17 Oct 2026).
 
     Records that might be the same business (``plausible_matches``: a shared
     distinctive word) are only candidates. A shared word proved nothing: all
@@ -455,7 +458,7 @@ def settle_supplier(
     A new supplier also carries the address and contacts its invoice prints
     (``read_details(name)`` → invoice_extraction.read_supplier_details), so
     the record Norm creates is one a venue can order from, not a bare name."""
-    if data.get("linked_supplier_id") or replica.get("linked_supplier_id"):
+    if replica.get("linked_supplier_id"):
         return
     issue = next(
         (
@@ -468,6 +471,16 @@ def settle_supplier(
     name = ((issue or {}).get("data") or {}).get("supplier_name")
     if not name:
         return
+    if data.get("linked_supplier_id"):
+        # Loaded's pick stands until the answer is accepted — so linking any
+        # supplier must not clear the blocker (invoice_review._finalise_issues).
+        issue["data"]["draft_supplier"] = data.get("supplier_name") or data.get(
+            "linked_supplier_id"
+        )
+        issue["message"] = (
+            f"no Loaded supplier matches '{name}' — Loaded filed it under "
+            f"'{issue['data']['draft_supplier']}'"
+        )
     from app.services import supplier_identity
 
     live = [

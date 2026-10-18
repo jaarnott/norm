@@ -1424,6 +1424,80 @@ class TestTheInvoicesUnitIsTheUnit:
         assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
 
 
+class TestTheCopyDecidesTheSupplier:
+    """Loaded's supplier never names a different business than the copy
+    prints: 19 Sydney Waste Services bills went in under St. Malo Bakery at
+    Somewhere North, where Loaded had filed them (17 Oct 2026)."""
+
+    POOL = [
+        {"id": "sup-malo", "name": "St. Malo Bakery"},
+        {"id": "sup-bidvest", "name": "Bidvest Food Service"},
+        {"id": "sup-bidfresh", "name": "Bidfoods fresh produce"},
+    ]
+
+    def _supplier(self, printed, loaded):
+        doc = _build(
+            dict(EXTRACTION, supplier_name=printed),
+            suppliers=self.POOL,
+            loaded_supplier_name=loaded,
+        )
+        return doc["linked_supplier_id"], doc
+
+    def test_a_printed_business_with_no_record_is_not_loadeds_guess(self):
+        sid, doc = self._supplier("Sydney Waste Services", "St. Malo Bakery")
+        assert sid is None
+        assert "supplier_unresolved" in {i["code"] for i in doc["issues"]}
+
+    def test_loadeds_pick_stands_when_the_copy_prints_no_supplier(self):
+        assert self._supplier(None, "St. Malo Bakery")[0] == "sup-malo"
+
+    def test_loadeds_pick_chooses_between_the_printed_business_records(
+        self, monkeypatch
+    ):
+        # Bessie keeps Bidfood's two divisions as two records; the printed
+        # 'Bidfood Limited' is both, as the global spec says. Loaded's pick
+        # chooses between them — before, a substring did.
+        class Spec:
+            name = "Bidfood"
+            aliases = [
+                "Bidfood Limited",
+                "Bidfoods fresh produce",
+                "Bidvest Food Service",
+            ]
+
+        class Specs:
+            def query(self, *a):
+                return self
+
+            def filter(self, *a):
+                return self
+
+            def all(self):
+                return [Spec]
+
+        monkeypatch.setattr(
+            "app.services.invoice_replica.match_spec", lambda *a, **k: (Spec, "alias")
+        )
+        monkeypatch.setattr(
+            "app.services.item_match.suggest_supplier_match", lambda *a, **k: None
+        )
+        doc = build_replica(
+            None,
+            Specs(),
+            "v-1",
+            dict(EXTRACTION, supplier_name="Bidfood Limited"),
+            lh=object(),
+            catalogue=CATALOGUE,
+            units=UNITS,
+            suppliers=self.POOL,
+            tax_rates=TAX,
+            aliases_by_id={},
+            item_matcher=lambda *a, **k: {},
+            loaded_supplier_name="Bidvest Food Service",
+        )
+        assert doc["linked_supplier_id"] == "sup-bidvest"
+
+
 class TestSupplierPlaceholder:
     """The 110016259 regression (19 Aug 2026): Loaded's literal
     '[Unnamed Supplier]' record exact-matched the DRAFT's placeholder name

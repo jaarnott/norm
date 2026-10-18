@@ -1019,7 +1019,7 @@ def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> N
                 fixes=fixes.get(field),
                 confidence=replica.get("fixes_confidence") if field in fixes else None,
             )
-    if replica.get("supplier_create_name") and not data.get("linked_supplier_id"):
+    if replica.get("supplier_create_name") and not replica.get("linked_supplier_id"):
         name = replica["supplier_create_name"]
         explanation = (
             replica.get("supplier_why")
@@ -1041,7 +1041,9 @@ def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> N
             suggestions,
             "create_supplier",
             field="linked_supplier_id",
-            current=None,
+            current=data.get("supplier_name")
+            if data.get("linked_supplier_id")
+            else None,
             proposed=name,
             explanation=explanation,
             payload=payload,
@@ -1706,7 +1708,12 @@ def _finalise_issues(
                 "field": clears[0],
                 "op": clears[1],
             }
-        if i.get("code") == "supplier_unresolved":
+        if i.get("code") == "supplier_unresolved" and not (i.get("data") or {}).get(
+            "draft_supplier"
+        ):
+            # A supplier on Loaded's draft that the copy contradicts is not an
+            # answer, so "any supplier linked" can't clear it — its fix must
+            # be accepted (a create, or the right record).
             i["clears_when"] = {
                 "scope": "header",
                 "field": "linked_supplier_id",

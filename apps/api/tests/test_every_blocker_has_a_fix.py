@@ -236,6 +236,37 @@ class TestSupplierBlockers:
         assert issue.get("gate") is None
         assert asked == []
 
+    def test_the_supplier_loaded_filed_it_under_is_no_answer(self):
+        # Somewhere North: Loaded filed 19 Sydney Waste Services bills under
+        # St. Malo Bakery, and Norm received them there (17 Oct 2026).
+        data = {
+            "lines": [],
+            "linked_supplier_id": "sup-malo",
+            "supplier_name": "St. Malo Bakery",
+        }
+        replica = self._replica("Sydney Waste Services")
+        RF.settle_supplier(
+            data, replica, [{"id": "sup-malo", "name": "St. Malo Bakery"}], []
+        )
+        suggestions: list = []
+        IR._header_suggestions(data, replica, suggestions)
+        [create] = suggestions
+        assert (create["kind"], create["current"], create["proposed"]) == (
+            "create_supplier",
+            "St. Malo Bakery",
+            "Sydney Waste Services",
+        )
+        [issue] = IR._finalise_issues(replica["issues"], [], {})
+        assert "clears_when" not in issue  # St. Malo being linked settles nothing
+        issue["blocking"] = True
+        IR.link_fixes(data, replica, [issue], suggestions)
+        doc = dict(data, issues=[issue], suggestions=suggestions)
+        assert IR.compute_confidence(doc) == "needs_review"
+        doc["suggestion_actions"] = [
+            {"suggestion_id": create["id"], "action": "accepted"}
+        ]
+        assert IR.compute_confidence(doc) == "ready"
+
     def test_sharing_only_trade_words_is_not_close(self):
         # Applegum Cafe SI650438: proposed as PFD Food Services, while its
         # blocker said "auto-create suppliers" — which could never act.
