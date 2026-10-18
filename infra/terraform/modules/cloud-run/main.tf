@@ -194,6 +194,15 @@ resource "google_cloud_run_v2_service" "api" {
           }
         }
       }
+      env {
+        name = "TOKEN_ENCRYPTION_KEYS"
+        value_source {
+          secret_key_ref {
+            secret  = var.secret_ids["TOKEN_ENCRYPTION_KEYS"]
+            version = "latest"
+          }
+        }
+      }
 
       ports {
         container_port = 8000

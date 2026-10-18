@@ -10,6 +10,11 @@ locals {
     "STRIPE_WEBHOOK_SECRET",
     "SENTRY_DSN",
     "SCHEDULER_SECRET",
+    # Fernet key(s) for connector OAuth tokens at rest (app/db/encrypted.py),
+    # comma-separated, newest first. One per environment; never in the
+    # shared config DB. Set a version BEFORE the API maps it (an empty
+    # secret fails the revision), then run scripts/encrypt_connection_tokens.py.
+    "TOKEN_ENCRYPTION_KEYS",
   ]
 }
 
