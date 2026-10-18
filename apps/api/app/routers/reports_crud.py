@@ -1041,6 +1041,7 @@ async def refresh_report(
                         config_db=_cdb,
                         venue_id=vid,
                         strict_venue=True,
+                        user=user,
                     )
                 finally:
                     _db.close()
@@ -1061,6 +1062,7 @@ async def refresh_report(
                             config_db=config_db,
                             venue_id=venue_ids[0],
                             strict_venue=True,
+                            user=user,
                         ),
                     )
                 ]
@@ -1193,6 +1195,7 @@ def refresh_single_chart(
             config_db=config_db,
             venue_id=vid,
             strict_venue=True,
+            user=user,
         )
 
         payload = tool_result.payload
@@ -1299,6 +1302,7 @@ async def test_chart_script(
             config_db=config_db,
             venue_id=vid,
             strict_venue=True,
+            user=user,
         )
         # Resolve venue name
         venue_name = vid

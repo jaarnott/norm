@@ -292,6 +292,48 @@ class TestRemoveMember:
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
+    def test_removing_a_member_removes_their_access_to_that_orgs_venues(
+        self,
+        client,
+        db_session,
+        admin_headers,
+        manager_user,
+        organization,
+        admin_org_membership,
+        manager_org_membership,
+    ):
+        """rich@loadedhub.com, 18 Oct 2026: removed from the organisation,
+        but his venue-access rows stayed and he could still open every venue."""
+        from app.db.models import Organization, UserVenueAccess, Venue
+
+        mine = Venue(name="Mine", organization_id=organization.id)
+        other_org = Organization(name="Elsewhere", slug="elsewhere")
+        db_session.add_all([mine, other_org])
+        db_session.flush()
+        theirs = Venue(name="Theirs", organization_id=other_org.id)
+        db_session.add(theirs)
+        db_session.flush()
+        db_session.add_all(
+            [
+                UserVenueAccess(user_id=manager_user.id, venue_id=mine.id),
+                UserVenueAccess(user_id=manager_user.id, venue_id=theirs.id),
+            ]
+        )
+        db_session.commit()
+
+        resp = client.delete(
+            f"/api/organizations/{organization.id}/members/{manager_user.id}",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        left = {
+            a.venue_id
+            for a in db_session.query(UserVenueAccess).filter_by(
+                user_id=manager_user.id
+            )
+        }
+        assert left == {theirs.id}
+
     def test_remove_member_not_found_returns_404(
         self,
         client,

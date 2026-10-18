@@ -487,6 +487,26 @@ async def remove_member(
     if not membership:
         raise HTTPException(404, "Membership not found")
 
+    # Leaving an organisation ends everything that reached its venues. Venue
+    # access is its own table and is what the venue picker, the chat and the
+    # connectors check, so deleting only the membership left a removed person
+    # able to open every venue (rich@loadedhub.com, 18 Oct 2026). Access to
+    # OTHER organisations' venues is untouched.
+    org_venues = db.query(Venue.id).filter(Venue.organization_id == org_id)
+    db.query(UserVenueAccess).filter(
+        UserVenueAccess.user_id == member_user_id,
+        UserVenueAccess.venue_id.in_(org_venues),
+    ).delete(synchronize_session=False)
+    from datetime import datetime, timezone
+
+    from app.db.mcp_models import McpGrant
+
+    db.query(McpGrant).filter(
+        McpGrant.user_id == member_user_id,
+        McpGrant.organization_id == org_id,
+        McpGrant.revoked_at.is_(None),
+    ).update({"revoked_at": datetime.now(timezone.utc)}, synchronize_session=False)
+
     db.delete(membership)
     db.commit()
     return {"ok": True}

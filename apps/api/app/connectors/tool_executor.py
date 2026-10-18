@@ -40,14 +40,20 @@ def execute_connector_tool(
     venue_id: str | None = None,
     thread_id: str | None = None,
     strict_venue: bool = False,
+    user=None,
 ) -> ToolResult:
     """Run under the caller's organisation (caller_scope): the venue this call
     was authorised for — MCP, charts and apps check it before calling — or
-    else its thread's user. See _execute_connector_tool for the rest."""
+    else its thread's user, or the signed-in ``user`` for a call with no venue
+    (a dashboard tile on "all venues": every HR tile reading app records said
+    "couldn't tell which organisation is asking", 18 Oct 2026).
+    See _execute_connector_tool for the rest."""
     from app.services import caller_scope
 
-    scope = caller_scope.for_venue(db, venue_id) or caller_scope.for_thread(
-        db, thread_id
+    scope = (
+        caller_scope.for_venue(db, venue_id)
+        or caller_scope.for_thread(db, thread_id)
+        or (caller_scope.for_user(db, user) if user is not None else None)
     )
     with caller_scope.use(scope):
         return _execute_connector_tool(

@@ -473,6 +473,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
                   hideAddToReport
                   fillContainer
                   emptyReason={chartErrors[chart.id]}
+                  loading={refreshingCharts.has(chart.id)}
                   // The tile is the card; the chart draws no second border inside it.
                   hideBorder
                   onDrillDown={(payload) => {

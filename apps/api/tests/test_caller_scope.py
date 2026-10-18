@@ -172,6 +172,30 @@ class TestListVenues:
         assert caller_scope.current() is None
 
 
+class TestVenuelessTiles:
+    def test_an_all_venues_call_runs_as_the_signed_in_users_organisation(
+        self, db_session, world, monkeypatch
+    ):
+        """Every HR dashboard tile reading app records said "couldn't tell which
+        organisation is asking" on All venues (18 Oct 2026): the executor
+        derived the scope from a venue or thread only, and a tile with no
+        venue has neither."""
+        import app.connectors.tool_executor as te
+
+        seen = []
+        monkeypatch.setattr(
+            te,
+            "_execute_connector_tool",
+            lambda *a, **k: seen.append(caller_scope.current()) or None,
+        )
+        te.execute_connector_tool("norm", "app_records", {}, db_session, db_session)
+        assert seen == [None]  # nobody identified: stays refused
+        te.execute_connector_tool(
+            "norm", "app_records", {}, db_session, db_session, user=world.user
+        )
+        assert seen[1].org_id == world.ours.id
+
+
 class TestHandlers:
     def test_invoice_handlers_refuse_another_organisations_venue(
         self, db_session, world
