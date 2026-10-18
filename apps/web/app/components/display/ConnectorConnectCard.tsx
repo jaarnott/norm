@@ -41,6 +41,9 @@ interface ConnectInfo {
  */
 export default function ConnectorConnectCard({ data, onAction }: DisplayBlockProps) {
   const connectorName = (data?.connector_name as string) || '';
+  // A page about one venue (Finance → Bills) shows that venue's row only —
+  // every venue's row is for chat and Settings, where there is no venue yet.
+  const onlyVenueId = (data?.venue_id as string) || null;
   const [info, setInfo] = useState<ConnectInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -150,7 +153,7 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
           <div style={{ fontSize: 'var(--fs-base)', color: 'var(--muted)' }}>No venues you can connect.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            {info.venues.map(v => {
+            {info.venues.filter(v => !onlyVenueId || v.venue_id === onlyVenueId).map(v => {
               const broken = v.status === 'needs_reconnect';
               const connected = v.status === 'connected';
               // A token bound to a different provider-side company than this

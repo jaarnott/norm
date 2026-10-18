@@ -580,8 +580,9 @@ APPS = [
         "xero",
         note=(
             "Amounts, due dates and accounts come from the xero tools — never "
-            "quote one you haven't read. Creating a bill goes through an "
-            "approval card and lands in Xero as a draft."
+            "quote one you haven't read. A bill lands in Xero as a draft via an "
+            "approval card. If a tool says a venue is not connected to Xero, "
+            "show the connect card (norm.show_connect, connector_name 'xero')."
         ),
         name="Xero",
         member="finance",

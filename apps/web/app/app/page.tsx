@@ -11,7 +11,7 @@ import LoginForm from '../components/auth/LoginForm';
 import FunctionalPage from '../components/pages/FunctionalPage';
 import QuotaExceededModal from '../components/layout/QuotaExceededModal';
 import { SIDE_PANEL_EVENT, type SidePanelRequest } from '../lib/sidePanel';
-import ConnectorConnectCard from '../components/display/ConnectorConnectCard';
+import ConnectPrompt from '../components/display/ConnectPrompt';
 import { requestOpenRecipe } from '../components/display/RecipeEditor';
 import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../components/pages/pageRegistry';
 import type { SendOptions } from '../components/chat/AttachmentComposer';
@@ -22,7 +22,6 @@ import { getPageDocument } from '../lib/pageDocument';
 import { PanelLeft as PanelLeftIcon, Menu, Settings, LogOut, SquarePen, X, type LucideIcon } from 'lucide-react';
 import Icon from '../components/ui/Icon';
 import Avatar from '../components/ui/Avatar';
-import Button from '../components/ui/Button';
 import IconButton from '../components/ui/IconButton';
 import { AGENTS } from '../components/layout/Sidebar';
 import { useBreakpoint } from '../hooks/useBreakpoint';
@@ -1192,31 +1191,24 @@ export default function Home() {
   // the user gets a graceful "reconnect here" state instead of a raw error, and
   // it works for every page through this one integration point.
   const connectPanel = connectConnector ? (
-    <div style={{ height: '100%', overflowY: 'auto', padding: '2rem 1.5rem', backgroundColor: 'var(--canvas)' }}>
-      <div style={{ maxWidth: 560, margin: '0 auto' }}>
-        <h1 style={{ margin: '0 0 0.35rem', fontSize: 'var(--fs-xl)', fontWeight: 700, color: 'var(--text)' }}>
-          This connection needs reconnecting
-        </h1>
-        <div style={{ fontSize: 'var(--fs-base)', color: 'var(--text-soft)', marginBottom: '1rem' }}>
-          We couldn&apos;t load this because the connection stopped working. Reconnect below to continue.
-        </div>
-        <ConnectorConnectCard
-          data={{ connector_name: connectConnector, reconnect: true }}
-          onAction={(action) => {
-            // The card signals a successful connect by asking to post a message.
-            // In this page panel there's no conversation to steer — just dismiss
-            // so the user can retry what they were doing.
-            if (action.action === 'send_message') {
-              setConnectConnector(null);
-              return Promise.resolve();
-            }
-            return handleWidgetAction(selectedThreadId || '', action);
-          }}
-        />
-        <Button size="sm" variant="secondary" onClick={() => setConnectConnector(null)} style={{ marginTop: '1rem' }}>
-          Dismiss
-        </Button>
-      </div>
+    <div style={{ height: '100%', overflowY: 'auto', padding: '0 1.5rem 2rem', backgroundColor: 'var(--canvas)' }}>
+      <ConnectPrompt
+        connector={connectConnector}
+        reconnect
+        title="This connection needs reconnecting"
+        detail="We couldn't load this because the connection stopped working. Reconnect below to continue."
+        onAction={(action) => {
+          // The card signals a successful connect by asking to post a message.
+          // In this page panel there's no conversation to steer — just dismiss
+          // so the user can retry what they were doing.
+          if (action.action === 'send_message') {
+            setConnectConnector(null);
+            return Promise.resolve();
+          }
+          return handleWidgetAction(selectedThreadId || '', action);
+        }}
+        onDismiss={() => setConnectConnector(null)}
+      />
     </div>
   ) : null;
 
