@@ -175,13 +175,21 @@ def _rows_from_payload(payload, script: dict) -> list:
 #: calendar, and the bucket the charts should use. Resolved here in Python so
 #: a refresh never spends a model call on "last 12 months".
 _PERIOD_CODES = {
-    "this_month": ("month", 0, 0),
-    "last_month": ("month", -1, -1),
-    "last_12_months": ("month", -11, 0),
+    "today": ("day", 0, 0),
+    "yesterday": ("day", -1, -1),
+    "last_7_days": ("day", -6, 0),
     "this_week": ("week", 0, 0),
     "last_week": ("week", -1, -1),
     "last_13_weeks": ("week", -12, 0),
+    "this_month": ("month", 0, 0),
+    "last_month": ("month", -1, -1),
+    "last_12_months": ("month", -11, 0),
 }
+
+#: The date keys a tool may take instead of start/end (Xero and the budgets
+#: take from_date/to_date; the older raw shapes took *_datetime).
+_START_KEYS = ("start", "start_datetime", "start_time", "from_date", "from")
+_END_KEYS = ("end", "end_datetime", "end_time", "to_date", "to")
 
 
 def _period_window(code: str, venue, span: int = 0):
@@ -199,7 +207,9 @@ def _period_window(code: str, venue, span: int = 0):
     kind, first, last = spec
     if span and span > 1:
         first = min(first, last - (span - 1))
-    fn = _bc.trading_month if kind == "month" else _bc.trading_week
+    fn = {"day": _bc.trading_day, "week": _bc.trading_week, "month": _bc.trading_month}[
+        kind
+    ]
     start = fn(venue, None, first).start
     end = fn(venue, None, last).end
     return start.isoformat(), end.isoformat(), kind
@@ -225,12 +235,20 @@ def _apply_global_dates(resolved: dict, gf: dict, venue=None) -> dict:
         if window:
             start, end, kind = window
             resolved.pop("period")
-            resolved["start"] = start
-            resolved["end"] = end
+            # The window lands on the tool's OWN date keys when the chart
+            # names them (Xero's from_date/to_date); start/end otherwise.
+            start_key = next((k for k in _START_KEYS if k in resolved), "start")
+            end_key = next((k for k in _END_KEYS if k in resolved), "end")
+            resolved[start_key] = start
+            resolved[end_key] = end
             resolved["confirmed_by_user"] = True
-            if "interval" in resolved and resolved["interval"] in ("month", "week"):
+            if "interval" in resolved and resolved["interval"] in (
+                "day",
+                "month",
+                "week",
+            ):
                 resolved["interval"] = kind
-            if resolved.get("group_by") in ("month", "week"):
+            if resolved.get("group_by") in ("day", "month", "week"):
                 resolved["group_by"] = kind
             return resolved
     if gf.get("start") and gf.get("end") and "period" in resolved:
@@ -240,11 +258,11 @@ def _apply_global_dates(resolved: dict, gf: dict, venue=None) -> dict:
         resolved["confirmed_by_user"] = True
         return resolved
     if gf.get("start"):
-        for k in ("start_datetime", "start", "start_time", "from_date", "from"):
+        for k in _START_KEYS:
             if k in resolved:
                 resolved[k] = gf["start"]
     if gf.get("end"):
-        for k in ("end_datetime", "end", "end_time", "to_date", "to"):
+        for k in _END_KEYS:
             if k in resolved:
                 resolved[k] = gf["end"]
     return resolved
@@ -475,6 +493,12 @@ async def instantiate_template(
         raise HTTPException(404, "Template not found")
 
     # Create the report
+    # A template may name the period its board opens on (Operations: today;
+    # the cost boards: this month). It travels on the dashboard's filters.
+    default_period = None
+    for chart_def in tmpl.charts or []:
+        if isinstance(chart_def, dict) and chart_def.get("_default_period"):
+            default_period = chart_def["_default_period"]
     report = Report(
         user_id=user.id,
         title=tmpl.title,
@@ -482,6 +506,7 @@ async def instantiate_template(
         is_dashboard=True,
         agent_slug=tmpl.agent_slug,
         refresh_interval_seconds=300,  # 5 min default
+        global_filters={"default_period": default_period} if default_period else None,
     )
     db.add(report)
     db.flush()

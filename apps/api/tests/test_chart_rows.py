@@ -355,6 +355,44 @@ class TestPeriodControl:
         assert out == {"start_datetime": "today_start"}
 
 
+class TestDayCodesAndDateKeys:
+    def _venue(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(timezone="Pacific/Auckland", day_start_time=None)
+
+    def test_today_is_the_venues_trading_day(self):
+        from app.services import business_calendar as _bc
+
+        venue = self._venue()
+        out = _apply_global_dates({"period": "today"}, {"period": "today"}, venue=venue)
+        day = _bc.trading_day(venue, None, 0)
+        assert out["start"] == day.start.isoformat()
+        assert out["end"] == day.end.isoformat()
+
+    def test_last_7_days_ends_today(self):
+        from app.services import business_calendar as _bc
+
+        venue = self._venue()
+        out = _apply_global_dates(
+            {"period": "x", "interval": "day"}, {"period": "last_7_days"}, venue=venue
+        )
+        assert out["start"] == _bc.trading_day(venue, None, -6).start.isoformat()
+        assert out["end"] == _bc.trading_day(venue, None, 0).end.isoformat()
+        assert out["interval"] == "day"
+
+    def test_the_window_lands_on_the_tools_own_date_keys(self):
+        """Xero and the budgets take from_date/to_date; the P&L tile refused
+        a window written to start/end (18 Oct 2026)."""
+        out = _apply_global_dates(
+            {"period": "last month", "from_date": "", "to_date": ""},
+            {"period": "last_month"},
+            venue=self._venue(),
+        )
+        assert "period" not in out and "start" not in out
+        assert out["from_date"].startswith("2") and out["to_date"] > out["from_date"]
+
+
 class TestASummaryIsOneRow:
     def test_a_document_at_the_path_is_one_row(self):
         doc = {

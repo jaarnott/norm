@@ -114,6 +114,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
     {
         "slug": "procurement-cogs",
         "agent_slug": "procurement",
+        "default_period": "this_month",
         "title": "Cost of Goods",
         "description": (
             "Purchases against sales from Loaded — cost of goods %, the food / "
@@ -452,181 +453,307 @@ DASHBOARD_TEMPLATES: list[dict] = [
             },
         ],
     },
+    # Operations (Oct 2026 rebuild). The April board was written for raw
+    # endpoints and spent a model call per tile per venue resolving "today";
+    # every tile here is a tool read on the venue's trading day, the cards
+    # compare with budget, last year and the roster on the same row
+    # (get_daily_performance), and the period control covers today,
+    # yesterday, this week and the months.
     {
         "slug": "reports-dashboard",
         "agent_slug": "reports",
-        "title": "Operations Dashboard",
-        "description": "Live overview across all venues",
+        "default_period": "today",
+        "title": "Operations",
+        "description": (
+            "Today at a glance — sales against budget and last year, orders, "
+            "labour and wage %, by venue and through the day. Switch the period "
+            "for yesterday, the week or the month."
+        ),
         "charts": [
             {
-                "title": "Orders Today",
+                "title": "Sales",
                 "chart_type": "kpi",
                 "chart_spec": {
-                    "chart_type": "kpi",
-                    "title": "Orders Today",
-                    "x_axis": {"key": "orders", "label": "Orders"},
-                    "series": [{"key": "orders", "label": "Orders"}],
+                    "refresh_interval_seconds": 300,
+                    "value_key": "sales",
+                    "format": "currency",
                     "prefix": "$",
-                    "format": "number",
-                    "value_key": "amount",
+                    "comparison_key": "last_year",
+                    "comparison_label": "vs last year",
+                    "note": "incl. GST, as the POS reads",
                 },
                 "script": {
                     "connector": "loadedhub",
-                    "action": "get_pos_orders",
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 1, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Budget achieved",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 300,
+                    "numerator_key": "sales",
+                    "denominator_key": "budget",
+                    "format": "percent",
+                    "note": "sales ÷ budget",
+                    "empty_note": "No budget set for this period in Loaded",
+                    "threshold": {
+                        "warning": 0.95,
+                        "danger": 0.85,
+                        "direction": "below",
+                    },
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 7, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Wage cost %",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 300,
+                    "numerator_key": "actual_cost",
+                    "denominator_key": "sales_ex_gst",
+                    "format": "percent",
+                    "lower_is_better": True,
+                    "note": "actual labour cost ÷ sales ex-GST",
+                    "empty_note": "No sales yet",
+                    "threshold": {
+                        "warning": 0.32,
+                        "danger": 0.38,
+                        "direction": "above",
+                    },
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 13, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Average order",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 300,
+                    "numerator_key": "order_value",
+                    "denominator_key": "orders",
+                    "format": "currency",
+                    "prefix": "$",
+                    "note": "orders as placed, before discounts",
+                    "empty_note": "No orders yet",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 19, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Orders",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 300,
+                    "value_key": "orders",
+                    "format": "number",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 1, "row": 5, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Budget",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 300,
+                    "value_key": "budget",
+                    "format": "currency",
+                    "prefix": "$",
+                    "note": "from Loaded's budgets",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 7, "row": 5, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Hours worked",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 300,
+                    "value_key": "actual_hours",
+                    "format": "number",
+                    "suffix": " h",
+                    "comparison_key": "rostered_hours",
+                    "comparison_label": "vs rostered",
+                    "lower_is_better": True,
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 13, "row": 5, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Labour cost",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 300,
+                    "value_key": "actual_cost",
+                    "format": "currency",
+                    "prefix": "$",
+                    "comparison_key": "rostered_cost",
+                    "comparison_label": "vs rostered",
+                    "lower_is_better": True,
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "summary",
+                },
+                "layout": {"col": 19, "row": 5, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Sales by half hour — today",
+                "chart_type": "stacked_bar",
+                "chart_spec": {
+                    "refresh_interval_seconds": 300,
+                    "x_axis": {"key": "startTime", "label": "Time", "format": "time"},
+                    "y_axis": {"key": "actual", "label": "Sales", "format": "currency"},
+                    "series": [{"key": "actual", "label": "Sales", "color": "#b07d4f"}],
+                    "value_key": "actual",
+                    "group_by": "venue",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_sales",
                     "params": {
                         "start": "today_start",
                         "end": "now",
-                        "interval": "1.00:00:00",
+                        "confirmed_by_user": True,
+                        "breakdown": "daily",
+                        "interval": "00:30:00",
                     },
+                    "rows": "rows",
                 },
-                "layout": {"col": 1, "row": 1, "colSpan": 8, "rowSpan": 4},
+                "layout": {"col": 1, "row": 9, "colSpan": 12, "rowSpan": 8},
             },
             {
-                "title": "Sales Today",
-                "chart_type": "kpi",
+                "title": "Sales vs budget and last year",
+                "chart_type": "line",
                 "chart_spec": {
-                    "chart_type": "kpi",
-                    "title": "Sales Today",
-                    "x_axis": {"key": "sales", "label": "Sales"},
-                    "series": [{"key": "sales", "label": "Sales"}],
-                    "comparison_key": "",
-                    "prefix": "$",
-                    "format": "number",
-                    "value_key": "amount",
-                },
-                "script": {
-                    "connector": "loadedhub",
-                    "action": "get_sales_data",
-                    "params": {
-                        "start_datetime": "today_start",
-                        "end_datetime": "now",
-                        "interval": "1.00:00:00",
-                    },
-                },
-                "layout": {"col": 9, "row": 1, "colSpan": 8, "rowSpan": 4},
-            },
-            {
-                "title": "Budget Today",
-                "chart_type": "kpi",
-                "chart_spec": {
-                    "chart_type": "kpi",
-                    "title": "Budget Today",
-                    "x_axis": {"key": "budget", "label": "Budget"},
-                    "series": [{"key": "budget", "label": "Budget"}],
-                    "value_key": "amount",
-                    "format": "number",
-                    "prefix": "$",
-                },
-                "script": {
-                    "connector": "loadedhub",
-                    "action": "get_budgets",
-                    "params": {"from_date": "today_start", "to_date": "tomorrow_start"},
-                },
-                "layout": {"col": 17, "row": 1, "colSpan": 8, "rowSpan": 4},
-            },
-            {
-                "title": "Venue Sales Breakdown",
-                "chart_type": "table",
-                "chart_spec": {
-                    "chart_type": "table",
-                    "title": "Venue Sales Breakdown",
-                    "x_axis": {"key": "venue", "label": "Venue"},
+                    "refresh_interval_seconds": 900,
+                    "x_axis": {"key": "bucket", "label": "Period"},
+                    "y_axis": {"key": "sales", "label": "Sales", "format": "currency"},
                     "series": [
-                        {"key": "orders", "label": "Orders"},
-                        {"key": "sales", "label": "Sales ($)"},
+                        {"key": "sales", "label": "Sales", "color": "#b07d4f"},
+                        {"key": "budget", "label": "Budget", "color": "#5b8abd"},
+                        {"key": "last_year", "label": "Last year", "color": "#c4a882"},
                     ],
                 },
                 "script": {
                     "connector": "loadedhub",
-                    "action": "get_sales_data",
+                    "action": "get_daily_performance",
                     "params": {
-                        "start_datetime": "today_start",
-                        "end_datetime": "now",
-                        "interval": "1.00:00:00",
-                        "_all_venues": True,
+                        "period": "last 7 days",
+                        "interval": "day",
+                        "period_span": 8,
                     },
+                    "rows": "rows",
                 },
-                "layout": {"col": 1, "row": 13, "colSpan": 12, "rowSpan": 8},
+                "layout": {"col": 13, "row": 9, "colSpan": 12, "rowSpan": 8},
             },
             {
-                "title": "Sales Last 12 Hours (30 min intervals)",
-                "chart_type": "stacked_bar",
+                "title": "Sales vs budget by venue",
+                "chart_type": "bar",
                 "chart_spec": {
-                    "chart_type": "stacked_bar",
-                    "title": "Sales Last 12 Hours",
-                    "x_axis": {"key": "startTime", "label": "Time", "format": "time"},
+                    "refresh_interval_seconds": 600,
+                    "x_axis": {"key": "venue", "label": "Venue"},
+                    "y_axis": {"key": "sales", "label": "Sales", "format": "currency"},
+                    "series": [
+                        {"key": "sales", "label": "Sales", "color": "#b07d4f"},
+                        {"key": "budget", "label": "Budget", "color": "#5b8abd"},
+                    ],
+                    "group_by": None,
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "by_venue",
+                },
+                "layout": {"col": 1, "row": 17, "colSpan": 8, "rowSpan": 8},
+            },
+            {
+                "title": "Rostered vs worked hours",
+                "chart_type": "bar",
+                "chart_spec": {
+                    "refresh_interval_seconds": 600,
+                    "x_axis": {"key": "venue", "label": "Venue"},
+                    "y_axis": {"key": "actual_hours", "label": "Hours"},
                     "series": [
                         {
-                            "key": "Bessie & Engineers",
-                            "label": "Bessie & Engineers",
-                            "color": "#4f8a5e",
-                        },
-                        {
-                            "key": "Freeman & Grey",
-                            "label": "Freeman & Grey",
-                            "color": "#5b8abd",
-                        },
-                        {
-                            "key": "The Glass Goose",
-                            "label": "The Glass Goose",
+                            "key": "rostered_hours",
+                            "label": "Rostered",
                             "color": "#c4a882",
                         },
-                        {
-                            "key": "Mr Murdochs",
-                            "label": "Mr Murdochs",
-                            "color": "#b07d4f",
-                        },
-                        {
-                            "key": "Dunedin Social Club",
-                            "label": "Dunedin Social Club",
-                            "color": "#8b6caf",
-                        },
-                        {
-                            "key": "Velvet Burger",
-                            "label": "Velvet Burger",
-                            "color": "#c75a5a",
-                        },
-                        {"key": "La Zeppa", "label": "La Zeppa", "color": "#3d9e8f"},
+                        {"key": "actual_hours", "label": "Worked", "color": "#4f8a5e"},
                     ],
-                    "group_by": "venue",
-                    "value_key": "amount",
+                    "group_by": None,
                 },
                 "script": {
                     "connector": "loadedhub",
-                    "action": "get_sales_data",
-                    "params": {
-                        "start_datetime": "12h_ago",
-                        "end_datetime": "now",
-                        "interval": "00:30:00",
-                        "_round_30": True,
-                    },
+                    "action": "get_daily_performance",
+                    "params": {"period": "today", "interval": "day"},
+                    "rows": "by_venue",
                 },
-                "layout": {"col": 1, "row": 5, "colSpan": 24, "rowSpan": 8},
+                "layout": {"col": 9, "row": 17, "colSpan": 8, "rowSpan": 8},
             },
             {
-                "title": "Staff Hours by Venue",
+                "title": "Top sellers",
                 "chart_type": "table",
                 "chart_spec": {
-                    "chart_type": "table",
-                    "title": "Staff Hours by Venue",
-                    "x_axis": {"key": "venue", "label": "Venue"},
+                    "refresh_interval_seconds": 900,
+                    "x_axis": {"key": "item", "label": "Item"},
                     "series": [
-                        {"key": "rostered_hours", "label": "Rostered Hours"},
-                        {"key": "actual_hours", "label": "Actual Hours"},
-                        {"key": "rostered_cost", "label": "Rostered Cost ($)"},
-                        {"key": "actual_cost", "label": "Actual Cost ($)"},
+                        {"key": "group", "label": "Group"},
+                        {"key": "quantity", "label": "Qty"},
+                        {"key": "sales", "label": "Sales"},
                     ],
+                    "field_order": ["venue", "item", "group", "quantity", "sales"],
+                    "hidden_fields": ["category"],
+                    "field_formats": {
+                        "sales": {"type": "currency"},
+                        "quantity": {"type": "number", "decimals": 0},
+                    },
                 },
                 "script": {
                     "connector": "loadedhub",
-                    "action": "get_timeclock_entries",
-                    "params": {
-                        "start_time": "today_start",
-                        "end_time": "now",
-                        "_all_venues": True,
-                    },
+                    "action": "get_sales",
+                    "params": {"period": "today", "breakdown": "items", "top": 15},
+                    "rows": "rows",
                 },
-                "layout": {"col": 13, "row": 13, "colSpan": 12, "rowSpan": 8},
+                "layout": {"col": 17, "row": 17, "colSpan": 8, "rowSpan": 8},
             },
         ],
     },
@@ -723,6 +850,14 @@ DASHBOARD_TEMPLATES: list[dict] = [
         ],
     },
 ]
+
+
+# A template may name the period its board opens on; it rides on the first
+# chart (`_default_period`) because the template row has no settings column,
+# and instantiate lifts it onto the dashboard's global_filters.
+for _t in DASHBOARD_TEMPLATES:
+    if _t.get("default_period") and _t.get("charts"):
+        _t["charts"][0]["_default_period"] = _t["default_period"]
 
 
 def get_template(slug: str) -> dict | None:

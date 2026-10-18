@@ -71,7 +71,9 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   const [selectedVenue, setSelectedVenue] = useState<string>('');
   // The period control, for dashboards whose charts take a plain-English
   // `period` (the cost-of-goods template). '' = each chart's own default.
-  const [selectedPeriod, setSelectedPeriod] = useState<string>('this_month');
+  // null until the viewer picks one; the dashboard's own default applies
+  // meanwhile (a template names it: Operations opens on today).
+  const [pickedPeriod, setPickedPeriod] = useState<string | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   // When each tile's refresh last STARTED (ms). Stamped at the start so a
   // slow tile is never fired twice, and seeded from the cache's own time on
@@ -81,6 +83,8 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   const { isMobile, isTablet } = useBreakpoint();
 
   const initialRefreshDone = useRef(false);
+  const selectedPeriod = pickedPeriod
+    ?? ((dashboard?.global_filters as { default_period?: string } | null)?.default_period || 'this_month');
 
   // Load dashboard — by direct report_id or by agent slug
   useEffect(() => {
@@ -206,9 +210,9 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedVenue]);
   useEffect(() => {
-    if (initialRefreshDone.current) handleRefresh({ period: selectedPeriod });
+    if (initialRefreshDone.current && pickedPeriod) handleRefresh({ period: pickedPeriod });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPeriod]);
+  }, [pickedPeriod]);
 
   // Auto-refresh, per tile: a 30-second tick refreshes the tiles whose own
   // interval has elapsed since their last refresh started. One timer firing
@@ -300,8 +304,13 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       className="n-select"
       aria-label="Period"
       value={selectedPeriod}
-      onChange={e => setSelectedPeriod(e.target.value)}
+      onChange={e => setPickedPeriod(e.target.value)}
     >
+      <optgroup label="Days">
+        <option value="today">Today</option>
+        <option value="yesterday">Yesterday</option>
+        <option value="last_7_days">Last 7 days</option>
+      </optgroup>
       <optgroup label="Months">
         <option value="this_month">This month</option>
         <option value="last_month">Last month</option>
