@@ -78,7 +78,21 @@ GATES: dict[str, str] = {
     AUTO_DELETE_UNREADABLE: "delete drafts with no readable invoice copy",
 }
 
-DEFAULTS: dict[str, object] = {"mode": DEFAULT_MODE, **{g: False for g in GATES}}
+#: Things Norm may do AFTER a receive has succeeded — switches in the same
+#: Settings → Preferences block as the gates, but not gates: no blocker waits
+#: on them, they apply at every level (the card's receive too, not only
+#: Autopilot), and they write to a system other than Loaded. Defined here in
+#: code, not in the tool row's options, so the switch needs no config change.
+CREATE_XERO_BILL = "create_xero_bill"
+AFTER_RECEIVE: dict[str, str] = {
+    CREATE_XERO_BILL: "create a bill in Xero",
+}
+
+DEFAULTS: dict[str, object] = {
+    "mode": DEFAULT_MODE,
+    **{g: False for g in GATES},
+    **{a: False for a in AFTER_RECEIVE},
+}
 
 
 def settings_from(stored: dict | None) -> dict:
@@ -92,7 +106,7 @@ def settings_from(stored: dict | None) -> dict:
     mode = stored.get("mode")
     if mode in MODES:
         out["mode"] = mode
-    for gate in GATES:
+    for gate in (*GATES, *AFTER_RECEIVE):
         out[gate] = stored.get(gate) is True
     return out
 

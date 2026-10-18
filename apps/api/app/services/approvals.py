@@ -542,6 +542,10 @@ def validate(row: dict | None, value) -> dict:
         known = {
             o.get("id") for o in policy.get("options") or [] if isinstance(o, dict)
         }
+        if row.get("action") == "review_and_receive_invoices":
+            from app.services import venue_autopilot as VA
+
+            known |= set(VA.AFTER_RECEIVE)
         options = value.get("options") or {}
         if not isinstance(options, dict) or set(options) - known:
             raise ValueError(
@@ -612,6 +616,18 @@ def describe_entry(row: dict | None, entry: dict | None) -> str:
         )
         if on and chosen == LEVELS[-1]:
             text += " — may also " + "; ".join(labels[o] for o in on)
+        if (row or {}).get("action") == "review_and_receive_invoices":
+            from app.services import venue_autopilot as VA
+
+            after = sorted(
+                a
+                for a in VA.AFTER_RECEIVE
+                if (entry.get("options") or {}).get(a) is True
+            )
+            if after:
+                text += " — after a receive: " + "; ".join(
+                    VA.AFTER_RECEIVE[a] for a in after
+                )
         return text
     if policy.get("default") == "auto":
         return "does it without asking"

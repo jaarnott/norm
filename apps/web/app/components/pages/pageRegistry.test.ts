@@ -41,6 +41,31 @@ describe('appPageConfig', () => {
   });
 });
 
+describe('scheduled tasks', () => {
+  // Every team member that works in a conversation also runs scheduled tasks.
+  const members = ['procurement', 'hr', 'reports', 'time_attendance', 'marketing', 'executive_chef', 'functions', 'finance'];
+
+  it('every member has a Tasks page loading its own agent\'s tasks', () => {
+    for (const member of members) {
+      const page = FUNCTIONAL_PAGES.find((p) => p.id === `tasks-${member}`);
+      expect(page, `tasks-${member}`).toBeDefined();
+      expect(page?.agent).toBe(member);
+      expect(page?.component).toBe('automated_task_board');
+      expect(page?.loadAction.defaultParams()).toEqual({ agent_slug: member });
+    }
+  });
+});
+
+describe('finance', () => {
+  it('has a Dashboard page for its own board, beside Bills and Tasks', () => {
+    const menu = FUNCTIONAL_PAGES.filter((p) => p.agent === 'finance').map((p) => p.id);
+    expect(menu).toEqual(expect.arrayContaining(['dashboard-finance', 'xero-bills', 'tasks-finance']));
+    const page = FUNCTIONAL_PAGES.find((p) => p.id === 'dashboard-finance');
+    expect(page?.component).toBe('dashboard_view');
+    expect(page?.componentProps).toEqual({ agent_slug: 'finance' });
+  });
+});
+
 describe('menu reachability', () => {
   const selectable = new Set(AGENTS.map((a) => a.id));
 

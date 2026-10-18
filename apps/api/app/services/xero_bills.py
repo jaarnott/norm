@@ -6,10 +6,11 @@ autopilot (``invoice_review``). Best effort by design — Loaded already holds
 the receive, so a Xero failure is recorded on the working document and
 reported, never raised into the receive.
 
-Off unless the venue's Xero mapping says ``push_bills`` (set on the Finance →
-Bills page): posting a venue's bills is that venue's decision, and the
-``review_and_receive_invoices`` consolidator is live config in every
-environment the moment it is synced.
+Off unless the PERSON receiving has switched it on (Settings → Preferences →
+Receive supplier invoices → "create a bill in Xero", venue_autopilot.
+CREATE_XERO_BILL): the caller passes ``enabled``. A background run with no
+person is off. The venue must also hold its own live Xero connection; its
+accounts and bill status come from the Finance → Bills settings.
 
 The bill itself is built by the ``xero.create_bill`` consolidator, run through
 the shared executor the way dashboards and apps run tools: it resolves the
@@ -17,11 +18,20 @@ supplier to a Xero contact, the tax types from the organisation's own rates,
 and each line's account from the venue's mapping. Its idempotency key is the
 Loaded invoice id, so a re-run (a retried job, a second receive of a twin)
 returns the same bill rather than a second one.
+
+The supplier's PDF goes on the bill too: the receive's Loaded file is
+downloaded and uploaded to ``PUT /Invoices/{id}/Attachments/{filename}`` (a
+POST replaces one of the same name; Xero's published contract, raw binary
+body). The upload is its own step with its own outcome
+(``xero_bill["attachment"]``): a bill without a file is still a good bill, and
+the next call for the same invoice retries only the file. Done here, not in
+the consolidator sandbox, because the bytes come straight from Loaded.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -32,10 +42,22 @@ from app.db.models import Connection
 logger = logging.getLogger(__name__)
 
 CONNECTOR = "xero"
+API_BASE = "https://api.xero.com/api.xro/2.0"
+#: Xero's limit per attachment.
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+_EXT = {
+    "application/pdf": "pdf",
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/heic": "heic",
+}
 
 
-def mapping_for(db: Session, venue_id: str | None) -> dict | None:
-    """The venue's Xero mapping when it is connected and pushes bills, else None."""
+def _row(db: Session, venue_id: str | None) -> Connection | None:
+    """The venue's own live Xero connection row, else None."""
     if not venue_id:
         return None
     row = (
@@ -45,10 +67,16 @@ def mapping_for(db: Session, venue_id: str | None) -> dict | None:
     )
     if not row or row.enabled != "true" or not row.access_token or row.needs_reconnect:
         return None
-    mapping = (row.config or {}).get("xero_mapping") or {}
-    if not mapping.get("push_bills"):
+    return row
+
+
+def mapping_for(db: Session, venue_id: str | None) -> dict | None:
+    """The venue's Xero mapping (possibly empty) when it holds its own live
+    Xero connection, else None."""
+    row = _row(db, venue_id)
+    if row is None:
         return None
-    return mapping
+    return (row.config or {}).get("xero_mapping") or {}
 
 
 def _num(v) -> float | None:
@@ -113,6 +141,90 @@ def bill_params_from_doc(venue_id: str, invoice_id: str, data: dict) -> dict:
     return params
 
 
+def attachment_name(
+    invoice_number: str | None, fallback: str, content_type: str
+) -> str:
+    """A safe filename for Xero: the supplier's number (or the Loaded invoice id)
+    plus the extension the file's type implies."""
+    base = re.sub(
+        r"[^A-Za-z0-9._-]+", "_", str(invoice_number or fallback or "invoice")
+    )
+    base = (base.strip("._") or "invoice")[:80]
+    ext = _EXT.get(str(content_type or "").lower(), "pdf")
+    return f"{base}.{ext}"
+
+
+def attach_file(
+    db: Session,
+    config_db: Session,
+    venue_id: str,
+    xero_invoice_id: str,
+    loaded_file_id: str,
+    *,
+    invoice_number: str | None = None,
+    loaded_invoice_id: str = "",
+) -> dict:
+    """Upload the invoice's Loaded file to the Xero bill. Never raises; returns
+    ``{"uploaded": bool, "filename": ..., "error": ...}``."""
+    import base64
+
+    import httpx
+
+    from app.db.config_models import ConnectionSpec
+    from app.services.oauth_service import get_valid_access_token
+    from app.services.received_invoice import LoadedInvoiceClient
+
+    try:
+        row = _row(db, venue_id)
+        if row is None:
+            return {"uploaded": False, "error": "Xero is not connected for this venue"}
+        tenant = str((row.config or {}).get("xero_tenant_id") or "")
+        spec = (
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == CONNECTOR)
+            .first()
+        )
+        if not tenant or not spec:
+            return {"uploaded": False, "error": "Xero connection is incomplete"}
+
+        lh = LoadedInvoiceClient(db, config_db, venue_id)
+        b64, ctype = lh.file_base64(loaded_file_id)
+        content = base64.b64decode(b64)
+        if not content:
+            return {"uploaded": False, "error": "the invoice file is empty"}
+        if len(content) > MAX_ATTACHMENT_BYTES:
+            return {
+                "uploaded": False,
+                "error": "the invoice file is over Xero's 25 MB limit",
+            }
+        filename = attachment_name(invoice_number, loaded_invoice_id, ctype)
+
+        token = get_valid_access_token(spec, db, venue_id=venue_id)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "xero-tenant-id": tenant,
+            "Accept": "application/json",
+            "Content-Type": ctype or "application/pdf",
+        }
+        url = f"{API_BASE}/Invoices/{xero_invoice_id}/Attachments/{filename}"
+        resp = httpx.put(url, headers=headers, content=content, timeout=60.0)
+        if resp.status_code >= 400:
+            # A file of this name is already on the bill: replace it (POST).
+            resp = httpx.post(url, headers=headers, content=content, timeout=60.0)
+        if resp.status_code >= 400:
+            return {
+                "uploaded": False,
+                "filename": filename,
+                "error": f"Xero {resp.status_code}: {resp.text[:200]}",
+            }
+        return {"uploaded": True, "filename": filename, "bytes": len(content)}
+    except Exception as exc:  # the bill exists; a missing file is retried later
+        logger.warning(
+            "xero attachment failed for invoice %s: %s", xero_invoice_id, exc
+        )
+        return {"uploaded": False, "error": str(exc)[:200]}
+
+
 def push_bill_after_receive(
     db: Session,
     config_db: Session,
@@ -121,11 +233,15 @@ def push_bill_after_receive(
     data: dict,
     *,
     doc=None,
+    enabled: bool = False,
 ) -> dict | None:
     """Create the bill in Xero for a just-received invoice. Returns the outcome
     (also written to ``data["xero_bill"]`` and the document when given), or
-    None when the venue does not push bills. Never raises."""
+    None when the person has not switched it on or the venue is not connected
+    to Xero. Never raises."""
     try:
+        if not enabled:
+            return None
         mapping = mapping_for(db, venue_id)
         if mapping is None:
             return None
@@ -133,7 +249,10 @@ def push_bill_after_receive(
             data.get("xero_bill") if isinstance(data.get("xero_bill"), dict) else None
         )
         if existing and existing.get("created"):
-            return existing
+            # The bill stands; only a missing file is worth another try.
+            return _ensure_attachment(
+                db, config_db, venue_id, invoice_id, data, existing, doc
+            )
         params = bill_params_from_doc(str(venue_id), invoice_id, data)
         if not params["lines"] or not params["supplier"]:
             outcome = {
@@ -166,6 +285,10 @@ def push_bill_after_receive(
                     or "Xero did not create the bill",
                     "at": datetime.now(timezone.utc).isoformat(),
                 }
+        if outcome.get("created"):
+            outcome = _ensure_attachment(
+                db, config_db, venue_id, invoice_id, data, outcome, doc
+            )
         data["xero_bill"] = outcome
         if doc is not None:
             doc.data = {**(doc.data or {}), "xero_bill": outcome}
@@ -196,4 +319,50 @@ def push_bill_after_receive(
             data["xero_bill"] = outcome
         except Exception:
             pass
+        return outcome
+
+
+def _ensure_attachment(
+    db: Session,
+    config_db: Session,
+    venue_id: str | None,
+    invoice_id: str,
+    data: dict,
+    outcome: dict,
+    doc,
+) -> dict:
+    """Attach the invoice's file to an already-created bill unless it already is.
+    Returns the outcome with ``attachment`` filled in; records it on the data
+    and the document. Never raises."""
+    try:
+        done = outcome.get("attachment") or {}
+        file_id = data.get("file_id")
+        if done.get("uploaded") or not file_id or not outcome.get("invoice_id"):
+            return outcome
+        result = attach_file(
+            db,
+            config_db,
+            str(venue_id),
+            str(outcome["invoice_id"]),
+            str(file_id),
+            invoice_number=str(data.get("reference_number") or "") or None,
+            loaded_invoice_id=invoice_id,
+        )
+        result["at"] = datetime.now(timezone.utc).isoformat()
+        outcome = {**outcome, "attachment": result}
+        data["xero_bill"] = outcome
+        if doc is not None:
+            doc.data = {**(doc.data or {}), "xero_bill": outcome}
+            flag_modified(doc, "data")
+        if not result.get("uploaded"):
+            logger.warning(
+                "xero attachment NOT uploaded for Loaded invoice %s: %s",
+                invoice_id,
+                result.get("error"),
+            )
+        return outcome
+    except Exception as exc:
+        logger.exception(
+            "xero attachment step failed for invoice %s: %s", invoice_id, exc
+        )
         return outcome

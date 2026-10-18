@@ -1510,7 +1510,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "chart_type": "line",
                 "chart_spec": {
                     "refresh_interval_seconds": 3600,
-                    "x_axis": {"key": "column", "label": "Month"},
+                    "x_axis": {"key": "month", "label": "Month"},
                     "y_axis": {
                         "key": "income",
                         "label": "Amount",

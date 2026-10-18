@@ -22,7 +22,7 @@ import Icon from '../ui/Icon';
 import PageState from '../ui/PageState';
 
 interface Level { id: string; label: string; description?: string }
-interface Switch { id: string; label: string }
+interface Switch { id: string; label: string; group?: 'after_receive' }
 export interface ToolPref {
   key: string;
   label: string;
@@ -39,6 +39,8 @@ const RECEIVE = 'loadedhub.review_and_receive_invoices';
 
 /** Why a receiving switch matters, beside the switch. */
 const SWITCH_NOTE: Record<string, string> = {
+  create_xero_bill:
+    'After an invoice is received into Loaded — from the card or on Autopilot — Norm creates the matching bill in Xero, with the supplier\'s PDF attached. It lands as a draft unless you set otherwise. The venue needs Xero connected and its accounts set under Finance → Bills → Xero settings. Yours alone, whatever level you receive at.',
   auto_create_suppliers:
     'The riskiest one. Supplier identity is what picks the extraction prompt, so a duplicate supplier sends every future invoice from that business to the wrong rules. Norm refuses to create one if anything existing plausibly matches.',
   receive_without_unit:
@@ -158,6 +160,27 @@ export default function ApprovalPreferences() {
   const levelled = tools.filter(t => t.kind === 'levels');
   const others = tools.filter(t => t.kind !== 'levels');
 
+  const renderSwitch = (t: ToolPref, sw: Switch, i: number, options: Record<string, boolean>, busy: boolean) => {
+    const on = !!options[sw.id];
+    return (
+      <label key={sw.id} style={{
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16,
+        padding: '10px 0', borderTop: i ? '1px solid var(--line-soft)' : 'none',
+        cursor: busy ? 'default' : 'pointer',
+      }}>
+        <span style={{ minWidth: 0 }}>
+          <span style={{ display: 'block', fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>
+            {sw.label[0].toUpperCase() + sw.label.slice(1)}
+          </span>
+          {SWITCH_NOTE[sw.id] && <span style={{ display: 'block', marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{SWITCH_NOTE[sw.id]}</span>}
+        </span>
+        <input type="checkbox" role="switch" checked={on} disabled={busy}
+          onChange={e => void save(t.key, { level: t.level, options: { ...options, [sw.id]: e.target.checked } })}
+          style={switchStyle(on, busy)} />
+      </label>
+    );
+  };
+
   return (
     <div style={{ maxWidth: 720, lineHeight: 1.45 }}>
       {header}
@@ -166,6 +189,8 @@ export default function ApprovalPreferences() {
       {levelled.map(t => {
         const options = t.options || {};
         const top = t.levels?.[t.levels.length - 1]?.id;
+        const gateSwitches = (t.switches || []).filter(sw => sw.group !== 'after_receive');
+        const afterSwitches = (t.switches || []).filter(sw => sw.group === 'after_receive');
         const busy = saving === t.key;
         return (
           <div key={t.key} className="n-card" style={card}>
@@ -201,33 +226,23 @@ export default function ApprovalPreferences() {
                 );
               })}
             </div>
-            {t.level === top && (t.switches || []).length > 0 && (
+            {t.level === top && gateSwitches.length > 0 && (
               <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
                 <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>What Norm may also do on its own</div>
                 <p style={{ margin: '2px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
                   Everything here writes to Loaded and can&apos;t be undone from Norm — leave a switch off
                   and invoices needing it wait for you instead, saying so.
                 </p>
-                {(t.switches || []).map((sw, i) => {
-                  const on = !!options[sw.id];
-                  return (
-                    <label key={sw.id} style={{
-                      display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16,
-                      padding: '10px 0', borderTop: i ? '1px solid var(--line-soft)' : 'none',
-                      cursor: busy ? 'default' : 'pointer',
-                    }}>
-                      <span style={{ minWidth: 0 }}>
-                        <span style={{ display: 'block', fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>
-                          {sw.label[0].toUpperCase() + sw.label.slice(1)}
-                        </span>
-                        {SWITCH_NOTE[sw.id] && <span style={{ display: 'block', marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{SWITCH_NOTE[sw.id]}</span>}
-                      </span>
-                      <input type="checkbox" role="switch" checked={on} disabled={busy}
-                        onChange={e => void save(t.key, { level: t.level, options: { ...options, [sw.id]: e.target.checked } })}
-                        style={switchStyle(on, busy)} />
-                    </label>
-                  );
-                })}
+                {gateSwitches.map((sw, i) => renderSwitch(t, sw, i, options, busy))}
+              </div>
+            )}
+            {afterSwitches.length > 0 && (
+              <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+                <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>After a receive</div>
+                <p style={{ margin: '2px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                  What Norm may do once an invoice is in Loaded. Applies at every level, not just Autopilot.
+                </p>
+                {afterSwitches.map((sw, i) => renderSwitch(t, sw, i, options, busy))}
               </div>
             )}
           </div>

@@ -1164,6 +1164,25 @@ class TestBatchModes:
         # the record shows what Norm changed unattended
         assert out["verdicts"][0]["suggestions"] == 1
 
+    def test_a_bill_in_xero_follows_the_persons_switch(self, batch, monkeypatch):
+        """Autopilot hands the person's "create a bill in Xero" switch to the
+        Xero step — on only when they switched it on (Settings → Preferences)."""
+        seen = []
+        monkeypatch.setattr(
+            "app.services.xero_bills.push_bill_after_receive",
+            lambda db, cdb, venue_id, iid, data, **kw: seen.append(
+                (venue_id, iid, kw.get("enabled"))
+            ),
+        )
+        batch({"inv-1": DETAIL()}, [EXTRACTION()], "autopilot")
+        batch(
+            {"inv-1": DETAIL()},
+            [EXTRACTION()],
+            "autopilot",
+            gates={"create_xero_bill": True},
+        )
+        assert seen == [("v-1", "inv-1", False), ("v-1", "inv-1", True)]
+
     def test_autopilot_skips_blocking_issue(self, batch):
         det = DETAIL(fileId=None)
         received = []

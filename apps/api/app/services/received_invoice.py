@@ -1408,11 +1408,23 @@ def receive_from_draft(
             working_document_id=doc.id,
             thread_id=doc.thread_id,
         )
-        # The venue may post its received bills to Xero (Finance → Bills
-        # settings). Best effort, recorded on the document either way.
+        # A bill in Xero when this person's receiving settings say so
+        # (Settings → Preferences). Best effort, recorded on the document.
+        from app.db.models import User
+        from app.services import venue_autopilot as VA
+        from app.services.approvals import receiving_settings
         from app.services.xero_bills import push_bill_after_receive
 
-        push_bill_after_receive(db, config_db, venue_id, invoice_id, data, doc=doc)
+        person = db.query(User).filter(User.id == user_id).first() if user_id else None
+        push_bill_after_receive(
+            db,
+            config_db,
+            venue_id,
+            invoice_id,
+            data,
+            doc=doc,
+            enabled=bool(receiving_settings(person).get(VA.CREATE_XERO_BILL)),
+        )
     return out, doc
 
 

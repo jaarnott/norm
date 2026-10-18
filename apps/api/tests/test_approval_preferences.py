@@ -402,6 +402,59 @@ class TestTheSettingsPage:
         )
         assert r.status_code == 200, r.text
 
+    def test_the_xero_bill_switch_is_its_own_group_at_every_level(
+        self, client, db_session, catalog
+    ):
+        """ "Create a bill in Xero" is a receiving switch but not a gate: it is
+        listed in its own group, saves below Autopilot (the card's receive
+        creates the bill too), and is named in the summary."""
+        key = f"{catalog}.review_and_receive_invoices"
+        user = _person(db_session)
+        r = client.get("/api/approval-preferences", headers=headers(user))
+        [tool] = [t for t in r.json()["tools"] if t["key"] == key]
+        after = [sw for sw in tool["switches"] if sw.get("group") == "after_receive"]
+        assert [(sw["id"], sw["label"]) for sw in after] == [
+            ("create_xero_bill", "create a bill in Xero")
+        ]
+        assert all(
+            "group" not in sw
+            for sw in tool["switches"]
+            if sw["id"] != "create_xero_bill"
+        )
+        r = client.put(
+            "/api/approval-preferences",
+            json={
+                "key": key,
+                "value": {
+                    "level": "approve_all",
+                    "options": {"create_xero_bill": True},
+                },
+            },
+            headers=headers(user),
+        )
+        assert r.status_code == 200, r.text
+        r = client.get("/api/approval-preferences", headers=headers(user))
+        [tool] = [t for t in r.json()["tools"] if t["key"] == key]
+        assert tool["options"] == {"create_xero_bill": True}
+        assert "after a receive: create a bill in Xero" in tool["summary"]
+        # What the receive paths read (the real Loaded key): on for the person
+        # who switched it on, off for everyone else and for a run with no person.
+        on = _person(
+            db_session,
+            {
+                approvals.RECEIVE_KEY: {
+                    "level": "approve_all",
+                    "options": {"create_xero_bill": True},
+                }
+            },
+        )
+        assert approvals.receiving_settings(on)["create_xero_bill"] is True
+        assert (
+            approvals.receiving_settings(_person(db_session))["create_xero_bill"]
+            is False
+        )
+        assert approvals.receiving_settings(None)["create_xero_bill"] is False
+
     def test_it_saves_only_for_the_caller(self, client, db_session, catalog):
         user, other = _person(db_session), _person(db_session)
         r = client.put(

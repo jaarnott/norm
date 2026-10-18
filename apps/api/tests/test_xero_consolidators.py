@@ -324,7 +324,10 @@ PNL = {
 
 
 class Api:
-    def __init__(self, responses=None, errors=None, settings=SETTINGS):
+    def __init__(
+        self, responses=None, errors=None, settings=SETTINGS, wrapped_dates=False
+    ):
+        self.wrapped_dates = wrapped_dates
         self.responses = responses or {}
         self.errors = errors or {}
         self.settings = settings
@@ -335,16 +338,18 @@ class Api:
         if action in self.errors:
             return {"error": self.errors[action]}
         if action == "resolve_dates":
-            return {
-                "success": True,
-                "data": {
-                    "window": {
-                        "start": "2026-09-01T07:00:00+12:00",
-                        "end": "2026-10-01T06:59:59+13:00",
-                        "description": "September",
-                    }
-                },
+            window = {
+                "start": "2026-09-01T07:00:00+12:00",
+                "end": "2026-10-01T06:59:59+13:00",
+                "description": "September",
             }
+            # call_api returns the handler's data UNWRAPPED (verified live);
+            # the wrapped form is accepted as well.
+            return (
+                {"data": {"window": window}}
+                if self.wrapped_dates
+                else {"window": window}
+            )
         if action == "get_connection_settings":
             return self.settings
         return self.responses.get(action, {})
@@ -487,12 +492,12 @@ class TestBills:
         assert out["filters"]["window"] == "September"
         assert (
             out["filters"]["from"] == "2026-09-01"
-            and out["filters"]["to"] == "2026-10-01"
+            and out["filters"]["to"] == "2026-09-30"  # the window ends 06:59 on 1 Oct
         )
         sent = api.params_for("list_invoices")[0]
         assert (
             sent["where"]
-            == 'Type=="ACCPAY"&&Date>=DateTime(2026,9,1)&&Date<=DateTime(2026,10,1)'
+            == 'Type=="ACCPAY"&&Date>=DateTime(2026,9,1)&&Date<=DateTime(2026,9,30)'
         )
         resolve = api.params_for("resolve_dates")[0]
         assert resolve == {"query": "september", "venue_id": "v1"}
@@ -522,9 +527,7 @@ class TestBills:
 
     def test_an_upstream_failure_is_an_error(self):
         api = Api(errors={"list_invoices": "HTTP 503"})
-        assert run("get_bills.py", api) == {
-            "error": "Xero bills unavailable: HTTP 503"
-        }
+        assert run("get_bills.py", api) == {"error": "Xero bills unavailable: HTTP 503"}
 
 
 class TestProfitAndLoss:
@@ -555,11 +558,48 @@ class TestProfitAndLoss:
         # Oldest first for charts.
         assert [m["column"] for m in out["months"]] == ["30 Aug 26", "30 Sep 26"]
         assert out["months"][1]["net_profit"] == 56352.61
+        # A plain month label for trend axes.
+        assert [m["month"] for m in out["months"]] == ["Aug 26", "Sep 26"]
+
+    def test_a_dashboards_timestamp_window_ends_on_the_last_day(self):
+        """The dashboard period control sends full timestamps; the window
+        ends 06:59 on the 1st of the next period. Xero's toDate is inclusive,
+        so that is the previous calendar day (the tile read 1 Oct in)."""
+        api = Api({"profit_and_loss": PNL})
+        out = run(
+            "get_profit_and_loss.py",
+            api,
+            from_date="2026-09-01T07:00:00+12:00",
+            to_date="2026-10-01T06:59:59+13:00",
+        )
+        sent = api.params_for("profit_and_loss")[0]
+        assert sent["from_date"] == "2026-09-01" and sent["to_date"] == "2026-09-30"
+        assert out["to"] == "2026-09-30"
+
+    def test_a_plain_to_date_is_inclusive_as_given(self):
+        api = Api({"profit_and_loss": PNL})
+        run("get_profit_and_loss.py", api, from_date="2026-09-01", to_date="2026-10-01")
+        assert api.params_for("profit_and_loss")[0]["to_date"] == "2026-10-01"
+
+    def test_an_afternoon_end_is_that_day(self):
+        api = Api({"profit_and_loss": PNL})
+        run(
+            "get_profit_and_loss.py",
+            api,
+            from_date="2026-09-01",
+            to_date="2026-09-30T18:00:00+12:00",
+        )
+        assert api.params_for("profit_and_loss")[0]["to_date"] == "2026-09-30"
+
+    def test_a_wrapped_resolver_answer_works_too(self):
+        api = Api({"profit_and_loss": PNL}, wrapped_dates=True)
+        out = run("get_profit_and_loss.py", api, period="last month")
+        assert out["from"] == "2026-09-01" and out["to"] == "2026-09-30"
 
     def test_a_period_resolves_through_norms_calendar(self):
         api = Api({"profit_and_loss": PNL})
         out = run("get_profit_and_loss.py", api, period="last month")
-        assert out["from"] == "2026-09-01" and out["to"] == "2026-10-01"
+        assert out["from"] == "2026-09-01" and out["to"] == "2026-09-30"
         assert "periods" not in api.params_for("profit_and_loss")[0]
 
     def test_no_dates_is_an_error(self):

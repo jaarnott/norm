@@ -2,8 +2,9 @@
 
 /**
  * Per-venue Xero settings, edited on the Finance → Bills page: which account
- * each kind of purchase posts to, how bills land, and whether Norm creates a
- * bill in Xero when it receives an invoice into Loaded.
+ * each kind of purchase posts to and how bills land. Whether Norm creates a
+ * bill when it receives an invoice is the person's own switch in Settings →
+ * Preferences → Receive supplier invoices, not a venue setting.
  *
  * Reads accounts + the current mapping through `xero.get_accounts` (one call,
  * the venue's own connection) and saves with `PUT /api/connectors/xero`, which
@@ -24,7 +25,6 @@ interface Mapping {
   due_days?: number | string;
   bill_status?: string;
   line_amount_types?: string;
-  push_bills?: boolean;
   tracking?: { category_id?: string; option_id?: string };
 }
 
@@ -77,6 +77,7 @@ export default function XeroSettingsPanel({ venueId, onSaved }: { venueId: strin
         accounts: Object.fromEntries(Object.entries(mapping.accounts || {}).filter(([, v]) => !!v)),
         due_days: mapping.due_days ? Number(mapping.due_days) : undefined,
       };
+      delete (clean as Record<string, unknown>).push_bills;
       const res = await apiFetch('/api/connectors/xero', {
         method: 'PUT',
         body: JSON.stringify({ venue_id: venueId, config: { xero_mapping: clean } }),
@@ -153,10 +154,10 @@ export default function XeroSettingsPanel({ venueId, onSaved }: { venueId: strin
                   <input className="n-input" value={mapping.tracking?.option_id || ''} placeholder="optional" onChange={(e) => { setSaved(false); setMapping((m) => ({ ...m, tracking: { ...(m.tracking || {}), option_id: e.target.value } })); }} />,
                 )}
               </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)' }}>
-                <input type="checkbox" checked={!!mapping.push_bills} onChange={(e) => { setSaved(false); setMapping((m) => ({ ...m, push_bills: e.target.checked })); }} />
-                <span>Create a bill in Xero when Norm receives an invoice into Loaded</span>
-              </label>
+              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                Creating a bill when Norm receives an invoice is switched on in Settings → Preferences →
+                Receive supplier invoices.
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Button size="sm" variant="primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
                 {saved && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--ok)', fontSize: 'var(--fs-sm)' }}><Check size={14} /> Saved</span>}

@@ -233,6 +233,48 @@ class TestReceiveEndpointWiring:
         db_session.refresh(dup)
         assert dup.data["reviewed_at"] is None
 
+    def test_the_card_receive_creates_a_xero_bill_only_for_a_person_who_asked(
+        self, client, db_session, admin_user, admin_headers, monkeypatch, venue
+    ):
+        """The card's Accept & Receive reads the CALLER's receiving settings:
+        the Xero step is enabled for someone who switched "create a bill in
+        Xero" on, and not for someone who didn't — and never on a refused
+        receive."""
+        from app.services import approvals
+
+        seen = []
+        monkeypatch.setattr(
+            "app.services.xero_bills.push_bill_after_receive",
+            lambda db, cdb, venue_id, iid, data, **kw: seen.append(
+                (iid, kw.get("enabled"))
+            ),
+        )
+        self._wire(monkeypatch, received=True)
+
+        def receive(iid):
+            _doc(db_session, venue, iid, reference_number=f"R-{iid}", supplier_name="S")
+            return client.post(
+                "/api/invoice-fixes/receive",
+                json={"venue_id": venue.id, "invoice_id": iid},
+                headers=admin_headers,
+            )
+
+        assert receive("inv-a").status_code == 200  # never switched it on
+        admin_user.approval_preferences = {
+            approvals.RECEIVE_KEY: {
+                "level": "approve_all",  # not Autopilot: the card creates it too
+                "options": {"create_xero_bill": True},
+            }
+        }
+        db_session.flush()
+        assert receive("inv-b").status_code == 200
+        assert seen == [("inv-a", False), ("inv-b", True)]
+
+        seen.clear()
+        self._wire(monkeypatch, received=False)  # Loaded refuses: nothing follows
+        assert receive("inv-c").status_code == 200
+        assert seen == []
+
     def test_a_refused_receive_does_not_invalidate(
         self, client, db_session, admin_user, admin_headers, monkeypatch, venue
     ):

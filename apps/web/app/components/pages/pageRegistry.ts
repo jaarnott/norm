@@ -159,6 +159,34 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     componentProps: { connector_name: 'bamboohr' },
   },
   {
+    // Functions and Finance run scheduled tasks like every other member
+    // (owner, 18 Oct 2026 — Functions was "chat only" before).
+    id: 'tasks-functions',
+    app: 'norm-core',
+    label: 'Tasks',
+    icon: Timer,
+    agent: 'functions',
+    component: 'automated_task_board',
+    loadAction: {
+      connector: 'norm',
+      action: 'list_automated_tasks',
+      defaultParams: () => ({ agent_slug: 'functions' }),
+    },
+  },
+  {
+    id: 'tasks-finance',
+    app: 'norm-core',
+    label: 'Tasks',
+    icon: Timer,
+    agent: 'finance',
+    component: 'automated_task_board',
+    loadAction: {
+      connector: 'norm',
+      action: 'list_automated_tasks',
+      defaultParams: () => ({ agent_slug: 'finance' }),
+    },
+  },
+  {
     id: 'tasks-hr',
     app: 'norm-core',
     label: 'Tasks',
@@ -314,6 +342,19 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     },
   },
   // Executive Chef
+  {
+    // Finance's board: sales, purchases and labour from Loaded, bills and the
+    // profit and loss from Xero for the venues connected to it. The "Finance"
+    // template (dashboard_templates.py) is what a person starts it from.
+    id: 'dashboard-finance',
+    app: 'norm-core',
+    label: 'Dashboard',
+    icon: LayoutDashboard,
+    agent: 'finance',
+    component: 'dashboard_view',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+    componentProps: { agent_slug: 'finance' },
+  },
   {
     id: 'dashboard-executive_chef',
     app: 'norm-core',

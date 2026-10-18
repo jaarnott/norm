@@ -17,8 +17,8 @@ MEMBERS = (
     "time_attendance",
     "marketing",
     "executive_chef",
-    # Norm Functions' coordinator — works when asked in chat; no scheduled runs
-    # of its own (owner decision, Oct 2026), so it has no Tasks page.
+    # Norm Functions' coordinator. Runs scheduled tasks like every other member
+    # (owner, 18 Oct 2026), so it has a Tasks page.
     "functions",
     # Finance — bills, suppliers, accounts and P&L from Xero (Oct 2026).
     "finance",

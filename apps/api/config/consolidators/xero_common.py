@@ -117,13 +117,43 @@ def xero_invoice_url(short_code, invoice_id):
     )
 
 
+def xero_end_date(end):
+    """The last CALENDAR day a window covers, for Xero's inclusive toDate /
+    Date<=. A plain YYYY-MM-DD is already inclusive. A timestamp is the
+    window's boundary — Norm's windows end at the START of the next business
+    day (06:59 the next morning, or midnight) — so one before midday is the
+    previous calendar day."""
+    end = str(end or "")
+    day = end[:10]
+    if len(end) < 13 or end[10] not in ("T", " "):
+        return day
+    try:
+        hour = int(end[11:13])
+        y, m, d = (int(x) for x in day.split("-"))
+    except ValueError:
+        return day
+    if hour < 12:
+        return (datetime.date(y, m, d) - datetime.timedelta(days=1)).isoformat()
+    return day
+
+
 def xero_window(call_api, params, venue_params):
-    """(from_date, to_date, description) from from_date/to_date or a plain-
-    English period resolved by Norm's calendar. ("", "", None) when neither."""
+    """(from_date, to_date, description, error) from from_date/to_date or a
+    plain-English period resolved by Norm's calendar. ("", "", None, None)
+    when neither was given.
+
+    Facts verified live (18 Oct 2026):
+    - call_api returns the handler's data ALREADY unwrapped, so the resolver
+      answers {"window": {...}}; a wrapped {"success", "data": {"window"}} is
+      accepted too (tests, MCP callers);
+    - a dashboard's period control sends from_date/to_date as full timestamps
+      on the venue's trading calendar, ending at 06:59 on the first day of
+      the next period — see xero_end_date.
+    """
     from_date = str(params.get("from_date") or "")[:10]
-    to_date = str(params.get("to_date") or "")[:10]
-    if from_date or to_date:
-        return from_date, to_date, None, None
+    to_raw = str(params.get("to_date") or "")
+    if from_date or to_raw:
+        return from_date, xero_end_date(to_raw), None, None
     period = str(params.get("period") or "").strip()
     if not period:
         return "", "", None, None
@@ -133,12 +163,15 @@ def xero_window(call_api, params, venue_params):
     elif venue_params.get("venue"):
         q["venue"] = venue_params["venue"]
     res = call_api("norm", "resolve_dates", q)
-    if not isinstance(res, dict) or res.get("error") or not res.get("success"):
+    if not isinstance(res, dict) or res.get("error"):
         return "", "", None, (res or {}).get("error") or f"could not resolve '{period}'"
-    window = (res.get("data") or {}).get("window") or {}
+    inner = res.get("data") if isinstance(res.get("data"), dict) else res
+    window = inner.get("window") if isinstance(inner, dict) else None
+    if not isinstance(window, dict) or not window.get("start") or not window.get("end"):
+        return "", "", None, f"could not resolve '{period}'"
     return (
-        str(window.get("start") or "")[:10],
-        str(window.get("end") or "")[:10],
+        str(window["start"])[:10],
+        xero_end_date(window["end"]),
         window.get("description"),
         None,
     )

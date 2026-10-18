@@ -94,9 +94,12 @@ def run(params, call_api, log):
 
     months = []
     for i, col in enumerate(columns):
+        parts = str(col).split()
         months.append(
             {
                 "column": col,
+                # "30 Sep 26" -> "Sep 26": what a trend axis should read as.
+                "month": " ".join(parts[1:]) if len(parts) == 3 else col,
                 **{k: (v[i] if i < len(v) else None) for k, v in totals.items()},
             }
         )

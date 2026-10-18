@@ -3406,11 +3406,18 @@ def review_invoices(
                     mode=mode,
                     actor="norm",
                 )
-                # The venue may post its received bills to Xero (Finance →
-                # Bills settings). Best effort; the receive stands either way.
+                # A bill in Xero when the person's receiving settings say so
+                # (Settings → Preferences). Best effort; the receive stands.
                 from app.services.xero_bills import push_bill_after_receive
 
-                push_bill_after_receive(db, config_db, venue_id, iid, data)
+                push_bill_after_receive(
+                    db,
+                    config_db,
+                    venue_id,
+                    iid,
+                    data,
+                    enabled=bool(settings.get(VA.CREATE_XERO_BILL)),
+                )
                 invalidate_conflicting_drafts(
                     db,
                     venue_id,

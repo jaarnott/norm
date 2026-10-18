@@ -47,6 +47,15 @@ def _view(user: User, entry: dict) -> dict:
             for o in policy.get("options") or []
             if isinstance(o, dict)
         ]
+        if row.get("action") == "review_and_receive_invoices":
+            # Switches for what Norm may do AFTER a receive (Xero bill): their
+            # own group, shown at every level.
+            from app.services import venue_autopilot as VA
+
+            switches += [
+                {"id": a, "label": text, "group": "after_receive"}
+                for a, text in VA.AFTER_RECEIVE.items()
+            ]
         known = {sw["id"] for sw in switches}
         out.update(
             kind="levels",
