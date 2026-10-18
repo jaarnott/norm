@@ -381,6 +381,28 @@ class TestDayCodesAndDateKeys:
         assert out["end"] == _bc.trading_day(venue, None, 0).end.isoformat()
         assert out["interval"] == "day"
 
+    def test_a_fixed_interval_keeps_its_bucket(self):
+        """The HR board's "rostered vs worked BY DAY" came back as one week
+        when the control said this_week (18 Oct 2026)."""
+        out = _apply_global_dates(
+            {"period": "this week", "interval": "day", "fixed_interval": True},
+            {"period": "this_week"},
+            venue=self._venue(),
+        )
+        assert out["interval"] == "day" and "fixed_interval" not in out
+        out = _apply_global_dates(
+            {"period": "this week", "interval": "day"},
+            {"period": "this_week"},
+            venue=self._venue(),
+        )
+        assert out["interval"] == "week"
+
+    def test_now_has_no_fractional_seconds(self):
+        from app.routers.reports_crud import _resolve_date_placeholders
+
+        out = _resolve_date_placeholders({"start": "today_start", "end": "now"})
+        assert "." not in out["end"] and out["end"] > out["start"]
+
     def test_the_window_lands_on_the_tools_own_date_keys(self):
         """Xero and the budgets take from_date/to_date; the P&L tile refused
         a window written to start/end (18 Oct 2026)."""

@@ -226,6 +226,9 @@ def _apply_global_dates(resolved: dict, gf: dict, venue=None) -> dict:
     week ``group_by``) to match.
     """
     span = resolved.pop("period_span", None)
+    # A chart whose bucket is part of its meaning ("rostered vs worked BY
+    # DAY") keeps it whatever period is chosen; the others follow the control.
+    fixed_interval = bool(resolved.pop("fixed_interval", False))
     if gf.get("period") and "period" in resolved:
         try:
             span = int(span or 0)
@@ -242,14 +245,15 @@ def _apply_global_dates(resolved: dict, gf: dict, venue=None) -> dict:
             resolved[start_key] = start
             resolved[end_key] = end
             resolved["confirmed_by_user"] = True
-            if "interval" in resolved and resolved["interval"] in (
-                "day",
-                "month",
-                "week",
-            ):
-                resolved["interval"] = kind
-            if resolved.get("group_by") in ("day", "month", "week"):
-                resolved["group_by"] = kind
+            if not fixed_interval:
+                if "interval" in resolved and resolved["interval"] in (
+                    "day",
+                    "month",
+                    "week",
+                ):
+                    resolved["interval"] = kind
+                if resolved.get("group_by") in ("day", "month", "week"):
+                    resolved["group_by"] = kind
             return resolved
     if gf.get("start") and gf.get("end") and "period" in resolved:
         resolved.pop("period")
@@ -310,7 +314,10 @@ def _resolve_date_placeholders(params: dict, venue=None) -> dict:
     from app.services import business_calendar as _bc
 
     tz = _bc.timezone_for(venue)
-    now = _dt.datetime.now(tz)
+    # Whole seconds: Loaded's feeds reject a fractional-second instant
+    # ("2026-10-18T13:45:26.665135+13:00 is not valid"), which emptied the
+    # half-hour sales chart whose end is `now` (18 Oct 2026).
+    now = _dt.datetime.now(tz).replace(microsecond=0)
 
     today = _bc.trading_day(venue, now, 0)
     yesterday = _bc.trading_day(venue, now, -1)

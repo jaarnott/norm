@@ -1005,7 +1005,11 @@ DASHBOARD_TEMPLATES: list[dict] = [
                 "script": {
                     "connector": "loadedhub",
                     "action": "get_daily_performance",
-                    "params": {"period": "this week", "interval": "day"},
+                    "params": {
+                        "period": "this week",
+                        "interval": "day",
+                        "fixed_interval": True,
+                    },
                     "rows": "rows",
                 },
                 "layout": {"col": 1, "row": 13, "colSpan": 12, "rowSpan": 8},
