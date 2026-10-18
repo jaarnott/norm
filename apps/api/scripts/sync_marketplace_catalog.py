@@ -389,6 +389,9 @@ APPS = [
             "loadedhub.get_invoices",
             "loadedhub.review_and_receive_invoices",
             "loadedhub.reconcile_received_invoices",
+            # Supplier aliases: review them, remove wrong ones (Oct 2026,
+            # sync_manage_supplier_config.py).
+            "loadedhub.manage_supplier",
         ],
         components=[
             _c(
