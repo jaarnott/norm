@@ -93,7 +93,7 @@ def test_changed_insights_are_reworded_in_one_call(db_session, place, monkeypatc
     bad = _insight(db_session, org, venue, subject="Staff", prompt=TEMPLATE)
     asked = []
 
-    def fake_call(db, user_prompt):
+    def fake_call(db, user_prompt, system=None):
         asked.append(user_prompt)
         return {
             "prompts": [
@@ -129,7 +129,7 @@ def test_an_older_rewording_is_redone_from_the_template(db_session, place, monke
     assert wording.needs_wording(row)
     asked = []
 
-    def fake_call(db, user_prompt):
+    def fake_call(db, user_prompt, system=None):
         asked.append(user_prompt)
         return {"prompts": [{"id": "1", "prompt": "Is FT worth it?"}]}
 
@@ -158,7 +158,7 @@ def test_a_failed_call_leaves_the_template_to_try_again(db_session, place, monke
     org, venue = place
     row = _insight(db_session, org, venue)
 
-    def boom(db, user_prompt):
+    def boom(db, user_prompt, system=None):
         raise RuntimeError("overloaded")
 
     monkeypatch.setattr(settings, "INSIGHT_WORDING_ENABLED", True)
@@ -262,7 +262,7 @@ def test_the_run_rewords_what_it_wrote(db_session, place, monkeypatch):
     monkeypatch.setattr(
         wording,
         "_call",
-        lambda db, p: {"prompts": [{"id": "1", "prompt": WORDED}]},
+        lambda db, p, system=None: {"prompts": [{"id": "1", "prompt": WORDED}]},
     )
     out = runner.word_pending(db_session, {org.id}, NOW)
     assert out == {"Dunedin Social Club": {"asked": 1, "worded": 1}}

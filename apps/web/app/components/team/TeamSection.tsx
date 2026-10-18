@@ -1,8 +1,9 @@
 'use client';
 
 /**
- * Your AI Team — the marketplace, rebuilt around the hierarchy
+ * Your AI team — the marketplace, rebuilt around the hierarchy
  * (Organisation → AI Team Members → Apps → Components → Connections).
+ * It is Settings → Organisation → AI team; it has no page of its own.
  *
  * Team members are the jobs you hire Norm to perform. Every App — Norm-built,
  * integration-backed, community or built by your team — is bound to the
@@ -21,7 +22,6 @@ import AppIcon from '../ui/AppIcon';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import Icon from '../ui/Icon';
-import PageHeader from '../ui/PageHeader';
 import PageState from '../ui/PageState';
 import {
   TEAM_CHANGED_EVENT,
@@ -59,12 +59,15 @@ const ICON_TILE: CSSProperties = {
   display: 'flex', alignItems: 'center', justifyContent: 'center',
 };
 const TITLE: CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' };
+/** A team member's name on its card — a step below the section titles. */
+const CARD_TITLE: CSSProperties = { ...TITLE, fontSize: 'var(--fs-md)' };
+const INTRO: CSSProperties = { margin: '4px 0 16px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
 const META: CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)' };
 const ELLIPSIS: CSSProperties = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
 // Member cards: two columns where there's room, one on a phone.
 const MEMBER_GRID: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, max(400px, calc(50% - 9px))), 1fr))', gap: 16 };
 
-export default function TeamPage({ user }: { user?: PageUser | null }) {
+export default function TeamSection({ user }: { user?: PageUser | null }) {
   const team = useTeam(getToken());
   const [catalog, setCatalog] = useState<CatalogApp[]>([]);
   const [connInfo, setConnInfo] = useState<Record<string, ConnVenue[] | 'loading'>>({});
@@ -320,10 +323,10 @@ export default function TeamPage({ user }: { user?: PageUser | null }) {
   );
 
   if (openSlug) {
-    // The app opens as a page of its own — it fills the area and scrolls.
+    // The app opens in place of the section, with a way back.
     return (
-      <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--canvas)' }}>
-        <AppRunner slug={openSlug} variant="page" back={{ label: 'Your AI team', onClick: () => setOpenSlug(null) }} />
+      <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+        <AppRunner slug={openSlug} variant="page" back={{ label: 'AI team', onClick: () => setOpenSlug(null) }} />
       </div>
     );
   }
@@ -341,7 +344,7 @@ export default function TeamPage({ user }: { user?: PageUser | null }) {
         <div style={{ flex: '1 1 260px', minWidth: 0, display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={ICON_TILE}>{t.icon}</span>
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 8px' }}>
-            <h2 id={`team-member-${t.slug}`} style={TITLE}>{t.name}</h2>
+            <h3 id={`team-member-${t.slug}`} style={CARD_TITLE}>{t.name}</h3>
             {t.status}
           </div>
         </div>
@@ -419,14 +422,14 @@ export default function TeamPage({ user }: { user?: PageUser | null }) {
     appSlug ? catalog.find((c) => c.composition.app_slug === appSlug) : undefined;
 
   return (
-    <div className="n-page" style={{ height: '100%', overflowY: 'auto', background: 'var(--canvas)' }}>
+    <div>
       {retireDialog}
-      <PageHeader
-        title="Your AI team"
-        meta={isOwner
+      <h2 id="team-yours" style={TITLE}>Your AI team</h2>
+      <p style={INTRO}>
+        {isOwner
           ? 'Team members do the jobs you hire Norm for. Each brings the apps it needs — switch any app on or off.'
           : 'Team members do the jobs you hire Norm for. Ask an organisation owner to hire or change apps.'}
-      />
+      </p>
       {notice && (
         <div role="status" style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', marginBottom: 16, borderRadius: 'var(--radius)', background: 'var(--info-bg)', color: 'var(--info)', fontSize: 'var(--fs-sm)' }}>
           <Icon icon={Info} size={16} style={{ marginTop: 1 }} />
@@ -441,7 +444,6 @@ export default function TeamPage({ user }: { user?: PageUser | null }) {
           {/* Your team — Norm itself, the always-included members, then who
               you've hired. Two columns where there's room. */}
           <section aria-labelledby="team-yours">
-            <h2 id="team-yours" style={{ ...TITLE, marginBottom: 12 }}>Your team</h2>
             <div style={MEMBER_GRID}>
               {normCard}
               {team.included.map(includedCard)}
@@ -543,7 +545,6 @@ export default function TeamPage({ user }: { user?: PageUser | null }) {
           )}
         </>
       )}
-      <div style={{ height: 40 }} />
     </div>
   );
 }

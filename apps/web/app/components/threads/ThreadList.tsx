@@ -7,16 +7,9 @@ import { SquarePen, Search, PanelLeftClose } from 'lucide-react';
 import { FUNCTIONAL_PAGES, type FunctionalPageConfig } from '../pages/pageRegistry';
 import { threadMembers } from '../../lib/threadApps';
 import { memberName } from '../../lib/memberNames';
-import { applyStatusFilter, matchesQuery, type FilterKey } from '../../lib/threadFilters';
+import { matchesQuery } from '../../lib/threadFilters';
 import Icon from '../ui/Icon';
 import IconButton from '../ui/IconButton';
-
-const FILTERS: { key: FilterKey; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'awaiting_approval', label: 'Awaiting approval' },
-  { key: 'awaiting_user_input', label: 'Needs input' },
-  { key: 'completed', label: 'Completed' },
-];
 
 interface ThreadListProps {
   threads: Thread[];
@@ -26,8 +19,6 @@ interface ThreadListProps {
   activeAgent: string;
   // Dynamic page entries (pinned apps) appended after the static list.
   extraPages?: FunctionalPageConfig[];
-  filter: FilterKey;
-  onFilterChange: (filter: FilterKey) => void;
   onNewChat: () => void;
   onCollapsePanel?: () => void;
   onSelectPage?: (pageId: string) => void;
@@ -46,7 +37,7 @@ interface ThreadListProps {
   showBrand?: boolean;
 }
 
-export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, filter, onFilterChange, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pageMember, activePage, showBrand = true }: ThreadListProps) {
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pageMember, activePage, showBrand = true }: ThreadListProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const searchBtnRef = useRef<HTMLButtonElement>(null);
@@ -57,9 +48,9 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
   // A member's section shows the threads that used its Apps (or, from before
   // there was one agent, were handled by it).
   const agentFiltered = activeAgent === 'home' ? threads : threads.filter(t => threadMembers(t).includes(activeAgent));
-  // Then the status filter, then the search box (titles, first prompts, Apps).
+  // Then the search box (titles, first prompts, Apps).
   const searching = searchOpen && query.trim() !== '';
-  const filtered = applyStatusFilter(agentFiltered, filter).filter(t => !searching || matchesQuery(t, query));
+  const filtered = agentFiltered.filter(t => !searching || matchesQuery(t, query));
 
   const pages = [...FUNCTIONAL_PAGES, ...(extraPages ?? [])]
     .filter(p => (pageMember?.[p.id] ?? p.agent) === activeAgent)
@@ -139,35 +130,6 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
         </nav>
         <div style={{ margin: '14px 0 8px', fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>
           {activeAgent === 'home' ? 'Recent threads' : `${memberName(activeAgent)} threads`}
-        </div>
-        {/* Filters — one row; it scrolls sideways rather than wrap when narrow */}
-        <div role="group" aria-label="Filter threads" className="no-scrollbar" style={{ display: 'flex', gap: 4, overflowX: 'auto' }}>
-          {FILTERS.map(f => {
-            const on = filter === f.key;
-            return (
-              <button
-                key={f.key}
-                type="button"
-                data-testid={`filter-${f.key}`}
-                aria-pressed={on}
-                onClick={() => onFilterChange(f.key)}
-                style={{
-                  flex: '0 0 auto',
-                  whiteSpace: 'nowrap',
-                  padding: '4px 6px',
-                  fontSize: 'var(--fs-xs)',
-                  fontWeight: on ? 600 : 500,
-                  color: on ? 'var(--text)' : 'var(--text-soft)',
-                  backgroundColor: on ? 'var(--selected)' : 'transparent',
-                  border: `1px solid ${on ? 'var(--brand-soft)' : 'var(--line)'}`,
-                  borderRadius: 999,
-                  cursor: 'pointer',
-                }}
-              >
-                {f.label}
-              </button>
-            );
-          })}
         </div>
       </div>
 

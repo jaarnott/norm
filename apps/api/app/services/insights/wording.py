@@ -106,10 +106,13 @@ def vocabulary(db, org_id: str, venue_id: str | None) -> list[str]:
     return [f"{m.title}: {m.body}"[:200] for m in rows]
 
 
-def needs_wording(row) -> bool:
-    """Not yet tried for its current words under these instructions: the
-    run's save() keeps the wording only while the template is unchanged."""
-    return ((row.data or {}).get("wording") or {}).get("v") != VERSION
+def needs_wording(row, version=None) -> bool:
+    """Not yet tried for its current words under these instructions (the
+    version is VERSION, plus the admin's edits of the instructions —
+    suggestions/config.py): the run's save() keeps the wording only while the
+    template is unchanged."""
+    want = VERSION if version is None else version
+    return ((row.data or {}).get("wording") or {}).get("v") != want
 
 
 def template_of(row) -> str:
@@ -117,13 +120,22 @@ def template_of(row) -> str:
     return ((row.data or {}).get("wording") or {}).get("template") or row.prompt
 
 
-def word(db, venue, rows) -> dict:
+def word(db, venue, rows, cfg=None) -> dict:
     """Reword ``rows`` (Insights whose ``prompt`` is still the template) in
-    place. Returns what happened, for the run's summary; never raises."""
+    place, under ``cfg`` — the effective suggestion config (its instructions,
+    version and switch); None = the defaults. Returns what happened, for the
+    run's summary; never raises."""
     from app.config import settings
 
-    rows = [r for r in rows if needs_wording(r)]
-    if not rows or not settings.INSIGHT_WORDING_ENABLED:
+    version = cfg.wording_version if cfg is not None else VERSION
+    system = (
+        cfg.settings.get("wording_instructions") if cfg is not None else None
+    ) or SYSTEM
+    on = settings.INSIGHT_WORDING_ENABLED and (
+        cfg is None or cfg.settings.get("wording_enabled", True)
+    )
+    rows = [r for r in rows if needs_wording(r, version)]
+    if not rows or not on:
         return {"asked": 0}
     by_id = {str(i): r for i, r in enumerate(rows, 1)}
     ask = {
@@ -132,7 +144,7 @@ def word(db, venue, rows) -> dict:
         "prompts": [{"id": i, "prompt": template_of(r)} for i, r in by_id.items()],
     }
     try:
-        answer = _call(db, json.dumps(ask, ensure_ascii=False))
+        answer = _call(db, json.dumps(ask, ensure_ascii=False), system)
     except Exception as exc:  # noqa: BLE001 — the templates stand
         logger.warning("insight wording failed: %s", exc)
         return {"asked": len(rows), "error": str(exc)[:200]}
@@ -154,7 +166,7 @@ def word(db, venue, rows) -> dict:
             "wording": {
                 "template": template,
                 "prompt": text if ok else None,
-                "v": VERSION,
+                "v": version,
             },
         }
         row.prompt = text if ok else template
@@ -162,7 +174,37 @@ def word(db, venue, rows) -> dict:
     return {"asked": len(rows), "worded": worded}
 
 
-def _call(db, user_prompt: str) -> dict | None:
+def trial(db, venue, rows, instructions: str) -> list[dict]:
+    """One rewording call under ``instructions`` for the admin page's "try it"
+    (Norm's cost, about $0.004): each row's template, the rewording and whether
+    the check would keep it. Changes nothing."""
+    by_id = {str(i): r for i, r in enumerate(rows, 1)}
+    ask = {
+        "venue": venue.name,
+        "vocabulary": vocabulary(db, venue.organization_id, venue.id),
+        "prompts": [{"id": i, "prompt": template_of(r)} for i, r in by_id.items()],
+    }
+    answer = _call(db, json.dumps(ask, ensure_ascii=False), instructions)
+    answers = {
+        str(item.get("id")): " ".join(str(item.get("prompt") or "").split())
+        for item in (answer or {}).get("prompts") or []
+        if isinstance(item, dict)
+    }
+    out = []
+    for i, row in by_id.items():
+        template, text = template_of(row), answers.get(i, "")
+        out.append(
+            {
+                "insight_id": row.id,
+                "template": template,
+                "worded": text,
+                "kept": keeps_the_facts(template, text, venue.name),
+            }
+        )
+    return out
+
+
+def _call(db, user_prompt: str, system: str = SYSTEM) -> dict | None:
     """One call to the small model, recorded with NO organisation (Norm's
     cost, never a plan's)."""
     import anthropic
@@ -183,7 +225,7 @@ def _call(db, user_prompt: str) -> dict | None:
     response = anthropic.Anthropic(api_key=api_key, timeout=60.0).messages.create(
         model=model,
         max_tokens=1500,
-        system=SYSTEM,
+        system=system,
         messages=[{"role": "user", "content": user_prompt}],
     )
     raw = "".join(
@@ -200,7 +242,7 @@ def _call(db, user_prompt: str) -> dict | None:
             organization_id=None,
             call_type=CALL_TYPE,
             model=model,
-            system_prompt=SYSTEM,
+            system_prompt=system,
             user_prompt=user_prompt,
             raw_response=raw,
             parsed_response=parsed,

@@ -168,7 +168,7 @@ def _run_task_now(
         )
         skip = (
             "This task belongs to a team member that isn't hired right now. "
-            "Re-hire them on the team page to run it."
+            "Re-hire them in Settings → AI team to run it."
         )
         db.add(Message(thread_id=thread.id, role="assistant", content=skip))
         db.commit()

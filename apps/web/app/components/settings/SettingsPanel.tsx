@@ -7,7 +7,6 @@ import { apiFetch } from '../../lib/api';
 import type { VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
 import BillingTab from './BillingTab';
-import CompanySettingsTab from './CompanySettingsTab';
 import ConnectionsMatrix from './ConnectionsMatrix';
 import AppMapPanel from './AppMapPanel';
 import EmailTab from './EmailTab';
@@ -24,7 +23,9 @@ import McpPanel from './McpPanel';
 import AdminThreadsPanel from './AdminThreadsPanel';
 import ApprovalPreferences from './ApprovalPreferences';
 import MemoryTab from './MemoryTab';
-import SuggestionNotesTab from './SuggestionNotesTab';
+import SuggestionsAdminPanel from './SuggestionsAdminPanel';
+import CompanySettingsTab from './CompanySettingsTab';
+import TeamSection from '../team/TeamSection';
 import AddressSearch from './AddressSearch';
 import { getStoredUser } from '../../lib/api';
 // can(user, scope): what the signed-in user may do — shared with the tabs.
@@ -1351,7 +1352,7 @@ function UsersTab({ canManage }: { canManage: boolean }) {
   );
 }
 
-export type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences' | 'suggestions';
+export type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences' | 'suggestion-rules' | 'team';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   return perms.some(p => can(user, p));
@@ -1596,15 +1597,16 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
   };
   addGroup('You', [[true, 'preferences', 'Preferences']]);
   addGroup('Organisation', [
+    // The company's money, dates and Functions switch (id kept: Functions' links open it).
+    [!!orgId, 'company', 'General'],
     [true, 'venues', 'Venues'],
     [true, 'members', 'Users'],
-    [!!orgId, 'company', 'Company'],
+    // Hire and retire team members, switch their apps.
+    [!!orgId, 'team', 'AI team'],
     [showRoles, 'roles', 'Roles'],
     [showBilling, 'billing', 'Billing'],
     [showEmail, 'email', 'Email'],
     [showConnections, 'connections', 'Connections'],
-    // What people told Norm about Home's suggestions (insight notes).
-    [can(storedUser, 'reports:read'), 'suggestions', 'Suggestions'],
   ]);
   addGroup('AI team', [
     [showAgents, 'agents', 'Agents'],
@@ -1614,6 +1616,8 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
     [showConnectors, 'connectors', 'Connector specs'],
     [showSupplierSpecs, 'supplier-specs', 'Supplier specs'],
     [isAdmin, 'app-map', 'App map'],
+    // How Home's suggestions are made — tuned site-wide (platform admins).
+    [isAdmin, 'suggestion-rules', 'Suggestions'],
   ]);
   addGroup('Platform', [
     [showDeployments, 'deployments', 'Deployments'],
@@ -1691,6 +1695,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
                   reconciling included. One home for one question. */}
               <ApprovalPreferences />
               <div style={{ height: 32 }} />
+              {/* Knowledge and suggestion notes, one list. */}
               <MemoryTab />
               {isAdmin && (
                 <div style={{ maxWidth: 720, marginTop: 32 }}>
@@ -1701,8 +1706,8 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
             </>
           )}
 
-          {/* ============ SUGGESTIONS TAB ============ */}
-          {tab === 'suggestions' && <SuggestionNotesTab />}
+          {/* ============ SUGGESTIONS TAB (platform admins) ============ */}
+          {tab === 'suggestion-rules' && isAdmin && <SuggestionsAdminPanel />}
 
           {/* ============ VENUES TAB ============ */}
           {tab === 'venues' && <VenuesTab canManage={can(storedUser, 'org:venues')} canConnect={can(storedUser, 'settings:connectors')} />}
@@ -1712,6 +1717,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
 
           {/* ============ COMPANY TAB (currency, time zone, tax, Functions mode) ============ */}
           {tab === 'company' && orgId && <CompanySettingsTab orgId={orgId} />}
+          {tab === 'team' && orgId && <TeamSection user={storedUser} />}
 
           {/* ============ CONNECTORS TAB ============ */}
           {tab === 'app-map' && isAdmin && <AppMapPanel />}

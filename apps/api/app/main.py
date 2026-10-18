@@ -124,6 +124,9 @@ app.include_router(well_known.router)  # /.well-known/* — must be at host root
 app.include_router(mcp_admin.router, prefix="/api")
 app.include_router(approval_preferences.router, prefix="/api")
 app.include_router(suggestions.router, prefix="/api")
+from app.routers import suggestion_admin  # noqa: E402
+
+app.include_router(suggestion_admin.router, prefix="/api")
 from app.routers import functions as functions_router  # noqa: E402
 from app.routers import functions_forms, functions_inbox  # noqa: E402
 from app.routers import public as public_router  # noqa: E402

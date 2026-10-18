@@ -24,6 +24,8 @@ import statistics
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
+from app.services.insights.rules import render, threshold
+
 WEEKDAYS = [
     "Monday",
     "Tuesday",
@@ -83,6 +85,9 @@ class VenueData:
     #: The hour the venue's trading day starts; earlier hours belong to the
     #: day before.
     day_start_hour: int = 7
+    #: The admin's overrides of thresholds and templates (rules.py), by
+    #: detector; None = the defaults.
+    rules: dict | None = None
 
 
 # ------------------------------------------------------------------ helpers
@@ -214,8 +219,11 @@ def data_health(v: VenueData) -> list[Finding]:
         recent = [r for d, r in lab.items() if (v.as_of - d).days <= 28]
         hours = [d for d, r in lab.items() if float(r.get("actual_hours") or 0) > 0]
         last = max(hours) if hours else None
-        if last is None or (v.as_of - last).days > 8:
+        if last is None or (v.as_of - last).days > threshold(
+            v.rules, "data_no_labour", "stale_days"
+        ):
             since = f"since {last:%a %d %b}" if last else "in the last two months"
+            facts = {"venue": v.venue_name, "since": since}
             out.append(
                 Finding(
                     "data_no_labour",
@@ -223,16 +231,15 @@ def data_health(v: VenueData) -> list[Finding]:
                     "data",
                     "org:manage",
                     headline=f"No hours worked have reached Loaded for {v.venue_name} {since}",
-                    prompt=(
-                        f"No hours worked have come through from Loaded for {v.venue_name} {since} — "
-                        "what's happening with the roster and timesheets there?"
-                    ),
+                    prompt=render(v.rules, "data_no_labour", "prompt", facts),
+                    data={"facts": facts},
                 )
             )
         elif sum(float(r.get("actual_hours") or 0) for r in recent) > 0 and all(
             float(r.get("actual_cost") or 0) == 0 for r in recent
         ):
             hrs = sum(float(r.get("actual_hours") or 0) for r in recent)
+            facts = {"venue": v.venue_name, "hours": f"{hrs:.0f}"}
             out.append(
                 Finding(
                     "data_pay_rates",
@@ -240,14 +247,11 @@ def data_health(v: VenueData) -> list[Finding]:
                     "data",
                     "org:manage",
                     headline=f"{v.venue_name}'s staff have no pay rates in Loaded ({hrs:.0f} hours at $0)",
-                    prompt=(
-                        f"Which staff at {v.venue_name} are missing pay rates in Loaded? "
-                        f"{hrs:.0f} hours over the last 4 weeks show as $0, so wages can't be "
-                        "worked out."
-                    ),
+                    prompt=render(v.rules, "data_pay_rates", "prompt", facts),
+                    data={"facts": facts},
                 )
             )
-        elif len(recent) >= 10 and all(
+        elif len(recent) >= threshold(v.rules, "data_no_clock_ins", "min_days") and all(
             float(r.get("actual_hours") or 0) == float(r.get("rostered_hours") or 0)
             and float(r.get("actual_cost") or 0) == float(r.get("rostered_cost") or 0)
             for r in recent
@@ -259,10 +263,10 @@ def data_health(v: VenueData) -> list[Finding]:
                     "data",
                     "org:manage",
                     headline=f"Nobody clocks in at {v.venue_name}: Loaded counts the roster as hours worked",
-                    prompt=(
-                        f"Nobody seems to clock in at {v.venue_name} — Loaded shows the rostered "
-                        "hours as worked on every shift. How are staff recording their hours there?"
+                    prompt=render(
+                        v.rules, "data_no_clock_ins", "prompt", {"venue": v.venue_name}
                     ),
+                    data={"facts": {"venue": v.venue_name}},
                     lasts_days=28,
                 )
             )
@@ -274,10 +278,10 @@ def data_health(v: VenueData) -> list[Finding]:
                 "data",
                 "org:manage",
                 headline=f"{v.venue_name} has no sales budgets in Loaded",
-                prompt=(
-                    f"{v.venue_name} has no sales budgets in Loaded — can you suggest weekly "
-                    "budgets from its recent trading?"
+                prompt=render(
+                    v.rules, "data_budgets", "prompt", {"venue": v.venue_name}
                 ),
+                data={"facts": {"venue": v.venue_name}},
                 lasts_days=28,
             )
         )
@@ -294,9 +298,19 @@ def unusual_day(v: VenueData) -> list[Finding]:
         return []
     a = _actual(r)
     diff = a - typical
-    if abs(diff) < max(500.0, 0.15 * typical) or abs(diff) / typical < 0.25:
+    if abs(diff) < max(
+        threshold(v.rules, "unusual_day", "min_dollars"), 0.15 * typical
+    ) or abs(diff) / typical < threshold(v.rules, "unusual_day", "min_change"):
         return []
     word = "up" if diff > 0 else "down"
+    facts = {
+        "day": f"{y:%A}",
+        "venue": v.venue_name,
+        "direction": word,
+        "change": pct(abs(diff) / typical),
+        "actual": money(a),
+        "usual": money(typical),
+    }
     return [
         Finding(
             "unusual_day",
@@ -304,13 +318,9 @@ def unusual_day(v: VenueData) -> list[Finding]:
             "sales",
             "reports:read",
             headline=f"{y:%A} at {v.venue_name} was {word} {pct(abs(diff) / typical)} on a usual {y:%A}",
-            prompt=(
-                f"Why was {y:%A} at {v.venue_name} {word} {pct(abs(diff) / typical)} on a normal "
-                f"{y:%A}? We took {money(a)} (ex GST) against the usual {money(typical)} — which "
-                "hours, products and staff made the difference?"
-            ),
+            prompt=render(v.rules, "unusual_day", "prompt", facts),
             value=abs(diff),
-            data={"actual": a, "typical": typical},
+            data={"actual": a, "typical": typical, "facts": facts},
             lasts_days=1,
         )
     ]
@@ -338,9 +348,17 @@ def sales_trend(v: VenueData) -> list[Finding]:
     else:
         return []
     change = (a - base) / base
-    if abs(change) < 0.10:
+    if abs(change) < threshold(v.rules, "sales_trend", "min_change"):
         return []
     word = "up" if change > 0 else "down"
+    facts = {
+        "venue": v.venue_name,
+        "direction": word,
+        "change": pct(abs(change)),
+        "basis": label,
+        "sales": money(a),
+        "base": money(base),
+    }
     return [
         Finding(
             "sales_trend",
@@ -348,13 +366,9 @@ def sales_trend(v: VenueData) -> list[Finding]:
             "sales",
             "reports:read",
             headline=f"{v.venue_name}'s sales are {word} {pct(abs(change))} on {label}",
-            prompt=(
-                f"Why are sales at {v.venue_name} {word} {pct(abs(change))} on {label}? "
-                f"{money(a)} over the last 4 weeks against {money(base)} — which days, hours "
-                "and products are driving it?"
-            ),
+            prompt=render(v.rules, "sales_trend", "prompt", facts),
             value=abs(a - base) / 4,
-            data={"sales": a, "base": base, "basis": label},
+            data={"sales": a, "base": base, "basis": label, "facts": facts},
         )
     ]
 
@@ -377,9 +391,20 @@ def average_order(v: VenueData) -> list[Finding]:
 
     a, n = avg(range(1, 29))
     p, _ = avg(range(29, 57))
-    if not a or not p or abs(a - p) / p < 0.06:
+    if (
+        not a
+        or not p
+        or abs(a - p) / p < threshold(v.rules, "average_order", "min_change")
+    ):
         return []
     word = "up" if a > p else "down"
+    facts = {
+        "venue": v.venue_name,
+        "direction": word,
+        "change": pct(abs(a - p) / p),
+        "average": f"${a:.2f}",
+        "previous": f"${p:.2f}",
+    }
     return [
         Finding(
             "average_order",
@@ -387,13 +412,9 @@ def average_order(v: VenueData) -> list[Finding]:
             "sales",
             "reports:read",
             headline=f"The average order at {v.venue_name} is {word} {pct(abs(a - p) / p)} to ${a:.2f}",
-            prompt=(
-                f"Why has our average order at {v.venue_name} gone {word} {pct(abs(a - p) / p)} to "
-                f"${a:.2f}? It was ${p:.2f} the 4 weeks before — is it items per order, prices, "
-                "discounts or what people are buying?"
-            ),
+            prompt=render(v.rules, "average_order", "prompt", facts),
             value=abs(a - p) * n / 4,
-            data={"average": a, "previous": p, "orders": n},
+            data={"average": a, "previous": p, "orders": n, "facts": facts},
         )
     ]
 
@@ -417,8 +438,16 @@ def discounts(v: VenueData) -> list[Finding]:
         name = str(r.get("discount") or "Unnamed")
         amount = float(r.get("discounts_amount") or 0)
         before = prior.get(r.get("discount"), 0.0)
-        growing = before > 0 and amount >= before * 1.5 and amount - before >= 500
-        biggest = r is rows[0] and share >= 0.04 and amount >= 1000
+        growing = (
+            before > 0
+            and amount >= before * threshold(v.rules, "discount", "growing_factor")
+            and amount - before >= threshold(v.rules, "discount", "growing_min")
+        )
+        biggest = (
+            r is rows[0]
+            and share >= threshold(v.rules, "discount", "biggest_share")
+            and amount >= threshold(v.rules, "discount", "biggest_min")
+        )
         if not (growing or biggest):
             continue
         generic = name.strip().lower() in ("discount", "discounts")
@@ -437,17 +466,21 @@ def discounts(v: VenueData) -> list[Finding]:
             else f"the {name}"
         )
         if growing:
-            ask = (
-                f"Why are {label[0].lower() + label[1:] if generic else label} up at {v.venue_name}? "
-                f"They cost {money(amount)} over the last 4 weeks, up from {money(before)} the 4 "
-                "weeks before — what's changed, and is it paying for itself?"
-            )
+            facts = {
+                "discounts": label[0].lower() + label[1:] if generic else label,
+                "venue": v.venue_name,
+                "amount": money(amount),
+                "before": money(before),
+            }
+            ask = render(v.rules, "discount", "growing", facts)
         else:
-            ask = (
-                f"Is {the} at {v.venue_name} worth it? It cost {money(amount)} over the last 4 "
-                f"weeks ({pct(share)} of sales went on discounts in all) — what do those bills look "
-                "like, and when is it used?"
-            )
+            facts = {
+                "the_discount": the,
+                "venue": v.venue_name,
+                "amount": money(amount),
+                "share": pct(share),
+            }
+            ask = render(v.rules, "discount", "biggest", facts)
         out.append(
             Finding(
                 "discount",
@@ -457,7 +490,13 @@ def discounts(v: VenueData) -> list[Finding]:
                 headline=f"{label} cost {v.venue_name} {money(amount)} in 4 weeks",
                 prompt=ask,
                 value=amount / 4,
-                data={"amount": amount, "before": before, "share": share},
+                data={
+                    "amount": amount,
+                    "before": before,
+                    "share": share,
+                    "facts": facts,
+                    "template": "growing" if growing else "biggest",
+                },
             )
         )
     return out
@@ -482,15 +521,23 @@ def budgets_out_of_date(v: VenueData) -> list[Finding]:
         b = sum(float(r["budget"]) for r in days)
         if b > 0:
             ratios.append(sum(_actual(r) for r in days) / b)
-    if len(ratios) < 6:
+    band = threshold(v.rules, "budgets_out_of_date", "band")
+    need = threshold(v.rules, "budgets_out_of_date", "min_weeks")
+    if len(ratios) < need:
         return []
-    over = [r for r in ratios if r >= 1.10]
-    under = [r for r in ratios if r <= 0.90]
-    if len(over) < 6 and len(under) < 6:
+    over = [r for r in ratios if r >= 1 + band]
+    under = [r for r in ratios if r <= 1 - band]
+    if len(over) < need and len(under) < need:
         return []
-    group = over if len(over) >= 6 else under
+    group = over if len(over) >= need else under
     word = "beaten" if group is over else "missed"
     avg = statistics.mean(group) - 1
+    facts = {
+        "venue": v.venue_name,
+        "direction": word,
+        "gap": pct(abs(avg)),
+        "weeks": str(len(group)),
+    }
     return [
         Finding(
             "budgets_out_of_date",
@@ -498,13 +545,13 @@ def budgets_out_of_date(v: VenueData) -> list[Finding]:
             "sales",
             "reports:read",
             headline=f"{v.venue_name} has {word} its budget by ~{pct(abs(avg))} in {len(group)} of 8 weeks",
-            prompt=(
-                f"Are our budgets at {v.venue_name} out of date? We've {word} them by about "
-                f"{pct(abs(avg))} in {len(group)} of the last 8 weeks — can you suggest new weekly "
-                "budgets, day by day, from recent trading?"
-            ),
+            prompt=render(v.rules, "budgets_out_of_date", "prompt", facts),
             value=0.0,
-            data={"weeks": len(ratios), "ratios": [round(r, 3) for r in ratios]},
+            data={
+                "weeks": len(ratios),
+                "ratios": [round(r, 3) for r in ratios],
+                "facts": facts,
+            },
             lasts_days=28,
         )
     ]
@@ -533,8 +580,16 @@ def quiet_day_wages(v: VenueData) -> list[Finding]:
             continue
         rate = c / s
         excess = (rate - week_rate) * s / 4
-        if rate - week_rate >= 0.10 and excess >= 150:
+        if rate - week_rate >= threshold(
+            v.rules, "quiet_day_wages", "min_gap"
+        ) and excess >= threshold(v.rules, "quiet_day_wages", "min_excess"):
             day = WEEKDAYS[i]
+            facts = {
+                "day": day,
+                "venue": v.venue_name,
+                "day_share": pct(rate),
+                "week_share": pct(week_rate),
+            }
             out.append(
                 Finding(
                     "quiet_day_wages",
@@ -542,27 +597,17 @@ def quiet_day_wages(v: VenueData) -> list[Finding]:
                     "wages",
                     "reports:read",
                     headline=f"{day}s at {v.venue_name} run wages at {pct(rate)} of sales (the week: {pct(week_rate)})",
-                    prompt=(
-                        f"How can I bring {day} wages down at {v.venue_name}? They've run at "
-                        f"{pct(rate)} of sales on {day}s over the last 4 weeks, against "
-                        f"{pct(week_rate)} across the week — show me who's rostered, the hours, and "
-                        f"{day} trade by hour."
-                    ),
+                    prompt=render(v.rules, "quiet_day_wages", "prompt", facts),
                     value=excess,
                     data={
                         "rate": rate,
                         "week_rate": week_rate,
                         "excess_per_day": excess,
+                        "facts": facts,
                     },
                 )
             )
     return sorted(out, key=lambda f: -f.value)[:2]
-
-
-#: A stretch never goes below this many on (someone to serve, someone to cook
-#: or pour), so that is the most it suggests cutting to.
-QUIET_CREW = 2.0
-QUIET_HOURS = (3, 4, 5, 6)
 
 
 def _minutes(clock: str) -> int | None:
@@ -659,6 +704,12 @@ def quiet_hours(v: VenueData) -> list[Finding]:
     if total_w <= 0 or total_s <= 0:
         return []  # no pay rates or no sales: data_health says so
     usual, rate = total_w / total_s, total_w / total_h
+    crew = threshold(v.rules, "quiet_hours", "crew")
+    lengths = range(
+        int(threshold(v.rules, "quiet_hours", "min_hours")),
+        int(threshold(v.rules, "quiet_hours", "max_hours")) + 1,
+    )
+    min_excess = threshold(v.rules, "quiet_hours", "min_excess")
     whole_days = {f.subject for f in quiet_day_wages(v)}
     dates = sorted({d for d, _ in sales})
     clock = [(v.day_start_hour + i) % 24 for i in range(24)]
@@ -673,17 +724,15 @@ def quiet_hours(v: VenueData) -> list[Finding]:
             for h in clock
         }
         # What each hour could save: its wages above the venue's usual share
-        # of its sales, but never below a crew of QUIET_CREW.
-        spare = {
-            h: min(paid[h] - usual * avg[h], paid[h] - QUIET_CREW * rate) for h in clock
-        }
+        # of its sales, but never below the crew.
+        spare = {h: min(paid[h] - usual * avg[h], paid[h] - crew * rate) for h in clock}
         floor = max(50.0, 0.05 * max(avg.values()))
         trading = [i for i, h in enumerate(clock) if avg[h] >= floor]
         if not trading:
             continue
         best, best_key = None, None
         for i in range(trading[0], trading[-1] + 1):
-            for n in QUIET_HOURS:
+            for n in lengths:
                 if i + n - 1 > trading[-1]:
                     break
                 hs = clock[i : i + n]
@@ -698,12 +747,16 @@ def quiet_hours(v: VenueData) -> list[Finding]:
                 s = sum(p[1] for p in per) / len(ds)
                 on = sum(staff.get((d, h), [0.0, 0.0])[0] for d in ds for h in hs)
                 on /= len(ds) * n
-                if on < QUIET_CREW + 1 or s <= 0:
+                if on < crew + 1 or s <= 0:
                     continue
                 share = w / s
                 steady = sum(1 for pw, ps in per if ps <= 0 or pw / ps >= 1.5 * usual)
                 excess = sum(spare[h] for h in hs)
-                if share < max(2 * usual, 0.5) or steady < len(ds) - 1 or excess < 100:
+                if (
+                    share < max(2 * usual, 0.5)
+                    or steady < len(ds) - 1
+                    or excess < min_excess
+                ):
                     continue
                 # The most to save; of equals, the tighter stretch.
                 key = (round(excess), -n)
@@ -722,6 +775,15 @@ def quiet_hours(v: VenueData) -> list[Finding]:
             continue
         span = f"{_clock_label(best['start'])} to {_clock_label(best['end'])}"
         people = max(round(best["staff"]), 3)
+        facts = {
+            "people": str(people),
+            "venue": v.venue_name,
+            "day": day,
+            "span": span,
+            "sales_per_hour": money(best["sales_per_hour"]),
+            "share": pct(best["share"]),
+            "week_share": pct(usual),
+        }
         out.append(
             Finding(
                 "quiet_hours",
@@ -732,15 +794,9 @@ def quiet_hours(v: VenueData) -> list[Finding]:
                     f"{day}s {span} at {v.venue_name}: about {people} on for "
                     f"{money(best['sales_per_hour'])} an hour of sales"
                 ),
-                prompt=(
-                    f"Do we need {people} people on at {v.venue_name} on {day}s from {span}? "
-                    f"Over the last 4 weeks those hours averaged "
-                    f"{money(best['sales_per_hour'])} an hour in sales, so wages ran at "
-                    f"{pct(best['share'])} of sales then ({pct(usual)} across the week) — "
-                    f"show me who's on in those hours and {day} trade hour by hour."
-                ),
+                prompt=render(v.rules, "quiet_hours", "prompt", facts),
                 value=best["excess"],
-                data={**best, "weeks": len(ds)},
+                data={**best, "weeks": len(ds), "facts": facts},
             )
         )
     return sorted(out, key=lambda f: -f.value)[:2]
@@ -756,8 +812,18 @@ def over_roster(v: VenueData) -> list[Finding]:
     ac = sum(float(r.get("actual_cost") or 0) for r in rows)
     rh = sum(float(r.get("rostered_hours") or 0) for r in rows)
     ah = sum(float(r.get("actual_hours") or 0) for r in rows)
-    if rc <= 0 or (ac - rc) / rc < 0.05 or ac - rc < 300:
+    if (
+        rc <= 0
+        or (ac - rc) / rc < threshold(v.rules, "over_roster", "min_over")
+        or ac - rc < threshold(v.rules, "over_roster", "min_dollars")
+    ):
         return []
+    facts = {
+        "venue": v.venue_name,
+        "extra": money(ac - rc),
+        "hours": f"{ah:.0f}",
+        "rostered_hours": f"{rh:.0f}",
+    }
     return [
         Finding(
             "over_roster",
@@ -765,30 +831,45 @@ def over_roster(v: VenueData) -> list[Finding]:
             "wages",
             "roster:read",
             headline=f"{v.venue_name} paid {money(ac - rc)} more in wages than rostered last week",
-            prompt=(
-                f"Why did {v.venue_name} pay {money(ac - rc)} more in wages than rostered last "
-                f"week? {ah:.0f} hours were worked against {rh:.0f} rostered — which shifts ran "
-                "over, and who?"
-            ),
+            prompt=render(v.rules, "over_roster", "prompt", facts),
             value=ac - rc,
-            data={"rostered": rc, "actual": ac, "hours": ah, "rostered_hours": rh},
+            data={
+                "rostered": rc,
+                "actual": ac,
+                "hours": ah,
+                "rostered_hours": rh,
+                "facts": facts,
+            },
         )
     ]
 
 
 def staff_over_roster(v: VenueData) -> list[Finding]:
+    over = threshold(v.rules, "staff_over_roster", "over")
+    min_hours = threshold(v.rules, "staff_over_roster", "min_rostered_hours")
+    min_dollars = threshold(v.rules, "staff_over_roster", "min_dollars")
     hits = [
         r
         for r in v.labour_staff
-        if float(r.get("rostered_hours") or 0) >= 20
+        if float(r.get("rostered_hours") or 0) >= min_hours
         and float(r.get("actual_hours") or 0)
-        > float(r.get("rostered_hours") or 0) * 1.15
-        and float(r.get("actual_cost") or 0) - float(r.get("rostered_cost") or 0) >= 200
+        > float(r.get("rostered_hours") or 0) * (1 + over)
+        and float(r.get("actual_cost") or 0) - float(r.get("rostered_cost") or 0)
+        >= min_dollars
     ]
     if not hits:
         return []
     extra = sum(float(r["actual_cost"]) - float(r["rostered_cost"]) for r in hits)
     top = max(hits, key=lambda r: float(r["actual_cost"]) - float(r["rostered_cost"]))
+    facts = {
+        "venue": v.venue_name,
+        "staff": str(len(hits)),
+        "over": pct(over),
+        "extra": money(extra),
+        "name": str(top.get("name")),
+        "hours": f"{float(top['actual_hours']):.0f}",
+        "rostered_hours": f"{float(top['rostered_hours']):.0f}",
+    }
     return [
         Finding(
             "staff_over_roster",
@@ -796,14 +877,9 @@ def staff_over_roster(v: VenueData) -> list[Finding]:
             "wages",
             "roster:write",
             headline=f"{len(hits)} staff at {v.venue_name} worked well over their rostered hours",
-            prompt=(
-                f"Who's working well over their rostered hours at {v.venue_name}? {len(hits)} staff "
-                f"went more than 15% over in the last 4 weeks ({money(extra)} in all), most of all "
-                f"{top.get('name')} — {float(top['actual_hours']):.0f} hours against "
-                f"{float(top['rostered_hours']):.0f} rostered."
-            ),
+            prompt=render(v.rules, "staff_over_roster", "prompt", facts),
             value=extra / 4,
-            data={"staff": len(hits), "extra": extra},
+            data={"staff": len(hits), "extra": extra, "facts": facts},
         )
     ]
 
@@ -827,8 +903,15 @@ def wage_rate_up(v: VenueData) -> list[Finding]:
     if len(hist) < 4 or rate >= 0.9:
         return []
     usual = statistics.median(hist)
-    if rate - usual < 0.03:
+    if rate - usual < threshold(v.rules, "wage_rate_up", "min_gap"):
         return []
+    facts = {
+        "venue": v.venue_name,
+        "share": pct(rate),
+        "usual": pct(usual),
+        "wages": money(c),
+        "sales": money(s),
+    }
     return [
         Finding(
             "wage_rate_up",
@@ -836,13 +919,9 @@ def wage_rate_up(v: VenueData) -> list[Finding]:
             "wages",
             "reports:read",
             headline=f"Wages at {v.venue_name} were {pct(rate)} of sales last week (usually {pct(usual)})",
-            prompt=(
-                f"Why were wages at {v.venue_name} {pct(rate)} of sales last week when we usually "
-                f"run at {pct(usual)}? That's {money(c)} on {money(s)} — which days and shifts "
-                "made the difference?"
-            ),
+            prompt=render(v.rules, "wage_rate_up", "prompt", facts),
             value=(rate - usual) * s,
-            data={"rate": rate, "usual": usual, "wages": c, "sales": s},
+            data={"rate": rate, "usual": usual, "wages": c, "sales": s, "facts": facts},
         )
     ]
 
@@ -866,8 +945,16 @@ def roster_ahead(v: VenueData) -> list[Finding]:
         return []
     rate = cost / expected
     excess = (rate - usual) * expected
-    if rate - usual < 0.03 or excess < 300:
+    if rate - usual < threshold(
+        v.rules, "roster_ahead", "min_gap"
+    ) or excess < threshold(v.rules, "roster_ahead", "min_dollars"):
         return []
+    facts = {
+        "venue": v.venue_name,
+        "cost": money(cost),
+        "share": pct(rate),
+        "usual": pct(usual),
+    }
     return [
         Finding(
             "roster_ahead",
@@ -875,13 +962,15 @@ def roster_ahead(v: VenueData) -> list[Finding]:
             "wages",
             "roster:read",
             headline=f"Next week's roster at {v.venue_name} is {pct(rate)} of usual sales (you run at {pct(usual)})",
-            prompt=(
-                f"Is next week's roster at {v.venue_name} too heavy? It costs {money(cost)} — "
-                f"{pct(rate)} of what a normal week takes, when we usually run wages at "
-                f"{pct(usual)}. Where could it come down, day by day?"
-            ),
+            prompt=render(v.rules, "roster_ahead", "prompt", facts),
             value=excess,
-            data={"cost": cost, "expected": expected, "rate": rate, "usual": usual},
+            data={
+                "cost": cost,
+                "expected": expected,
+                "rate": rate,
+                "usual": usual,
+                "facts": facts,
+            },
             lasts_days=(start - v.as_of).days + 1,
         )
     ]
@@ -905,9 +994,10 @@ def cogs_trend(v: VenueData) -> list[Finding]:
         return sum(float(r.get("purchases") or 0) for r in rs) / s if s else None
 
     a, b = ratio(last4), ratio(prev8)
-    if a is None or b is None or a - b < 0.03:
+    if a is None or b is None or a - b < threshold(v.rules, "cogs_trend", "min_gap"):
         return []
     sales4 = sum(float(r["sales"]) for r in last4)
+    facts = {"venue": v.venue_name, "recent": pct(a), "before": pct(b)}
     return [
         Finding(
             "cogs_trend",
@@ -915,13 +1005,9 @@ def cogs_trend(v: VenueData) -> list[Finding]:
             "cogs",
             "orders:read",
             headline=f"{v.venue_name}'s cost of goods is {pct(a)} over 4 weeks, up from {pct(b)}",
-            prompt=(
-                f"Why has cost of goods at {v.venue_name} gone up to {pct(a)}? It was {pct(b)} over "
-                "the 8 weeks before (what we bought against what we sold) — which suppliers and "
-                "categories are behind it?"
-            ),
+            prompt=render(v.rules, "cogs_trend", "prompt", facts),
             value=(a - b) * sales4 / 4,
-            data={"recent": a, "before": b},
+            data={"recent": a, "before": b, "facts": facts},
         )
     ]
 
@@ -945,7 +1031,12 @@ def price_rises(v: VenueData) -> list[Finding]:
     """A supplier's price for one item, in one invoiced unit, stepping up 5%+
     and staying there for the next two deliveries, in the last 8 weeks."""
     internal = {s.lower() for s in v.internal_suppliers}
-    cutoff = (v.as_of - timedelta(weeks=8)).isoformat()
+    cutoff = (
+        v.as_of - timedelta(weeks=threshold(v.rules, "price_rise", "weeks"))
+    ).isoformat()
+    min_step = threshold(v.rules, "price_rise", "min_step")
+    max_step = threshold(v.rules, "price_rise", "max_step")
+    min_yearly = threshold(v.rules, "price_rise", "min_yearly")
     out: list[Finding] = []
     for item_id, rows in v.histories.items():
         item = next(
@@ -957,7 +1048,7 @@ def price_rises(v: VenueData) -> list[Finding]:
             for i in range(1, len(rs)):
                 a, b = float(rs[i - 1]["unit_cost"]), float(rs[i]["unit_cost"])
                 step = (b - a) / a
-                if step < 0.05 or step > 0.8 or str(rs[i]["date"]) < cutoff:
+                if step < min_step or step > max_step or str(rs[i]["date"]) < cutoff:
                     continue
                 after = rs[i : i + 3]
                 if len(after) < 2 or any(
@@ -968,9 +1059,20 @@ def price_rises(v: VenueData) -> list[Finding]:
                     sum(float(x.get("quantity") or 0) for x in rs) * 4
                 )  # 13 weeks -> a year
                 yearly = (b - a) * qty_year
-                if yearly < 300:
+                if yearly < min_yearly:
                     continue
                 when = _iso(rs[i]["date"])
+                facts = {
+                    "supplier": nice(sup),
+                    "item": nice(item),
+                    "change": pct(step),
+                    "venue": v.venue_name,
+                    "old_price": f"${a:.2f}",
+                    "new_price": f"${b:.2f}",
+                    "per_unit": " a " + unit.lower() if unit else "",
+                    "date": f"{when:%d %b}",
+                    "yearly": money(yearly),
+                }
                 out.append(
                     Finding(
                         "price_rise",
@@ -978,18 +1080,14 @@ def price_rises(v: VenueData) -> list[Finding]:
                         "cogs",
                         "orders:read",
                         headline=f"{nice(sup)} put {nice(item)} up {pct(step)} at {v.venue_name}",
-                        prompt=(
-                            f"{nice(sup)} put {nice(item)} up {pct(step)} at {v.venue_name} — who "
-                            f"sells it cheaper? It went from ${a:.2f} to ${b:.2f}"
-                            f"{' a ' + unit.lower() if unit else ''} on {when:%d %b}, about "
-                            f"{money(yearly)} a year at our volumes."
-                        ),
+                        prompt=render(v.rules, "price_rise", "prompt", facts),
                         value=yearly / 52,
                         data={
                             "from": a,
                             "to": b,
                             "date": str(rs[i]["date"]),
                             "unit": unit,
+                            "facts": facts,
                         },
                         lasts_days=7,
                     )
@@ -1006,6 +1104,10 @@ def group_price_gaps(venues: list[VenueData]) -> dict[str, list[Finding]]:
     sister venue. Same-supplier gaps first: "ask Bidfood for Dunedin's price".
     Returns findings keyed by the venue that pays more."""
     internal = {s.lower() for v in venues for s in v.internal_suppliers}
+    rules = next((v.rules for v in venues if v.rules), None)
+    min_gap = threshold(rules, "group_price_gap", "min_gap")
+    max_gap = threshold(rules, "group_price_gap", "max_gap")
+    min_yearly = threshold(rules, "group_price_gap", "min_yearly")
     by_item: dict[tuple, list[tuple[VenueData, dict]]] = {}
     for v in venues:
         for r in v.item_supplier:
@@ -1033,13 +1135,26 @@ def group_price_gaps(venues: list[VenueData]) -> dict[str, list[Finding]]:
             high = float(r["unit_cost_last"])
             ratio = high / low
             yearly = (high - low) * float(r.get("quantity_base") or 0) / 13 * 52
-            if not 1.08 <= ratio <= 2.0 or yearly < 500:
+            if not 1 + min_gap <= ratio <= 1 + max_gap or yearly < min_yearly:
                 continue
             same = (
                 str(r.get("supplier_name")).lower()
                 == str(cheapest.get("supplier_name")).lower()
             )
             per = f"/{unit}" if unit else ""
+            facts = {
+                "venue": v.venue_name,
+                "gap": pct(ratio - 1),
+                "cheaper_venue": cheapest_v.venue_name,
+                "item": nice(item),
+                "our_price": f"${high:.2f}{per}",
+                "our_supplier": nice(r.get("supplier_name")),
+                "their_price": f"${low:.2f}{per}",
+                "their_supplier": "the same supplier"
+                if same
+                else nice(cheapest.get("supplier_name")),
+                "yearly": money(yearly),
+            }
             out.setdefault(v.venue_id, []).append(
                 Finding(
                     "group_price_gap",
@@ -1050,13 +1165,7 @@ def group_price_gaps(venues: list[VenueData]) -> dict[str, list[Finding]]:
                         f"{v.venue_name} pays {pct(ratio - 1)} more for {nice(item)} than "
                         f"{cheapest_v.venue_name}"
                     ),
-                    prompt=(
-                        f"Why does {v.venue_name} pay {pct(ratio - 1)} more than "
-                        f"{cheapest_v.venue_name} for {nice(item)}? We pay ${high:.2f}{per} from "
-                        f"{nice(r.get('supplier_name'))}; {cheapest_v.venue_name} pays ${low:.2f}{per} "
-                        f"from {'the same supplier' if same else nice(cheapest.get('supplier_name'))} — "
-                        f"about {money(yearly)} a year. Should we switch, or ask for the better price?"
-                    ),
+                    prompt=render(rules, "group_price_gap", "prompt", facts),
                     value=yearly / 52 * (1.5 if same else 1.0),
                     data={
                         "high": high,
@@ -1064,6 +1173,7 @@ def group_price_gaps(venues: list[VenueData]) -> dict[str, list[Finding]]:
                         "unit": unit,
                         "same_supplier": same,
                         "cheaper_venue": cheapest_v.venue_name,
+                        "facts": facts,
                     },
                 )
             )

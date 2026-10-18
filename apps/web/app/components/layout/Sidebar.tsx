@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { Home, Package, UserRound, Clock, ChartColumnBig, Megaphone, ChefHat, PartyPopper, Landmark, Blocks, Settings, LogOut, UserRoundPlus, type LucideIcon } from 'lucide-react';
+import { Home, Package, UserRound, Clock, ChartColumnBig, Megaphone, ChefHat, PartyPopper, Landmark, Blocks, Settings, LogOut, type LucideIcon } from 'lucide-react';
 import { colors } from '../../lib/theme';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import Icon from '../ui/Icon';
@@ -121,18 +121,6 @@ export default function Sidebar({ selected, onSelect, user, onLogout, hired }: S
             </button>
           );
         })}
-        <button
-          type="button"
-          className="n-rail-tile"
-          data-testid="sidebar-team"
-          onClick={() => onSelect('team')}
-          title="Your AI team — hire agents"
-          aria-label="Your AI team"
-          aria-current={selected === 'team' ? 'page' : undefined}
-          style={tileStyle(selected === 'team', { border: '1px dashed var(--line-strong)', marginTop: 6 })}
-        >
-          <Icon icon={UserRoundPlus} size={20} duo={selected === 'team'} />
-        </button>
       </div>
 
       {/* Bottom: settings, who you are, sign out */}

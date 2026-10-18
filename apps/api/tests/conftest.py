@@ -66,6 +66,17 @@ from app.routers import (
 settings.INSIGHT_WORDING_ENABLED = False
 
 
+@pytest.fixture(autouse=True)
+def _fresh_suggestion_config():
+    """The suggestion config is cached for a minute (suggestions/config.py);
+    a test's rows roll back, so its cache must not reach the next test."""
+    from app.services.suggestions import config as suggestion_config
+
+    suggestion_config.clear_cache()
+    yield
+    suggestion_config.clear_cache()
+
+
 # ---------------------------------------------------------------------------
 # Minimal app for tests (no startup/shutdown events)
 # ---------------------------------------------------------------------------
@@ -125,6 +136,9 @@ _test_app.include_router(_public.router, prefix="/api")
 from app.routers import suggestions as _suggestions  # noqa: E402
 
 _test_app.include_router(_suggestions.router, prefix="/api")
+from app.routers import suggestion_admin as _suggestion_admin  # noqa: E402
+
+_test_app.include_router(_suggestion_admin.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------

@@ -414,6 +414,29 @@ class DashboardTemplate(ConfigBase):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
+class SuggestionConfig(ConfigBase):
+    """Site-wide tuning of Home's suggestions (services/suggestions/config.py,
+    docs/plans/suggestions-config.md), edited on Settings → AI team →
+    Suggestions by platform admins.
+
+    A row holds only what differs from the code's defaults: ``settings`` the
+    global knobs, ``prompt:<id>`` one catalogue prompt (a custom prompt is
+    stored whole), ``detector:<name>`` one insight detector. An empty table is
+    the defaults exactly, and "reset" empties a row. ``previous`` is the value
+    before the last save, so a save can be undone (``{"_absent": true}`` when
+    the row didn't exist).
+    """
+
+    __tablename__ = "suggestion_config"
+
+    key = Column(String, primary_key=True)
+    value = Column(JSON, nullable=False, default=dict)
+    previous = Column(JSON, nullable=True)
+    updated_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class SystemSecret(ConfigBase):
     __tablename__ = "system_secrets"
 

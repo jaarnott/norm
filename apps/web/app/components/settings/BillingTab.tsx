@@ -494,10 +494,10 @@ export default function BillingTab({ orgId }: { orgId: string }) {
         </div>
       </Section>
 
-      {/* Your AI team — hired and paid state; managed on the team page */}
+      {/* Your AI team — hired and paid state; managed on Settings → AI team */}
       <Section
         title="Your AI team"
-        footnote="Hire and retire team members — and switch their Apps — on the team page (the + button in the sidebar)."
+        footnote="Hire and retire team members — and switch their Apps — in Settings → AI team."
       >
         {teamRows > 0 && (
           <div className="n-card" style={{ overflowX: 'auto' }}>

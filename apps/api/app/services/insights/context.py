@@ -77,24 +77,14 @@ def from_suggestion(
     return insight_dict(db, row.id)
 
 
-def guidance(insight: dict | None) -> str:
-    """The prompt section for a conversation that began from an insight."""
-    if not insight:
-        return ""
-    noted = ""
-    if insight.get("notes"):
-        lines = "\n".join(
-            f"- {n['verdict']}: {n.get('reason') or ''}{' (until ' + n['until'] + ')' if n.get('until') else ''}"
-            for n in insight["notes"]
-        )
-        noted = f"\nWhat people have already said about it:\n{lines}\n"
-    return f"""
-
-## This conversation began from an insight
-The person clicked an insight Norm raised on their Home screen (insight_id `{insight["id"]}`,
-{insight.get("venue") or "their venue"}, numbers to {insight.get("as_of")}):
-**{insight["headline"]}**
-{noted}
+#: What Norm is told in a chat that began from an insight. A default:
+#: Settings → AI team → Suggestions can change it (suggestions/config.py).
+#: Placeholders: {insight_id} {venue} {as_of} {headline} {notes}.
+GUIDANCE = """## This conversation began from an insight
+The person clicked an insight Norm raised on their Home screen (insight_id `{insight_id}`,
+{venue}, numbers to {as_of}):
+**{headline}**
+{notes}
 Answer their question with the data as usual. Then listen for two things, at any point in
 this conversation:
 - **They explain it** — it is planned or known (a promotion, a minimum crew, a one-off
@@ -107,3 +97,32 @@ this conversation:
 If they say the insight isn't useful to them, record verdict `not_useful`. Never record a
 note they didn't give you, and never more than one per thing they said.
 """
+
+
+def guidance(insight: dict | None, config_db=None) -> str:
+    """The prompt section for a conversation that began from an insight."""
+    from app.services.insights.rules import render_text
+    from app.services.suggestions import config as suggestion_config
+
+    if not insight:
+        return ""
+    noted = ""
+    if insight.get("notes"):
+        lines = "\n".join(
+            f"- {n['verdict']}: {n.get('reason') or ''}{' (until ' + n['until'] + ')' if n.get('until') else ''}"
+            for n in insight["notes"]
+        )
+        noted = f"\nWhat people have already said about it:\n{lines}\n"
+    facts = {
+        "insight_id": insight["id"],
+        "venue": insight.get("venue") or "their venue",
+        "as_of": insight.get("as_of"),
+        "headline": insight["headline"],
+        "notes": noted,
+    }
+    template = suggestion_config.current(config_db).settings.get("insight_guidance")
+    try:
+        body = render_text(template or GUIDANCE, facts)
+    except (KeyError, ValueError, IndexError):
+        body = render_text(GUIDANCE, facts)
+    return "\n\n" + body

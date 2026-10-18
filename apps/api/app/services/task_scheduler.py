@@ -398,7 +398,7 @@ def execute_task_now(
                 run.status = "skipped_unhired"
                 run.error_message = (
                     f"Team member '{task.agent_slug}' is not hired — "
-                    "re-hire them on the team page to resume this task."
+                    "re-hire them in Settings → AI team to resume this task."
                 )
                 run.completed_at = datetime.now(timezone.utc)
                 run.duration_ms = int((time.time() - t0) * 1000)

@@ -645,7 +645,7 @@ def build_tool_definitions(
     if insight:
         from app.services.insights.context import guidance as insight_guidance
 
-        system_prompt += insight_guidance(insight)
+        system_prompt += insight_guidance(insight, _cdb)
 
     # What this person lets Norm do without asking — the invoice tools'
     # levels and any always-allowed write — stated rather than fetched.

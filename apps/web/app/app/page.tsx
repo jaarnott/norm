@@ -19,7 +19,7 @@ import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
 import { OPEN_APP_PAGE_EVENT } from '../components/apps/AppRunner';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
 import { getPageDocument } from '../lib/pageDocument';
-import { PanelLeft as PanelLeftIcon, Menu, Settings, LogOut, SquarePen, UserRoundPlus, X, type LucideIcon } from 'lucide-react';
+import { PanelLeft as PanelLeftIcon, Menu, Settings, LogOut, SquarePen, X, type LucideIcon } from 'lucide-react';
 import Icon from '../components/ui/Icon';
 import Avatar from '../components/ui/Avatar';
 import Button from '../components/ui/Button';
@@ -29,7 +29,6 @@ import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useActiveVenue, readActiveVenue } from '../hooks/useActiveVenue';
 import { useTeam } from '../hooks/useTeam';
 import { threadMembers } from '../lib/threadApps';
-import TeamPage from '../components/team/TeamPage';
 import type { Thread, WidgetAction, VenueDetail } from '../types';
 
 type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null };
@@ -56,7 +55,6 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [activeAgent, setActiveAgent] = useState('home');
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'all' | 'awaiting_approval' | 'awaiting_user_input' | 'completed'>('all');
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [activePage, setActivePage] = useState<string | null>(null);
   // Bumped when a page asks to be re-opened at new deep-link params (the
@@ -159,7 +157,7 @@ export default function Home() {
   // direct-access guard surface.
   useEffect(() => {
     if (!team.hired) return;
-    const NON_AGENT = new Set(['home', 'settings', 'team']);
+    const NON_AGENT = new Set(['home', 'settings']);
     if (!NON_AGENT.has(activeAgent) && !team.hired.has(activeAgent)) {
       setActiveAgent('home');
       setActivePage(null);
@@ -889,9 +887,9 @@ export default function Home() {
     setActivePage(null);
     // Stay with the current team member: the main pane is the new-chat box
     // whenever no thread or page is open, whoever is selected — jumping to
-    // Home only lost the member's menu. Settings and Your AI team fill the
-    // whole pane, so those (reachable from the phone's top bar) give way.
-    setActiveAgent(a => (a === 'settings' || a === 'team' ? 'home' : a));
+    // Home only lost the member's menu. Settings fills the whole pane, so it
+    // (reachable from the phone's top bar) gives way.
+    setActiveAgent(a => (a === 'settings' ? 'home' : a));
     setMobileView('home');
   }, []);
 
@@ -1133,9 +1131,9 @@ export default function Home() {
   // Tablet (768–1023px): the menu panel is a drawer over the content, not a
   // column beside it — at 820px a fixed 360px column left the page about
   // 400px. It starts closed; a rail member or "Show panel" opens it, and
-  // choosing something in it, the scrim or Escape closes it. Settings and
-  // Your AI team have no panel at all.
-  const panelHidden = activeAgent === 'settings' || activeAgent === 'team';
+  // choosing something in it, the scrim or Escape closes it. Settings has no
+  // panel at all.
+  const panelHidden = activeAgent === 'settings';
   const drawerOpen = isTablet && !panelCollapsed && !panelHidden;
   useEffect(() => { setPanelCollapsed(isTablet); }, [isTablet]);
   // Focus moves into the drawer when it opens, so the next Tab is its first
@@ -1279,10 +1277,7 @@ export default function Home() {
 
     // Settings view
     if (mobileView === 'settings') {
-      return mobileShell(
-        activeAgent === 'team' ? 'Your AI team' : 'Settings',
-        activeAgent === 'team' ? <TeamPage user={user} /> : <SettingsPanel key={settingsTab} initialTab={settingsTab} />,
-      );
+      return mobileShell('Settings', <SettingsPanel key={settingsTab} initialTab={settingsTab} />);
     }
 
     // List view (hamburger destination) — team members + menu + user footer
@@ -1358,8 +1353,6 @@ export default function Home() {
               onSelectThread={handleSelectThreadMobile}
               onRemoveThread={removeThread}
               activeAgent={activeAgent}
-              filter={filter}
-              onFilterChange={setFilter}
               onNewChat={() => { handleNewChat(); setMobileView('home'); }}
               onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
               extraPages={effectiveAppPages}
@@ -1378,7 +1371,6 @@ export default function Home() {
             }}>
               <Avatar name={user.full_name} />
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-base)', color: 'var(--text-soft)' }}>{user.full_name}</span>
-              {footerButton('sidebar-team-mobile', 'Your AI team', UserRoundPlus, () => { setActiveAgent('team'); setMobileView('settings'); })}
               {showSettings && footerButton('sidebar-settings', 'Settings', Settings, () => { setActiveAgent('settings'); setMobileView('settings'); })}
               {footerButton('sidebar-logout', 'Sign out', LogOut, handleLogout)}
             </div>
@@ -1407,7 +1399,7 @@ export default function Home() {
           setActiveAgent(id);
           // On a tablet a member's menu lives in the drawer: choosing the
           // member opens it.
-          if (isTablet && id !== 'settings' && id !== 'team') setPanelCollapsed(false);
+          if (isTablet && id !== 'settings') setPanelCollapsed(false);
         }}
         threadCounts={threadCounts}
         user={user}
@@ -1435,8 +1427,7 @@ export default function Home() {
           display: 'flex',
           flexDirection: 'column',
           // 344 since the thread cards' remove button moved into the age's
-          // spot on hover (Oct 2026); it was 360. The four filter chips just
-          // fit at this width (ThreadList).
+          // spot on hover (Oct 2026); it was 360.
           width: (panelCollapsed || panelHidden) ? 0 : 344,
           minWidth: (panelCollapsed || panelHidden) ? 0 : 344,
           borderRight: (panelCollapsed || panelHidden) ? 'none' : '1px solid var(--line)',
@@ -1450,8 +1441,6 @@ export default function Home() {
           onSelectThread={(id) => { setSelectedThreadId(id); if (activePage) setActivePage(null); closeDrawer(); }}
           onRemoveThread={removeThread}
           activeAgent={activeAgent}
-          filter={filter}
-          onFilterChange={setFilter}
           onNewChat={() => { handleNewChat(); closeDrawer(); }}
           onCollapsePanel={() => setPanelCollapsed(true)}
           extraPages={effectiveAppPages}
@@ -1493,8 +1482,6 @@ export default function Home() {
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
           {activeAgent === 'settings' ? (
             <SettingsPanel key={settingsTab} initialTab={settingsTab} />
-          ) : activeAgent === 'team' ? (
-            <TeamPage user={user} />
           ) : connectPanel ? (
             connectPanel
           ) : activePage ? (() => {

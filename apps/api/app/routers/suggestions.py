@@ -84,7 +84,7 @@ def list_insight_notes(
     user: User = Depends(require_permission("reports:read")),
 ):
     """What people have told Norm about its suggestions, newest first: Settings
-    → Suggestions. A note quietens (or follows up) a suggestion for the whole
+    → Preferences → What Norm has learned. A note quietens (or follows up) a suggestion for the whole
     organisation, so everyone who sees suggestions can see why."""
     from app.db.models import Insight, InsightNote, Venue
     from app.services.entitlements import org_id_for_user

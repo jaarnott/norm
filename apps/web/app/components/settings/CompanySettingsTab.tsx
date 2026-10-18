@@ -45,7 +45,7 @@ function draftOf(s: CompanySettings): Draft {
 }
 
 /**
- * Settings → Company: the currency, default time zone and tax wording Norm
+ * Settings → General: the currency, default time zone and tax wording Norm
  * Functions uses for money and organisation-wide dates, and — for owners and
  * admins only — the Functions mode switch. Everyone in the organisation can
  * read the first three; `can_edit` from the API decides who sees controls,
@@ -145,9 +145,9 @@ export default function CompanySettingsTab({ orgId }: { orgId: string }) {
   const target = FUNCTIONS_MODES.find((m) => m.id === switching);
 
   return (
-    // 760 so three fields fit with "NZD — New Zealand Dollar" unclipped.
-    <div style={{ maxWidth: 760, lineHeight: 1.45 }}>
-      <h2 style={sectionTitle}>Company</h2>
+    // Full width, like the AI team tab.
+    <div style={{ lineHeight: 1.45 }}>
+      <h2 style={sectionTitle}>General</h2>
       <p style={intro}>How Norm shows money and organisation-wide dates — on quotes, menus and Functions reports.</p>
 
       <div className="n-card" style={{ padding: 16 }}>

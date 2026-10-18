@@ -30,6 +30,8 @@ from sqlalchemy.exc import IntegrityError
 
 from app.services.insights import detectors as det
 from app.services.insights import wording
+from app.services.insights.rules import render, threshold
+from app.services.suggestions import config as suggestion_config
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,7 @@ def fetch(db, config_db, venue, as_of: date, cadences: list[str], siblings: set[
         as_of=as_of,
         internal_suppliers=siblings,
         day_start_hour=clock.day_start[0],
+        rules=suggestion_config.current(config_db).rules,
     )
     monday = det.week_start(as_of)
     weekly = "weekly" in cadences
@@ -287,7 +290,9 @@ def fetch(db, config_db, venue, as_of: date, cadences: list[str], siblings: set[
     return v, f
 
 
-def detect(v: det.VenueData, cadences: list[str]) -> list[det.Finding]:
+def detect(v: det.VenueData, cadences: list[str], cfg=None) -> list[det.Finding]:
+    """Every finding of today's sets, less those of detectors an admin turned
+    off (Settings → AI team → Suggestions)."""
     sets = []
     if "daily" in cadences:
         sets += det.DAILY
@@ -303,7 +308,13 @@ def detect(v: det.VenueData, cadences: list[str]) -> list[det.Finding]:
             logger.exception(
                 "insight detector %s failed for %s", fn.__name__, v.venue_name
             )
-    return out
+    return switched_on(out, cfg)
+
+
+def switched_on(findings: list[det.Finding], cfg=None) -> list[det.Finding]:
+    if cfg is None:
+        return findings
+    return [f for f in findings if cfg.detector(f.detector).get("enabled", True)]
 
 
 # ------------------------------------------------------------------ saving
@@ -318,9 +329,11 @@ def save(
     as_of: date,
     findings: list[det.Finding],
     now: datetime,
+    wording_version=None,
 ) -> int:
     from app.db.models import Insight
 
+    version = wording.VERSION if wording_version is None else wording_version
     saved = 0
     for f in findings:
         key = subject_key(venue_id, f.detector, f.subject)
@@ -338,7 +351,7 @@ def save(
         row.area, row.audience = f.area, f.audience
         kept = (row.data or {}).get("wording") or {}
         row.headline, row.data = f.headline, dict(f.data)
-        if kept.get("template") == f.prompt and kept.get("v") == wording.VERSION:
+        if kept.get("template") == f.prompt and kept.get("v") == version:
             # The same words as last run: keep their rewording (wording.py).
             row.prompt = kept.get("prompt") or f.prompt
             row.data["wording"] = kept
@@ -369,7 +382,7 @@ def _store_item_supplier(run, v: det.VenueData) -> None:
     }
 
 
-def _group_gaps(db, org_id: str, now: datetime) -> int:
+def _group_gaps(db, org_id: str, now: datetime, cfg=None) -> int:
     """Price gaps across the org's venues, from each venue's latest weekly run
     (within 8 days)."""
     from app.db.models import InsightRun, Venue
@@ -403,22 +416,30 @@ def _group_gaps(db, org_id: str, now: datetime) -> int:
                     as_of=now.date(),
                     item_supplier=rows,
                     internal_suppliers=names,
+                    rules=cfg.rules if cfg is not None else None,
                 )
             )
     if len(data) < 2:
         return 0
     saved = 0
     for vid, findings in det.group_price_gaps(data).items():
-        saved += save(db, org_id, vid, now.date(), findings, now)
+        saved += save(
+            db,
+            org_id,
+            vid,
+            now.date(),
+            switched_on(findings, cfg),
+            now,
+            cfg.wording_version if cfg is not None else None,
+        )
     return saved
 
 
 # ------------------------------------------------------------------ follow-ups
-FOLLOW_UP_AFTER_DAYS = 21
 
 
 def follow_ups(
-    db, venue, findings: list[det.Finding], now: datetime
+    db, venue, findings: list[det.Finding], now: datetime, cfg=None
 ) -> list[det.Finding]:
     """Close the loop on "we'll fix it": three weeks after someone said they
     would act on an insight, say whether it worked — today's value of the
@@ -440,7 +461,8 @@ def follow_ups(
             else n.created_at.replace(tzinfo=timezone.utc)
         )
         age = (now - made).days
-        if age < FOLLOW_UP_AFTER_DAYS or age > FOLLOW_UP_AFTER_DAYS + 14:
+        after_days = threshold(cfg.rules if cfg else None, "follow_up", "after_days")
+        if age < after_days or age > after_days + 14:
             continue
         key = subject_key(venue.id, "follow_up", n.id)
         if db.query(Insight).filter(Insight.subject_key == key).first():
@@ -461,6 +483,12 @@ def follow_ups(
         else:
             verdict = "No change yet"
             line = f"still about {det.money(after or before)} a week"
+        facts = {
+            "change": n.reason or "the change we made",
+            "venue": venue.name,
+            "about": about.rstrip("."),
+            "result": line,
+        }
         out.append(
             det.Finding(
                 "follow_up",
@@ -468,13 +496,14 @@ def follow_ups(
                 original.area if original else "wages",
                 original.audience if original else "reports:read",
                 headline=f"{verdict}: {about.rstrip('.')} — {line}",
-                prompt=(
-                    f"Has {n.reason or 'the change we made'} worked at {venue.name}? "
-                    f"{about.rstrip('.')} — it {line}. Show me how it's moved week by week "
-                    "since, and what's left to do."
-                ),
+                prompt=render(cfg.rules if cfg else None, "follow_up", "prompt", facts),
                 value=max(before - after, 0.0),
-                data={"note_id": n.id, "before": before, "after": after},
+                data={
+                    "note_id": n.id,
+                    "before": before,
+                    "after": after,
+                    "facts": facts,
+                },
                 lasts_days=7,
             )
         )
@@ -493,11 +522,14 @@ def run_venue(
         .filter(Venue.organization_id == venue.organization_id)
         .all()
     }
+    cfg = suggestion_config.current(config_db)
     v, f = fetch(db, config_db, venue, as_of, cadences, siblings)
-    findings = detect(v, cadences)
+    findings = detect(v, cadences, cfg)
     if "weekly" in cadences:
-        findings += follow_ups(db, venue, findings, now)
-    saved = save(db, venue.organization_id, venue.id, as_of, findings, now)
+        findings += switched_on(follow_ups(db, venue, findings, now, cfg), cfg)
+    saved = save(
+        db, venue.organization_id, venue.id, as_of, findings, now, cfg.wording_version
+    )
     return {
         "venue": venue.name,
         "cadences": cadences,
@@ -546,13 +578,14 @@ def due_venues(
     return out
 
 
-def word_pending(db, org_ids: set[str], now: datetime) -> dict:
+def word_pending(db, org_ids: set[str], now: datetime, config_db=None) -> dict:
     """Reword every live insight of these organisations not yet worded under
     the current instructions (wording.py) — after all their venues ran, so a
     sister venue's price gaps are worded too. Never fails the run."""
     from app.db.models import Insight, Venue
 
     out: dict = {}
+    cfg = suggestion_config.current(config_db)
     try:
         rows = (
             db.query(Insight)
@@ -561,12 +594,12 @@ def word_pending(db, org_ids: set[str], now: datetime) -> dict:
         )
         by_venue: dict[str, list] = {}
         for r in rows:
-            if wording.needs_wording(r):
+            if wording.needs_wording(r, cfg.wording_version):
                 by_venue.setdefault(r.venue_id, []).append(r)
         for vid, pending in by_venue.items():
             venue = db.get(Venue, vid)
             if venue is not None:
-                out[venue.name] = wording.word(db, venue, pending)
+                out[venue.name] = wording.word(db, venue, pending, cfg)
                 db.commit()
     except Exception as exc:  # noqa: BLE001 — the templates stand
         db.rollback()
@@ -594,6 +627,13 @@ def run_due_insights(
     db = db or SessionLocal()
     config_db = config_db or _ConfigSessionLocal()
     ran: list[dict] = []
+    if not suggestion_config.current(config_db).settings.get("insights_enabled", True):
+        # Switched off on Settings → AI team → Suggestions.
+        if own_db:
+            db.close()
+        if own_cdb:
+            config_db.close()
+        return {"ran": [], "off": True}
     try:
         for venue, slot in due_venues(
             db, now, venue_ids, any_time=bool(force_cadences)
@@ -639,7 +679,12 @@ def run_due_insights(
                 }
                 db.commit()
                 if "weekly" in cadences:
-                    entry["group_saved"] = _group_gaps(db, venue.organization_id, now)
+                    entry["group_saved"] = _group_gaps(
+                        db,
+                        venue.organization_id,
+                        now,
+                        suggestion_config.current(config_db),
+                    )
                     db.commit()
                 entry.update(
                     ok=True,
@@ -674,7 +719,9 @@ def run_due_insights(
             ran.append(entry)
         out = {"ran": ran}
         if ran:
-            out["wording"] = word_pending(db, {e["org_id"] for e in ran}, now)
+            out["wording"] = word_pending(
+                db, {e["org_id"] for e in ran}, now, config_db
+            )
         for e in ran:
             e.pop("org_id", None)
         return out
