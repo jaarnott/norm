@@ -2548,6 +2548,112 @@ def _scoped_venue_id(params: dict, db: Session) -> tuple[str | None, str | None]
     return (v.id, None) if v else (None, err)
 
 
+@register("norm", "app_records")
+def _app_records(params: dict, db: Session, thread_id: str | None) -> dict:
+    """Rows of one of Norm's built-in apps (Hiring, Training, Performance),
+    for the calling organisation — the read a dashboard tile or the HR
+    member needs ("open jobs", "training due this month") without going
+    through the app's own screens.
+
+    Reads only, built-ins only, and only the collections the app declares.
+    The organisation comes from caller_scope (the venue a chart was authorised
+    for, the thread's user), never from the params. ``where`` filters on
+    top-level fields the way the records API does; ``date_field`` with
+    ``start``/``end`` keeps rows whose field falls in the window (ISO text
+    compares as text, which is why the fields are stored that way).
+    """
+    from app.db.models import AppRecord
+    from app.services import builtin_apps, caller_scope
+    from app.services.app_runtime import _condition, _record_out
+
+    slug = str(params.get("app") or "").strip()
+    collection = str(params.get("collection") or "").strip()
+    built = builtin_apps.get_builtin(slug)
+    if built is None:
+        return {
+            "success": False,
+            "data": {},
+            "error": "app must be one of Norm's built-in apps: "
+            + ", ".join(sorted(builtin_apps.builtin_apps())),
+        }
+    storage = (built.spec or {}).get("storage") or {}
+    collections = list(storage.get("collections") or [])
+    if collection not in collections:
+        return {
+            "success": False,
+            "data": {},
+            "error": f"{slug} has no collection '{collection}' — one of: "
+            + ", ".join(collections),
+        }
+    scope = caller_scope.current()
+    org_id = scope.org_id if scope else None
+    if not org_id:
+        return {
+            "success": False,
+            "data": {},
+            "error": (
+                "Norm couldn't tell which organisation is asking, so it can't "
+                "read app records."
+            ),
+        }
+    from app.db.engine import _ConfigSessionLocal
+
+    config_db = _ConfigSessionLocal()
+    try:
+        if not builtin_apps.is_on(slug, org_id, db, config_db):
+            return {"success": False, "data": {}, "error": f"{built.name} is off"}
+    finally:
+        config_db.close()
+
+    q = db.query(AppRecord).filter(
+        AppRecord.namespace == storage.get("namespace"),
+        AppRecord.organization_id == org_id,
+        AppRecord.collection == collection,
+    )
+    where = params.get("where")
+    if isinstance(where, dict):
+        for key, value in where.items():
+            q = q.filter(_condition(str(key), value))
+    date_field = str(params.get("date_field") or "").strip()
+    if date_field:
+        if params.get("before_today"):
+            # Overdue: the field's date is before today (ISO text compares as text).
+            import datetime as _dt
+
+            today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+            q = q.filter(_condition(date_field, {"lt": today}))
+        else:
+            if params.get("start"):
+                q = q.filter(_condition(date_field, {"gte": str(params["start"])[:10]}))
+            if params.get("end"):
+                q = q.filter(
+                    _condition(date_field, {"lte": str(params["end"])[:10] + "~"})
+                )
+    try:
+        limit = max(1, min(int(params.get("limit") or 500), 2000))
+    except (TypeError, ValueError):
+        limit = 500
+    count = q.count()
+    rows = []
+    if not params.get("count_only"):
+        fields = params.get("fields")
+        for r in q.order_by(AppRecord.created_at.desc()).limit(limit).all():
+            out = _record_out(r)
+            if isinstance(fields, list) and fields:
+                out = {k: out.get(k) for k in ["id", *fields] if k in out}
+            rows.append(out)
+    return {
+        "success": True,
+        "data": {
+            "app": slug,
+            "collection": collection,
+            "count": count,
+            "rows": rows,
+            "truncated": count > len(rows) and not params.get("count_only"),
+        },
+    }
+
+
 @register("norm", "list_venues")
 def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
     """The venues a connector fan-out can cover: name + connection state.

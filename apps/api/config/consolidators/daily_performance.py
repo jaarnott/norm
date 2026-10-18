@@ -15,7 +15,7 @@
 # Built for the Operations dashboard, which used to spend a model call per
 # tile per venue resolving "today" and showed no comparison at all; the join
 # gives it one read per tile and the comparisons on the same row. Requires
-# consolidator_config {"max_api_calls": 14, "allowed_write_actions": []}.
+# consolidator_config {"max_api_calls": 20, "allowed_write_actions": []}.
 #
 # Lessons carried over from get_purchase_cogs: a dashboard hands this tool a
 # venue_id, and the tools underneath take a venue by NAME, so the id is mapped
@@ -168,6 +168,26 @@ def _iso_date(text, years):
     return None
 
 
+def _trading_date(iso_text, day_start=None):
+    """The trading date an instant belongs to: the civil date, or the day
+    before when the clock is earlier than the venue's day start (a "HH:MM"
+    string; noon when none is known)."""
+    moment = datetime.datetime.fromisoformat(str(iso_text))
+    cut = datetime.time(12, 0)
+    if hasattr(day_start, "hour"):
+        cut = datetime.time(day_start.hour, getattr(day_start, "minute", 0))
+    elif isinstance(day_start, str) and ":" in day_start:
+        parts = day_start.split(":")
+        try:
+            cut = datetime.time(int(parts[0]), int(parts[1]))
+        except ValueError:
+            pass
+    day = moment.date()
+    if moment.time() < cut:
+        day = day - datetime.timedelta(days=1)
+    return day.isoformat()
+
+
 def _bucket_of(iso_date, interval):
     """(label, bucket start ISO) for a trading date."""
     day = datetime.date.fromisoformat(iso_date)
@@ -276,12 +296,14 @@ def run(params, call_api, log, call_api_parallel=None):
     elif venue_name:
         common["venue"] = venue_name
     daily = {"breakdown": "daily", "interval": "1.00:00:00"}
+    # Budgets are read here, not through get_sales' compare='budget': that
+    # path has get_sales call the get_budgets consolidator, and a consolidator
+    # may only nest one level deep — from here that is two (18 Oct 2026).
+    budget_targets = venues or [venue_name]
+    b_from = _trading_date(w_start, window.get("day_start"))
+    b_to = _trading_date(w_end, window.get("day_start"))
     calls = [
-        (
-            "loadedhub",
-            "get_sales",
-            {**common, **daily, "compare": ["budget", "last_year"]},
-        ),
+        ("loadedhub", "get_sales", {**common, **daily, "compare": ["last_year"]}),
         ("loadedhub", "get_sales", {**common, **daily, "tax": "exclude"}),
         ("loadedhub", "get_sales", {**common, **daily, "measure": "orders"}),
         (
@@ -289,11 +311,26 @@ def run(params, call_api, log, call_api_parallel=None):
             "get_labour",
             {**common, "view": "attendance", "group_by": "day", "include": "both"},
         ),
+    ] + [
+        (
+            "loadedhub",
+            "get_budgets",
+            {
+                **({"venue_id": params["venue_id"]} if params.get("venue_id") else {}),
+                "venue": v,
+                "from_date": b_from,
+                "to_date": b_to,
+                "tax": "include",
+            },
+        )
+        for v in budget_targets
     ]
     if call_api_parallel:
-        sales_in, sales_ex, orders, labour = call_api_parallel(calls)
+        results = call_api_parallel(calls)
     else:
-        sales_in, sales_ex, orders, labour = [call_api(c, a, p) for (c, a, p) in calls]
+        results = [call_api(c, a, p) for (c, a, p) in calls]
+    sales_in, sales_ex, orders, labour = results[:4]
+    budgets = list(zip(budget_targets, results[4:]))
 
     for res, what in ((sales_in, "sales"), (sales_ex, "sales ex GST")):
         failure = _failure(res, what)
@@ -304,6 +341,10 @@ def run(params, call_api, log, call_api_parallel=None):
         failure = _failure(res, what)
         if failure:
             warnings.append(failure + " — those columns are blank")
+    for v, res in budgets:
+        failure = _failure(res, "budget" + (" (" + str(v) + ")" if multi else ""))
+        if failure:
+            warnings.append(failure + " — budget blank")
 
     def venue_key(name):
         return name if multi else None
@@ -335,8 +376,16 @@ def run(params, call_api, log, call_api_parallel=None):
     for r in sales_in.get("rows") or []:
         if isinstance(r, dict) and (d := day_of(r.get("venue"), r)) is not None:
             d["sales"] = _num(r.get("actual")) or 0.0
-            d["budget"] = _num(r.get("budget"))
             d["last_year"] = _num(r.get("last_year"))
+    for v, res in budgets:
+        if not isinstance(res, dict) or _failure(res, "budget"):
+            continue
+        for r in res.get("days") or []:
+            if (
+                isinstance(r, dict)
+                and (d := day_of(v, {"date": r.get("date")})) is not None
+            ):
+                d["budget"] = _num(r.get("amount"))
     for r in (sales_ex.get("rows") or []) if isinstance(sales_ex, dict) else []:
         if isinstance(r, dict) and (d := day_of(r.get("venue"), r)) is not None:
             d["sales_ex_gst"] = _num(r.get("actual")) or 0.0

@@ -39,10 +39,16 @@ def sales_rows(venue, tax="include"):
             "actual": round(actual * factor, 2),
         }
         if tax == "include":
-            row["budget"] = 1000.0 * (i + 1)
             row["last_year"] = 1100.0 * (i + 1)
         out.append(row)
     return out
+
+
+def budget_days():
+    return [
+        {"date": d, "day": LABELS[d][:3], "amount": 1000.0 * (i + 1)}
+        for i, d in enumerate(DAYS)
+    ]
 
 
 def order_rows(venue):
@@ -112,6 +118,13 @@ class Api:
                     else sales_rows(v, params.get("tax", "include"))
                 )
             return {"rows": rows, "totals": {}}
+        if action == "get_budgets":
+            assert (
+                params.get("venue")
+                and params.get("from_date")
+                and params.get("to_date")
+            )
+            return {"days": budget_days(), "total": 6000.0}
         if action == "get_labour":
             if len(names) > 1 or self.labour_group:
                 return {
@@ -178,7 +191,13 @@ class TestTheJoin:
                 assert p.get("venue") == "La Zeppa" and "venues" not in p
                 assert p["confirmed_by_user"] is True and p["start"] == WINDOW["start"]
         sales = [p for a, p in api.calls if a == "get_sales"]
-        assert any(p.get("compare") == ["budget", "last_year"] for p in sales)
+        # budgets come from get_budgets directly: compare='budget' would nest
+        # the budgets consolidator two deep, which the sandbox refuses
+        assert any(p.get("compare") == ["last_year"] for p in sales)
+        assert not any("budget" in (p.get("compare") or []) for p in sales)
+        budget_calls = [p for a, p in api.calls if a == "get_budgets"]
+        assert budget_calls and budget_calls[0]["from_date"] == "2026-10-12"
+        assert budget_calls[0]["to_date"] == "2026-10-18"
         assert any(p.get("tax") == "exclude" for p in sales)
         assert any(p.get("measure") == "orders" for p in sales)
 
@@ -221,6 +240,11 @@ class TestEdges:
     def test_no_venue_at_all_is_a_clear_error(self):
         out = run(Api(), venue_id=None)
         assert out["error"].startswith("no venue")
+
+    def test_a_failed_budget_read_leaves_budget_blank_with_a_warning(self):
+        out = run(Api(fail={"get_budgets": "no budgets"}))
+        assert out["rows"][0]["budget"] is None and out["rows"][0]["budget_pct"] is None
+        assert any("budget: no budgets" in w for w in out["warnings"])
 
     def test_a_bad_interval_is_refused(self):
         assert "interval must be" in run(Api(), interval="hour")["error"]

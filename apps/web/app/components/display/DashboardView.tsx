@@ -35,6 +35,10 @@ function getEmbeddableComponent(key: string): React.ComponentType<DisplayBlockPr
     automated_task_board: () => import('./AutomatedTaskBoard'),
     generic_table: () => import('./GenericTable'),
     saved_reports_board: () => import('./SavedReportsBoard'),
+    // Norm's own apps as a tile (the HR board embeds Hiring), and the chef's
+    // menu engineering grid.
+    app_runner: () => import('../apps/AppPage'),
+    menu_engineering: () => import('./MenuEngineering'),
   };
   if (imports[key]) {
     EMBEDDABLE_COMPONENTS[key] = dynamic(imports[key], { ssr: false }) as unknown as React.ComponentType<DisplayBlockProps>;
