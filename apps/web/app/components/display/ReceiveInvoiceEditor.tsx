@@ -165,6 +165,7 @@ const gateLabels: Record<string, string> = {
   receive_without_unit: 'receive when no unit can be found',
   receive_with_unconfirmed_unit: 'receive when the unit came from Loaded rather than the invoice',
   receive_without_po: 'receive without a valid purchase order',
+  receive_unit_kind_mismatch: 'receive in a unit of a different kind from the stocktake unit',
   auto_strike_phantom_lines: "strike lines the invoice doesn't bill",
   auto_delete_duplicates: 'delete a duplicate invoice draft',
   auto_delete_non_invoices: "delete drafts that aren't invoices",

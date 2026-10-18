@@ -162,9 +162,13 @@ class LoadedInvoiceClient:
                 f"Loaded {method} {path} → {resp.status_code}: {resp.text[:200]}"
             )
         try:
-            return resp.json()
+            payload = resp.json()
         except Exception:
             return resp.text
+        # Non-measurement units reach Norm marked deleted (invoice_units).
+        from app.services.invoice_units import hide_non_measurement_units
+
+        return hide_non_measurement_units(path, payload)
 
     def get(self, path: str) -> object:
         return self.request("GET", path)

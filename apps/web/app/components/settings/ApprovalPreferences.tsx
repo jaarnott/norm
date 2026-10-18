@@ -45,6 +45,8 @@ const SWITCH_NOTE: Record<string, string> = {
     'Norm picks the closest unit Loaded already has. It never invents one — that is the switch above.',
   receive_with_unconfirmed_unit:
     'The line has a unit, it just came from Loaded rather than the invoice copy. Off means someone confirms it first; the blocker names which unit it would use.',
+  receive_unit_kind_mismatch:
+    'Loaded can\'t convert a weight into a count or a volume, so a product bought by the 10 kg box but counted each in stocktakes would count wrong. Off means the invoice waits; on means Norm receives it in the unit the invoice shows.',
   auto_delete_duplicates:
     'A destructive write: Norm deletes the draft when the same invoice number from the same supplier was already received.',
   auto_delete_non_invoices:

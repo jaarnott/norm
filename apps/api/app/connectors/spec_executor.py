@@ -314,6 +314,10 @@ def execute_http(
                 payload = resp.json()
             except Exception:
                 payload = {"body": resp.text[:500]}
+            # Non-measurement units reach Norm marked deleted (invoice_units).
+            from app.services.invoice_units import hide_non_measurement_units
+
+            payload = hide_non_measurement_units(rendered.url, payload)
         return ConnectorResult(
             success=True,
             reference=reference,

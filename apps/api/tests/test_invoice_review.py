@@ -3435,6 +3435,52 @@ class TestTheCopyDecidesWhichLayoutReadsIt:
         assert len(calls) == 2  # one per explicit call, never recursive
         assert used is neat and again["supplier_name"] == "Neat Meat"
 
+    def test_a_supplier_studied_after_the_read_is_read_again(self, monkeypatch):
+        """Shelves Central #SC4341 (16 Oct 2026): no Loaded supplier, so the
+        study came after the first read, and the invoice was received on it."""
+        roster: dict = {}
+        calls = self._wire(
+            monkeypatch,
+            roster,
+            second={"supplier_name": "Shelves Central", "invoice_number": "SECOND"},
+        )
+
+        def _study(_db, _cdb, _v, _i, supplier):
+            roster[supplier.lower()] = self._Spec("s-shelves", "Shelves Central")
+            return True
+
+        monkeypatch.setattr(IR, "_maybe_sensei", _study)
+        out, used = IR.study_printed_supplier(
+            None,
+            object(),
+            None,
+            "v-1",
+            "inv-1",
+            "f-1",
+            {},
+            [],
+            {"supplier_name": "Shelves Central"},
+        )
+        assert calls == ["INSTR:Shelves Central"]
+        assert out["invoice_number"] == "SECOND" and used.name == "Shelves Central"
+
+    def test_no_study_no_second_read(self, monkeypatch):
+        calls = self._wire(monkeypatch, {})
+        monkeypatch.setattr(IR, "_maybe_sensei", lambda *a: False)
+        out, used = IR.study_printed_supplier(
+            None,
+            object(),
+            None,
+            "v-1",
+            "inv-1",
+            "f-1",
+            {},
+            [],
+            {"supplier_name": "Shelves Central"},
+        )
+        assert calls == [] and used is None
+        assert out == {"supplier_name": "Shelves Central"}
+
     def test_loaded_s_supplier_stays_in_the_second_prompt(self, monkeypatch):
         """The supplier-differs clause is what lets the model say the two
         disagree, and Loaded's name is still a true statement about Loaded."""

@@ -1279,6 +1279,38 @@ class TestCreditNoteSigns:
         assert any(i["code"] == "duplicate_invoice" for i in doc["issues"])
 
 
+class TestANonMeasurementUnitIsNoUnit:
+    """A supplier record set up in a non-measurement unit (Bunch, Box) reaches
+    Norm marked deleted (invoice_units.hide_non_measurement_units), and a
+    deleted unit on the record is no unit: the line is not booked in it.
+    Somewhere North's parsley and dill went in as Bunch or Kilo this way."""
+
+    def test_the_record_unit_is_not_used(self):
+        bunch = {
+            "id": "u-bunch",
+            "name": "Bunch",
+            "ratio": 1,
+            "stockUnitType": "Count",
+            "datestampDeleted": "1970-01-01T00:00:00+00:00",
+            "hiddenByNorm": "not a measurement",
+        }
+        catalogue = [
+            dict(
+                CATALOGUE[0],
+                suppliers=[dict(CATALOGUE[0]["suppliers"][0], unitId="u-bunch")],
+            ),
+            *CATALOGUE[1:],
+        ]
+        line = dict(EXTRACTION["lines"][0], unit="Bunch", unit_of_measure=None)
+        doc = _build(
+            dict(EXTRACTION, lines=[line]), catalogue=catalogue, units=[*UNITS, bunch]
+        )
+        ln = doc["lines"][0]
+        assert ln["linked_item_id"] == "item-salmon"  # the record still links
+        assert ln.get("linked_unit_id") != "u-bunch"
+        assert any(i["code"] == "unit_missing" for i in doc["issues"])
+
+
 class TestTheInvoicesUnitIsTheUnit:
     """The unit-fix doctrine, replica-side (TestCopyUnitPrecedence folded in):
     the copy is the delivery; a variant default is user-entered data in

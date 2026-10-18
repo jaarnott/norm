@@ -13,6 +13,7 @@ retired ``link_po`` / ``unit`` fix appliers.
 import pytest
 
 from app.services import invoice_catalog as CAT
+from app.services import invoice_units as U
 from app.services.invoice_units import is_multipack, multipack_equal, units_equivalent
 
 UNITS = [
@@ -264,3 +265,86 @@ class TestGetOrCreateUnit:
 def test_parsed_unit_spec_matches_the_llm_conventions(name, spec):
     # The answers llm_unit_spec's prompt documents, without the call.
     assert CAT.parsed_unit_spec(name) == spec
+
+
+class TestOnlyMeasurementUnits:
+    """The owner, 17 Oct 2026: "norm should not be using non measurement units
+    at all eg. bunch, market etc as they cant be used in recipes or
+    stocktaking". Names from the three AU venues' real unit lists."""
+
+    @pytest.mark.parametrize(
+        "name,utype,ratio",
+        [
+            ("Kilo", "Weight", 1),
+            ("Gram", "Weight", 0.001),
+            ("Each", "Count", 1),
+            ("EA", "Count", 1),
+            ("Dozen", "Count", 12),
+            ("180 Pack", "Count", 180),
+            ("700 Grams", "Weight", 0.7),
+            ("Punnet (400g)", "Weight", 0.4),
+            ("12 Pack (1L)", "Volume", 12),
+            ("190gx6", "Weight", 1.14),
+            ("300ML - 8 PACK", "Volume", 2.4),
+            ("4x12 unit", "Count", 48),
+            ("Tray (22 units)", "Count", 22),
+            ("Box of 12", "Count", 12),
+            ("2.27KG (120 Slices)", "Count", 120),
+            ("5L Keg", "Volume", 5),
+            ("Keg", "Volume", 50),
+            ("Triple", "Volume", 0.09),
+            ("6x1L", "Volume", 6),
+            ("48x250", "Count", 48),
+        ],
+    )
+    def test_a_measurement_is_kept(self, name, utype, ratio):
+        assert U.is_measurement({"name": name, "stockUnitType": utype, "ratio": ratio})
+
+    @pytest.mark.parametrize(
+        "name,utype,ratio",
+        [
+            ("Box", "Volume", 250),  # Loaded's default: 250 litres
+            ("Bunch", "Count", 1),
+            ("Market", "Count", 1),
+            ("Punnet", "Count", 1),
+            ("CARTON", "Count", 1),
+            ("Serving", "Count", 1),
+            ("Ream", "Count", 500),
+            ("1 KG", "Weight", 1000),  # Somewhere North's: 1,000 kg a bag
+            ("2500 Pack", "Count", 1),
+            ("285 Grams", "Volume", 0.285),
+        ],
+    )
+    def test_anything_else_is_not(self, name, utype, ratio):
+        assert not U.is_measurement(
+            {"name": name, "stockUnitType": utype, "ratio": ratio}
+        )
+
+    def test_the_unit_list_reaches_norm_with_them_marked_deleted(self):
+        rows = [
+            {"id": "u-kilo", "name": "Kilo", "ratio": 1, "stockUnitType": "Weight"},
+            {"id": "u-box", "name": "Box", "ratio": 250, "stockUnitType": "Volume"},
+            {
+                "id": "u-old",
+                "name": "Bunch",
+                "ratio": 1,
+                "stockUnitType": "Count",
+                "datestampDeleted": "2025-03-01T00:00:00Z",
+            },
+        ]
+        out = U.hide_non_measurement_units(
+            "https://api.loadedhub.com/1.0/stock/internal/units?includeDeleted=true",
+            rows,
+        )
+        by_id = {u["id"]: u for u in out}
+        assert not by_id["u-kilo"].get("datestampDeleted")
+        assert by_id["u-box"]["datestampDeleted"] == U.HIDDEN_UNIT_MARK
+        assert by_id["u-box"]["hiddenByNorm"] == "not a measurement"
+        # Loaded's own deletion is left exactly as it was.
+        assert by_id["u-old"]["datestampDeleted"] == "2025-03-01T00:00:00Z"
+
+    def test_other_responses_pass_through(self):
+        rows = [{"id": "x", "name": "Box", "ratio": 250, "stockUnitType": "Volume"}]
+        assert U.hide_non_measurement_units("/1.0/stock/internal/items", rows) == [
+            {"id": "x", "name": "Box", "ratio": 250, "stockUnitType": "Volume"}
+        ]

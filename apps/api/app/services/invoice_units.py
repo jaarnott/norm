@@ -100,6 +100,128 @@ def is_packaging_word(text: object) -> bool:
     return " ".join(str(text or "").strip().lower().split()) in _PACKAGING_WORDS
 
 
+# ---------------------------------------------------------------------------
+# Measurement units only (owner, 17 Oct 2026)
+# ---------------------------------------------------------------------------
+#
+# "norm should not be using non measurement units at all eg. bunch, market etc
+# as they cant be used in recipes or stocktaking." A Loaded unit Norm may use
+# states its quantity: a weight, a volume, or a count of identical items
+# ('Each', '12 Pack', '180 Pack' — "recipes use '2 eggs'"). Any other unit
+# reaches Norm marked deleted, at the two places it reads Loaded's unit list
+# (the app's Loaded client and the connector HTTP layer): everything that picks
+# a unit already skips deleted ones, and reports — which must still name the
+# units old records use — already read deleted ones. Loaded itself is untouched.
+
+#: Whole names that only say how goods were bundled (Box is Loaded's default
+#: VOLUME unit of 250 L; Bunch, Punnet and Market are counts of 1).
+_BUNDLING_WORDS = _PACKAGING_WORDS | {
+    "bag",
+    "bags",
+    "tray",
+    "trays",
+    "bunch",
+    "bunches",
+    "market",
+    "punnet",
+    "punnets",
+    "crate",
+    "sack",
+}
+_SIZE = (
+    r"\d+(?:\.\d+)?\s*(?:kg|kgs|g|gm|gms|gr|gram|grams|ml|l|lt|ltr|litre|litres"
+    r"|liter|liters)"
+)
+_COUNT_WORDS = r"(?:units?|packs?|pk|pcs|pieces?|ea|each|slices?|sheets?)"
+#: Marker set on a unit Norm hides: Loaded's own deleted units carry a date here.
+HIDDEN_UNIT_MARK = "1970-01-01T00:00:00+00:00"
+_UNITS_PATH = "/1.0/stock/internal/units"
+
+
+def _name_quantities(name: str) -> list[dict]:
+    """Every quantity a unit's name states, as ``{ratio, stock_unit_type}``.
+    Several readings, because Loaded's names come in many shapes: '6x190g',
+    '190gx6', '12 Pack (1L)', '300ML - 8 PACK', 'Punnet (400g)', '4x12 unit',
+    'Tray (22 units)', 'Box of 12', '5L Keg'."""
+    from app.services.invoice_catalog import parsed_unit_spec
+
+    n = " ".join(name.lower().split())
+    cands = [n]
+    m = re.match(r"^(" + _SIZE + r")\s*x\s*(\d+)$", n)
+    if m:
+        cands.append(f"{m.group(2)}x{m.group(1)}")
+    m = re.match(r"^(\d+)\s*(?:pack|pk)\s*\(([^)]+)\)$", n)
+    if m:
+        cands.append(f"{m.group(1)}x{m.group(2)}")
+    m = re.match(r"^(\d+)\s*x\s*\d", n)
+    if m:
+        cands.append(f"{m.group(1)} pack")
+    m = re.match(r"^(\d+)\s*x\s*(\d+)(?:\s*" + _COUNT_WORDS + r")?$", n)
+    if m:
+        cands.append(f"{int(m.group(1)) * int(m.group(2))} pack")
+    m = re.match(r"^(" + _SIZE + r")\s*[-–]?\s*(\d+)\s*(?:pack|pk)$", n)
+    if m:
+        cands.append(f"{m.group(2)}x{m.group(1)}")
+    cands += [f"{c} pack" for c in re.findall(r"\bof\s+(\d+)\b", n)]
+    for inner in re.findall(r"\(([^)]*)\)", n):
+        cands.append(inner)
+        c = re.match(r"^(\d+)\s*" + _COUNT_WORDS + r"$", inner.strip())
+        if c:
+            cands.append(f"{c.group(1)} pack")
+    cands += re.findall(r"\b(" + _SIZE + r")\b", n)
+    out: list[dict] = []
+    for c in cands:
+        spec = parsed_unit_spec(c)
+        if spec and spec not in out:
+            out.append(spec)
+    return out
+
+
+def is_measurement(unit: dict) -> bool:
+    """Is this Loaded unit a measurement Norm may use?
+
+    - A bundling word on its own ('Box', 'Bunch', 'CARTON') never is.
+    - A name that states a quantity must agree with Loaded's own type and ratio
+      for the unit — which rejects Somewhere North's '1 KG' (ratio 1000) and
+      '2500 Pack' (ratio 1) as surely as a bundling word.
+    - A name that states none: a weight or volume Loaded defines stands ('Keg'
+      50 L, a bar 'Triple' 90 ml); a count must state its number ('Serving',
+      'Single', 'Ream' don't)."""
+    name = " ".join(str(unit.get("name") or "").lower().split())
+    if not name or name in _BUNDLING_WORDS:
+        return False
+    utype = unit.get("stockUnitType")
+    try:
+        ratio = float(unit.get("ratio") or 0)
+    except (TypeError, ValueError):
+        return False
+    stated = _name_quantities(name)
+    if stated:
+        return any(
+            (not utype or s["stock_unit_type"] == utype)
+            and abs(s["ratio"] - ratio) <= 1e-6 * max(1.0, ratio)
+            for s in stated
+        )
+    return utype in ("Weight", "Volume")
+
+
+def hide_non_measurement_units(url: object, payload: object) -> object:
+    """Loaded's unit list with every non-measurement unit marked deleted (see
+    the block comment above). Any other response passes through untouched."""
+    path = str(url or "").split("?")[0].rstrip("/")
+    if not path.endswith(_UNITS_PATH) or not isinstance(payload, list):
+        return payload
+    for unit in payload:
+        if (
+            isinstance(unit, dict)
+            and not unit.get("datestampDeleted")
+            and not is_measurement(unit)
+        ):
+            unit["datestampDeleted"] = HIDDEN_UNIT_MARK
+            unit["hiddenByNorm"] = "not a measurement"
+    return payload
+
+
 # Category → the unit TYPES a delivered unit may be. Validators independent
 # of any venue's data. A beverage may be a volume OR a count: poured/portioned
 # drinks (wine, spirits, kegs, cordials) are volumes, but a drink sold as a whole

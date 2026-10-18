@@ -740,10 +740,24 @@ def build_replica(
             and not is_packaging_word(derived)
             and (is_multipack(derived) or parse_unit(derived) is not None)
         )
-        if variant and variant.get("unitId"):
-            unit_rec = next(
-                (u for u in units if u.get("id") == variant.get("unitId")), None
-            ) or {"id": variant.get("unitId"), "name": None, "ratio": None}
+        variant_unit = (
+            next((u for u in units if u.get("id") == variant.get("unitId")), None)
+            if variant and variant.get("unitId")
+            else None
+        )
+        # A deleted unit on the supplier record — Loaded's, or a non-measurement
+        # unit Norm hides (invoice_units.hide_non_measurement_units: Box, Bunch,
+        # Market) — is no unit: the line goes on to the copy, the catalogue and
+        # the estimate like any line without one.
+        variant_unit_usable = bool(variant and variant.get("unitId")) and not (
+            variant_unit is not None and variant_unit.get("datestampDeleted")
+        )
+        if variant_unit_usable:
+            unit_rec = variant_unit or {
+                "id": variant.get("unitId"),
+                "name": None,
+                "ratio": None,
+            }
             unit_source = "variant"
             # The unit is whatever the INVOICE says. A variant default is
             # user-entered data in Loaded; the copy is the delivery, and

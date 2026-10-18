@@ -1600,6 +1600,8 @@ class TestEveryBlockerHasAnAutopilotDecision:
         "supplier_unresolved": {"kind": "create_supplier"},
         "loaded_line_not_on_copy": {"kind": "strike"},
         "po_missing": {"kind": "link_po"},
+        # A "receive it anyway" confirm, applied when its switch is on.
+        "unit_kind_mismatch": {"kind": "confirm", "fixes": "unit_kind_mismatch"},
         "po_unresolved": {"kind": "link_po"},
         "po_split_order": {"kind": "split_reference"},
         "po_doubled_up": {"kind": "unlink_po"},
@@ -1649,3 +1651,70 @@ class TestEveryBlockerHasAnAutopilotDecision:
         issue = {"id": code, "code": code, "line_id": "ln-1", "blocking": True}
         s = {"id": "s-1", "line_id": "ln-1", **self.SETTLED_BY[code]}
         assert IR._answers(s, issue)
+
+
+class TestAUnitOfAnotherKind:
+    """Owner, 17 Oct 2026: a unit of a different kind (weight, volume, count)
+    from the product's stocktake unit needs its own switch. Off: the invoice
+    is not received; on: it is. Loaded can't convert one kind to another."""
+
+    UNITS = [
+        {"id": "u-kilo", "name": "Kilo", "ratio": 1, "stockUnitType": "Weight"},
+        {"id": "u-each", "name": "Each", "ratio": 1, "stockUnitType": "Count"},
+        {"id": "u-10kg", "name": "10 KG", "ratio": 10, "stockUnitType": "Weight"},
+    ]
+    #: Potatoes counted each in stocktakes, delivered by the 10 kg box.
+    CATALOGUE = [{"id": "item-potato", "name": "Potato", "countingUnitId": "u-each"}]
+
+    def _data(self, unit_id="u-10kg", unit="10 KG"):
+        return {
+            "invoice_id": "inv-1",
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "description": "Dutch Cream Potato",
+                    "item_name": "Potato",
+                    "linked_item_id": "item-potato",
+                    "linked_unit_id": unit_id,
+                    "unit": unit,
+                    "quantity_received": 1,
+                    "unit_cost": 58.0,
+                }
+            ],
+            "suggestions": [],
+            "suggestion_actions": [],
+            "issues": [],
+        }
+
+    def _review(self, data):
+        issues: list = []
+        suggestions: list = []
+        IR.unit_kind_issues(data, suggestions, self.CATALOGUE, self.UNITS, issues)
+        IR.link_fixes(data, None, issues, suggestions)
+        data["issues"], data["suggestions"] = issues, suggestions
+        return issues, suggestions
+
+    def test_a_weight_on_a_product_counted_each_is_a_blocker(self):
+        [issue], [fix] = self._review(self._data())
+        assert issue["code"] == "unit_kind_mismatch" and issue["blocking"]
+        assert issue["gate"] == VA.RECEIVE_UNIT_KIND_MISMATCH
+        assert "'10 KG' (a weight)" in issue["message"]
+        assert "'Each' (a count)" in issue["message"]
+        assert fix["kind"] == "confirm" and fix["gate"] == VA.RECEIVE_UNIT_KIND_MISMATCH
+        assert issue["fix"] == [fix["id"]]
+
+    def test_the_same_kind_is_no_blocker(self):
+        issues, _ = self._review(self._data(unit_id="u-each", unit="Each"))
+        assert issues == []
+
+    def test_the_switch_on_receives_it_off_stops_it(self):
+        for on, expect in ((True, "ready"), (False, "needs_review")):
+            data = self._data()
+            self._review(data)
+            settings = {
+                "mode": "autopilot",
+                **{g: False for g in VA.GATES},
+                VA.RECEIVE_UNIT_KIND_MISMATCH: on,
+            }
+            IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
+            assert IR.compute_confidence(data) == expect, on

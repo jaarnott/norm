@@ -616,6 +616,56 @@ _HEADER_VALUE_FIELDS = (
 )
 
 
+#: Loaded's unit kinds, in words for a blocker.
+_KIND_WORDS = {"Weight": "a weight", "Volume": "a volume", "Count": "a count"}
+
+
+def unit_kind_issues(
+    data: dict,
+    suggestions: list[dict],
+    catalogue: list[dict] | None,
+    units: list[dict] | None,
+    issues: list[dict],
+) -> None:
+    """A line received in a unit of a different kind (weight, volume or
+    count) from what stocktakes count its product in. Loaded can't convert
+    one kind into another, so the stock count would be wrong; the owner
+    (17 Oct 2026) gave it a switch: receive_unit_kind_mismatch. Checked on
+    the units the suggestions leave. In place."""
+    by_item = {str(i.get("id")): i for i in catalogue or [] if isinstance(i, dict)}
+    by_unit = {str(u.get("id")): u for u in units or [] if isinstance(u, dict)}
+    post = {
+        str(ln.get("id")): ln
+        for ln in _all_applied(data, suggestions).get("lines") or []
+    }
+    for line in data.get("lines") or []:
+        ln = post.get(str(line.get("id"))) or {}
+        if not ln or ln.get("struck"):
+            continue
+        item = by_item.get(str(ln.get("linked_item_id")))
+        unit = by_unit.get(str(ln.get("linked_unit_id")))
+        counting = by_unit.get(str((item or {}).get("countingUnitId")))
+        got = (unit or {}).get("stockUnitType")
+        want = (counting or {}).get("stockUnitType")
+        if not got or not want or got == want:
+            continue
+        desc = ln.get("item_name") or ln.get("description") or ln.get("code") or "line"
+        issues.append(
+            {
+                "id": f"unit_kind_mismatch:{ln['id']}",
+                "code": "unit_kind_mismatch",
+                "blocking": True,
+                "line_id": ln["id"],
+                "gate": _VA.RECEIVE_UNIT_KIND_MISMATCH,
+                "message": (
+                    f"'{desc}' is received in '{unit.get('name')}' "
+                    f"({_KIND_WORDS.get(got, got)}) but stocktakes count it in "
+                    f"'{counting.get('name')}' ({_KIND_WORDS.get(want, want)})"
+                ),
+            }
+        )
+
+
 def brand_issues(data: dict, issues: list[dict]) -> None:
     """A brand Loaded names but has no record for STOPS the receive.
 
@@ -1177,6 +1227,7 @@ _ISSUE_GATES = {
     # A unit Loaded supplied but the copy never confirmed. name_the_unit_in_use
     # re-points unit_missing here too when the working line already has one.
     "unit_unconfirmed": _VA.RECEIVE_WITH_UNCONFIRMED_UNIT,
+    "unit_kind_mismatch": _VA.RECEIVE_UNIT_KIND_MISMATCH,
     "po_missing": _VA.RECEIVE_WITHOUT_PO,
     "po_unresolved": _VA.RECEIVE_WITHOUT_PO,
     "loaded_line_not_on_copy": _VA.AUTO_STRIKE_PHANTOM_LINES,
@@ -1710,7 +1761,12 @@ LOADED_WRITE_ORDER = ("create_supplier", "create_unit", "create_item", "create_b
 #: Blockers a venue switch waves through on its own: the switch IS the answer
 #: ("receive without an order"), so nothing has to be applied for it to stand
 #: down.
-_SWITCH_SETTLES = ("po_missing", "po_unresolved", "unit_unconfirmed")
+_SWITCH_SETTLES = (
+    "po_missing",
+    "po_unresolved",
+    "unit_unconfirmed",
+    "unit_kind_mismatch",
+)
 # Not the totals: the blocker clears only because the invoice balances — never
 # by decree.
 
@@ -1796,6 +1852,12 @@ def _confirm_for(data: dict, replica: dict | None, issue: dict) -> dict | None:
             "printed": f"the printed column says '{unit}'; keep it",
         }.get(source, f"keep Loaded's '{unit}'")
         explanation = f"the invoice doesn't confirm the unit for '{desc}' — {said}"
+    elif code == "unit_kind_mismatch":
+        ln = _line(data, issue.get("line_id"))
+        if not ln:
+            return None
+        field, proposed = "unit", ln.get("unit")
+        explanation = f"{issue.get('message')} — receive it anyway"
     elif code == "po_missing":
         field = "linked_purchase_order_id"
         explanation = (
@@ -2571,9 +2633,18 @@ def review_invoice(
             # when Loaded's name matched something. Ask the roster about the
             # printed name too, or a business filed under someone else's Loaded
             # record is never trained.
-            printed = extraction.get("supplier_name")
-            if allow_sensei and file_id and printed and spec_used is None:
-                _maybe_sensei(db, config_db, venue_id, invoice_id, str(printed))
+            if allow_sensei and file_id and spec_used is None:
+                extraction, spec_used = study_printed_supplier(
+                    db,
+                    config_db,
+                    lh,
+                    venue_id,
+                    invoice_id,
+                    file_id,
+                    detail,
+                    aliases,
+                    extraction,
+                )
             data["extracted_snapshot"] = _extracted_snapshot(extraction)
             # Feed the Norm supplier-product catalogue: every successful
             # extraction's printed sizes are supplier-stated physical facts
@@ -2860,6 +2931,7 @@ def review_invoice(
                 resolve_lines=resolve_added,
                 on_unresolved=totals_unresolved,
             )
+            unit_kind_issues(data, suggestions, catalogue, units, issues)
             link_fixes(data, replica, issues, suggestions)
             data["suggestions"] = suggestions
             data["issues"] = issues
@@ -2957,6 +3029,41 @@ def _with_suppliers(reference: dict | None, suppliers: list[dict]) -> dict:
     if ref.get("suppliers") is None:
         ref["suppliers"] = suppliers
     return ref
+
+
+def study_printed_supplier(
+    db: Session,
+    config_db: Session,
+    lh,
+    venue_id: str,
+    invoice_id: str,
+    file_id: object,
+    detail: dict,
+    aliases: list[str],
+    extraction: dict,
+) -> tuple[dict, object]:
+    """Study the supplier the copy PRINTS when it has no prompt, then read the
+    copy again under what the study wrote, before anything is decided.
+
+    The study before the first read keys on Loaded's supplier, so a draft that
+    names none, or names another business, is first read with the main prompt
+    alone. Shelves Central #SC4341 (16 Oct 2026, no Loaded supplier) was
+    studied after that read, its notes were applied a minute later, and it
+    was received on the first reading anyway: nothing read it again. A study
+    that concludes no notes are needed leaves the instructions as they were,
+    so the second read is a cache hit and costs nothing."""
+    printed = extraction.get("supplier_name")
+    if not printed or not _maybe_sensei(
+        db, config_db, venue_id, invoice_id, str(printed)
+    ):
+        return extraction, None
+    # The study wrote the supplier's notes in its own session.
+    expire = getattr(config_db, "expire_all", None)
+    if callable(expire):
+        expire()
+    return reread_under_printed_spec(
+        db, config_db, lh, venue_id, file_id, detail, aliases, extraction
+    )
 
 
 def reread_under_printed_spec(
