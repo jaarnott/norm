@@ -230,7 +230,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // Loaded app's marketplace composition (sync_marketplace_catalog.py).
     id: 'supplier-tenders',
     app: 'loaded-stock',
-    connections: ['cook_brothers_app'],
+    connections: ['loaded_legacy'],
     label: 'Supplier Tenders',
     icon: Gavel,
     agent: 'procurement',

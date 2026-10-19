@@ -1,14 +1,12 @@
-"""Supplier tenders — the web page's bridge to the Cook Brothers App + Loaded.
+"""Supplier tenders — the web page's bridge to Loaded's tenders.
 
 Loaded's tenders API is unreachable with Norm's own OAuth client (the
-``stock:tenders`` scopes aren't grantable on it), so tender documents ride the
-Cook Brothers App connection — its consolidated ``stock_loadedhub_tender`` tool
-(action: list | get | update), venue resolved from the authenticated
-connection, reusing the recipe-write ``_cb_context``/``execute_spec`` plumbing.
-
-The review comes straight through the same tool (``action: review`` — Loaded's
-own tender-review report, passed through unchanged), so page and agent see
-exactly what Loaded's own screen would show.
+``stock:tenders`` scopes aren't grantable on it), so it goes through Loaded
+Legacy (app/connectors/loaded_legacy.py): ``list_tenders`` and
+``review_tender`` — Loaded's own tender-review report, passed through
+unchanged, so the page shows what Loaded's own screen would. Until 19 Oct 2026
+this went through the Cook Brothers App's ``stock_loadedhub_tender``
+(docs/plans/loaded-legacy-takeover.md).
 """
 
 import logging
@@ -26,8 +24,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-CB_TOOL = "stock_loadedhub_tender"
-
 
 class TendersRequest(BaseModel):
     venue_id: str
@@ -40,43 +36,23 @@ class TenderReviewRequest(BaseModel):
     end_time: str
 
 
-def _call_cb(fields: dict, venue_id: str, db: Session, config_db: Session):
-    from app.connectors.spec_executor import execute_spec
-    from app.services.recipe_save import RecipeSaveError, _cb_context, _op
+def _call(action: str, fields: dict, venue_id: str, db: Session, config_db: Session):
+    from app.connectors import loaded_legacy
 
-    try:
-        spec, cfg = _cb_context(venue_id, db, config_db)
-    except RecipeSaveError as exc:
-        # Venue isn't CB-connected — same actionable message the recipe save gives.
-        raise HTTPException(status_code=400, detail=str(exc))
-    try:
-        op = _op(spec, CB_TOOL)
-    except RecipeSaveError:
+    if loaded_legacy.connection(db, venue_id) is None:
         raise HTTPException(
-            status_code=501,
-            detail=(
-                "The Cook Brothers App doesn't expose supplier tenders yet — "
-                f"its '{CB_TOOL}' tool hasn't been added/discovered."
-            ),
+            status_code=400,
+            detail="This venue isn't connected to Loaded Legacy — connect it in "
+            "Settings → Venues to see its tenders.",
         )
-    result, _ = execute_spec(
-        spec, {**op, "required_fields": []}, fields, cfg.config, db, venue_id=venue_id
-    )
-    if not result.success:
-        raise HTTPException(
-            status_code=502, detail=result.error_message or "Cook Brothers App error"
-        )
-    payload = result.response_payload or {}
-    data = (
-        payload.get("data")
-        if isinstance(payload, dict) and "data" in payload
-        else payload
-    )
-    # The CB tool nests once more per action: list -> {tenders: [...]},
-    # get -> {tender: {...}}. Unwrap either; pass anything else through.
-    if isinstance(data, dict):
-        for key in ("tender", "tenders", "review"):
-            if key in data:
+    try:
+        data = loaded_legacy.call(action, fields, venue_id, db, config_db)
+    except loaded_legacy.LoadedLegacyError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    # Loaded answers the list as an array (older answers wrapped it).
+    if isinstance(data, dict) and action == "list_tenders":
+        for key in ("items", "data"):
+            if isinstance(data.get(key), list):
                 return data[key]
     return data
 
@@ -92,7 +68,7 @@ def list_tenders(
         raise HTTPException(
             status_code=403, detail="You don't have access to that venue."
         )
-    return {"data": _call_cb({"action": "list"}, req.venue_id, db, config_db)}
+    return {"data": _call("list_tenders", {}, req.venue_id, db, config_db)}
 
 
 @router.post("/supplier-tenders/review")
@@ -107,9 +83,8 @@ def tender_review(
             status_code=403, detail="You don't have access to that venue."
         )
     fields = {
-        "action": "review",
         "tender_id": req.tender_id,
         "start_time": req.start_time,
         "end_time": req.end_time,
     }
-    return {"data": _call_cb(fields, req.venue_id, db, config_db)}
+    return {"data": _call("review_tender", fields, req.venue_id, db, config_db)}

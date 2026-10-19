@@ -1,19 +1,22 @@
-"""Save a recipe to LoadedHub — the one place recipe writes happen.
+"""Save a recipe to Loaded — the recipe editor's and the claude.ai recipe
+card's writer.
 
-Loaded's only recipe-write API is its legacy ``/wapi`` host, which Norm's own
-OAuth token can't authenticate against. So recipe writes are routed through the
-Cook Brothers App MCP connector's ``kitchen_record_recipe`` tool (its
-stored per-org token DOES reach the legacy host). Recipe *reads* stay direct on
-the loadedhub connector — see ``sync_recipe_component_apis.py``.
+Loaded's only recipe-write API is its older ``/wapi`` host, which Norm's OAuth
+token can't reach. The writes go through the Loaded Legacy connector
+(app/connectors/loaded_legacy.py), and the write itself is its
+``record_recipe`` tool (config/consolidators/record_recipe.py): this module
+runs that tool, so the editor, the claude.ai card and the agent share one
+write path. Until 19 Oct 2026 this went through the Cook Brothers App's
+``kitchen_record_recipe`` (docs/plans/loaded-legacy-takeover.md).
 
-The write tool wants the CB App's OWN venue id (not Norm's), so we resolve it
-from ``list_venues`` on the same connection. Quantities on the wire are DISPLAY
-units for each line's ``unit_id`` — the RecipeEditor already converts Loaded's
-raw base quantities to display on load (``qty / unitRatio``), so the lines it
-sends here pass straight through.
+Quantities from the editor are DISPLAY units of each line's ``unit_id`` (the
+RecipeEditor converts Loaded's base quantities on load, ``qty / unitRatio``).
+The tool stores base units, so each line goes with its unit's ratio, read
+here once from the venue's units — with the ids and ratios settled, the tool
+needs no name matching.
 
-One writer, two front doors: the web route (routers/recipe_editor) and the MCP
-app tool (``norm__save_recipe``) both call ``save_recipe``.
+Two front doors call ``save_recipe``: the web route (routers/recipe_editor)
+and the MCP app tool (``norm__save_recipe``).
 """
 
 from __future__ import annotations
@@ -21,115 +24,98 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy.orm import Session
-from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
 
-CONNECTOR = "cook_brothers_app"
-SAVE_ACTION = "kitchen_record_recipe"
-LIST_VENUES_ACTION = "list_venues"
+CONNECTOR = "loaded_legacy"
+SAVE_TOOL = "record_recipe"
 
 
 class RecipeSaveError(Exception):
     """Recoverable failure saving a recipe; message goes back to the caller."""
 
 
-def _op(spec, action: str) -> dict:
-    for t in spec_rows.rows(spec):
-        if t.get("action") == action:
-            return t
-    raise RecipeSaveError(
-        f"The Cook Brothers App connector has no '{action}' tool. "
-        "Run sync-mcp-tools to discover it."
+def _units(venue_id: str, db: Session, config_db: Session) -> dict[str, dict]:
+    """The venue's units by id (the recipe editor's own read)."""
+    from app.services.component_api import execute_component_action
+
+    out = execute_component_action(
+        "recipe_editor", "list_units", {}, venue_id, db, config_db
     )
+    data = out.get("data") if isinstance(out, dict) else out
+    return {
+        str(u.get("id")): u
+        for u in (data if isinstance(data, list) else [])
+        if isinstance(u, dict) and u.get("id")
+    }
 
 
-def _cb_context(venue_id: str, db: Session, config_db: Session):
-    """The CB App spec + this venue's credentials, or a clear error."""
-    from app.db.config_models import ConnectionSpec
-    from app.db.models import Connection
-
-    spec = (
-        config_db.query(ConnectionSpec)
-        .filter(ConnectionSpec.connector_name == CONNECTOR)
-        .first()
-    )
-    if not spec:
-        raise RecipeSaveError("The Cook Brothers App connector is not configured.")
-
-    cfg = (
-        db.query(Connection)
-        .filter(
-            Connection.connector_name == CONNECTOR,
-            Connection.enabled == "true",
-            Connection.venue_id == venue_id,
-        )
-        .first()
-    )
-    if not cfg:
-        raise RecipeSaveError(
-            "This venue isn't connected to the Cook Brothers App. Connect it in "
-            "Settings to save recipes."
-        )
-    return spec, cfg
+def _unit(units: dict, unit_id: object, label: str) -> dict:
+    u = units.get(str(unit_id or ""))
+    try:
+        ratio = float(u.get("ratio")) if u else 0.0
+    except (TypeError, ValueError):
+        ratio = 0.0
+    if not ratio:
+        raise RecipeSaveError(f"{label} has a unit that isn't one of this venue's.")
+    return {"id": u["id"], "name": u.get("name"), "ratio": ratio}
 
 
-def resolve_cb_venue_id(venue_id: str, db: Session, config_db: Session) -> str:
-    """The CB App's own venue id for this Norm venue.
-
-    The connection's token grants a set of CB venues; pick the one that matches
-    this Norm venue by name, or the only one if it grants exactly one.
-    """
-    from app.connectors.spec_executor import execute_spec
-    from app.db.models import Venue
-
-    spec, cfg = _cb_context(venue_id, db, config_db)
-    result, _ = execute_spec(
-        spec, _op(spec, LIST_VENUES_ACTION), {}, cfg.config, db, venue_id=venue_id
-    )
-    if not result.success:
-        raise RecipeSaveError(
-            f"Couldn't list Cook Brothers App venues: {result.error_message}"
-        )
-    payload = result.response_payload or {}
-    data = payload.get("data") if isinstance(payload, dict) else payload
-    venues = data.get("venues") if isinstance(data, dict) else data
-    venues = venues if isinstance(venues, list) else []
-    if not venues:
-        raise RecipeSaveError("The Cook Brothers App connection grants no venues.")
-    if len(venues) == 1:
-        return venues[0].get("id")
-
-    venue = db.query(Venue).filter(Venue.id == venue_id).first()
-    name = (venue.name if venue else "").strip().lower()
-    for v in venues:
-        vn = str(v.get("name") or "").strip().lower()
-        if vn and (vn == name or vn in name or name in vn):
-            return v.get("id")
-    raise RecipeSaveError(
-        "Couldn't match this venue to a Cook Brothers App venue. Reconnect the "
-        "Cook Brothers App for the correct venue."
-    )
+def tool_params(recipe: dict, units: dict) -> dict:
+    """The editor's recipe as ``record_recipe``'s input: a create when there is
+    no ``recipe_id``, else an edit; ``lines`` replace the version's lines."""
+    is_create = bool(recipe.get("create")) or not recipe.get("recipe_id")
+    params: dict = {}
+    keys = ("name", "notes", "is_counted_in_stocktake", "yield_quantity")
+    if not is_create:
+        keys = ("recipe_id", "version_id", *keys)
+    for k in keys:
+        if recipe.get(k) is not None:
+            params[k] = recipe[k]
+    if recipe.get("yield_unit_id"):
+        yu = _unit(units, recipe["yield_unit_id"], "The yield")
+        params["yield_unit"] = yu["id"]
+        params["yield_unit_name"] = yu["name"]
+        params["yield_unit_ratio"] = yu["ratio"]
+    lines = recipe.get("lines")
+    if lines is not None:
+        params["mode"] = "replace"
+        params["ingredients"] = []
+        for ln in lines:
+            if not isinstance(ln, dict):
+                continue
+            label = f"'{(ln.get('name') or 'A line').strip()}'"
+            if not ln.get("ref_id"):
+                raise RecipeSaveError(f"{label} has no stock item or recipe.")
+            u = _unit(units, ln.get("unit_id"), label)
+            params["ingredients"].append(
+                {
+                    "kind": ln.get("kind") or "item",
+                    "ref_id": ln["ref_id"],
+                    "name": (ln.get("name") or "").strip(),
+                    "unit": u["id"],
+                    "unit_name": u["name"],
+                    "unit_ratio": u["ratio"],
+                    "quantity": ln.get("quantity"),
+                }
+            )
+    return params
 
 
 def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) -> dict:
-    """Save a recipe to Loaded via the Cook Brothers App — update or create.
+    """Save a recipe to Loaded — update or create.
 
     ``recipe`` carries what the editor built: optional ``name``/``notes``/
     ``is_counted_in_stocktake``/``yield_quantity``/``yield_unit_id``, and
     ``lines`` (each ``{kind, ref_id, unit_id, quantity}`` in DISPLAY units — a
     full replacement of the version's lines).
 
-    Two modes:
-
-    * **Update** — ``recipe_id`` + ``version_id`` present: writes the given
-      version.
-    * **Create** — ``recipe_id`` omitted (or ``create: true``): the CB tool makes
-      the recipe and its first version, then writes the lines/yield in the same
-      call, and returns the new ``recipe_id``/``version_id``. A create needs a
-      ``name``.
+    * **Update** — ``recipe_id`` + ``version_id`` present: writes that version.
+    * **Create** — ``recipe_id`` omitted (or ``create: true``): makes the recipe
+      and its first version and returns the new ``recipe_id``/``version_id``.
+      A create needs a ``name``, a yield unit and its lines.
     """
-    from app.connectors.spec_executor import ConnectorAuthError, execute_spec
+    from app.connectors.tool_executor import execute_connector_tool
 
     if not isinstance(recipe, dict):
         raise RecipeSaveError("recipe must be an object.")
@@ -143,42 +129,12 @@ def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) ->
     if lines is not None and (not isinstance(lines, list) or len(lines) > 500):
         raise RecipeSaveError("lines must be a list of at most 500 entries.")
 
-    spec, cfg = _cb_context(venue_id, db, config_db)
-    cb_venue_id = resolve_cb_venue_id(venue_id, db, config_db)
-
-    # The consolidated kitchen_record_recipe (29 Aug 2026, replacing
-    # kitchen_loadedhub_update_recipe) has a strict schema, verified live:
-    # create = omit recipe_id/version_id (no create flag exists); update needs
-    # BOTH ids (the "version_id resolved from recipe_id" in its description is
-    # not the actual behaviour); ingredients are {kind, name, quantity, unit}
-    # where unit takes a unit NAME or unit id (GUID ok) and name is required;
-    # yield_unit likewise takes name-or-id.
-    fields = {"venue_id": cb_venue_id}
-    passthrough = ("name", "notes", "is_counted_in_stocktake", "yield_quantity")
-    if not is_create:
-        passthrough = ("recipe_id", "version_id", *passthrough)
-    for k in passthrough:
-        if recipe.get(k) is not None:
-            fields[k] = recipe[k]
-    if recipe.get("yield_unit_id") is not None:
-        fields["yield_unit"] = recipe["yield_unit_id"]
-    if lines is not None:
-        # The id the editor chose goes with the name. Until Oct 2026 only the
-        # name went, and the CB App resolved it again — so a line the chef
-        # had pinned to one of three "POLENTA" sub-recipes could land on
-        # another (prod thread aad94383).
-        fields["ingredients"] = [
-            {
-                "kind": ln.get("kind") or "item",
-                "name": (ln.get("name") or "").strip(),
-                **({"ref_id": ln["ref_id"]} if ln.get("ref_id") else {}),
-                "quantity": ln.get("quantity"),
-                "unit": ln.get("unit_id") or ln.get("unit_name") or "",
-            }
-            for ln in lines
-            if isinstance(ln, dict)
-        ]
-
+    units = (
+        _units(venue_id, db, config_db)
+        if (lines or recipe.get("yield_unit_id"))
+        else {}
+    )
+    params = tool_params(recipe, units)
     logger.info(
         "recipe_save",
         extra={
@@ -188,89 +144,26 @@ def save_recipe(venue_id: str, recipe: dict, db: Session, config_db: Session) ->
             "lines": len(lines or []),
         },
     )
-    # execute_spec enforces the operation's required_fields (recipe_id/version_id
-    # in the discovered CB schema) — but a create legitimately omits them. We own
-    # validation above, so hand execute_spec an operation with no required gate.
-    op = {**_op(spec, SAVE_ACTION), "required_fields": []}
-    try:
-        result, _ = execute_spec(spec, op, fields, cfg.config, db, venue_id=venue_id)
-    except ConnectorAuthError as exc:
-        raise RecipeSaveError(str(exc)) from exc
-    if not result.success:
-        raise RecipeSaveError(result.error_message or "Loaded rejected the save.")
-
-    # A create should return the new ids; surface them so the caller can open
-    # the saved recipe. The CB App's create response carries null ids (its
-    # body echoes a placeholder — verified live, Aug 2026), so when they are
-    # missing the recipe is found in Loaded by name: the newest recipe with
-    # that name, which the write just made.
-    payload = result.response_payload or {}
-    src = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(src, dict):
-        src = payload if isinstance(payload, dict) else {}
-    new_recipe_id = (
-        src.get("recipe_id") or src.get("recipeId") or recipe.get("recipe_id")
+    result = execute_connector_tool(
+        CONNECTOR,
+        SAVE_TOOL,
+        params,
+        db,
+        config_db,
+        venue_id=venue_id,
+        strict_venue=True,
     )
-    new_version_id = (
-        src.get("version_id") or src.get("versionId") or recipe.get("version_id")
-    )
-    if is_create and not new_recipe_id:
-        new_recipe_id, new_version_id = find_created(
-            venue_id, str(recipe.get("name") or ""), db, config_db
-        )
+    data = result.payload if isinstance(result.payload, dict) else {}
+    error = result.error or data.get("error")
+    if not result.success or error:
+        raise RecipeSaveError(str(error or "Loaded rejected the save."))
     return {
         "saved": True,
-        "created": is_create,
-        "recipe_id": new_recipe_id,
-        "version_id": new_version_id,
-        "detail": result.response_payload,
+        "created": bool(data.get("created")),
+        "recipe_id": data.get("recipe_id") or recipe.get("recipe_id"),
+        "version_id": data.get("version_id") or recipe.get("version_id"),
+        "detail": {
+            "via": CONNECTOR,
+            **({"note": data["note"]} if data.get("note") else {}),
+        },
     }
-
-
-def pick_created(rows: list, name: str) -> tuple[str | None, str | None]:
-    """The recipe a create just made: the newest live recipe called ``name``
-    (case-insensitive), with its current version's id."""
-    want = " ".join(str(name or "").split()).lower()
-    if not want:
-        return None, None
-    same = [
-        r
-        for r in rows
-        if isinstance(r, dict)
-        and r.get("id")
-        and not r.get("deletedAt")
-        and " ".join(str(r.get("name") or "").split()).lower() == want
-    ]
-    if not same:
-        return None, None
-    same.sort(key=lambda r: str(r.get("createdAt") or ""), reverse=True)
-    r = same[0]
-    cv = r.get("currentVersion") if isinstance(r.get("currentVersion"), dict) else None
-    versions = [v for v in (r.get("versions") or []) if isinstance(v, dict)]
-    current = (
-        cv
-        or next((v for v in versions if not v.get("validTo")), None)
-        or (versions[-1] if versions else None)
-    )
-    return r["id"], (current or {}).get("id")
-
-
-def find_created(
-    venue_id: str, name: str, db: Session, config_db: Session
-) -> tuple[str | None, str | None]:
-    """Read Loaded's recipe list (the recipe editor's own read) and pick the
-    recipe a create just made. Best effort: a failed read returns no ids."""
-    from app.services.component_api import execute_component_action
-
-    try:
-        out = execute_component_action(
-            "recipe_editor", "list_recipes", {}, venue_id, db, config_db
-        )
-    except Exception as exc:  # noqa: BLE001 — the save itself succeeded
-        logger.warning("recipe created but its id could not be read back: %s", exc)
-        return None, None
-    rows = out.get("data") if isinstance(out, dict) else out
-    found = pick_created(rows if isinstance(rows, list) else [], name)
-    if not found[0]:
-        logger.warning("recipe created but not found by name %r in Loaded", name)
-    return found

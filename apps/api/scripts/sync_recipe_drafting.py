@@ -166,7 +166,7 @@ PLAYBOOK = {
 
 **5. Then say what needs the chef, briefly.** Each card is open below. Report only the lines Norm flagged (a candidate to pick, a stock item that doesn't exist, a missing quantity) and any recipe that already exists. Don't repeat the drafts in text. The chef can create a missing stock item from the card; if the user asks YOU to create items, use manage_stock_item (names in CAPITALS, no supplier) and then re-draft.
 
-**6. Saving.** The chef's Save on a card is the approval — nothing reaches Loaded until then, so never say a recipe is saved until you've seen it: the card's draft document carries `status: saved` and the new recipe_id once the chef saves, and get_recipes shows it. When the user explicitly asks you to save without a card ("just create it"), use record_recipe instead: it needs Loaded's own unit names (get_stock view 'reference' kind 'units') and exact item names, it asks for approval, and it returns the new recipe's id.""",
+**6. Saving.** The chef's Save on a card is the approval — nothing reaches Loaded until then, so never say a recipe is saved until you've seen it: the card's draft document carries `status: saved` and the new recipe_id once the chef saves, and get_recipes shows it. When the user explicitly asks you to save without a card ("just create it"), use record_recipe instead: name the ingredients and units as written — Norm matches them, and writes nothing if it isn't sure of a line (it names the candidates) — it asks for approval, and it returns the new recipe's id.""",
 }
 
 APP_NOTE = (
@@ -260,8 +260,9 @@ def main() -> None:
     args = parser.parse_args()
     apply_row_updates(
         [
+            # On Loaded Legacy since 19 Oct 2026 (sync_loaded_legacy_takeover.py).
             RowUpdate(
-                "cook_brothers_app", "record_recipe", code=code_of("record_recipe.py")
+                "loaded_legacy", "record_recipe", code=code_of("record_recipe.py")
             )
         ],
         dry_run=args.dry_run,

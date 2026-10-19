@@ -883,8 +883,8 @@ def _save_recipe(
 ) -> dict:
     """Save a recipe to Loaded — the recipe editor's Save button.
 
-    Routes through the Cook Brothers App (recipe_save.save_recipe); the user's
-    click is the approval.
+    Routes through Loaded Legacy's record_recipe (recipe_save.save_recipe); the
+    user's click is the approval.
     """
     from app.services.recipe_save import RecipeSaveError, save_recipe
 

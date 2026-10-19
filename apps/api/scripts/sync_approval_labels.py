@@ -113,7 +113,7 @@ def _receiving_options() -> list[dict]:
 WRITES = {
     "loadedhub.manage_stock_item": _ask("update stock items"),
     "loadedhub.manage_menu": _ask("change menus"),
-    "cook_brothers_app.record_recipe": _ask("save recipes in Orbit"),
+    "loaded_legacy.record_recipe": _ask("save recipes in Loaded"),
     "gmail.send_email": _ask("send emails from your Gmail"),
     "norm_email.send_report_email": _ask("email reports"),
     "norm.manage_task": _ask("change scheduled tasks"),

@@ -10,11 +10,18 @@
 #              with the biggest shortfalls and surpluses by value, and the
 #              items that could not be checked because they have no POS link.
 #
-# It replaces two tools on the agent menu. `stock_find_stocktakes` (Orbit's
-# list — Orbit returns Loaded's own stocktake ids) and
+# It replaced two tools on the agent menu: a stocktake list and
 # `generate_stocktake_report` (Loaded's report: 274–566 raw lines, which the
 # agent paged through with 7+ search_tool_result calls to answer "biggest
-# variances"). Both stay callable here.
+# variances").
+#
+# The list: Loaded's completed-stocktakes read is on its older /wapi host,
+# which refuses Norm's OAuth token. Until 19 Oct 2026 it came through the
+# Cook Brothers App (`stock_find_stocktakes`), which has no connection for
+# the Australian venues — every call there failed. Now it is Loaded Legacy's
+# `list_stocktakes` (one OData filter: pending ones, and completed ones in the
+# window) and `list_stock_groups` (the whole-category templates, "All Food").
+# docs/plans/loaded-legacy-takeover.md.
 #
 # Pairing is done HERE, never by the caller: a variance only means something
 # between two counts of the same template, and Loaded reports on a mixed pair
@@ -30,7 +37,8 @@
 # link have expected usage 0, so their "variance" is simply their usage — they
 # are reported separately as usage, not ranked as variance.
 #
-# Requires consolidator_config: {"max_api_calls": 4}
+# Requires consolidator_config: {"max_api_calls": 5}
+#   (resolve_dates, the list, the templates, the report, one report retry)
 
 _ZERO = "00000000-0000-0000-0000-000000000000"
 _VIEWS = ("list", "variance")
@@ -66,23 +74,49 @@ def _err(result, key):
     return None
 
 
-def _orbit_data(result):
-    """Orbit's MCP reply is {"success", "data": {...}}; tolerate the bare dict."""
-    if not isinstance(result, dict):
-        return None, "Orbit returned nothing readable"
-    if result.get("success") is False:
-        return None, str(
-            result.get("error") or result.get("message") or "Orbit call failed"
-        )
-    data = result.get("data") if isinstance(result.get("data"), dict) else result
-    if not isinstance(data.get("stocktakes"), list):
-        return None, _err(result, "stocktakes") or "Orbit returned no stocktake list"
-    return data, None
+def _odata_time(d):
+    """An OData datetimeoffset literal: whole seconds, the offset kept."""
+    return d.replace(microsecond=0).isoformat()
+
+
+def _listing(call_api, venue, window, back_days):
+    """{"stocktakes", "templates"} from Loaded Legacy, or an error.
+
+    Pending counts always, completed ones in the window (reaching back
+    ``back_days`` before it); with no window, the newest 500. Titles starting
+    "[AUTO]" are left out (machine counts, as Orbit did)."""
+    done = "Pending eq false"
+    if window:
+        start = _ts(window.get("start"))
+        end = _ts(window.get("end"))
+        if start:
+            start = start - datetime.timedelta(days=back_days)
+            done += f" and DatestampCompleted gt {_odata_time(start)}"
+        if end:
+            done += f" and DatestampCompleted lt {_odata_time(end)}"
+    args = {"venue": venue, "filter": f"Pending eq true or ({done})"}
+    if not window:
+        args["top"] = 500
+    rows = call_api("loaded_legacy", "list_stocktakes", args)
+    if not isinstance(rows, list):
+        return None, _err(rows, "stocktakes") or "Loaded returned no stocktake list"
+    groups = call_api("loaded_legacy", "list_stock_groups", {"venue": venue})
+    templates = [
+        {"id": g.get("id"), "title": "All " + str(g.get("name") or "")}
+        for g in (groups if isinstance(groups, list) else [])
+        if isinstance(g, dict) and g.get("id")
+    ]
+    stocktakes = [
+        s
+        for s in rows
+        if isinstance(s, dict) and not str(s.get("title") or "").startswith("[AUTO]")
+    ]
+    return {"stocktakes": stocktakes, "templates": templates}, None
 
 
 def _template_names(data):
-    """id -> title. Orbit lists the whole-category templates; titles of every
-    other template are recovered from its counts ("11/07/2026 - DAILY
+    """id -> title. Loaded's whole-category templates ("All Food"); titles of
+    every other template are recovered from its counts ("11/07/2026 - DAILY
     STOCKTAKE - KITCHEN" -> "DAILY STOCKTAKE - KITCHEN")."""
     names = {}
     for t in data.get("templates") or []:
@@ -397,26 +431,20 @@ def run(params, call_api, log):
     status = "completed"
     if view == "list":
         status = _lower(params.get("status")) or "completed"
-    find = {"venue": venue, "status": status, "include_templates": True, "limit": 200}
-    if window:
-        start = _ts(window.get("start"))
-        end = _ts(window.get("end"))
-        # A variance over a period opens on the last count BEFORE the period —
-        # reach back far enough to find it.
-        back = 120 if view == "variance" else 0
-        if start:
-            find["from"] = (start - datetime.timedelta(days=back)).date().isoformat()
-        if end:
-            find["to"] = end.date().isoformat()
-    listing = call_api("cook_brothers_app", "stock_find_stocktakes", find)
-    data, derr = _orbit_data(listing)
+    # A variance over a period opens on the last count BEFORE the period —
+    # reach back far enough to find it.
+    data, derr = _listing(call_api, venue, window, 120 if view == "variance" else 0)
     if derr:
         return {"error": f"could not list stocktakes: {derr}"}
     names = _template_names(data)
+    # Pending counts are always listed (on top), as Orbit's list did; only
+    # status 'pending' narrows the list to them.
     rows = [
         _row(s, names)
         for s in data["stocktakes"]
-        if isinstance(s, dict) and s.get("id")
+        if isinstance(s, dict)
+        and s.get("id")
+        and (status != "pending" or s.get("pending"))
     ]
 
     tid = None

@@ -5,10 +5,9 @@ Executive Chef manages recipes and menus in LoadedHub. This upserts its
 ``agent_connector_bindings`` for ``loadedhub`` (recipe reads + menu CRUD + a few
 stock-reference reads).
 
-Recipe **writes** are bound by a separate script (``sync_cb_recipe_write_binding.py``):
-they go through the ``cook_brothers_app`` MCP connector's
-``kitchen_loadedhub_update_recipe`` tool (Loaded's own recipe-write API can't be
-authed from Norm; the CB App resolves the venue from the authenticated connection).
+Recipe **writes** are bound separately: Loaded's recipe-write API refuses Norm's
+OAuth token, so they go through Loaded Legacy's ``record_recipe`` (since 19 Oct
+2026, ``sync_loaded_legacy_takeover.py``; the Cook Brothers App before).
 Stock-item **writes** (create/update item, a variant's unit, the default supplier
 variant) are added to the loadedhub spec by ``sync_stock_item_write_actions.py`` and
 bound here.

@@ -36,7 +36,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from scripts.tool_row_updates import RowUpdate, apply_row_updates, code_of  # noqa: E402
 
-READ_ENDPOINTS = (("cook_brothers_app", "kitchen_get_recipe"),)
+# Was the Cook Brothers App's kitchen_get_recipe, gone with the takeover
+# (19 Oct 2026); record_recipe now reads through Loaded Legacy's own GET rows.
+READ_ENDPOINTS: tuple = ()
 
 
 def updates() -> list[RowUpdate]:
@@ -45,12 +47,8 @@ def updates() -> list[RowUpdate]:
             "loadedhub", "manage_stock_item", code=code_of("manage_stock_item.py")
         ),
         RowUpdate("loadedhub", "manage_menu", code=code_of("manage_menu.py")),
-        RowUpdate(
-            "cook_brothers_app",
-            "record_recipe",
-            code=code_of("record_recipe.py"),
-            config={"max_api_calls": 2},
-        ),
+        # record_recipe moved to Loaded Legacy on 19 Oct 2026; its row is
+        # written by sync_loaded_legacy_spec.py.
     ]
 
 

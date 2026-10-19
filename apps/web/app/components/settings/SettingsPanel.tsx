@@ -28,6 +28,7 @@ import CompanySettingsTab from './CompanySettingsTab';
 import TeamSection from '../team/TeamSection';
 import AddressSearch from './AddressSearch';
 import OrganisationsPanel from './OrganisationsPanel';
+import PasswordLoginForm, { type AccountChoice } from '../display/PasswordLoginForm';
 import { getStoredUser } from '../../lib/api';
 // can(user, scope): what the signed-in user may do — shared with the tabs.
 import { can } from '../../lib/permissions';
@@ -171,6 +172,11 @@ interface VenueConnector {
   spec_driven?: boolean;
   fields?: { key: string; label: string; secret: boolean }[];
   config?: Record<string, string>;
+  /** A password login reaching several accounts (Loaded Legacy: the
+   *  person's Loaded companies): the one this venue works on, and what to
+   *  call one. */
+  account?: string | null;
+  account_choice?: AccountChoice | null;
 }
 
 /**
@@ -194,6 +200,7 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast, canManage, canC
   const [savingConnector, setSavingConnector] = useState<string | null>(null);
   const [loadingConnectors, setLoadingConnectors] = useState(false);
   const [editingConnector, setEditingConnector] = useState<string | null>(null);
+  const [connectorError, setConnectorError] = useState<string | null>(null);
   const [editingVenue, setEditingVenue] = useState(false);
   const [venueForm, setVenueForm] = useState({ location: venue.location || '', timezone: venue.timezone || '', day_start_time: venue.day_start_time || '' });
   const [savingVenue, setSavingVenue] = useState(false);
@@ -224,17 +231,32 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast, canManage, canC
     }
   };
 
+  // A refused save says why (a password login is checked before it's kept).
   const handleSaveConnector = async (connectorName: string) => {
     setSavingConnector(connectorName);
+    setConnectorError(null);
     try {
-      await apiFetch(`/api/connectors/${connectorName}`, {
+      const res = await apiFetch(`/api/connectors/${connectorName}`, {
         method: 'PUT',
         body: JSON.stringify({ config: connectorForms[connectorName] || {}, venue_id: venue.id }),
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setConnectorError(typeof d.detail === 'string' ? d.detail : `Couldn't save (${res.status})`);
+        return;
+      }
       setEditingConnector(null);
       await loadConnectors();
-    } catch { /* ignore */ }
-    setSavingConnector(null);
+    } catch (e) {
+      setConnectorError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingConnector(null);
+    }
+  };
+
+  const toggleEditing = (connectorName: string) => {
+    setConnectorError(null);
+    setEditingConnector(editingConnector === connectorName ? null : connectorName);
   };
 
   const handleOAuthConnect = async (connectorName: string) => {
@@ -342,17 +364,46 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast, canManage, canC
               const isEditing = editingConnector === c.name;
               const form = connectorForms[c.name] || {};
               const fields = c.fields || [];
+              // A username-and-password login Norm checks before keeping
+              // (Loaded Legacy): its own status, Connect / Replace login, and
+              // the same form as Settings → Connections (PasswordLoginForm).
+              const isLogin = c.auth_type === 'password_login';
+              const loginStatus = !c.configured || !c.enabled ? null
+                : c.needs_reconnect ? <Badge tone="warn">Needs attention</Badge>
+                : <Badge tone="ok">Connected</Badge>;
               return (
                 <div key={c.name} style={i > 0 ? { borderTop: '1px solid var(--line-soft)' } : undefined}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px' }}>
-                    <span style={{ flex: '1 1 140px', minWidth: 0, fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>{c.label}</span>
+                    <span style={{ flex: '1 1 140px', minWidth: 0, fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>
+                      {c.label}
+                      {isLogin && c.account && (
+                        <span style={{ display: 'block', fontSize: 'var(--fs-xs)', fontWeight: 400, color: 'var(--muted)' }}>
+                          Works on {c.account}{c.account_choice ? ` (${c.account_choice.label})` : ''}
+                        </span>
+                      )}
+                      {isLogin && c.needs_reconnect && c.last_auth_error && (
+                        <span style={{ display: 'block', fontSize: 'var(--fs-xs)', fontWeight: 400, color: 'var(--error)' }}>{c.last_auth_error}</span>
+                      )}
+                    </span>
                     {/* Without settings:connectors, the status alone. */}
                     {!canConnect ? (
-                      c.auth_type === 'oauth2' ? (
+                      isLogin ? (loginStatus ?? <Badge>Not connected</Badge>)
+                      : c.auth_type === 'oauth2' ? (
                         c.oauth_connected && c.needs_reconnect ? <Badge tone="error">Reconnect needed</Badge>
                           : c.oauth_connected ? <Badge tone="ok">Connected</Badge>
                           : <Badge>Not connected</Badge>
                       ) : c.configured ? <Badge tone="ok">Configured</Badge> : <Badge>Not configured</Badge>
+                    ) : isLogin ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {loginStatus}
+                        <Button
+                          variant={isEditing ? 'quiet' : c.configured ? 'secondary' : 'primary'}
+                          size="sm"
+                          onClick={(e) => { e.stopPropagation(); toggleEditing(c.name); }}
+                        >
+                          {isEditing ? 'Cancel' : c.configured ? 'Replace login' : 'Connect'}
+                        </Button>
+                      </div>
                     ) : c.auth_type === 'oauth2' ? (
                       c.oauth_connected && c.needs_reconnect ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={c.last_auth_error || 'This connection stopped working and needs to be reconnected.'}>
@@ -370,19 +421,37 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast, canManage, canC
                     ) : (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         {c.configured && <Badge tone="ok">Configured</Badge>}
-                        <Button size="sm" onClick={(e) => { e.stopPropagation(); setEditingConnector(isEditing ? null : c.name); }}>
+                        <Button size="sm" onClick={(e) => { e.stopPropagation(); toggleEditing(c.name); }}>
                           {c.configured ? 'Edit' : 'Configure'}
                         </Button>
                       </div>
                     )}
                   </div>
 
+                  {isLogin && isEditing && (
+                    <div style={{ padding: '10px 12px 12px', borderTop: '1px solid var(--line-soft)', backgroundColor: 'var(--surface)' }}>
+                      <PasswordLoginForm
+                        connectorName={c.name}
+                        venueId={venue.id}
+                        fields={fields}
+                        initial={c.config}
+                        accountChoice={c.account_choice}
+                        account={c.account}
+                        onSaved={() => { setEditingConnector(null); loadConnectors(); }}
+                        onCancel={() => setEditingConnector(null)}
+                      />
+                    </div>
+                  )}
+
                   {/* Credential form */}
-                  {isEditing && fields.length > 0 && (
-                    <div style={{
-                      display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px 12px',
-                      borderTop: '1px solid var(--line-soft)', backgroundColor: 'var(--surface)',
-                    }}>
+                  {!isLogin && isEditing && fields.length > 0 && (
+                    <form
+                      onSubmit={(e) => { e.preventDefault(); handleSaveConnector(c.name); }}
+                      style={{
+                        display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px 12px',
+                        borderTop: '1px solid var(--line-soft)', backgroundColor: 'var(--surface)',
+                      }}
+                    >
                       {fields.map(f => (
                         <div key={f.key}>
                           <label className="n-label" htmlFor={`${fieldId}-${c.name}-${f.key}`}>{f.label}</label>
@@ -390,6 +459,7 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast, canManage, canC
                             id={`${fieldId}-${c.name}-${f.key}`}
                             className="n-input"
                             type={f.secret ? 'password' : 'text'}
+                            autoComplete={f.secret ? 'new-password' : 'off'}
                             value={form[f.key] || ''}
                             onChange={e => setConnectorForms(prev => ({
                               ...prev,
@@ -400,12 +470,17 @@ function VenueCard({ venue, onDelete, onUpdate, compact, isLast, canManage, canC
                           />
                         </div>
                       ))}
+                      {connectorError && (
+                        <div role="alert" style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)' }}>{connectorError}</div>
+                      )}
                       <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                        <Button variant="primary" size="sm" onClick={(e) => { e.stopPropagation(); handleSaveConnector(c.name); }}
-                          disabled={savingConnector === c.name}>{savingConnector === c.name ? 'Saving…' : 'Save'}</Button>
+                        <Button variant="primary" size="sm" type="submit" onClick={(e) => e.stopPropagation()}
+                          disabled={savingConnector === c.name}>
+                          {savingConnector === c.name ? 'Saving…' : 'Save'}
+                        </Button>
                         <Button size="sm" onClick={(e) => { e.stopPropagation(); setEditingConnector(null); }}>Cancel</Button>
                       </div>
-                    </div>
+                    </form>
                   )}
                 </div>
               );

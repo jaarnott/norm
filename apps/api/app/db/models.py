@@ -20,7 +20,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 
-from app.db.encrypted import EncryptedText
+from app.db.encrypted import EncryptedSecretsJSON, EncryptedText
 
 
 def _uuid() -> str:
@@ -449,7 +449,8 @@ class Connection(Base):
     user_id = Column(
         String, ForeignKey("users.id"), nullable=True
     )  # for per-user OAuth (email connectors)
-    config = Column(JSON, nullable=False, default=dict)
+    #: Typed credentials; secret-named values are stored encrypted (encrypted.py).
+    config = Column(EncryptedSecretsJSON, nullable=False, default=dict)
     enabled = Column(String, nullable=False, default="true")
     # Encrypted at rest when TOKEN_ENCRYPTION_KEYS is set (app/db/encrypted.py):
     # still TEXT in the database and plain strings in Python, so nothing that

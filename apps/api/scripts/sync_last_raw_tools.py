@@ -98,8 +98,9 @@ STOCKTAKES_TOOL = {
     },
     "max_result_chars": 30_000,
     "consolidator_config": {
-        # resolve (1) + Orbit list (1) + report (1) + its one retry (1).
-        "max_api_calls": 4,
+        # resolve (1) + the list (1) + its templates (1) + report (1) + its one
+        # retry (1). The list moved from Orbit to Loaded Legacy on 19 Oct 2026.
+        "max_api_calls": 5,
         "allowed_write_actions": [],
     },
 }

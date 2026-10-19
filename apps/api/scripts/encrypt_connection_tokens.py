@@ -1,5 +1,7 @@
 """Encrypt (or re-encrypt, or decrypt) the OAuth tokens already stored in
-``connector_configs`` — the one-off backfill for app/db/encrypted.py.
+``connector_configs`` — the one-off backfill for app/db/encrypted.py — and the
+secrets typed into its ``config`` (API keys, passwords: every value whose key
+``encrypted.is_secret_key`` names a secret; 19 Oct 2026).
 
 The column type encrypts every token written after ``TOKEN_ENCRYPTION_KEYS``
 is set, and reads plaintext rows unchanged, so nothing breaks while rows sit
@@ -53,6 +55,92 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 COLUMNS = ("access_token", "refresh_token")
 RETRIES = 3
+
+
+def config_target(config: dict, mode: str) -> dict:
+    """``config`` with its secret values as they should be stored: encrypted
+    under the newest key (apply), or plain (decrypt). Non-secret values are
+    left alone. Raises ValueError when a value cannot be read."""
+    from app.db.encrypted import is_encrypted, is_secret_key
+
+    return {
+        k: target(v, mode)
+        if isinstance(v, str) and (is_secret_key(k) or is_encrypted(v))
+        else v
+        for k, v in (config or {}).items()
+    }
+
+
+def config_states(config: dict) -> dict:
+    """Each secret value's state (see ``classify``)."""
+    from app.db.encrypted import is_encrypted, is_secret_key
+
+    return {
+        k: classify(v)
+        for k, v in (config or {}).items()
+        if isinstance(v, str) and v and (is_secret_key(k) or is_encrypted(v))
+    }
+
+
+def run_config(engine, mode: str, out=print, only_ids: list[str] | None = None) -> dict:
+    """The typed secrets in ``config``, row by row, compare-and-set on the raw
+    JSON text it read. Called by ``run`` after the key canary check."""
+    import json
+
+    from sqlalchemy import text
+
+    counts: dict[str, int] = {}
+    changed = skipped = 0
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT id, connector_name, venue_id, user_id, config::text AS raw "
+                "FROM connector_configs "
+                "WHERE (CAST(:ids AS VARCHAR[]) IS NULL OR id = ANY(:ids)) "
+                "ORDER BY connector_name, id"
+            ),
+            {"ids": list(only_ids) if only_ids else None},
+        ).fetchall()
+    for row in rows:
+        config = json.loads(row.raw) if row.raw else {}
+        if not isinstance(config, dict):
+            continue
+        states = config_states(config)
+        if not states:
+            continue
+        for state in states.values():
+            counts[state] = counts.get(state, 0) + 1
+        out(
+            f"{_label(row)}: config " + ", ".join(f"{k}={v}" for k, v in states.items())
+        )
+        if mode == "dry-run":
+            continue
+        try:
+            new = config_target(config, mode)
+        except ValueError:
+            out(f"  SKIPPED {_label(row)}: a config value cannot be decrypted")
+            skipped += 1
+            continue
+        if new == config:
+            continue
+        with engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    "UPDATE connector_configs SET config = CAST(:new AS json) "
+                    "WHERE id = :id AND config::text = :old"
+                ),
+                {"id": row.id, "new": json.dumps(new), "old": row.raw},
+            )
+        if result.rowcount == 1:
+            changed += 1
+        else:
+            out(f"  CHANGED UNDER US {_label(row)}: run again")
+            skipped += 1
+    return {
+        **{f"config_values_{k}": v for k, v in sorted(counts.items())},
+        "config_rows_changed": changed,
+        "config_rows_skipped": skipped,
+    }
 
 
 def classify(value: str | None) -> str:
@@ -205,6 +293,7 @@ def run(engine, mode: str, out=print, only_ids: list[str] | None = None) -> dict
         "rows_changed": changed,
         "rows_skipped": skipped,
         "retries": conflicts,
+        **run_config(engine, mode, out=out, only_ids=only_ids),
     }
     out("summary: " + ", ".join(f"{k}={v}" for k, v in summary.items()))
     return summary
@@ -243,7 +332,7 @@ def main() -> int:
         print("(dry run — nothing written)")
     if summary.get("refused"):
         return 3
-    return 1 if summary.get("rows_skipped") else 0
+    return 1 if summary.get("rows_skipped") or summary.get("config_rows_skipped") else 0
 
 
 if __name__ == "__main__":

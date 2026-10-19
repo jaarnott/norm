@@ -7,7 +7,6 @@ here names the failure it closes.
 
 from __future__ import annotations
 
-import pathlib
 
 import pytest
 
@@ -142,6 +141,11 @@ class TestUnits:
 
     def test_a_deleted_unit_is_never_returned(self):
         assert resolve_unit("cup", rd._live_units(UNITS)) == (None, [])
+        assert resolve_unit("u-dead", UNITS) == (None, [])
+
+    def test_a_unit_given_by_its_id_is_that_unit(self):
+        """The recipe editor and record_recipe send unit ids, not names."""
+        assert resolve_unit("u-ml", UNITS, want_type="Weight")[0]["id"] == "u-ml"
 
 
 # -------------------------------------------------------------- lines ----
@@ -268,11 +272,12 @@ class TestMatchRecipe:
         )
         assert d["recipe_id"] == "" and d["draft_id"]
         assert d["is_counted_in_stocktake"] is True
-        assert (d["yield_quantity"], d["yield_unit_id"], d["yield_unit_name"]) == (
-            1.0,
-            "u-kilo",
-            "Kilo",
-        )
+        assert (
+            d["yield_quantity"],
+            d["yield_unit_id"],
+            d["yield_unit_name"],
+            d["yield_unit_ratio"],  # record_recipe stores the yield in base units
+        ) == (1.0, "u-kilo", "Kilo", 1.0)
         assert d["notes"] == "<ol><li>Mix</li></ol>"
         assert d["unresolved_count"] == 0 and d["problems"] == []
         assert d["duplicate_of"] is None
@@ -417,67 +422,6 @@ class TestDraftRecipeHandler:
 # ------------------------------------------------------- the save path ----
 
 
-class TestSaveSendsTheChosenId:
-    def test_ref_id_goes_with_the_name(self, monkeypatch):
-        """A line pinned to one of three POLENTA sub-recipes must save as that one."""
-        from app.services import recipe_save
-
-        seen = {}
-        fake_spec = type(
-            "Spec",
-            (),
-            {"tools": [{"action": recipe_save.SAVE_ACTION, "required_fields": []}]},
-        )()
-        monkeypatch.setattr(
-            recipe_save,
-            "_cb_context",
-            lambda *a, **k: (fake_spec, type("Cfg", (), {"config": {}})()),
-        )
-        monkeypatch.setattr(recipe_save, "resolve_cb_venue_id", lambda *a, **k: "cb-1")
-
-        def fake_execute_spec(spec, op, fields, creds, db, venue_id=None, **k):
-            seen["fields"] = fields
-            return type(
-                "R", (), {"success": True, "response_payload": {"data": {}}}
-            )(), None
-
-        monkeypatch.setattr(
-            "app.connectors.spec_executor.execute_spec", fake_execute_spec
-        )
-        recipe_save.save_recipe(
-            "v",
-            {
-                "name": "DISH - X",
-                "lines": [
-                    {
-                        "kind": "recipe",
-                        "ref_id": "r-polenta-b",
-                        "name": "COMPONENT - SOFT POLENTA 26",
-                        "unit_id": "u-gram",
-                        "quantity": 300,
-                    },
-                    {
-                        "kind": "item",
-                        "name": "LEMONS",
-                        "unit_id": "u-kilo",
-                        "quantity": 1,
-                    },
-                ],
-            },
-            db=None,
-            config_db=None,
-        )
-        ings = seen["fields"]["ingredients"]
-        assert (
-            ings[0]["ref_id"] == "r-polenta-b"
-            and ings[0]["name"] == "COMPONENT - SOFT POLENTA 26"
-        )
-        assert "ref_id" not in ings[1]
-
-
-# ------------------------------------------------- creating a stock item ----
-
-
 class TestCreateStockItem:
     def test_payload_has_no_supplier_and_a_capital_name(self, monkeypatch):
         from app.services import stock_items
@@ -541,189 +485,6 @@ class TestCreateStockItem:
 
 
 # -------------------------------------------- record_recipe: an edit ----
-
-
-class TestRecordRecipeEditWithoutVersion:
-    CODE = (
-        pathlib.Path(__file__).resolve().parent.parent
-        / "config"
-        / "consolidators"
-        / "record_recipe.py"
-    ).read_text()
-
-    def _run(self, params, recipe_read):
-        from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(self.CODE, ns)
-        calls = []
-
-        def call_api(connector, action, body):
-            calls.append((action, body))
-            if action == "kitchen_get_recipe":
-                return recipe_read
-            return {"saved": True}
-
-        return ns["run"](params, call_api, lambda *_: None), calls
-
-    def test_the_current_version_is_read_and_used(self):
-        """'name and yield_unit_id are required to create a recipe' × 14."""
-        read = {
-            "data": {
-                "recipe": {
-                    "recipe": {"id": "abc", "name": "X"},
-                    "version": {"version_id": "v-cur", "lines": []},
-                }
-            }
-        }
-        out, calls = self._run({"recipe_id": "abc", "notes": "<p>Method</p>"}, read)
-        assert out == {"saved": True}
-        assert [a for a, _ in calls] == ["kitchen_get_recipe", "kitchen_record_recipe"]
-        assert calls[1][1]["version_id"] == "v-cur"
-
-    def test_an_unreadable_recipe_is_refused_without_writing(self):
-        out, calls = self._run({"recipe_id": "abc", "notes": "x"}, {"error": "nope"})
-        assert "Couldn't read recipe abc" in out["error"]
-        assert [a for a, _ in calls] == ["kitchen_get_recipe"]
-
-
-# ------------------------------------------ a create's id, read back ----
-
-
-ROWS = [
-    {
-        "id": "r-old",
-        "name": "COMPONENT - LEMON BUTTER",
-        "createdAt": "2025-01-01T00:00:00+00:00",
-        "versions": [{"id": "v-old", "validTo": None}],
-    },
-    {
-        "id": "r-new",
-        "name": "COMPONENT - LEMON BUTTER",
-        "createdAt": "2026-10-11T22:00:00+00:00",
-        "versions": [
-            {"id": "v-1", "validTo": "2026-10-11T22:00:01+00:00"},
-            {"id": "v-2", "validTo": None},
-        ],
-    },
-    {
-        "id": "r-gone",
-        "name": "COMPONENT - LEMON BUTTER",
-        "createdAt": "2026-10-12T00:00:00+00:00",
-        "deletedAt": "2026-10-12",
-        "versions": [],
-    },
-    {
-        "id": "r-other",
-        "name": "COMPONENT - LIME BUTTER",
-        "createdAt": "2026-10-12T00:00:00+00:00",
-        "versions": [],
-    },
-]
-
-
-class TestCreatedIdIsReadBack:
-    """The CB App's create response carries null ids; the save finds the
-    recipe it just made instead of handing the caller nothing."""
-
-    def test_pick_created_takes_the_newest_live_match_and_its_current_version(self):
-        from app.services.recipe_save import pick_created
-
-        assert pick_created(ROWS, "component - lemon butter ") == ("r-new", "v-2")
-        assert pick_created(ROWS, "nothing") == (None, None)
-        assert pick_created(ROWS, "") == (None, None)
-
-    def test_save_resolves_the_id_when_the_cb_app_returns_none(self, monkeypatch):
-        from app.services import recipe_save
-
-        fake_spec = type(
-            "Spec",
-            (),
-            {"tools": [{"action": recipe_save.SAVE_ACTION, "required_fields": []}]},
-        )()
-        monkeypatch.setattr(
-            recipe_save,
-            "_cb_context",
-            lambda *a, **k: (fake_spec, type("Cfg", (), {"config": {}})()),
-        )
-        monkeypatch.setattr(recipe_save, "resolve_cb_venue_id", lambda *a, **k: "cb-1")
-        monkeypatch.setattr(
-            "app.connectors.spec_executor.execute_spec",
-            lambda *a, **k: (
-                type(
-                    "R",
-                    (),
-                    {
-                        "success": True,
-                        "response_payload": {
-                            "data": {
-                                "created": True,
-                                "recipe_id": None,
-                                "version_id": None,
-                            }
-                        },
-                    },
-                )(),
-                None,
-            ),
-        )
-        monkeypatch.setattr(
-            "app.services.component_api.execute_component_action",
-            lambda component, action, params, venue_id, db, cfg: {
-                "data": ROWS,
-                "status_code": 200,
-            },
-        )
-        out = recipe_save.save_recipe(
-            "v",
-            {"name": "COMPONENT - LEMON BUTTER", "lines": []},
-            db=None,
-            config_db=None,
-        )
-        assert (out["created"], out["recipe_id"], out["version_id"]) == (
-            True,
-            "r-new",
-            "v-2",
-        )
-
-    def test_record_recipe_fills_the_ids_in_after_a_create(self):
-        CODE = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "config"
-            / "consolidators"
-            / "record_recipe.py"
-        ).read_text()
-        from app.connectors.function_executor import _SAFE_BUILTINS, _SAFE_MODULES
-
-        ns = {"__builtins__": _SAFE_BUILTINS, **_SAFE_MODULES}
-        exec(CODE, ns)
-        calls = []
-
-        def call_api(connector, action, body):
-            calls.append((connector, action))
-            if action == "kitchen_record_recipe":
-                return {
-                    "success": True,
-                    "data": {"created": True, "recipe_id": None, "version_id": None},
-                }
-            if action == "get_all_recipes":
-                return ROWS
-            raise AssertionError(action)
-
-        out = ns["run"](
-            {
-                "name": "COMPONENT - LEMON BUTTER",
-                "yield_quantity": 1,
-                "yield_unit": "Kilo",
-                "ingredients": [
-                    {"kind": "item", "name": "LEMONS", "quantity": 1, "unit": "Kilo"}
-                ],
-            },
-            call_api,
-            lambda *_: None,
-        )
-        assert [a for _, a in calls] == ["kitchen_record_recipe", "get_all_recipes"]
-        assert (out["data"]["recipe_id"], out["data"]["version_id"]) == ("r-new", "v-2")
 
 
 def test_the_tool_row_declares_a_draft_effect_and_fans_out():

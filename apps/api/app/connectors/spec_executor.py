@@ -148,6 +148,19 @@ def _apply_auth(
                 )
         headers["Authorization"] = f"Bearer {str(token).strip()}"
 
+    elif auth_type == "password_login":
+        # A token from a username-and-password login (services/password_login).
+        if not require_token:
+            token = "<not resolved — preview only>"
+        else:
+            from app.services.password_login import PasswordLoginError, access_token
+
+            try:
+                token = access_token(spec, db, venue_id)
+            except PasswordLoginError as exc:
+                raise ConnectorAuthError(str(exc)) from None
+        headers["Authorization"] = f"Bearer {token}"
+
     return headers, httpx_auth
 
 
@@ -676,8 +689,10 @@ def _should_retry_after_refresh(result: ConnectorResult, spec, db: Session) -> b
     return (
         not result.success
         and result.response_payload.get("status_code") == 401
-        and spec.auth_type == "oauth2"
-        and bool(spec.oauth_config)
+        and (
+            (spec.auth_type == "oauth2" and bool(spec.oauth_config))
+            or spec.auth_type == "password_login"
+        )
         and db is not None
     )
 
@@ -705,7 +720,15 @@ def _refresh_and_retry(
         # force=True: the 401 proves the token is dead no matter what
         # token_expires_at claims — the lazy early-return would hand the same
         # rejected token straight back for the replay.
-        refresh_access_token(spec, db, venue_id=venue_id, force=True)
+        if spec.auth_type == "password_login":
+            from app.services.password_login import PasswordLoginError, relogin
+
+            try:
+                relogin(spec, db, venue_id)  # no refresh token: log in again
+            except PasswordLoginError as exc:
+                raise ConnectorAuthError(str(exc)) from None
+        else:
+            refresh_access_token(spec, db, venue_id=venue_id, force=True)
         rendered.headers, _ = _apply_auth(
             rendered.headers,
             spec.auth_type,

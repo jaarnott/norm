@@ -112,7 +112,6 @@ ENGINE_ONLY = {
         "record_split_order",
         "show_orders",
     ],
-    "cook_brothers_app": ["stock_loadedhub_tender"],
     "brevo": "*",
     "metricool": "*",
     "bidfood": "*",
@@ -412,7 +411,10 @@ APPS = [
                 page=_p("supplier-tenders", "Supplier Tenders", "Gavel"),
                 full_width=True,
                 description="Agreed supplier price lists, with tendered-vs-paid review.",
-                connections=["cook_brothers_app"],
+                # Loaded's tenders API refuses Norm's OAuth token (TEMPORARY:
+                # app/connectors/loaded_legacy.py; the Cook Brothers App until
+                # 19 Oct 2026).
+                connections=["loaded_legacy"],
             ),
             _c(
                 "purchase_order_editor",
@@ -459,8 +461,9 @@ APPS = [
             "loadedhub.get_menus",
             "loadedhub.manage_menu",
             "loadedhub.manage_stock_item",
-            # the tool wrapping Orbit's recipe endpoint (sync_orbit_recipe_wrapper.py)
-            "cook_brothers_app.record_recipe",
+            # the recipe write (config/consolidators/record_recipe.py) — on
+            # Loaded Legacy since 19 Oct 2026, the Cook Brothers App before
+            "loaded_legacy.record_recipe",
         ],
         components=[
             _c(
@@ -468,7 +471,10 @@ APPS = [
                 page=_p("recipes", "Recipes", "BookOpen"),
                 full_width=False,  # in chat: one inline card per recipe (Oct 2026)
                 description="Recipe editor with live Loaded costs; Save writes to Loaded.",
-                connections=["cook_brothers_app"],
+                # Saves go through Loaded Legacy (TEMPORARY:
+                # app/connectors/loaded_legacy.py; the Cook Brothers App until
+                # 19 Oct 2026).
+                connections=["loaded_legacy"],
             ),
             _c(
                 "menu_editor",

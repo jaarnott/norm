@@ -1,9 +1,9 @@
 """get_stocktakes — the stocktake list and the same-template variance report.
 
 Exec'd under the REAL sandbox namespace against the canonical file. Fixtures
-are shaped like the live payloads (Sep 2026): Orbit's stock_find_stocktakes
-reply as the executor returns it ({"success", "data": {stocktakes, templates}}),
-and Loaded's stocktake report ({totals..., totalVariance, lines: [{groupHeader,
+are shaped like the live payloads: Loaded Legacy's list_stocktakes (Loaded's
+/wapi/r/Stocktakes rows, read 19 Oct 2026) and list_stock_groups (the
+whole-category templates), and Loaded's stocktake report ({totals..., totalVariance, lines: [{groupHeader,
 stockItemName, unit: {…}, startQty, endQty, qtyReceived, expectedUsed,
 hasPosLinks, unitCost}]}, with item-less group-header rows).
 
@@ -64,10 +64,15 @@ STOCKTAKES = [
     _st("food-29", "29/07/2026 - All Food", "2026-07-29T12:38:40+12:00", FOOD),
     _st("staff-1", "1/08/2026 - Staff Food", "2026-08-01T10:00:00+12:00", STAFF),
 ]
-TEMPLATES = [
-    {"id": BEV, "title": "All Beverage", "datestampDeleted": None},
-    {"id": FOOD, "title": "All Food", "datestampDeleted": None},
-    {"id": "bd216723", "title": "All Other Stock", "datestampDeleted": None},
+GROUPS = [
+    {"id": BEV, "name": "Beverage", "masterId": None, "xeroAccountCode": None},
+    {"id": FOOD, "name": "Food", "masterId": None, "xeroAccountCode": None},
+    {
+        "id": "bd216723",
+        "name": "Other Stock",
+        "masterId": None,
+        "xeroAccountCode": None,
+    },
 ]
 
 
@@ -173,17 +178,14 @@ class Api:
     def call_api(self, connector, action, params=None):
         p = dict(params or {})
         self.calls.append((action, p))
-        if action == "stock_find_stocktakes":
+        if action == "list_stocktakes":
+            assert connector == "loaded_legacy"
             if self.orbit_error:
-                return {"success": False, "error": self.orbit_error}
-            return {
-                "success": True,
-                "data": {
-                    "venue_id": "v",
-                    "stocktakes": copy.deepcopy(self.stocktakes),
-                    "templates": TEMPLATES,
-                },
-            }
+                return {"error": self.orbit_error}
+            return copy.deepcopy(self.stocktakes)
+        if action == "list_stock_groups":
+            assert connector == "loaded_legacy"
+            return copy.deepcopy(GROUPS)
         if action == "generate_stocktake_report":
             if self.report_failures:
                 self.report_failures -= 1
@@ -217,8 +219,11 @@ class TestList:
             out["completed_by_template"]["DAILY STOCKTAKE - KITCHEN"] == 1
         )  # recovered from its title
         assert "template_id" not in out["stocktakes"][0]
+        # One Loaded call for every count: pending ones and completed ones —
+        # with no period, the newest 500.
         find = api.calls[0][1]
-        assert find["include_templates"] is True and find["limit"] == 200
+        assert find["filter"] == "Pending eq true or (Pending eq false)"
+        assert find["top"] == 500 and find["venue"] == "La Zeppa"
 
     def test_list_for_one_template(self):
         out = run(Api(), view="list", template="food")
@@ -315,10 +320,13 @@ class TestPairing:
         run(api, template="Food", period="last week")
         assert api.report_args()[0]["start_stocktake_id"] == "food-04"
         assert api.report_args()[0]["end_stocktake_id"] == "food-11"
-        find = [p for a, p in api.calls if a == "stock_find_stocktakes"][0]
-        assert (
-            find["from"] == "2026-04-07" and find["to"] == "2026-08-12"
+        find = [p for a, p in api.calls if a == "list_stocktakes"][0]
+        assert find["filter"] == (
+            "Pending eq true or (Pending eq false"
+            " and DatestampCompleted gt 2026-04-07T07:00:00+12:00"
+            " and DatestampCompleted lt 2026-08-12T06:59:59+12:00)"
         )  # reaches back for the opener
+        assert "top" not in find
 
     def test_unresolvable_period_is_an_error(self):
         assert (
@@ -409,7 +417,7 @@ class TestFailures:
         out = run(Api(report_failures=2), template="Food")
         assert "LoadedHub failure" in out["error"]
 
-    def test_an_orbit_failure_says_so(self):
+    def test_a_list_failure_says_so(self):
         out = run(Api(orbit_error="401 unauthorized"), template="Food")
         assert "could not list stocktakes" in out["error"] and "401" in out["error"]
 

@@ -644,3 +644,125 @@ class TestKeyCanary:
         assert _canary_raw(db_session) == before
         self._run(db_session, "decrypt", [conn.id, canary_id])
         assert _canary_raw(db_session) == before
+
+
+def _raw_config(db, conn_id: str) -> dict:
+    import json
+
+    raw = db.execute(
+        text("SELECT config::text FROM connector_configs WHERE id = :i"), {"i": conn_id}
+    ).scalar()
+    return json.loads(raw)
+
+
+class TestTypedSecrets:
+    """The secrets typed into a connection's credentials (19 Oct 2026, owner:
+    "encrypt all typed secrets"): encrypted by name, so every path that
+    rewrites a connection keeps them encrypted."""
+
+    def test_secret_named_values_are_encrypted_and_others_are_not(
+        self, db_session, keys
+    ):
+        venue = _make_venue(db_session)
+        row = _connection(db_session, venue, connector_name="typed_secrets")
+        row.config = {"api_key": "k-1", "password": "pw-1", "customer_code": "C9"}
+        db_session.flush()
+        raw = _raw_config(db_session, row.id)
+        assert enc.is_encrypted(raw["api_key"]) and enc.is_encrypted(raw["password"])
+        assert raw["customer_code"] == "C9"
+        assert _reload(db_session, row.id).config == {
+            "api_key": "k-1",
+            "password": "pw-1",
+            "customer_code": "C9",
+        }
+
+    def test_another_path_rewriting_the_config_keeps_them_encrypted(
+        self, db_session, keys
+    ):
+        # The OAuth callback merges a company id into config the same way.
+        venue = _make_venue(db_session)
+        row = _connection(db_session, venue, connector_name="typed_secrets")
+        row.config = {"api_key": "k-1"}
+        db_session.flush()
+        row = _reload(db_session, row.id)
+        row.config = {**row.config, "x_loaded_company_id": "c-1"}
+        db_session.flush()
+        raw = _raw_config(db_session, row.id)
+        assert enc.is_encrypted(raw["api_key"]) and raw["x_loaded_company_id"] == "c-1"
+
+    def test_plaintext_secrets_already_stored_read_unchanged(self, db_session, keys):
+        venue = _make_venue(db_session)
+        row = _connection(db_session, venue, connector_name="typed_secrets")
+        db_session.execute(
+            text(
+                """UPDATE connector_configs SET config = '{"api_key": "old"}' """
+                "WHERE id = :i"
+            ),
+            {"i": row.id},
+        )
+        assert _reload(db_session, row.id).config == {"api_key": "old"}
+
+    def test_every_secret_field_in_use_has_a_secret_name(self):
+        from app.connectors.loaded_legacy import SPEC
+        from app.routers.connectors import _get_platform_connectors
+        from app.services.config_validator import check_secret_credential_fields
+
+        # The secret fields of the specs live in production on 19 Oct 2026.
+        for key in ("api_key", "access_token", "user_token", "password"):
+            assert enc.is_secret_key(key), key
+        for meta in _get_platform_connectors():
+            for field in meta["fields"]:
+                assert not field.get("secret") or enc.is_secret_key(field["key"])
+        assert not check_secret_credential_fields(
+            "loaded_legacy", SPEC["credential_fields"]
+        )
+        # A secret field without a secret's name would be stored in plain text.
+        [issue] = check_secret_credential_fields("x", [{"key": "pin", "secret": True}])
+        assert "unencrypted" in issue.problem
+        for plain in ("x_loaded_company_id", "username", "customer_code", "subdomain"):
+            assert not enc.is_secret_key(plain), plain
+
+    def test_the_backfill_encrypts_and_decrypts_typed_secrets(self, db_session, keys):
+        import scripts.encrypt_connection_tokens as script
+
+        _canary(db_session)
+        venue = _make_venue(db_session)
+        row = _connection(db_session, venue, connector_name="typed_secrets")
+        db_session.execute(
+            text(
+                """UPDATE connector_configs SET config = """
+                """'{"api_key": "plain-k", "subdomain": "acme"}' WHERE id = :i"""
+            ),
+            {"i": row.id},
+        )
+        lines: list[str] = []
+        summary = script.run(
+            _ConnAdapter(db_session.connection()),
+            "dry-run",
+            out=lines.append,
+            only_ids=[row.id],
+        )
+        assert summary["config_values_plaintext"] == 1
+        assert "plain-k" not in "\n".join(lines)
+        summary = script.run(
+            _ConnAdapter(db_session.connection()),
+            "apply",
+            out=lines.append,
+            only_ids=[row.id],
+        )
+        assert summary["config_rows_changed"] == 1
+        raw = _raw_config(db_session, row.id)
+        assert (
+            enc.encrypted_under_newest_key(raw["api_key"])
+            and raw["subdomain"] == "acme"
+        )
+        script.run(
+            _ConnAdapter(db_session.connection()),
+            "decrypt",
+            out=lines.append,
+            only_ids=[row.id],
+        )
+        assert _raw_config(db_session, row.id) == {
+            "api_key": "plain-k",
+            "subdomain": "acme",
+        }

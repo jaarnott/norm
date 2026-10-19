@@ -1,43 +1,47 @@
 # ruff: noqa: F821 — sandbox-injected names (json); not imports.
 #
-# Canonical function_code for `cook_brothers_app.record_recipe` — create a
-# LoadedHub recipe, or write changes to one directly (installed by
-# scripts/sync_orbit_recipe_wrapper.py, Sep 2026; review fixes applied by
-# scripts/sync_write_tool_safety.py, 1 Oct 2026).
+# Canonical function_code for `loaded_legacy.record_recipe` — create a Loaded
+# recipe, or write a change to one. The one recipe write: the agent's tool,
+# and what the recipe editor and the claude.ai recipe card save through
+# (app/services/recipe_save.py runs it), so there is a single path.
 #
-# The tool the agent sees. The work is done by Orbit's own MCP function
-# `kitchen_record_recipe`, which resolves ingredients by name and writes the
-# recipe — but under the Sep 2026 rule (docs/tool-architecture-strategy.md)
-# an Orbit function is an API endpoint, and an LLM only ever sees tools. So
-# this wrapper is the tool; the endpoint stays a building block that the
-# recipe editor (app/services/recipe_save.py) also calls directly.
+# History:
+#   - Sep 2026: a wrapper around the Cook Brothers App's (Orbit's)
+#     `kitchen_record_recipe`, which held one Loaded login for every venue.
+#   - 19 Oct 2026: Loaded Legacy took it over (docs/plans/loaded-legacy-
+#     takeover.md) and it writes through Loaded's older API itself:
+#       create  POST /wapi/r/StockRecipeVersions — the first version with its
+#               recipe in one body, as Loaded's web app sends it;
+#       edit    read the recipe and the version, apply the change, PUT
+#               /wapi/r/StockRecipeVersions/{id} — the whole version, its
+#               recipe nested, ?validUntil= the next version's start.
 #
-# The row's method is POST, so the tool loop asks for approval before it
-# runs — the same gate the raw function had.
+# What it does differently from Orbit's function (read 19 Oct 2026):
+#   - Names are matched by Norm's own matcher (`loadedhub.draft_recipe`,
+#     app/services/recipe_draft.py — built after a production thread where
+#     half of Orbit's lookups failed). A line it isn't sure of stops the write
+#     and is named with its candidates; nothing is picked fuzzily.
+#   - `merge` merges. Orbit read the lines from the wrong level of its own
+#     answer, so merge replaced the recipe with the lines sent.
+#   - Allergens aren't written: Loaded keeps none on this path (Orbit kept them
+#     in its own food-control-plan table). The result says so.
 #
-# Consolidator review (1 Oct 2026) — why it checks before it sends:
+# Loaded's rules it keeps (verified live, 19 Oct 2026 and before):
+#   - quantities are stored in base units: display × the unit's ratio;
+#   - the recipe nested in a save has no versions, its images are JSON text
+#     without their src, and its notes' <img> tags lose their src — what
+#     Loaded's web app's save() sends (Mercury recipes.factory.js);
+#   - a recipe read naming another company answers 404, so an edit's first
+#     read is also the check that the venue's Loaded Legacy company is right;
+#   - recipes shared with other companies can't be saved here (500).
 #
-#   - Neither the tool nor the endpoint carried a schema, so the model saw
-#     `ingredients` and `allergens` as strings and sent JSON text; Orbit's
-#     schema (additionalProperties false, typed lines) rejects that. The row
-#     now carries Orbit's schema, and text that is JSON is still read here.
-#   - Orbit's `mode` defaults to REPLACE: an edit that sends only the changed
-#     line deletes every other line. An edit with ingredients must now say
-#     which it means.
-#   - Lines are checked against Orbit's required fields first, so a bad line
-#     is a clear refusal, not an Orbit validation dump after approval.
+# Approval: the row's method is POST, so the tool loop asks before it runs;
+# for an edit the card lists each line before → after (from the read), and
+# the approved run reads again and stops if the recipe moved meanwhile.
 #
-# Approval preview (Oct 2026, services/previews.py): before writing, the
-# tool shows what changes — for an edit it reads the recipe as it is
-# (`kitchen_get_recipe`) and lists each ingredient line before → after, so a
-# 'replace' that would drop lines says which. The approved run reads it again
-# and stops if the recipe moved in the meantime.
-#
-# Requires consolidator_config: {"max_api_calls": 2}  (read + write)
+# Requires consolidator_config: {"max_api_calls": 6, "allowed_write_actions":
+#   ["loaded_legacy.create_recipe_version", "loaded_legacy.save_recipe_version"]}
 
-# No venue_id: call_api picks the venue's Orbit connection from this tool
-# call's own venue, and strips venue keys before the request (the endpoint's
-# venue_id — Orbit's own id — never reached Orbit from the agent either).
 _FIELDS = (
     "recipe_id",
     "version_id",
@@ -45,20 +49,15 @@ _FIELDS = (
     "notes",
     "yield_quantity",
     "yield_unit",
+    "yield_unit_ratio",
+    "yield_unit_name",
     "is_counted_in_stocktake",
     "mode",
     "ingredients",
-    "allergens",
 )
 _MODES = ("replace", "merge")
 _KINDS = ("item", "recipe")
-_ALLERGEN_STATUSES = ("contains", "no", "cmw", "mc")
-_STATUS_LABELS = {
-    "contains": "Contains",
-    "no": "No",
-    "cmw": "Can be made without",
-    "mc": "May contain",
-}
+_LL = "loaded_legacy"
 
 
 def _parse(value):
@@ -95,6 +94,12 @@ def _boolean(value):
     return None
 
 
+def _err(result):
+    if isinstance(result, dict) and result.get("error"):
+        return str(result["error"])
+    return None
+
+
 def _check_ingredients(lines):
     """(clean lines, problems)."""
     if isinstance(lines, dict):
@@ -108,6 +113,13 @@ def _check_ingredients(lines):
             problems.append(f"{label} is not an object")
             continue
         ln = dict(ln)
+        if "remove" in ln:
+            ln["remove"] = _boolean(ln["remove"])
+        if ln.get("remove"):
+            if not (ln.get("name") or ln.get("ref_id") or ln.get("line_id")):
+                problems.append(f"{label} needs a name, ref_id or line_id to remove")
+            clean.append(ln)
+            continue
         if ln.get("kind") not in _KINDS:
             problems.append(f"{label} needs kind 'item' (stock item) or 'recipe'")
         if not ln.get("unit"):
@@ -117,41 +129,355 @@ def _check_ingredients(lines):
             problems.append(f"{label} needs a numeric quantity")
         else:
             ln["quantity"] = quantity
-        if not (ln.get("name") or ln.get("ref_id") or ln.get("line_id")):
-            problems.append(f"{label} needs a name (or ref_id / line_id)")
-        if "remove" in ln:
-            ln["remove"] = _boolean(ln["remove"])
+        if not (ln.get("name") or ln.get("ref_id")):
+            problems.append(f"{label} needs a name (or ref_id)")
         clean.append(ln)
     return clean, problems
 
 
-def _check_allergens(entries):
-    if isinstance(entries, dict):
-        entries = [entries]
-    if not isinstance(entries, list):
-        return None, ["allergens must be a list of {code, status}"]
+def _settled(line):
+    """A line that already names its stock item or sub-recipe and its unit with
+    the unit's ratio (what the recipe editor sends) needs no matching."""
+    return bool(
+        line.get("ref_id") and line.get("unit") and _number(line.get("unit_ratio"))
+    )
+
+
+# ------------------------------------------------------------- matching ----
+
+
+def _match(params, body, lines, call_api):
+    """Settle names and units with Norm's matcher. Returns (lines with
+    ref_id/unit/unit_ratio, yield unit or None, the recipe already called
+    this name or None, problems)."""
+    want_yield = bool(body.get("yield_unit")) and not _number(
+        body.get("yield_unit_ratio")
+    )
+    todo = [
+        i for i, ln in enumerate(lines) if not ln.get("remove") and not _settled(ln)
+    ]
+    if not todo and not want_yield:
+        return lines, None, None, []
+    draft = call_api(
+        "loadedhub",
+        "draft_recipe",
+        {
+            "venue": params.get("venue"),
+            "venue_id": params.get("venue_id"),
+            "recipes": [
+                {
+                    "name": body.get("name") or "recipe",
+                    "yield_quantity": body.get("yield_quantity") or 1,
+                    "yield_unit": body.get("yield_unit") or "",
+                    "lines": [
+                        {
+                            "kind": ln.get("kind"),
+                            "name": ln.get("name"),
+                            "ref_id": ln.get("ref_id"),
+                            "quantity": ln.get("quantity"),
+                            "unit": ln.get("unit"),
+                        }
+                        for ln in (lines[i] for i in todo)
+                    ],
+                }
+            ],
+        },
+    )
+    if _err(draft):
+        return None, None, None, [f"couldn't match the ingredients: {_err(draft)}"]
+    drafts = draft.get("recipes") if isinstance(draft, dict) else None
+    d = drafts[0] if isinstance(drafts, list) and drafts else {}
+    got = d.get("lines") or []
     problems = []
-    for i, a in enumerate(entries):
-        if not isinstance(a, dict) or not a.get("code"):
-            problems.append(f"allergens[{i}] needs a code")
-        elif a.get("status") not in _ALLERGEN_STATUSES:
+    out = list(lines)
+    for i, m in zip(todo, got):
+        ln = lines[i]
+        status = (m.get("match") or {}).get("status")
+        if status != "matched":
+            why = "; ".join((m.get("match") or {}).get("reasons") or []) or "no match"
+            cands = [
+                c.get("name") for c in (m.get("match") or {}).get("candidates") or []
+            ]
             problems.append(
-                f"allergens[{i}] status must be one of {', '.join(_ALLERGEN_STATUSES)}"
+                f"'{ln.get('name') or ln.get('ref_id')}': {why}"
+                + (
+                    f" (candidates: {', '.join(str(c) for c in cands)})"
+                    if cands
+                    else ""
+                )
             )
-    return entries, problems
+            continue
+        out[i] = {
+            **ln,
+            "kind": m.get("kind") or ln.get("kind"),
+            "ref_id": m.get("ref_id"),
+            "name": m.get("name") or ln.get("name"),
+            "unit": m.get("unit_id"),
+            "unit_name": m.get("unit_name"),
+            "unit_ratio": m.get("unit_ratio"),
+            "quantity": m.get("quantity"),
+        }
+    if len(got) != len(todo):
+        problems.append("the matcher didn't answer for every line")
+    yunit = None
+    if want_yield:
+        if d.get("yield_unit_id"):
+            yunit = {
+                "id": d["yield_unit_id"],
+                "name": d.get("yield_unit_name"),
+                "ratio": d.get("yield_unit_ratio") or 1,
+            }
+        else:
+            problems.append(
+                f"no Loaded unit called '{body.get('yield_unit')}' for the yield"
+            )
+    return out, yunit, d.get("duplicate_of"), problems
+
+
+# --------------------------------------------------------------- Loaded ----
+
+
+def _web_line(ln, version_id, old=None):
+    """One version line as Loaded's web app sends it. An existing line keeps
+    its Loaded fields (and id); quantity in base units."""
+    ratio = _number(ln.get("unit_ratio")) or 1
+    item = ln.get("kind") != "recipe"
+    out = dict(old or {})
+    out.update(
+        {
+            "versionId": version_id,
+            "itemId": ln["ref_id"] if item else None,
+            "stockItemId": ln["ref_id"] if item else None,
+            "itemName": ln.get("name") if item else None,
+            "stockItemName": ln.get("name") if item else None,
+            "recipeId": None if item else ln["ref_id"],
+            "recipeName": None if item else ln.get("name"),
+            "unitId": ln.get("unit"),
+            "unitName": ln.get("unit_name") or (old or {}).get("unitName"),
+            "unitRatio": ratio,
+            "quantity": round(float(ln["quantity"]) * ratio, 9),
+            "deletedAt": None,
+        }
+    )
+    if not version_id:
+        out.pop("versionId", None)
+    return out
+
+
+def _old_ref(old):
+    return old.get("stockItemId") or old.get("itemId") or old.get("recipeId")
+
+
+def _old_name(old):
+    return old.get("stockItemName") or old.get("itemName") or old.get("recipeName")
+
+
+def _find_old(ln, pool, used):
+    """The existing line this one changes: by line id, then by what it is,
+    then by name."""
+    tests = (
+        lambda o: ln.get("line_id") and o.get("id") == ln["line_id"],
+        lambda o: ln.get("ref_id") and _old_ref(o) == ln["ref_id"],
+        lambda o: (
+            (ln.get("name") or "").strip().lower()
+            and str(_old_name(o) or "").strip().lower()
+            == (ln.get("name") or "").strip().lower()
+        ),
+    )
+    for test in tests:
+        for i, o in enumerate(pool):
+            if i not in used and test(o):
+                return i
+    return None
+
+
+def _apply_lines(version, lines, mode, version_id):
+    """The version's new lines. replace: exactly the lines sent (an existing
+    line keeps its id when it is the same item or sub-recipe). merge: the
+    lines sent change or add, `remove` drops, every other line stays."""
+    pool = [o for o in version.get("lines") or [] if isinstance(o, dict)]
+    used = set()
+    out = []
+    changed = {}
+    for ln in lines:
+        k = _find_old(ln, pool, used)
+        if ln.get("remove"):
+            if k is not None:
+                used.add(k)
+            continue
+        if k is not None:
+            used.add(k)
+            changed[k] = _web_line(ln, version_id, pool[k])
+        else:
+            out.append(_web_line(ln, version_id))
+    if mode == "merge":
+        kept = []
+        for i, o in enumerate(pool):
+            if i in changed:
+                kept.append(changed[i])
+            elif i not in used:
+                kept.append(o)
+        out = kept + out
+    else:
+        out = [changed[i] for i in sorted(changed)] + out
+    for order, line in enumerate(out):
+        line["lineOrder"] = order
+    return out
+
+
+def _web_recipe(rec):
+    """The recipe as Loaded's web app nests it in a save: no versions, images
+    as JSON text without their src, the notes' <img> tags without src."""
+    w = {k: v for k, v in rec.items() if k not in ("versions", "currentVersion")}
+    images = rec.get("imagesJson")
+    if isinstance(images, str):
+        try:
+            images = json.loads(images) if images else []
+        except ValueError:
+            images = []
+    images = images if isinstance(images, list) else []
+    clean = []
+    for im in images:
+        if isinstance(im, dict):
+            im = {k: v for k, v in im.items() if k != "src"}
+        clean.append(im)
+    w["imagesJson"] = json.dumps(clean)
+    main = rec.get("mainImageJson")
+    if isinstance(main, str) and main:
+        try:
+            main = json.loads(main)
+        except ValueError:
+            main = None
+    if isinstance(main, dict):
+        w["mainImageJson"] = json.dumps({k: v for k, v in main.items() if k != "src"})
+    if isinstance(w.get("notes"), str):
+        w["notes"] = _strip_img_src(w["notes"])
+    return w
+
+
+def _strip_img_src(html):
+    """<img ... src="..."> → <img ...> (the sandbox has no re)."""
+    out, i = [], 0
+    while True:
+        j = html.find("<img", i)
+        if j < 0:
+            out.append(html[i:])
+            return "".join(out)
+        end = html.find(">", j)
+        if end < 0:
+            out.append(html[i:])
+            return "".join(out)
+        out.append(html[i:j])
+        tag = html[j : end + 1]
+        s = tag.find(' src="')
+        if s >= 0:
+            e = tag.find('"', s + 6)
+            if e >= 0:
+                tag = tag[:s] + tag[e + 1 :]
+        out.append(tag)
+        i = end + 1
+
+
+def _versions(rec):
+    vs = [v for v in rec.get("versions") or [] if isinstance(v, dict)]
+    return sorted(
+        vs,
+        key=lambda v: (_number(v.get("versionNo")) or 0, str(v.get("validFrom") or "")),
+    )
+
+
+def _read(body, call_api):
+    """(recipe, version, valid_until) as Loaded has them now — or an error."""
+    rec = call_api(_LL, "get_recipe", {"recipe_id": body["recipe_id"]})
+    if _err(rec) or not isinstance(rec, dict) or not rec.get("id"):
+        return None, (
+            f"Couldn't read recipe {body['recipe_id']} through Loaded Legacy "
+            f"({_err(rec) or 'nothing came back'}). If the recipe exists, the venue's "
+            "Loaded company may be wrong — check it in Settings → Venues."
+        )
+    versions = _versions(rec)
+    vid = body.get("version_id") or (rec.get("currentVersion") or {}).get("id")
+    if not vid and versions:
+        vid = versions[-1].get("id")
+    idx = None
+    for i, v in enumerate(versions):
+        if v.get("id") == vid:
+            idx = i
+    if idx is None:
+        return None, (
+            "That version of the recipe isn't in Loaded any more — reopen the "
+            "recipe and try again."
+        )
+    valid_until = (
+        versions[idx + 1].get("validFrom") if idx + 1 < len(versions) else None
+    )
+    ver = call_api(_LL, "get_recipe_version", {"version_id": vid})
+    if _err(ver) or not isinstance(ver, dict):
+        return (
+            None,
+            f"Couldn't read the recipe's version ({_err(ver) or 'nothing came back'}).",
+        )
+    return (rec, ver, valid_until), None
+
+
+def _yield(target, body, yunit, current=None):
+    """Write the yield (Loaded's spelling, 'yeild', kept) in base units."""
+    if yunit is None and "yield_quantity" not in body:
+        return
+    cur = current or {}
+    if yunit is None:
+        yunit = {
+            "id": cur.get("yeildUnitId"),
+            "name": cur.get("yeildUnitName"),
+            "ratio": _number(cur.get("yeildUnitRatio")) or 1,
+        }
+    qty = body.get("yield_quantity")
+    if qty is None:
+        qty = (_number(cur.get("yeildQuantity")) or 0) / (
+            _number(cur.get("yeildUnitRatio")) or 1
+        )
+    ratio = _number(yunit.get("ratio")) or 1
+    for spelling in ("yeild", "yield"):
+        target[spelling + "UnitId"] = yunit.get("id")
+        target[spelling + "UnitName"] = yunit.get("name")
+        target[spelling + "UnitRatio"] = ratio
+        target[spelling + "Quantity"] = round(float(qty) * ratio, 9)
+
+
+def _kept(after, sent):
+    """Did Loaded keep the lines it was sent?"""
+    got = [ln for ln in (after or {}).get("lines") or [] if isinstance(ln, dict)]
+    want = sent.get("lines") or []
+    if len(got) != len(want):
+        return False
+
+    def key(x):
+        return (
+            str(_old_ref(x)),
+            str(x.get("unitId")),
+            round(_number(x.get("quantity")) or 0, 6),
+        )
+
+    return sorted(key(x) for x in got) == sorted(key(x) for x in want)
+
+
+# ------------------------------------------------------------------ run ----
 
 
 def run(params, call_api, log):
     body = {k: params[k] for k in _FIELDS if params.get(k) not in (None, "")}
-    if not body.get("recipe_id") and not body.get("name"):
+    notes_out = []
+    if params.get("allergens") not in (None, "", []):
+        notes_out.append(
+            "Allergens weren't saved: Loaded keeps no allergen statuses on recipes."
+        )
+    editing = bool(body.get("recipe_id"))
+    if not editing and not body.get("name"):
         return {"error": "A new recipe needs a name (or pass recipe_id to edit one)."}
 
     problems = []
     if "ingredients" in body:
         body["ingredients"], found = _check_ingredients(_parse(body["ingredients"]))
-        problems += found
-    if "allergens" in body:
-        body["allergens"], found = _check_allergens(_parse(body["allergens"]))
         problems += found
     if "yield_quantity" in body:
         body["yield_quantity"] = _number(body["yield_quantity"])
@@ -164,85 +490,171 @@ def run(params, call_api, log):
     mode = str(body.get("mode") or "").strip().lower()
     if mode and mode not in _MODES:
         problems.append("mode must be 'merge' or 'replace'")
-    elif mode:
-        body["mode"] = mode
-    if body.get("recipe_id") and "ingredients" in body and not mode:
-        # Orbit's default is replace: sending only the changed line would
-        # delete every other line of the recipe.
+    if editing and "ingredients" in body and not mode:
+        # Sending only the changed line must never silently delete the rest.
         problems.append(
             "editing a recipe's ingredients needs mode: 'merge' changes or adds "
             "the lines you send and keeps the rest; 'replace' makes your list "
             "the whole recipe"
         )
+    if not editing:
+        mode = "replace"
+        if not body.get("yield_unit"):
+            problems.append("a new recipe needs a yield_unit (and yield_quantity)")
+        if not [ln for ln in body.get("ingredients") or [] if not ln.get("remove")]:
+            problems.append("a new recipe needs its ingredient lines")
     if problems:
         return {"error": "nothing written — " + "; ".join(problems)}
 
-    # An edit without the version: Orbit treats recipe_id-without-version_id
-    # as a create and refuses it ("name and yield_unit_id are required") —
-    # 14 times in one production thread (aad94383). Read the recipe once and
-    # edit its current version; the same read feeds the preview card.
-    now = None
-    if body.get("recipe_id") and not body.get("version_id"):
-        now = _current(body, call_api)
-        if now is None:
-            return {
-                "error": f"Couldn't read recipe {body['recipe_id']} to find its current version."
-            }
-        # The version's id as the read names it; a read that carries none
-        # leaves the edit to Orbit's own resolution, as before.
-        version = now[1] or {}
-        version_id = version.get("version_id") or version.get("id")
-        if version_id:
-            body["version_id"] = version_id
-
-    preview(lambda: _card(body, mode, call_api, now))
-    log(
-        f"record_recipe: {'edit ' + str(body['recipe_id']) if body.get('recipe_id') else 'create ' + repr(body.get('name'))}"
-        f", {len(body.get('ingredients') or [])} ingredient line(s)"
-        + (f", mode {mode}" if mode else "")
+    lines, yunit, same_name, problems = _match(
+        params, body, body.get("ingredients") or [], call_api
     )
-    out = call_api("cook_brothers_app", "kitchen_record_recipe", body)
-    if not body.get("recipe_id"):
-        out = _with_created_ids(out, body.get("name"), call_api, log)
-    return out
+
+    def _same(a, b):
+        return " ".join(str(a or "").lower().split()) == " ".join(
+            str(b or "").lower().split()
+        )
+
+    if not editing and same_name and _same(same_name.get("name"), body.get("name")):
+        # 2–3 Oct 2026: Orbit's create made several recipes twice in one thread.
+        problems.append(
+            f"a recipe called {same_name.get('name') or body.get('name')!r} already "
+            f"exists (recipe_id {same_name.get('id')}) — edit it with recipe_id, or "
+            "give the new recipe a different name"
+        )
+    if problems:
+        return {"error": "nothing written — " + "; ".join(problems)}
+    if (
+        yunit is None
+        and body.get("yield_unit")
+        and _number(body.get("yield_unit_ratio"))
+    ):
+        yunit = {
+            "id": body["yield_unit"],
+            "name": body.get("yield_unit_name"),
+            "ratio": _number(body["yield_unit_ratio"]),
+        }
+
+    if not editing:
+        return _create(body, lines, yunit, call_api, log, notes_out)
+
+    now, rerr = _read(body, call_api)
+    if rerr:
+        return {"error": rerr}
+    rec, ver, valid_until = now
+    version_id = ver.get("id") or body.get("version_id")
+    sent = {k: v for k, v in ver.items()}
+    if "ingredients" in body:
+        sent["lines"] = _apply_lines(ver, lines, mode, version_id)
+    _yield(sent, body, yunit, ver)
+    recipe = _web_recipe(rec)
+    if body.get("name"):
+        recipe["name"] = str(body["name"]).strip()
+    if "notes" in body:
+        recipe["notes"] = _strip_img_src(str(body["notes"]))
+    if "is_counted_in_stocktake" in body:
+        recipe["stocktake"] = body["is_counted_in_stocktake"]
+    sent["recipe"] = recipe
+
+    preview(
+        lambda: _card(rec, ver, sent, body, mode),
+        basis={"version": ver, "name": rec.get("name"), "notes": rec.get("notes")},
+    )
+    log(
+        f"record_recipe: edit {rec.get('name')!r}, {len(sent.get('lines') or [])} line(s)"
+        + (f", mode {mode}" if "ingredients" in body else "")
+    )
+    out = call_api(
+        _LL,
+        "save_recipe_version",
+        {"version_id": version_id, "valid_until": valid_until or "", "body": sent},
+    )
+    if _err(out):
+        if rec.get("isShared"):
+            return {
+                "error": (
+                    "Loaded refused the save. This recipe is shared with other "
+                    "companies, and Loaded's older API doesn't save shared recipes — "
+                    "change it in Loaded."
+                )
+            }
+        return {"error": f"Loaded refused the save: {_err(out)}"}
+    if "ingredients" in body:
+        after = call_api(_LL, "get_recipe_version", {"version_id": version_id})
+        if _err(after) or not _kept(after, sent):
+            return {
+                "error": (
+                    "Loaded accepted the save but the recipe doesn't show the change — "
+                    "reopen the recipe to check it."
+                )
+            }
+    result = {
+        "saved": True,
+        "created": False,
+        "recipe_id": rec.get("id"),
+        "version_id": version_id,
+        "name": recipe.get("name"),
+        "lines": len(sent.get("lines") or []),
+    }
+    if notes_out:
+        result["note"] = " ".join(notes_out)
+    return result
 
 
-def _with_created_ids(out, name, call_api, log):
-    """Orbit's create response carries null ids (verified live, Aug 2026).
-    Read Loaded's recipe list and fill them in: the newest live recipe with
-    this name is the one just made. The model then has the id to open or
-    edit it, instead of searching by name."""
-    if not isinstance(out, dict) or out.get("error"):
-        return out
-    data = out.get("data") if isinstance(out.get("data"), dict) else out
-    if data.get("recipe_id"):
-        return out
-    rows = call_api("loadedhub", "get_all_recipes", {})
-    rows = rows.get("data") if isinstance(rows, dict) else rows
-    want = " ".join(str(name or "").split()).lower()
-    same = [
-        r
-        for r in (rows if isinstance(rows, list) else [])
-        if isinstance(r, dict)
-        and r.get("id")
-        and not r.get("deletedAt")
-        and " ".join(str(r.get("name") or "").split()).lower() == want
+def _create(body, lines, yunit, call_api, log, notes_out):
+    sent = {
+        "versionNo": 1,
+        "lines": [],
+        "recipe": {
+            "imagesJson": "[]",
+            "name": str(body["name"]).strip(),
+            "notes": _strip_img_src(str(body.get("notes") or "")),
+            "stocktake": bool(body.get("is_counted_in_stocktake")),
+        },
+    }
+    sent["lines"] = _apply_lines({"lines": []}, lines, "replace", None)
+    _yield(sent, {**body, "yield_quantity": body.get("yield_quantity") or 1}, yunit)
+    preview(lambda: _card({}, {}, sent, body, "replace"))
+    log(
+        f"record_recipe: create {sent['recipe']['name']!r}, {len(sent['lines'])} line(s)"
+    )
+    out = call_api(_LL, "create_recipe_version", {"body": sent})
+    if _err(out):
+        return {"error": f"Loaded refused the new recipe: {_err(out)}"}
+    recipe_id, version_id = _created(sent["recipe"]["name"], call_api, log)
+    result = {
+        "saved": True,
+        "created": True,
+        "recipe_id": recipe_id,
+        "version_id": version_id,
+        "name": sent["recipe"]["name"],
+        "lines": len(sent["lines"]),
+    }
+    if notes_out:
+        result["note"] = " ".join(notes_out)
+    return result
+
+
+def _created(name, call_api, log):
+    """Loaded answers a create with 204 and no ids (verified in its test
+    environment, 19 Oct 2026): the new recipe is the newest live one with this
+    name, and its version is that recipe's current one."""
+    quoted = str(name).replace("'", "''")
+    found = call_api(
+        _LL,
+        "find_recipes",
+        {"filter": f"Name eq '{quoted}' and DatestampDeleted eq null"},
+    )
+    rows = [
+        r for r in (found if isinstance(found, list) else []) if isinstance(r, dict)
     ]
-    if not same:
-        log(f"record_recipe: created {name!r} but it was not found by name")
-        return out
-    same.sort(key=lambda r: str(r.get("createdAt") or ""), reverse=True)
-    r = same[0]
-    versions = [v for v in (r.get("versions") or []) if isinstance(v, dict)]
-    current = versions[-1] if versions else {}
-    for v in versions:  # the open-ended version is the current one
-        if not v.get("validTo"):
-            current = v
-            break
-    data["recipe_id"] = r["id"]
-    data["version_id"] = current.get("id")
-    data["name"] = r.get("name")
-    return out
+    if not rows:
+        log(f"record_recipe: created {name!r} but couldn't find it by name")
+        return None, None
+    rows.sort(key=lambda r: str(r.get("datestampCreated") or ""), reverse=True)
+    rec = call_api(_LL, "get_recipe", {"recipe_id": rows[0].get("id")})
+    current = (rec.get("currentVersion") if isinstance(rec, dict) else None) or {}
+    return rows[0].get("id"), current.get("id")
 
 
 # ------------------------------------------------------------- preview ----
@@ -271,50 +683,25 @@ def _amount(quantity, unit):
     return f"{quantity} {unit or ''}".strip()
 
 
-def _current(body, call_api):
-    """(recipe head, version, allergens) as Orbit has it now, or None."""
-    args = {"recipe_id": body["recipe_id"]}
-    if body.get("version_id"):
-        args["version_id"] = body["version_id"]
-    out = call_api("cook_brothers_app", "kitchen_get_recipe", args)
-    if not isinstance(out, dict) or out.get("error"):
+def _display(line):
+    ratio = _number(line.get("unitRatio")) or 1
+    qty = (_number(line.get("quantity")) or 0) / ratio
+    return _amount(round(qty, 4), line.get("unitName"))
+
+
+def _yield_text(v):
+    if not v or v.get("yeildUnitId") is None:
         return None
-    data = out.get("data") if isinstance(out.get("data"), dict) else out
-    rec = data.get("recipe") if isinstance(data.get("recipe"), dict) else {}
-    head = rec.get("recipe") if isinstance(rec.get("recipe"), dict) else {}
-    if not head:
-        return None
-    return head, rec.get("version") or {}, rec.get("allergens") or []
+    ratio = _number(v.get("yeildUnitRatio")) or 1
+    return _amount(
+        round((_number(v.get("yeildQuantity")) or 0) / ratio, 4), v.get("yeildUnitName")
+    )
 
 
-def _match(line, existing):
-    for old in existing:
-        if line.get("line_id") and old.get("line_id") == line["line_id"]:
-            return old
-    for old in existing:
-        if line.get("ref_id") and old.get("ref_id") == line["ref_id"]:
-            return old
-    name = str(line.get("name") or "").strip().lower()
-    for old in existing:
-        if name and str(old.get("name") or "").strip().lower() == name:
-            return old
-    return None
-
-
-def _card(body, mode, call_api, now=None):
-    """What this call changes, for the approval card — from the recipe as it
-    is now when editing one (``now``: that read, when run() already made it)."""
+def _card(rec, ver, sent, body, mode):
+    """What this call changes, for the approval card."""
+    editing = bool(rec)
     changes, warnings = [], []
-    head, version, allergens = {}, {}, []
-    editing = bool(body.get("recipe_id"))
-    if editing:
-        now = now or _current(body, call_api)
-        if now is None:
-            warnings.append(
-                "Couldn't read the recipe as it is now — showing the changes as sent."
-            )
-        else:
-            head, version, allergens = now
 
     def change(field, before, after):
         row = {"field": field, "after": after}
@@ -322,74 +709,54 @@ def _card(body, mode, call_api, now=None):
             row["before"] = before
         changes.append(row)
 
-    if body.get("name") and body["name"] != head.get("name"):
-        change("Name", head.get("name"), body["name"])
-    if "notes" in body and body["notes"] != head.get("notes"):
+    new = sent.get("recipe") or {}
+    if new.get("name") != rec.get("name"):
+        change("Name", rec.get("name"), new.get("name"))
+    if "notes" in body and new.get("notes") != rec.get("notes"):
         change(
-            "Method / notes", _plain_text(head.get("notes")), _plain_text(body["notes"])
+            "Method / notes",
+            _plain_text(rec.get("notes")),
+            _plain_text(new.get("notes")),
         )
-    if "yield_quantity" in body or "yield_unit" in body:
-        before = _amount(version.get("yield_quantity"), version.get("yield_unit_name"))
-        after = _amount(
-            body.get("yield_quantity", version.get("yield_quantity")),
-            body.get("yield_unit") or version.get("yield_unit_name"),
+    if _yield_text(sent) != _yield_text(ver):
+        change("Yield", _yield_text(ver), _yield_text(sent))
+    if "is_counted_in_stocktake" in body and new.get("stocktake") != rec.get(
+        "stocktake"
+    ):
+        change(
+            "Counted in stocktake",
+            None
+            if rec.get("stocktake") is None
+            else ("Yes" if rec.get("stocktake") else "No"),
+            "Yes" if new.get("stocktake") else "No",
         )
-        if before != after:
-            change("Yield", before, after)
-    if "is_counted_in_stocktake" in body:
-        was = head.get("is_counted_in_stocktake")
-        if was != body["is_counted_in_stocktake"]:
-            change(
-                "Counted in stocktake",
-                None if was is None else ("Yes" if was else "No"),
-                "Yes" if body["is_counted_in_stocktake"] else "No",
-            )
-
-    existing = [ln for ln in (version.get("lines") or []) if isinstance(ln, dict)]
-    matched = []
-    for line in body.get("ingredients") or []:
-        old = _match(line, existing) if existing else None
-        name = line.get("name") or (old or {}).get("name") or line.get("ref_id")
-        before = _amount(old.get("quantity"), old.get("unit_name")) if old else None
-        if old:
-            matched.append(old)
-        if line.get("remove"):
-            change(f"Ingredient · {name}", before, "Removed")
-            continue
-        after = _amount(line.get("quantity"), line.get("unit"))
-        if old is None:
-            changes.append({"field": f"Ingredient · {name}", "after": after + " (new)"})
-        elif before != after:
-            change(f"Ingredient · {name}", before, after)
-    if mode == "replace" and "ingredients" in body:
-        dropped = [old for old in existing if not any(old is m for m in matched)]
-        for old in dropped:
-            change(
-                f"Ingredient · {old.get('name')}",
-                _amount(old.get("quantity"), old.get("unit_name")),
-                "Removed",
-            )
-        if dropped:
+    if "ingredients" in body:
+        before = {}
+        for o in ver.get("lines") or []:
+            before.setdefault(str(_old_ref(o)), o)
+        after_refs = set()
+        for ln in sent.get("lines") or []:
+            ref = str(_old_ref(ln))
+            after_refs.add(ref)
+            old = before.get(ref)
+            name = _old_name(ln) or ref
+            if old is None:
+                changes.append(
+                    {"field": f"Ingredient · {name}", "after": _display(ln) + " (new)"}
+                )
+            elif _display(old) != _display(ln) or old.get("unitId") != ln.get("unitId"):
+                change(f"Ingredient · {name}", _display(old), _display(ln))
+        dropped = [o for ref, o in before.items() if ref not in after_refs]
+        for o in dropped:
+            change(f"Ingredient · {_old_name(o)}", _display(o), "Removed")
+        if dropped and mode == "replace":
             warnings.append(
-                f"Replace: the recipe becomes exactly the {len(body['ingredients'])} "
+                f"Replace: the recipe becomes exactly the {len(sent.get('lines') or [])} "
                 f"line(s) sent, so {len(dropped)} current line(s) are removed."
             )
-
-    statuses = {
-        str(a.get("code")): a.get("status") for a in allergens if isinstance(a, dict)
-    }
-    for a in body.get("allergens") or []:
-        code = str(a.get("code"))
-        if statuses.get(code) != a.get("status"):
-            change(
-                f"Allergen · {code.replace('_', ' ').title()}",
-                _STATUS_LABELS.get(statuses.get(code), statuses.get(code)),
-                _STATUS_LABELS.get(a.get("status"), a.get("status")),
-            )
-
     return {
         "title": "Change a recipe" if editing else "Create a recipe",
-        "target": body.get("name") or head.get("name") or body.get("recipe_id"),
+        "target": new.get("name") or rec.get("name") or body.get("recipe_id"),
         "changes": changes,
         "warnings": warnings,
     }

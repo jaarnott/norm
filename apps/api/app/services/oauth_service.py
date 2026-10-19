@@ -282,8 +282,15 @@ def token_is_dead(config_row: Connection | None, now: datetime | None = None) ->
     refresh with never gets that far, so on its own the flag called it healthy.
     That is how six local venues showed "Connected" on 11 Oct 2026 while every
     LoadedHub call failed with "No refresh token available".
+
+    A password login (services/password_login) is never dead this way: it has
+    no refresh token because it logs in again with the stored password, so an
+    expired token is just the next login. A refused login sets the flag.
     """
     if config_row is None or config_row.refresh_token:
+        return False
+    meta = config_row.oauth_metadata
+    if isinstance(meta, dict) and "password_login" in meta:
         return False
     if not config_row.access_token:
         return True

@@ -5,6 +5,7 @@ import { apiFetch } from '../../lib/api';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
+import PasswordLoginForm, { type AccountChoice } from './PasswordLoginForm';
 
 type VenueStatus = 'connected' | 'needs_reconnect' | 'not_connected';
 
@@ -19,6 +20,8 @@ interface VenueRow {
   // legitimately differ, so the flag, not the name, decides "wrong".
   wrong_company?: boolean;
   last_auth_error?: string | null;
+  // A password login's account (Loaded Legacy: the Loaded company picked).
+  account?: string | null;
 }
 
 interface ConnectInfo {
@@ -26,6 +29,8 @@ interface ConnectInfo {
   display_name: string;
   auth_type: string;
   credential_fields: { key: string; label: string; secret?: boolean }[];
+  // a password login reaching several accounts: what to call one
+  account_choice?: AccountChoice | null;
   venues: VenueRow[];
 }
 
@@ -38,6 +43,10 @@ interface ConnectInfo {
  *     authorize URL, reconcile on the callback's postMessage).
  *   - API-key connectors → an inline credential form that POSTs same-origin to
  *     /api/connectors/{name}; the values never pass through the model.
+ *   - Password-login connectors (auth_type password_login) → that form per
+ *     venue: each venue connects with its own login, which the server checks
+ *     before keeping (a refused one is never saved). A failing login shows
+ *     "Needs attention" with the service's reason.
  */
 export default function ConnectorConnectCard({ data, onAction }: DisplayBlockProps) {
   const connectorName = (data?.connector_name as string) || '';
@@ -49,6 +58,8 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
   const [busy, setBusy] = useState<string | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
   const [savedKey, setSavedKey] = useState(false);
+  // Password login: the venue whose form is open.
+  const [openVenue, setOpenVenue] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     if (!connectorName) return;
@@ -125,6 +136,12 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
     }
   };
 
+  const loginSaved = (venueName: string) => {
+    setOpenVenue(null);
+    refresh();
+    onAction?.({ connector_name: 'norm', action: 'send_message', params: { message: `I've connected ${info?.display_name || connectorName} for ${venueName}.` } });
+  };
+
   if (!connectorName) return null;
 
   const box: React.CSSProperties = {
@@ -141,6 +158,8 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
   }
 
   const isOAuth = info.auth_type === 'oauth2';
+  const isPasswordLogin = info.auth_type === 'password_login';
+  const venues = info.venues.filter(v => !onlyVenueId || v.venue_id === onlyVenueId);
 
   return (
     <div style={box}>
@@ -148,7 +167,59 @@ export default function ConnectorConnectCard({ data, onAction }: DisplayBlockPro
         Connect {label}
       </div>
 
-      {isOAuth ? (
+      {isPasswordLogin ? (
+        venues.length === 0 ? (
+          <div style={{ fontSize: 'var(--fs-base)', color: 'var(--muted)' }}>No venues you can connect.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            {venues.map(v => {
+              const broken = v.status === 'needs_reconnect';
+              const connected = v.status === 'connected';
+              const open = openVenue === v.venue_id;
+              return (
+                <div key={v.venue_id}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-base)', color: 'var(--text)' }}>
+                      {v.venue_name}
+                      {v.account && (
+                        <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
+                          Works on {v.account}{info.account_choice ? ` (${info.account_choice.label})` : ''}
+                        </span>
+                      )}
+                      {broken && v.last_auth_error && (
+                        <span style={{ display: 'block', fontSize: 'var(--fs-xs)', color: 'var(--error)' }}>{v.last_auth_error}</span>
+                      )}
+                    </span>
+                    {connected && <Badge tone="ok">Connected</Badge>}
+                    {broken && <Badge tone="warn">Needs attention</Badge>}
+                    <Button
+                      size="sm"
+                      variant={open ? 'quiet' : broken ? 'danger' : connected ? 'secondary' : 'primary'}
+                      onClick={() => setOpenVenue(open ? null : v.venue_id)}
+                      disabled={busy !== null}
+                    >
+                      {open ? 'Cancel' : connected || broken ? 'Replace login' : 'Connect'}
+                    </Button>
+                  </div>
+                  {open && (
+                    <div style={{ marginTop: '0.5rem' }}>
+                      <PasswordLoginForm
+                        connectorName={connectorName}
+                        venueId={v.venue_id}
+                        fields={info.credential_fields}
+                        accountChoice={info.account_choice}
+                        account={v.account}
+                        onSaved={() => loginSaved(v.venue_name)}
+                        onCancel={() => setOpenVenue(null)}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : isOAuth ? (
         info.venues.length === 0 ? (
           <div style={{ fontSize: 'var(--fs-base)', color: 'var(--muted)' }}>No venues you can connect.</div>
         ) : (

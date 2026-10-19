@@ -192,6 +192,38 @@ def check_connector_tools(
 _AGGREGATE_HINTS = ("total", "sum", "count", "avg", "average")
 
 
+def check_secret_credential_fields(
+    connector_name: str, credential_fields: list | None
+) -> list[ConfigIssue]:
+    """A credential field marked ``secret`` must have a secret's name: typed
+    secrets are encrypted by name (db/encrypted.is_secret_key), so any path
+    that rewrites a connection keeps them encrypted. A secret called something
+    else would be stored in plain text."""
+    from app.db.encrypted import is_secret_key
+
+    issues: list[ConfigIssue] = []
+    for field in credential_fields or []:
+        if not isinstance(field, dict) or not field.get("secret"):
+            continue
+        key = field.get("key")
+        if key and not is_secret_key(key):
+            issues.append(
+                ConfigIssue(
+                    severity="error",
+                    where=f"{connector_name}.credential_fields.{key}",
+                    problem=(
+                        f"secret field '{key}' doesn't have a secret's name, so "
+                        "what is typed into it is stored unencrypted"
+                    ),
+                    fix=(
+                        "Rename it (e.g. api_key, password, or a name ending "
+                        "_token / _secret / _password) in Settings → Connector specs."
+                    ),
+                )
+            )
+    return issues
+
+
 def _check_stale_aggregates(where: str, tool: dict) -> list[ConfigIssue]:
     """Flag a transform that filters rows but passes a summary field through.
 
@@ -1195,6 +1227,11 @@ def validate_config(db=None, config_db=None) -> dict:
                     spec.execution_mode,
                     spec_rows.rows(spec),
                     internal_actions,
+                )
+            )
+            issues.extend(
+                check_secret_credential_fields(
+                    spec.connector_name, spec.credential_fields
                 )
             )
             actions_by_connector.setdefault(spec.connector_name, set())

@@ -3,9 +3,10 @@
 Reads for the recipe editor go through the generic component-API route
 (recipe_editor/list_recipes, get_recipe, list_stock_items, list_units — all
 direct loadedhub). The SAVE is the one write, and it can't ride the component-API
-path: it goes through the Cook Brothers App MCP connector, not a loadedhub HTTP
-call. Both this route and the MCP ``norm__save_recipe`` app tool call the single
-``recipe_save.save_recipe`` writer.
+path: Loaded's recipe writes refuse the OAuth token, so it goes through Loaded
+Legacy's ``record_recipe`` tool. Both this route and the MCP
+``norm__save_recipe`` app tool call the single ``recipe_save.save_recipe``
+writer.
 """
 
 import logging
@@ -50,9 +51,9 @@ def recipe_links_route(
 ):
     """POS product name -> recipe id for the Menu Engineering table's click-through.
 
-    Sourced from the Cook Brothers App (the one place the posItem->recipe link is
-    reachable); ``{}`` when the venue isn't CB-connected, so the client falls back
-    to name-matching against the menus."""
+    Loaded's POS-item -> recipe links come through Loaded Legacy
+    (services/menu_engineering); ``{}`` when the venue isn't connected to it, so
+    the client falls back to name-matching against the menus."""
     if not user_can_access_venue(db, user.id, req.venue_id):
         raise HTTPException(
             status_code=403, detail="You don't have access to that venue."

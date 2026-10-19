@@ -65,12 +65,17 @@ def _redact_config(
     config: dict, connector_name: str, credential_fields: list | None = None
 ) -> dict:
     # Check platform connectors first
+    from app.db.encrypted import is_secret_key
+
     meta = next((c for c in PLATFORM_CONNECTORS if c["name"] == connector_name), None)
     fields = meta["fields"] if meta else (credential_fields or [])
-    if not fields:
-        return config
     secret_keys = {f["key"] for f in fields if f.get("secret")}
-    return {k: ("••••••••" if k in secret_keys and v else v) for k, v in config.items()}
+    # Anything named like a secret is masked too: until 19 Oct 2026 a spec
+    # connector's PUT answered with its typed API key / password in clear.
+    return {
+        k: ("••••••••" if (k in secret_keys or is_secret_key(k)) and v else v)
+        for k, v in (config or {}).items()
+    }
 
 
 @router.get("/connectors")
@@ -131,6 +136,13 @@ async def list_connectors(
                 # UI keys "Reconnect needed" off this instead.
                 entry["needs_reconnect"] = needs_reconnect(config_row)
                 entry["last_auth_error"] = config_row.last_auth_error
+            if spec.auth_type == "password_login":
+                # One login, several accounts (Loaded's companies): which one
+                # this connection works on, and what to call one.
+                from app.services.password_login import account_choice, account_name
+
+                entry["account_choice"] = account_choice(spec)
+                entry["account"] = account_name(config_row)
             result.append(entry)
 
     return {"connectors": result}
@@ -203,6 +215,8 @@ async def connector_connect_info(
             if needs_reconnect(cfg):
                 return "needs_reconnect"
             return "connected"
+        if spec.auth_type == "password_login" and cfg.needs_reconnect:
+            return "needs_reconnect"  # its login is being refused
         values = cfg.config or {}
         if required_keys:
             ok = all(str(values.get(k) or "").strip() for k in required_keys)
@@ -236,6 +250,9 @@ async def connector_connect_info(
         return (str(name) if name else None), wrong
 
     bindings = {v.id: _token_binding(_cfg_for(v.id)) for v in venues}
+    login = spec.auth_type == "password_login"
+    if login:
+        from app.services.password_login import account_choice, account_name
     venue_rows = [
         {
             "venue_id": v.id,
@@ -249,6 +266,8 @@ async def connector_connect_info(
             "last_auth_error": (
                 _cfg_for(v.id).last_auth_error if _cfg_for(v.id) else None
             ),
+            # a password login's account (Loaded Legacy: the Loaded company)
+            "account": account_name(_cfg_for(v.id)) if login else None,
         }
         for v in venues
     ]
@@ -258,6 +277,7 @@ async def connector_connect_info(
         "display_name": spec.display_name,
         "auth_type": spec.auth_type,
         "credential_fields": spec.credential_fields or [],
+        "account_choice": account_choice(spec) if login else None,
         # One honest answer for callers that don't care about venues: is this
         # connection usable anywhere? (Platform pipes are always configured.)
         "configured": platform
@@ -283,6 +303,7 @@ async def upsert_connector(
     user: User = Depends(require_permission("settings:connectors")),
 ):
     meta = next((c for c in PLATFORM_CONNECTORS if c["name"] == name), None)
+    spec = None
     if not meta:
         # Check if it's a spec-driven connector
         spec = (
@@ -293,6 +314,13 @@ async def upsert_connector(
         if not spec:
             raise HTTPException(404, f"Unknown connector: {name}")
 
+    # A venue's connection is set by someone who works at that venue.
+    if body.venue_id and user.role != "admin":
+        from app.services.venue_service import get_user_venues
+
+        if body.venue_id not in {v.id for v in get_user_venues(db, user.id)}:
+            raise HTTPException(403, "Not one of your venues")
+
     # Venue-aware lookup
     query = db.query(Connection).filter(Connection.connector_name == name)
     if body.venue_id:
@@ -301,28 +329,55 @@ async def upsert_connector(
         query = query.filter(Connection.venue_id.is_(None))
     row = query.first()
 
+    # Merge: keep existing values for redacted fields
+    config = dict(row.config) if row else {}
+    for k, v in body.config.items():
+        if v != "••••••••":
+            config[k] = v
+
+    # A password login is checked before it is kept: a login the service
+    # refuses is never saved (services/password_login).
+    token = account = None
+    if spec is not None and spec.auth_type == "password_login" and body.enabled:
+        from app.services.password_login import (
+            ChooseAccount,
+            PasswordLoginError,
+            check_and_prepare,
+        )
+
+        try:
+            config, token, account = check_and_prepare(spec, db, body.venue_id, config)
+        except ChooseAccount as exc:
+            # The login works; the form lists the accounts to pick from.
+            raise HTTPException(
+                409, {"message": str(exc), "choose": exc.choice}
+            ) from None
+        except PasswordLoginError as exc:
+            raise HTTPException(400, str(exc)) from None
+
     if row:
-        # Merge: keep existing values for redacted fields
-        merged = dict(row.config)
-        for k, v in body.config.items():
-            if v != "••••••••":
-                merged[k] = v
-        row.config = merged
+        row.config = config
         row.enabled = "true" if body.enabled else "false"
     else:
         row = Connection(
             connector_name=name,
             venue_id=body.venue_id,
-            config=body.config,
+            config=config,
             enabled="true" if body.enabled else "false",
         )
         db.add(row)
+    if token is not None:
+        from app.services.password_login import store_checked_token
+
+        store_checked_token(row, token, account)
     db.commit()
     db.refresh(row)
     return {
         "name": row.connector_name,
         "enabled": row.enabled == "true",
-        "config": _redact_config(row.config, name),
+        "config": _redact_config(
+            row.config, name, spec.credential_fields if spec is not None else None
+        ),
     }
 
 

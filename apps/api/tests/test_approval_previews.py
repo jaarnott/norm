@@ -411,63 +411,89 @@ class TestMenuPreview:
 
 
 class TestRecipePreview:
-    RECIPE_PAYLOAD = {
-        "success": True,
-        "data": {
-            "recipe": {
-                "recipe": {
-                    "id": "r-1",
-                    "name": "COMPONENT - AIOLI",
-                    "notes": "<p>x</p>",
-                },
-                "version": {
-                    "yield_quantity": 20,
-                    "yield_unit_name": "Litre",
-                    "lines": [
-                        {
-                            "line_id": "a",
-                            "name": "OIL CANOLA",
-                            "quantity": 16,
-                            "unit_name": "Litre",
-                        },
-                        {
-                            "line_id": "b",
-                            "name": "GARLIC PEELED",
-                            "quantity": 500,
-                            "unit_name": "Gram",
-                        },
-                        {
-                            "line_id": "c",
-                            "name": "SALT TABLE IODISED",
-                            "quantity": 80,
-                            "unit_name": "Gram",
-                        },
-                    ],
-                },
-                "allergens": [{"code": "EGGS", "status": "no"}],
-            }
-        },
+    """record_recipe on Loaded Legacy (19 Oct 2026): the card is built from
+    Loaded's own recipe and version, read through Loaded Legacy."""
+
+    RECIPE_READ = {
+        "id": "r-1",
+        "name": "COMPONENT - AIOLI",
+        "notes": "<p>x</p>",
+        "imagesJson": "[]",
+        "currentVersion": {"id": "v-1"},
+        "versions": [{"id": "v-1", "versionNo": 1, "validFrom": None}],
+    }
+    VERSION_READ = {
+        "id": "v-1",
+        "yeildQuantity": 20.0,
+        "yeildUnitId": "u-l",
+        "yeildUnitName": "Litre",
+        "yeildUnitRatio": 1.0,
+        "lines": [
+            {
+                "id": "a",
+                "stockItemId": "it-oil",
+                "stockItemName": "OIL CANOLA",
+                "unitId": "u-l",
+                "unitName": "Litre",
+                "unitRatio": 1.0,
+                "quantity": 16.0,
+            },
+            {
+                "id": "b",
+                "stockItemId": "it-garlic",
+                "stockItemName": "GARLIC PEELED",
+                "unitId": "u-g",
+                "unitName": "Gram",
+                "unitRatio": 0.001,
+                "quantity": 0.5,
+            },
+            {
+                "id": "c",
+                "stockItemId": "it-salt",
+                "stockItemName": "SALT TABLE IODISED",
+                "unitId": "u-g",
+                "unitName": "Gram",
+                "unitRatio": 0.001,
+                "quantity": 0.08,
+            },
+        ],
     }
     TOOLS = [
-        {"action": "kitchen_get_recipe", "method": "GET", "path_template": "//r"},
-        {"action": "kitchen_record_recipe", "method": "POST", "path_template": "//r"},
+        {"action": "get_recipe", "method": "GET", "path_template": "//r"},
+        {"action": "get_recipe_version", "method": "GET", "path_template": "//v"},
+        {"action": "save_recipe_version", "method": "PUT", "path_template": "//v"},
     ]
     CONFIG = {
-        "max_api_calls": 2,
-        "allowed_write_actions": ["cook_brothers_app.kitchen_record_recipe"],
+        "max_api_calls": 6,
+        "allowed_write_actions": ["loaded_legacy.save_recipe_version"],
     }
+
+    @staticmethod
+    def _line(ref, name, unit, ratio, qty):
+        return {
+            "kind": "item",
+            "ref_id": ref,
+            "name": name,
+            "unit": unit,
+            "unit_name": "Gram" if ratio == 0.001 else "Litre",
+            "unit_ratio": ratio,
+            "quantity": qty,
+        }
 
     def _card(self, monkeypatch, db_session, params):
         _wire_fake_connector(
             monkeypatch,
-            {"kitchen_get_recipe": copy.deepcopy(self.RECIPE_PAYLOAD)},
+            {
+                "get_recipe": copy.deepcopy(self.RECIPE_READ),
+                "get_recipe_version": copy.deepcopy(self.VERSION_READ),
+            },
             tools=self.TOOLS,
         )
-        return _preview(RECIPE, params, db_session, self.CONFIG)["preview"]["card"]
+        out = _preview(RECIPE, params, db_session, self.CONFIG)
+        assert out["preview_writes"] == []  # a preview writes nothing
+        return out["preview"]["card"]
 
-    def test_a_merge_changes_one_line_and_names_the_allergen(
-        self, monkeypatch, db_session
-    ):
+    def test_a_merge_shows_the_one_line_it_changes(self, monkeypatch, db_session):
         card = self._card(
             monkeypatch,
             db_session,
@@ -475,20 +501,11 @@ class TestRecipePreview:
                 "recipe_id": "r-1",
                 "mode": "merge",
                 "ingredients": [
-                    {
-                        "kind": "item",
-                        "name": "Garlic peeled",
-                        "quantity": 600,
-                        "unit": "Gram",
-                    }
+                    self._line("it-garlic", "GARLIC PEELED", "u-g", 0.001, 600)
                 ],
-                "allergens": [{"code": "EGGS", "status": "contains"}],
             },
         )
-        assert _rows(card) == {
-            "Ingredient · Garlic peeled": ("500 Gram", "600 Gram"),
-            "Allergen · Eggs": ("No", "Contains"),
-        }
+        assert _rows(card) == {"Ingredient · GARLIC PEELED": ("500 Gram", "600 Gram")}
 
     def test_a_replace_lists_the_lines_it_drops(self, monkeypatch, db_session):
         card = self._card(
@@ -497,14 +514,7 @@ class TestRecipePreview:
             {
                 "recipe_id": "r-1",
                 "mode": "replace",
-                "ingredients": [
-                    {
-                        "kind": "item",
-                        "name": "OIL CANOLA",
-                        "quantity": 16,
-                        "unit": "Litre",
-                    }
-                ],
+                "ingredients": [self._line("it-oil", "OIL CANOLA", "u-l", 1.0, 16)],
             },
         )
         assert _rows(card) == {

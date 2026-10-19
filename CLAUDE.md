@@ -214,7 +214,9 @@ image tag directly (images are tagged by git SHA in the `norm-testing` registry)
 **Once connector tokens are encrypted** (`TOKEN_ENCRYPTION_KEYS` set and
 `scripts/encrypt_connection_tokens.py --apply` run), an image from before Norm
 Functions can't read them — run `encrypt_connection_tokens.py --decrypt` against that
-environment first, or every connector sends `enc:v1:` ciphertext as its token:
+environment first, or every connector sends `enc:v1:` ciphertext as its token. The same
+script also decrypts the secrets typed into connections (API keys, passwords — encrypted
+since Oct 2026), which an image older than that change would otherwise send as `enc:v1:`:
 
 ```bash
 gcloud run services update norm-api-production \

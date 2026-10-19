@@ -1,149 +1,143 @@
-"""Tests for the recipe writer's request construction (update vs create).
+"""The recipe editor's writer: what ``save_recipe`` hands ``record_recipe``.
 
-The writer routes through the Cook Brothers App MCP tool
-``kitchen_loadedhub_update_recipe``. These tests intercept ``execute_spec`` at
-the connector boundary and assert exactly what ``save_recipe`` hands it — the
-live CB round-trip is exercised separately (it has a real side effect).
-
-Create mode is the important case: the CB tool creates a recipe when
-``recipe_id`` is omitted (or ``create: true``), so the writer must (a) not send
-recipe_id/version_id, (b) flag create, and (c) not be blocked by the discovered
-schema's required_fields.
+Since 19 Oct 2026 the editor (and the claude.ai recipe card) save through
+Loaded Legacy's ``record_recipe`` tool — one write path with the agent's
+(docs/plans/loaded-legacy-takeover.md). These tests intercept the tool call
+and assert exactly what goes in; the write itself is tested in
+test_record_recipe_consolidator.py, and end to end in test_loaded_legacy.py.
 """
+
+from types import SimpleNamespace
 
 import pytest
 
 from app.services import recipe_save
 from app.services.recipe_save import RecipeSaveError, save_recipe
 
-
-class _FakeResult:
-    def __init__(self, success=True, payload=None, error=None):
-        self.success = success
-        self.response_payload = payload or {}
-        self.error_message = error
+UNITS = {
+    "u-g": {"id": "u-g", "name": "Gram", "ratio": 0.001},
+    "u-kg": {"id": "u-kg", "name": "Kilo", "ratio": 1.0},
+}
 
 
 @pytest.fixture()
 def capture(monkeypatch):
-    """Stub the CB context + resolver + executor; capture the execute_spec call."""
-    fake_spec = type(
-        "Spec",
-        (),
-        {
-            "tools": [
-                {
-                    "action": recipe_save.SAVE_ACTION,
-                    "required_fields": ["recipe_id", "version_id"],
-                }
-            ]
-        },
-    )()
-    fake_cfg = type("Cfg", (), {"config": {}})()
-    seen = {}
-
-    monkeypatch.setattr(
-        recipe_save, "_cb_context", lambda *a, **k: (fake_spec, fake_cfg)
+    """The venue's units, and the tool call (answered with ``capture.answer``)."""
+    seen = SimpleNamespace(
+        calls=[], answer={"saved": True, "recipe_id": "r-new", "version_id": "v-new"}
     )
-    monkeypatch.setattr(recipe_save, "resolve_cb_venue_id", lambda *a, **k: "cbven-1")
+    monkeypatch.setattr(recipe_save, "_units", lambda venue_id, db, config_db: UNITS)
 
-    def fake_execute_spec(spec, op, fields, creds, db, venue_id=None, **k):
-        seen["op"] = op
-        seen["fields"] = fields
-        return _FakeResult(
-            payload={"data": {"recipe_id": "NEW-R", "version_id": "NEW-V"}}
-        ), None
+    def tool(connector, action, params, db, config_db, **kw):
+        seen.calls.append((connector, action, params, kw))
+        return SimpleNamespace(success=True, payload=seen.answer, error=None)
 
-    # save_recipe imports execute_spec from this module at call time.
-    monkeypatch.setattr("app.connectors.spec_executor.execute_spec", fake_execute_spec)
+    monkeypatch.setattr("app.connectors.tool_executor.execute_connector_tool", tool)
     return seen
 
 
-def test_update_sends_ids_and_no_create_flag(capture):
-    recipe = {
-        "recipe_id": "R1",
-        "version_id": "V1",
-        "name": "Aioli",
-        "lines": [
-            {
-                "kind": "item",
-                "ref_id": "i1",
-                "name": "Egg",
-                "unit_id": "u1",
-                "quantity": 2,
-            }
-        ],
-    }
-    out = save_recipe("venue-1", recipe, db=None, config_db=None)
-    f = capture["fields"]
-    assert f["recipe_id"] == "R1"
-    assert f["version_id"] == "V1"
-    assert "create" not in f
-    assert f["venue_id"] == "cbven-1"
-    # kitchen_record_recipe shape (verified live): editor lines map to
-    # ingredients {kind, name, ref_id, quantity, unit} — unit takes the unit
-    # id, and ref_id (Oct 2026) pins the line to the item the editor chose.
-    assert f["ingredients"] == [
-        {"kind": "item", "name": "Egg", "ref_id": "i1", "quantity": 2, "unit": "u1"}
+def _lines():
+    return [
+        {
+            "kind": "recipe",
+            "ref_id": "r-polenta-2",
+            "name": "POLENTA",
+            "unit_id": "u-kg",
+            "quantity": 0.5,
+        },
+        {
+            "kind": "item",
+            "ref_id": "it-salt",
+            "name": "SALT",
+            "unit_id": "u-g",
+            "quantity": 4,
+        },
     ]
-    assert "lines" not in f
-    assert out["created"] is False
 
 
-def test_create_omits_ids_and_flags_create(capture):
-    recipe = {
-        "name": "New Sauce",
-        "notes": "method here",
-        "yield_quantity": 2,
-        "yield_unit_id": "u9",
-        "lines": [
+def test_an_update_replaces_the_lines_with_the_ids_the_chef_chose(capture):
+    """Prod thread aad94383: a line pinned to one of three POLENTA sub-recipes
+    must save as that one — the id goes, never just the name."""
+    out = save_recipe(
+        "venue-1",
+        {
+            "recipe_id": "r-1",
+            "version_id": "v-1",
+            "name": "DISH - X",
+            "lines": _lines(),
+        },
+        None,
+        None,
+    )
+    [(connector, action, params, kw)] = capture.calls
+    assert (connector, action) == ("loaded_legacy", "record_recipe")
+    assert kw == {"venue_id": "venue-1", "strict_venue": True}
+    assert params["recipe_id"] == "r-1" and params["version_id"] == "v-1"
+    assert params["mode"] == "replace"
+    polenta, salt = params["ingredients"]
+    assert polenta["ref_id"] == "r-polenta-2" and polenta["kind"] == "recipe"
+    # the unit's ratio goes with it, so the tool matches nothing by name
+    assert (salt["unit"], salt["unit_ratio"], salt["quantity"]) == ("u-g", 0.001, 4)
+    assert out["saved"] and out["detail"] == {"via": "loaded_legacy"}
+
+
+def test_a_create_omits_the_ids_and_carries_the_yield_unit(capture):
+    out = save_recipe(
+        "venue-1",
+        {
+            "name": "COMPONENT - New",
+            "yield_quantity": 2,
+            "yield_unit_id": "u-kg",
+            "lines": _lines(),
+        },
+        None,
+        None,
+    )
+    params = capture.calls[0][2]
+    assert "recipe_id" not in params and "version_id" not in params
+    assert (params["yield_unit"], params["yield_unit_ratio"]) == ("u-kg", 1.0)
+    assert out["created"] is False or out["recipe_id"] == "r-new"
+    assert (out["recipe_id"], out["version_id"]) == ("r-new", "v-new")
+
+
+def test_an_explicit_create_flag_forces_a_create_even_with_a_recipe_id(capture):
+    save_recipe(
+        "v",
+        {"create": True, "recipe_id": "r-1", "name": "Copy", "lines": _lines()},
+        None,
+        None,
+    )
+    assert "recipe_id" not in capture.calls[0][2]
+
+
+@pytest.mark.parametrize(
+    "recipe, why",
+    [
+        ({"lines": []}, "needs a name"),
+        ({"recipe_id": "r-1", "lines": []}, "version_id"),
+        ({"recipe_id": "r-1", "version_id": "v", "lines": [{}] * 501}, "at most 500"),
+        (
             {
-                "kind": "item",
-                "ref_id": "i1",
-                "name": "Egg",
-                "unit_id": "u1",
-                "quantity": 2,
-            }
-        ],
-    }
-    out = save_recipe("venue-1", recipe, db=None, config_db=None)
-    f = capture["fields"]
-    # kitchen_record_recipe has no create flag — creation IS the absence of ids.
-    assert "create" not in f
-    assert "recipe_id" not in f
-    assert "version_id" not in f
-    assert f["name"] == "New Sauce"
-    assert f["yield_unit"] == "u9"
-    assert "yield_unit_id" not in f
-    # The required-field gate must be lifted, or a create (no ids) is blocked.
-    assert capture["op"]["required_fields"] == []
-    # The new ids come back to the caller.
-    assert out["created"] is True
-    assert out["recipe_id"] == "NEW-R"
-    assert out["version_id"] == "NEW-V"
+                "recipe_id": "r-1",
+                "version_id": "v",
+                "lines": [{"ref_id": "x", "unit_id": "u-cup", "quantity": 1}],
+            },
+            "isn't one of this venue's",
+        ),
+    ],
+)
+def test_bad_input_is_refused_before_the_tool(capture, recipe, why):
+    with pytest.raises(RecipeSaveError, match=why):
+        save_recipe("v", recipe, None, None)
+    assert capture.calls == []
 
 
-def test_explicit_create_flag_forces_create_even_with_recipe_id(capture):
-    recipe = {"recipe_id": "R1", "create": True, "name": "Forced"}
-    save_recipe("venue-1", recipe, db=None, config_db=None)
-    f = capture["fields"]
-    # the caller's create flag forces the create branch but never reaches the
-    # wire — kitchen_record_recipe has no such field.
-    assert "create" not in f
-    assert "recipe_id" not in f
-
-
-def test_create_requires_a_name(capture):
-    with pytest.raises(RecipeSaveError, match="name"):
-        save_recipe("venue-1", {"lines": []}, db=None, config_db=None)
-
-
-def test_update_requires_version_id(capture):
-    with pytest.raises(RecipeSaveError, match="version_id"):
-        save_recipe("venue-1", {"recipe_id": "R1"}, db=None, config_db=None)
-
-
-def test_rejects_too_many_lines(capture):
-    recipe = {"name": "X", "lines": [{"kind": "item"}] * 501}
-    with pytest.raises(RecipeSaveError, match="500"):
-        save_recipe("venue-1", recipe, db=None, config_db=None)
+def test_the_tools_refusal_reaches_the_editor(capture):
+    capture.answer = {"error": "nothing written — 'SALT': no match"}
+    with pytest.raises(RecipeSaveError, match="no match"):
+        save_recipe(
+            "v",
+            {"recipe_id": "r-1", "version_id": "v-1", "lines": _lines()},
+            None,
+            None,
+        )

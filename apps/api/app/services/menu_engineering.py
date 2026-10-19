@@ -2,54 +2,71 @@
 
 The Menu Engineering view gets units/sales/cost/margin per product from Loaded's
 Cost-of-Goods report (loadedhub ``get_cogs_detail``, over OAuth) — but that report
-carries no recipe id. The proper POS-item -> recipe link lives behind Loaded's
-``wapi`` host, which the OAuth connector can't reach; the **Cook Brothers App**
-can, and its ``kitchen_get_product_sales`` returns ``recipe_id`` per product. This
-bridges to it so the table can link a product straight to its recipe.
+carries no recipe id. Loaded's POS-item → recipe links live on its older
+``wapi`` host, which the OAuth connector can't reach; Loaded Legacy can
+(``list_pos_item_links``, keyed by the POS item's id). The POS items' names
+come over OAuth (``get_pos_items_raw``), so a product name maps to its recipe.
+
+Until 19 Oct 2026 the links came from the Cook Brothers App's
+``kitchen_get_product_sales`` — its own copy of product sales with a recipe id
+each (docs/plans/loaded-legacy-takeover.md).
 """
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
 
-PRODUCT_SALES_ACTION = "kitchen_get_product_sales"
+logger = logging.getLogger(__name__)
 
 
 def product_recipe_links(
     venue_id: str, start: str, end: str, db: Session, config_db: Session
 ) -> dict[str, str]:
-    """Map POS product name -> recipe id via the Cook Brothers App.
+    """Map POS product name -> recipe id.
 
-    Returns ``{}`` when the venue isn't connected to the CB App (or the call
+    Returns ``{}`` when the venue isn't connected to Loaded Legacy (or a read
     fails), so the caller falls back to name-matching against the menus.
+    ``start``/``end`` are kept for the caller's contract: a link is the POS
+    item's current recipe, whatever the period.
     """
-    from app.connectors.spec_executor import execute_spec
-    from app.services.recipe_save import RecipeSaveError, _cb_context, _op
+    from app.connectors import loaded_legacy
+    from app.connectors.tool_executor import execute_connector_tool
 
     try:
-        spec, cfg = _cb_context(venue_id, db, config_db)
-    except RecipeSaveError:
+        links = loaded_legacy.call(
+            loaded_legacy.LIST_POS_ITEM_LINKS, {}, venue_id, db, config_db
+        )
+    except loaded_legacy.LoadedLegacyError as exc:
+        logger.info("menu engineering: no recipe links (%s)", exc)
         return {}
-    op = _op(spec, PRODUCT_SALES_ACTION)
-    result, _ = execute_spec(
-        spec,
-        op,
-        {"from": start, "to": end, "limit": 5000},
-        cfg.config,
+    recipe_of = {
+        str(ln.get("posIdentifier")): ln.get("recipeId")
+        for ln in (links if isinstance(links, list) else [])
+        if isinstance(ln, dict)
+        and ln.get("recipeId")
+        and ln.get("posIdentifier")
+        and not ln.get("stockDeleted")
+    }
+    if not recipe_of:
+        return {}
+    items = execute_connector_tool(
+        "loadedhub",
+        "get_pos_items_raw",
+        {},
         db,
+        config_db,
         venue_id=venue_id,
+        strict_venue=True,
     )
-    if not result.success:
-        return {}
-    payload = result.response_payload or {}
-    data = payload.get("data") if isinstance(payload, dict) else payload
-    sales = data.get("sales") if isinstance(data, dict) else None
-    links: dict[str, str] = {}
-    for row in sales or []:
-        if not isinstance(row, dict):
+    rows = items.payload if items.success and isinstance(items.payload, list) else []
+    out: dict[str, str] = {}
+    for it in rows:
+        if not isinstance(it, dict) or it.get("whenDeleted"):
             continue
-        name = (row.get("pos_item_name") or "").strip()
-        rid = row.get("recipe_id")
-        if name and rid and name not in links:
-            links[name] = rid
-    return links
+        name = (it.get("name") or "").strip()
+        rid = recipe_of.get(str(it.get("posIdentifier")))
+        if name and rid and name not in out:
+            out[name] = rid
+    return out

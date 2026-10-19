@@ -286,6 +286,14 @@ def resolve_unit(
     text = _norm(written)
     if not text:
         return None, []
+    # A unit given by its id (the recipe editor's lines, record_recipe) is
+    # that unit: the caller already chose it.
+    by_id = next(
+        (u for u in _live_units(units) if str(u.get("id")) == str(written).strip()),
+        None,
+    )
+    if by_id is not None:
+        return by_id, []
     idx = _unit_index(units)
     wanted = UNIT_ALIASES.get(text) or (text,)
     found: list[dict] = []
@@ -574,6 +582,7 @@ def match_recipe(
         "yield_quantity": yqty if yqty is not None else 0.0,
         "yield_unit_id": yunit["id"] if yunit else None,
         "yield_unit_name": yunit.get("name") if yunit else None,
+        "yield_unit_ratio": float(yunit.get("ratio") or 1) if yunit else None,
         "lines": lines,
         "versions": [],
         "duplicate_of": _find_duplicate(name, cat.get("recipes") or []),

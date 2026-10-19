@@ -46,15 +46,10 @@ def _fields(definition: dict) -> dict:
 
 
 def updates(specs: dict) -> list[RowUpdate]:
-    from app.connectors import spec_rows
-
     stock = load_script("sync_manage_stock_item_config").TOOL
     menu = load_script("sync_menus_config").WRITE_TOOL
-    orbit = load_script("sync_orbit_recipe_wrapper")
-    endpoint = spec_rows.find_endpoint(specs["cook_brothers_app"], orbit.ENDPOINT)
-    if endpoint is None:
-        raise SystemExit("cook_brothers_app.kitchen_record_recipe endpoint not found")
-    recipe = orbit.tool_row(endpoint)
+    # cook_brothers_app.record_recipe left for Loaded Legacy on 19 Oct 2026; its
+    # row is written by sync_loaded_legacy_spec.py.
     return [
         RowUpdate(
             "loadedhub",
@@ -64,12 +59,6 @@ def updates(specs: dict) -> list[RowUpdate]:
         ),
         RowUpdate(
             "loadedhub", "manage_menu", _fields(menu), code=code_of("manage_menu.py")
-        ),
-        RowUpdate(
-            "cook_brothers_app",
-            "record_recipe",
-            _fields(recipe),
-            code=recipe["consolidator_config"]["function_code"],
         ),
     ]
 

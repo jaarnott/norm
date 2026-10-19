@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Norm can't log in to {{ connector }} for {{ venue }}</h1>
+<p>Norm logs in to {{ connector }} with the login saved in Settings → Connections ({{ username }}). It was refused:</p>
+<p><strong>{{ error }}</strong></p>
+<p>Until it's fixed, what Norm does through {{ connector }} for {{ venue }} won't work. Everything else is unaffected. Norm tries again once an hour on its own, which works if the problem was on {{ connector }}'s side.</p>
+<p>If the password was changed, or that person no longer has access, enter a current login for {{ venue }} in Settings → Connections → {{ connector }}.</p>
+<a href="{{ link }}" class="btn">Open Connections</a>
+{% endblock %}

@@ -227,6 +227,13 @@ export default function Home() {
         setSettingsView('unit-check');
         setMobileView('settings');
       }
+      // ?open=connections: Settings → Connections (the Loaded Legacy email).
+      if (params.get('open') === 'connections' && !threadId) {
+        setActivePage(null);
+        setActiveAgent('settings');
+        setSettingsTab('connections');
+        setMobileView('settings');
+      }
       const page = params.get('page');
       const pageCfg = page && !threadId ? FUNCTIONAL_PAGES.find(p => p.id === page) : undefined;
       if (pageCfg) {

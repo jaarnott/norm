@@ -1,4 +1,6 @@
-"""Encryption at rest for connector OAuth tokens (Oct 2026).
+"""Encryption at rest for connector OAuth tokens (Oct 2026) and for the
+secrets typed into a connection's credentials (``EncryptedSecretsJSON``,
+19 Oct 2026 — owner: "encrypt all typed secrets").
 
 Every connector's tokens — LoadedHub's rotating refresh tokens, the venue
 mailboxes' Gmail grants, Gmail/Outlook send-on-behalf, the MCP connectors —
@@ -42,7 +44,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from sqlalchemy import Text
+from sqlalchemy import JSON, Text
 from sqlalchemy.types import TypeDecorator
 
 logger = logging.getLogger(__name__)
@@ -194,6 +196,75 @@ class EncryptedText(TypeDecorator):
 
     def process_result_value(self, value, dialect):
         return decrypt_token(value)
+
+
+# ---------------------------------------------------------------------------
+# Typed secrets in a connection's credentials (Connection.config)
+# ---------------------------------------------------------------------------
+#
+# A connector's credential form (Settings → Connections) saves what is typed
+# into ``Connection.config`` — a JSON object of API keys, usernames, ids and
+# passwords. The secrets in it are encrypted like the tokens above, by name:
+# every path that rewrites a connection's config (the form, the OAuth
+# callbacks merging a company id, scripts) keeps them encrypted without
+# knowing which fields are secret. A credential field marked ``secret`` must
+# therefore have a secret's name — config_validator checks every spec.
+
+#: Credential keys whose values are secrets.
+SECRET_CONFIG_KEYS = frozenset(
+    {
+        "password",
+        "api_key",
+        "api_secret",
+        "access_token",
+        "refresh_token",
+        "user_token",
+        "client_secret",
+        "secret",
+        "token",
+        "private_key",
+    }
+)
+SECRET_CONFIG_SUFFIXES = ("_password", "_secret", "_token", "_api_key", "_private_key")
+
+
+def is_secret_key(key: object) -> bool:
+    """Is this credential key's value a secret (and so stored encrypted)?"""
+    k = str(key or "").strip().lower()
+    return k in SECRET_CONFIG_KEYS or k.endswith(SECRET_CONFIG_SUFFIXES)
+
+
+def encrypt_secrets(config):
+    """A copy of ``config`` with every secret-named string value encrypted.
+    Other values, non-dicts and already-encrypted values pass through."""
+    if not isinstance(config, dict):
+        return config
+    return {
+        k: encrypt_token(v) if isinstance(v, str) and is_secret_key(k) else v
+        for k, v in config.items()
+    }
+
+
+def decrypt_secrets(config):
+    """A copy of ``config`` with every encrypted value decrypted, whatever its
+    key (a value no key opens reads as None, like a token)."""
+    if not isinstance(config, dict):
+        return config
+    return {k: decrypt_token(v) if is_encrypted(v) else v for k, v in config.items()}
+
+
+class EncryptedSecretsJSON(TypeDecorator):
+    """``JSON`` in the database with its secret-named values encrypted;
+    plaintext in Python. Rows written before keys existed read unchanged."""
+
+    impl = JSON
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return encrypt_secrets(value)
+
+    def process_result_value(self, value, dialect):
+        return decrypt_secrets(value)
 
 
 # ---------------------------------------------------------------------------
