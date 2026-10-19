@@ -18,6 +18,7 @@ from app.db.models import (
 )
 from app.auth.dependencies import get_current_user, require_permission
 from app.services.oauth_service import needs_reconnect
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 
@@ -109,11 +110,7 @@ def _org_to_dict(org: Organization, db: Session, include_details: bool = False) 
 
 def _get_user_org(user: User, db: Session) -> Organization | None:
     """Get the user's primary organization."""
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     if not membership:
         return None
     return (
@@ -203,7 +200,12 @@ async def list_organizations(
 
     # Membership orgs first, then the rest (only ever non-empty for admins).
     member_set = set(member_org_ids)
-    orgs.sort(key=lambda o: (o.id not in member_set, (o.name or "").lower()))
+    # The organisation the person is acting in comes first: clients take
+    # organizations[0] as "the current one".
+    current = active_org.org_id_for(db, user.id)
+    orgs.sort(
+        key=lambda o: (o.id != current, o.id not in member_set, (o.name or "").lower())
+    )
     return {"organizations": [_org_to_dict(o, db) for o in orgs]}
 
 
@@ -213,27 +215,21 @@ async def create_organization(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("admin:system")),
 ):
-    """Create a new organization. The creating user becomes the owner."""
+    """Create a new organization. The creating user becomes the owner — with
+    the owner ROLE: this route set only the label, so its owner held no
+    permissions at all. (Platform admins making one for a customer use the
+    Organisations page, which doesn't make them a member.)"""
+    from app.services import org_admin
+
     existing = db.query(Organization).filter(Organization.slug == body.slug).first()
     if existing:
         raise HTTPException(400, f"Organization with slug '{body.slug}' already exists")
 
-    org = Organization(
-        name=body.name,
-        slug=body.slug,
-        billing_email=body.billing_email,
-        plan=body.plan,
+    org = org_admin.create_organization(
+        db, body.name, owner=user, billing_email=body.billing_email
     )
-    db.add(org)
-    db.flush()
-
-    # Make the creating user the owner
-    membership = OrganizationMembership(
-        user_id=user.id,
-        organization_id=org.id,
-        role="owner",
-    )
-    db.add(membership)
+    org.slug = body.slug
+    org.plan = body.plan
     db.commit()
 
     return _org_to_dict(org, db, include_details=True)
@@ -528,18 +524,19 @@ async def create_venue(
         raise HTTPException(404, "Organization not found")
     _require_org_permission(db, user, org_id, "org:venues")
 
-    venue = Venue(
-        name=body.name,
+    from app.services import org_admin
+
+    # The creator gets access only as a member of this organisation: a
+    # platform admin adding a venue for a customer isn't handed its data.
+    venue = org_admin.create_venue(
+        db,
+        org_id,
+        body.name,
         location=body.location,
         timezone=body.timezone,
         day_start_time=body.day_start_time,
-        organization_id=org_id,
+        grant_to=user,
     )
-    db.add(venue)
-    db.flush()
-
-    # Grant the creating user access to the venue
-    db.add(UserVenueAccess(user_id=user.id, venue_id=venue.id))
     db.commit()
 
     return {
@@ -866,6 +863,13 @@ async def set_user_venues(
         scope = _orgs_where(db, user.id, "org:members") & _orgs_where(db, user_id)
         if not scope:
             raise HTTPException(403, "Not a member of this organization")
+    # Naming the organisation limits the change to it. Without it, someone in
+    # two organisations had their access in both rewritten from one page.
+    org_id = body.get("organization_id")
+    if org_id:
+        if scope is not None and org_id not in scope:
+            raise HTTPException(403, "Not a member of this organization")
+        scope = {org_id}
 
     venues = db.query(Venue).filter(Venue.id.in_(venue_ids)).all() if venue_ids else []
     if len(venues) != len(venue_ids):
@@ -1110,20 +1114,4 @@ async def get_usage_breakdown(
             }
             for tid, n, cost, billable, read, write in top
         ],
-    }
-
-
-@router.get("/users/by-email")
-async def find_user_by_email(
-    email: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
-):
-    """Find a user by email address. Used for adding members to an organization."""
-    target = db.query(User).filter(User.email == email).first()
-    if not target:
-        raise HTTPException(404, "User not found")
-    return {
-        "id": target.id,
-        "email": target.email,
-        "full_name": target.full_name,
-        "role": target.role,
     }

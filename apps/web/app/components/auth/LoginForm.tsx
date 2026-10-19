@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import AuthShell, { authInput, authLabel, authLink, authSubmit } from './AuthShell';
 import Button from '../ui/Button';
+import AddressSearch from '../settings/AddressSearch';
 
 interface LoginFormProps {
   onSuccess: (token: string, user: { id: string; email: string; full_name: string; role: string }) => void;
@@ -15,6 +16,17 @@ export default function LoginForm({ onSuccess, initialMode = 'login' }: LoginFor
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  // Signing up makes your business (organisation) and its first venue.
+  const [orgName, setOrgName] = useState('');
+  const [venueName, setVenueName] = useState('');
+  const [venueAddress, setVenueAddress] = useState('');
+  // The device's own timezone until an address is chosen: the owner is usually
+  // signing up where the venue is, and a venue without one would fall back to
+  // Auckland (wrong for an Australian venue).
+  const [venueTimezone, setVenueTimezone] = useState(() => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch { return ''; }
+  });
+  const [timezoneFromAddress, setTimezoneFromAddress] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [forgotSuccess, setForgotSuccess] = useState(false);
@@ -43,7 +55,13 @@ export default function LoginForm({ onSuccess, initialMode = 'login' }: LoginFor
     const url = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
     const body = mode === 'login'
       ? { email, password }
-      : { email, password, full_name: fullName };
+      : {
+          email, password, full_name: fullName,
+          organization_name: orgName,
+          venue_name: venueName,
+          venue_location: venueAddress || null,
+          venue_timezone: venueTimezone || null,
+        };
 
     try {
       const res = await fetch(url, {
@@ -184,6 +202,50 @@ export default function LoginForm({ onSuccess, initialMode = 'login' }: LoginFor
                 required
                 style={authInput}
               />
+
+              {mode === 'register' && (
+                <>
+                  <div style={{ margin: '24px 0 4px', fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-soft)' }}>
+                    Your business
+                  </div>
+                  <label htmlFor="signup-org" style={authLabel}>Business name</label>
+                  <input
+                    id="signup-org"
+                    data-testid="signup-org"
+                    type="text"
+                    autoComplete="organization"
+                    placeholder="e.g. Harbour Hospitality Group"
+                    value={orgName}
+                    onChange={e => setOrgName(e.target.value)}
+                    required
+                    style={authInput}
+                  />
+                  <label htmlFor="signup-venue" style={{ ...authLabel, marginTop: 16 }}>First venue</label>
+                  <input
+                    id="signup-venue"
+                    data-testid="signup-venue"
+                    type="text"
+                    placeholder="e.g. The Harbour Bar"
+                    value={venueName}
+                    onChange={e => setVenueName(e.target.value)}
+                    required
+                    style={authInput}
+                  />
+                  <label style={{ ...authLabel, marginTop: 16, display: 'block' }}>Venue address</label>
+                  <AddressSearch
+                    value={venueAddress}
+                    onChange={setVenueAddress}
+                    onSelect={sel => { setVenueAddress(sel.address); if (sel.timezone) { setVenueTimezone(sel.timezone); setTimezoneFromAddress(true); } }}
+                    placeholder="Start typing the address"
+                    inputStyle={authInput}
+                  />
+                  <div style={{ marginTop: 6, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                    {venueTimezone
+                      ? <>Timezone: {venueTimezone}{timezoneFromAddress ? '' : ' (from this device — choosing the address sets it from the venue)'}. Trading days and reports follow it.</>
+                      : 'Choosing the address sets the venue’s timezone. You can add more venues later.'}
+                  </div>
+                </>
+              )}
 
               {errorBox}
 

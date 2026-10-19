@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.config import settings
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 
@@ -279,21 +280,19 @@ def check_quota(db: Session, org_id: str) -> dict:
 def _org_for_thread(db: Session, thread_id: str) -> str | None:
     """The organisation a conversation belongs to: its venue's, else its
     starter's membership."""
-    from app.db.models import OrganizationMembership, Thread, Venue
+    from app.db.models import Thread, Venue
 
     thread = db.query(Thread).filter(Thread.id == thread_id).first()
     if thread is None:
         return None
+    if thread.organization_id:
+        return thread.organization_id
     if thread.venue_id:
         venue = db.query(Venue).filter(Venue.id == thread.venue_id).first()
         if venue is not None:
             return venue.organization_id
     if thread.user_id:
-        membership = (
-            db.query(OrganizationMembership)
-            .filter(OrganizationMembership.user_id == thread.user_id)
-            .first()
-        )
+        membership = active_org.membership_for(db, thread.user_id)
         if membership is not None:
             return membership.organization_id
     return None
@@ -319,15 +318,7 @@ def check_quota_for_user(db: Session, user_id: str | None) -> None:
     if not user_id or not _is_enforcement_enabled():
         return
 
-    from app.db.models import OrganizationMembership
-
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(
-            OrganizationMembership.user_id == user_id,
-        )
-        .first()
-    )
+    membership = active_org.membership_for(db, user_id)
     if not membership:
         return
 

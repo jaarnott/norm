@@ -156,17 +156,16 @@ def build_ctx(
     ``org_id`` may only differ from the user's own organisation for a
     platform admin; anyone else naming another org gets ``Forbidden``.
     """
-    from app.db.models import OrganizationMembership, Role, UserVenueAccess, Venue
+    from app.db.models import Role, UserVenueAccess, Venue
 
     if user is None:
         raise Forbidden("Sign in to use Functions.")
     is_platform_admin = getattr(user, "role", None) == "admin"
-    q = db.query(OrganizationMembership).filter(
-        OrganizationMembership.user_id == user.id
-    )
-    if org_id:
-        q = q.filter(OrganizationMembership.organization_id == org_id)
-    membership = q.order_by(OrganizationMembership.created_at).first()
+    from app.services import active_org
+
+    membership = active_org.membership_for(db, user.id, org_id)
+    if org_id and membership is not None and membership.organization_id != org_id:
+        membership = None  # a named organisation the user is not in
 
     if membership is None:
         if not (is_platform_admin and org_id):

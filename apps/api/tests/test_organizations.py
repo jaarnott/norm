@@ -385,23 +385,16 @@ class TestUserVenues:
         assert resp.json()["venue_count"] == 1
 
 
-class TestFindUserByEmail:
-    """GET /api/users/by-email"""
-
-    def test_find_user_by_email(self, client, admin_user, admin_headers):
+class TestNoUserLookupByEmail:
+    def test_the_lookup_is_gone(self, client, admin_user, manager_headers):
+        """Any signed-in user could look up any account by email, in any
+        organisation (removed 19 Oct 2026; adding people goes through the
+        invite, which takes the email itself)."""
         resp = client.get(
             f"/api/users/by-email?email={admin_user.email}",
-            headers=admin_headers,
+            headers=manager_headers,
         )
-        assert resp.status_code == 200
-        assert resp.json()["id"] == admin_user.id
-
-    def test_find_user_not_found_returns_404(self, client, admin_headers):
-        resp = client.get(
-            "/api/users/by-email?email=nobody@example.com",
-            headers=admin_headers,
-        )
-        assert resp.status_code == 404
+        assert resp.status_code in (404, 405)
 
 
 class TestOrgUsage:

@@ -45,6 +45,7 @@ from dataclasses import dataclass
 import sqlalchemy as sa
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from app.services import active_org
 from app.connectors import spec_rows
 
 logger = logging.getLogger(__name__)
@@ -200,15 +201,11 @@ def org_permissions(db: Session, user) -> set[str]:
     but nowhere else in this module is that shortcut taken.
     """
     from app.auth.permissions import ALL_ORG_PERMISSIONS
-    from app.db.models import OrganizationMembership, Role
+    from app.db.models import Role
 
     if getattr(user, "role", None) == "admin":
         return set(ALL_ORG_PERMISSIONS)
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     if not membership or not membership.role_id:
         return set()
     role = db.query(Role).filter(Role.id == membership.role_id).first()
@@ -1307,13 +1304,9 @@ def save_app(db: Session, user, payload: dict) -> dict:
     """
     import re
 
-    from app.db.models import App, AppVersion, OrganizationMembership
+    from app.db.models import App, AppVersion
 
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     if not membership:
         raise HTTPException(403, "no organization membership")
 

@@ -1,5 +1,6 @@
 'use client';
 
+import OrgSwitcher from './OrgSwitcher';
 import type { CSSProperties } from 'react';
 import { Home, Package, UserRound, Clock, ChartColumnBig, Megaphone, ChefHat, PartyPopper, Landmark, Blocks, Settings, LogOut, type LucideIcon } from 'lucide-react';
 import { colors } from '../../lib/theme';
@@ -37,6 +38,8 @@ interface SidebarUser {
   full_name: string;
   role: string;
   permissions?: string[];
+  organizations?: { id: string; name: string | null }[];
+  active_organization_id?: string | null;
 }
 
 function hasPermission(user: SidebarUser | null | undefined, ...perms: string[]): boolean {
@@ -139,6 +142,8 @@ export default function Sidebar({ selected, onSelect, user, onLogout, hired }: S
             <Icon icon={Settings} size={20} duo={selected === 'settings'} />
           </button>
         )}
+
+        <OrgSwitcher organizations={user?.organizations} activeId={user?.active_organization_id} />
 
         {user && <Avatar name={user.full_name} title={`${user.full_name} (${user.role})`} />}
 

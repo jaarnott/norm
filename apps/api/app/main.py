@@ -73,6 +73,9 @@ from slowapi.errors import RateLimitExceeded  # noqa: E402
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+from app.services.active_org import ActiveOrgMiddleware  # noqa: E402
+
+app.add_middleware(ActiveOrgMiddleware)
 app.add_middleware(RequestTracingMiddleware)
 app.add_middleware(MetricsMiddleware)
 
@@ -125,6 +128,9 @@ app.include_router(mcp_admin.router, prefix="/api")
 app.include_router(approval_preferences.router, prefix="/api")
 app.include_router(suggestions.router, prefix="/api")
 from app.routers import suggestion_admin  # noqa: E402
+from app.routers import admin_organizations  # noqa: E402
+
+app.include_router(admin_organizations.router, prefix="/api")
 
 app.include_router(suggestion_admin.router, prefix="/api")
 from app.routers import functions as functions_router  # noqa: E402

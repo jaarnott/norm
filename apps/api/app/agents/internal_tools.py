@@ -13,6 +13,7 @@ from typing import Callable
 
 from sqlalchemy.orm import Session
 from app.connectors import spec_rows
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 
@@ -3214,18 +3215,14 @@ def _principal_for_memory(thread_id: str | None, db: Session):
     Memory is scoped to a person and an organisation; without both we cannot
     store or recall safely, so the tools no-op rather than guessing.
     """
-    from app.db.models import OrganizationMembership, Thread
+    from app.db.models import Thread
 
     if not thread_id:
         return None, None
     thread = db.query(Thread).filter(Thread.id == thread_id).first()
     if not thread or not thread.user_id:
         return None, None
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == thread.user_id)
-        .first()
-    )
+    membership = active_org.membership_for(db, thread.user_id)
     return thread.user_id, (membership.organization_id if membership else None)
 
 
@@ -3732,7 +3729,7 @@ def _save_app(params: dict, db: Session, thread_id: str | None) -> dict:
 
 @register("norm", "get_app")
 def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
-    from app.db.models import App, AppVersion, OrganizationMembership
+    from app.db.models import App, AppVersion
     from app.services.app_runtime import resolve_access
 
     user = _thread_user(db, thread_id)
@@ -3742,11 +3739,7 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
     if not slug:
         return {"success": False, "data": None, "error": "a slug is required"}
 
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     app = (
         db.query(App)
         .filter(

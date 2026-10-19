@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.mcp.principal import McpPrincipal
 from app.mcp.scopes import scopes_grantable_by
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,6 @@ def _resolve_dev_principal(token: str, db: Session) -> McpPrincipal | None:
         return None
 
     from app.db.models import (
-        OrganizationMembership,
         Role,
         User,
         UserVenueAccess,
@@ -150,11 +150,7 @@ def _resolve_dev_principal(token: str, db: Session) -> McpPrincipal | None:
     if not user:
         raise McpAuthError("Dev token is set but no active admin user exists")
 
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     if not membership:
         raise McpAuthError(f"Dev user {user.email} has no organization membership")
 

@@ -27,6 +27,7 @@ import SuggestionsAdminPanel from './SuggestionsAdminPanel';
 import CompanySettingsTab from './CompanySettingsTab';
 import TeamSection from '../team/TeamSection';
 import AddressSearch from './AddressSearch';
+import OrganisationsPanel from './OrganisationsPanel';
 import { getStoredUser } from '../../lib/api';
 // can(user, scope): what the signed-in user may do — shared with the tabs.
 import { can } from '../../lib/permissions';
@@ -851,7 +852,8 @@ function UsersTab({ canManage }: { canManage: boolean }) {
     setAddError('');
     setAddSuccess('');
     try {
-      const roleId = addRole || (availableRoles.length > 0 ? availableRoles[0].id : '');
+      // The least-privileged role unless one is chosen, never whichever comes first.
+      const roleId = addRole || availableRoles.find(r => r.name === 'team_member')?.id || (availableRoles.length > 0 ? availableRoles[0].id : '');
       const res = await apiFetch('/api/auth/invite', {
         method: 'POST',
         body: JSON.stringify({
@@ -877,10 +879,10 @@ function UsersTab({ canManage }: { canManage: boolean }) {
     if (!org) return;
     setResendStatus(prev => ({ ...prev, [email]: 'sending' }));
     try {
-      const roleId = availableRoles.length > 0 ? availableRoles[0].id : '';
+      // A resend changes nothing about the person: no role, no venues.
       const res = await apiFetch('/api/auth/invite', {
         method: 'POST',
-        body: JSON.stringify({ email, org_id: org.id, role_id: roleId, venue_ids: [] }),
+        body: JSON.stringify({ email, org_id: org.id }),
       });
       setResendStatus(prev => ({ ...prev, [email]: res.ok ? 'sent' : 'failed' }));
       // Clear status after 3 seconds
@@ -909,7 +911,7 @@ function UsersTab({ canManage }: { canManage: boolean }) {
     setMemberVenues(prev => ({ ...prev, [userId]: updated }));
     try {
       await mustSucceed(
-        () => apiFetch(`/api/users/${userId}/venues`, { method: 'PUT', body: JSON.stringify({ venue_ids: updated }) }),
+        () => apiFetch(`/api/users/${userId}/venues`, { method: 'PUT', body: JSON.stringify({ venue_ids: updated, organization_id: org?.id }) }),
         'Venue access wasn’t changed',
       );
     } catch (e) {
@@ -1352,7 +1354,7 @@ function UsersTab({ canManage }: { canManage: boolean }) {
   );
 }
 
-export type SettingsTab = 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences' | 'suggestion-rules' | 'team';
+export type SettingsTab = 'organisations' | 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences' | 'suggestion-rules' | 'team';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   return perms.some(p => can(user, p));
@@ -1620,6 +1622,8 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
     [isAdmin, 'suggestion-rules', 'Suggestions'],
   ]);
   addGroup('Platform', [
+    // Every organisation, its venues and people — platform admins only.
+    [isAdmin, 'organisations', 'Organisations'],
     [showDeployments, 'deployments', 'Deployments'],
     [showTests, 'tests', 'Tests'],
     [showSecrets, 'secrets', 'Secrets'],
@@ -1972,6 +1976,7 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
           {tab === 'email' && <EmailTab canManage={can(storedUser, 'email:manage')} canSendTest={isAdmin} />}
 
           {/* ============ DEPLOYMENTS TAB ============ */}
+          {tab === 'organisations' && isAdmin && <OrganisationsPanel />}
           {tab === 'deployments' && <DeploymentsPanel />}
 
           {/* ============ TESTS TAB ============ */}

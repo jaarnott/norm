@@ -22,6 +22,7 @@ from app.services.hr_service import (
     submit_hr_thread,
 )
 from app.services.report_threads import _report_thread_to_dict
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +167,19 @@ async def get_all_threads(
     """
     from sqlalchemy import or_
 
+    # Someone in several organisations sees the conversations of the one they
+    # are acting in; a conversation with no organisation recorded stays visible.
+    scope = []
+    if len(active_org.memberships_for(db, user.id)) > 1:
+        current = active_org.org_id_for(db, user.id)
+        scope = [
+            or_(Thread.organization_id.is_(None), Thread.organization_id == current)
+        ]
+
     threads = (
         db.query(Thread)
         .filter(
+            *scope,
             Thread.user_id == user.id,
             # Exclude automated task execution runs — only show conversation threads
             or_(Thread.intent.is_(None), ~Thread.intent.like("%.automated_task")),
@@ -386,15 +397,10 @@ async def approve(
 
 
 def _rejection_org_id(db, user) -> str | None:
-    from app.db.models import OrganizationMembership
 
     if not user:
         return None
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     return membership.organization_id if membership else None
 
 

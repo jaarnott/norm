@@ -133,6 +133,8 @@ def for_thread(db: Session, thread_id: str | None) -> Scope | None:
         if thread.user_id
         else None
     )
+    if thread.organization_id:
+        return Scope(thread.organization_id, user_id=thread.user_id)
     return for_user(db, user) or for_venue(db, thread.venue_id)
 
 

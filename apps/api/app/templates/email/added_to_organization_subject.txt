@@ -1,0 +1,1 @@
+{{ inviter_name }} added you to {{ org_name }} on Norm

@@ -23,8 +23,9 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_db
-from app.db.models import Memory, OrganizationMembership, User
+from app.db.models import Memory, User
 from app.services.memory_rules import admit
+from app.services import active_org
 
 router = APIRouter(tags=["memories"])
 
@@ -53,11 +54,7 @@ class MemoryUpdate(BaseModel):
 
 
 def _org_id(user: User, db: Session) -> str:
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     if not membership:
         raise HTTPException(status_code=400, detail="No organization membership")
     return membership.organization_id

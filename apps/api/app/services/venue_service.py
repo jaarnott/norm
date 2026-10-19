@@ -1,8 +1,10 @@
 """Venue utilities shared across agents and services."""
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db.models import Venue, UserVenueAccess
+from app.services import active_org
 
 
 def get_user_venues(db: Session, user_id: str | None = None) -> list[Venue]:
@@ -31,7 +33,14 @@ def get_user_venues(db: Session, user_id: str | None = None) -> list[Venue]:
     if not venue_ids:
         return []
 
-    return db.query(Venue).filter(Venue.id.in_(venue_ids)).order_by(Venue.name).all()
+    q = db.query(Venue).filter(Venue.id.in_(venue_ids))
+    # A person who belongs to several organisations sees the venues of the one
+    # they are acting in, never a mixture; a stale access row can't open another
+    # organisation's venue. (No membership at all: the access list stands.)
+    org = active_org.org_id_for(db, user_id)
+    if org:
+        q = q.filter(or_(Venue.organization_id.is_(None), Venue.organization_id == org))
+    return q.order_by(Venue.name).all()
 
 
 def user_can_access_venue(
@@ -46,7 +55,7 @@ def user_can_access_venue(
     """
     if not venue_id or not user_id:
         return True
-    return (
+    has_row = (
         db.query(UserVenueAccess)
         .filter(
             UserVenueAccess.user_id == user_id,
@@ -55,6 +64,13 @@ def user_can_access_venue(
         .first()
         is not None
     )
+    if not has_row:
+        return False
+    org = active_org.org_id_for(db, user_id)
+    if not org:
+        return True
+    venue_org = db.query(Venue.organization_id).filter(Venue.id == venue_id).scalar()
+    return venue_org is None or venue_org == org
 
 
 def resolve_venue_id(venue_name: str | None, db: Session) -> str | None:

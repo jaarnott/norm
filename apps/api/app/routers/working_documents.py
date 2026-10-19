@@ -14,6 +14,7 @@ from app.db.engine import get_db, get_config_db
 from app.db.models import WorkingDocument, User
 from app.auth.dependencies import get_current_user
 from app.connectors import spec_rows
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -494,16 +495,12 @@ def _doc_to_dict(doc: WorkingDocument) -> dict:
 
 def _signal_org_id(db, doc) -> str | None:
     """Organisation for a working document, via its thread's owner."""
-    from app.db.models import OrganizationMembership, Thread
+    from app.db.models import Thread
 
     thread = db.query(Thread).filter(Thread.id == doc.thread_id).first()
     if not thread or not thread.user_id:
         return None
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == thread.user_id)
-        .first()
-    )
+    membership = active_org.membership_for(db, thread.user_id)
     return membership.organization_id if membership else None
 
 

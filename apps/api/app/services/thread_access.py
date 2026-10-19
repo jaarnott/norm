@@ -22,6 +22,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.db.models import Thread, User
+from app.services import active_org
 
 _TASK_SUFFIXES = (".automated_conversation", ".automated_task")
 
@@ -29,13 +30,8 @@ _TASK_SUFFIXES = (".automated_conversation", ".automated_task")
 def _org_of(db: Session, user_id: str | None) -> str | None:
     if not user_id:
         return None
-    from app.db.models import OrganizationMembership
 
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user_id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user_id)
     return membership.organization_id if membership else None
 
 

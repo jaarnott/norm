@@ -14,12 +14,14 @@ from app.db.models import (
     UserVenueAccess,
     Organization,
     Role,
+    Venue,
 )
 from app.auth.security import hash_password, verify_password, create_access_token
 from app.auth.schemas import RegisterRequest, LoginRequest, TokenResponse, UserResponse
 from app.auth.dependencies import get_current_user, require_permission
 from app.auth.permissions import ALL_ORG_PERMISSIONS
 from app.middleware.rate_limit import limiter
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -46,6 +48,13 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
+    from app.services import org_admin
+
+    if not req.organization_name.strip() or not req.venue_name.strip():
+        raise HTTPException(
+            status_code=422, detail="Name your business and its first venue"
+        )
+
     # First user gets admin role, rest get user
     is_first = db.query(User).count() == 0
     role = "admin" if is_first else "user"
@@ -57,6 +66,25 @@ async def register(
         role=role,
     )
     db.add(user)
+    db.flush()
+
+    # Your own organisation, you as its owner, and its first venue — one
+    # transaction, so a failure leaves no half-made account behind.
+    org = org_admin.create_organization(
+        db,
+        req.organization_name,
+        owner=user,
+        billing_email=req.email,
+        timezone=req.venue_timezone,
+    )
+    org_admin.create_venue(
+        db,
+        org.id,
+        req.venue_name,
+        location=req.venue_location,
+        timezone=req.venue_timezone,
+        grant_to=user,
+    )
     db.commit()
     db.refresh(user)
     return _make_token_response(user)
@@ -82,30 +110,40 @@ async def me(user: User = Depends(get_current_user), db: Session = Depends(get_d
     permissions: list[str] = []
     org_role: dict | None = None
 
+    memberships = active_org.memberships_for(db, user.id)
+    active = active_org.membership_for(db, user.id)
     if user.role == "admin":
         # Platform admins get all org permissions
         permissions = list(ALL_ORG_PERMISSIONS)
-    else:
-        # Load membership -> role -> permissions
-        membership = (
-            db.query(OrganizationMembership)
-            .filter(OrganizationMembership.user_id == user.id)
-            .first()
-        )
-        if membership and membership.role_id:
-            role_obj = db.query(Role).filter(Role.id == membership.role_id).first()
-            if role_obj:
+    if active and active.role_id:
+        role_obj = db.query(Role).filter(Role.id == active.role_id).first()
+        if role_obj:
+            if user.role != "admin":
                 permissions = role_obj.permissions or []
-                org_role = {
-                    "name": role_obj.name,
-                    "display_name": role_obj.display_name,
-                }
+            org_role = {
+                "name": role_obj.name,
+                "display_name": role_obj.display_name,
+            }
 
+    # Every organisation the person can act in, for the switcher.
+    from app.db.models import Organization
+
+    orgs = {
+        o.id: o.name
+        for o in db.query(Organization)
+        .filter(Organization.id.in_([m.organization_id for m in memberships]))
+        .all()
+    }
     resp = UserResponse(
         id=user.id, email=user.email, full_name=user.full_name, role=user.role
     ).model_dump()
     resp["permissions"] = permissions
     resp["org_role"] = org_role
+    resp["organizations"] = [
+        {"id": m.organization_id, "name": orgs.get(m.organization_id)}
+        for m in memberships
+    ]
+    resp["active_organization_id"] = active.organization_id if active else None
     return resp
 
 
@@ -115,8 +153,9 @@ async def me(user: User = Depends(get_current_user), db: Session = Depends(get_d
 class InviteRequest(BaseModel):
     email: str
     org_id: str
-    role_id: str
-    venue_ids: list[str] = []
+    #: Omitted on a resend: an existing member keeps their role and venues.
+    role_id: str | None = None
+    venue_ids: list[str] | None = None
 
 
 @router.post("/auth/invite")
@@ -131,6 +170,12 @@ def invite_user(
     from app.config import settings as app_settings
 
     email = body.email.strip().lower()
+
+    # The caller must hold org:members IN the organisation they are inviting to
+    # (the dependency above checks the organisation they are acting in).
+    from app.routers.organizations import _require_org_permission
+
+    _require_org_permission(db, user, body.org_id, "org:members")
 
     # Check if user already exists
     existing = db.query(User).filter(User.email == email).first()
@@ -159,6 +204,10 @@ def invite_user(
     )
 
     if not membership:
+        if not body.role_id:
+            raise HTTPException(
+                status_code=422, detail="Choose a role for the new member"
+            )
         membership = OrganizationMembership(
             user_id=target_user.id,
             organization_id=body.org_id,
@@ -166,36 +215,70 @@ def invite_user(
             role_id=body.role_id,
         )
         db.add(membership)
-    else:
+    elif body.role_id:
         membership.role_id = body.role_id
 
-    # Set venue access
-    db.query(UserVenueAccess).filter(UserVenueAccess.user_id == target_user.id).delete()
-    for vid in body.venue_ids:
-        db.add(UserVenueAccess(user_id=target_user.id, venue_id=vid))
+    # Set venue access — for THIS organisation only. The invite used to delete
+    # every venue row the person had, in every organisation, so inviting an
+    # existing user to a second organisation silently locked them out of the
+    # first. Venues named must belong to the organisation they are invited to.
+    org_venue_ids = {
+        v.id for v in db.query(Venue).filter(Venue.organization_id == body.org_id)
+    }
+    venue_ids = body.venue_ids
+    stray = [vid for vid in (venue_ids or []) if vid not in org_venue_ids]
+    if stray:
+        db.rollback()
+        raise HTTPException(
+            status_code=422, detail="A venue named does not belong to that organisation"
+        )
+    if venue_ids is not None:  # None = leave their access as it is
+        db.query(UserVenueAccess).filter(
+            UserVenueAccess.user_id == target_user.id,
+            UserVenueAccess.venue_id.in_(org_venue_ids),
+        ).delete(synchronize_session=False)
+        for vid in venue_ids:
+            db.add(UserVenueAccess(user_id=target_user.id, venue_id=vid))
 
     db.commit()
-
-    # Generate invite token and send email
-    token = create_invite_token(target_user.id)
-    invite_url = f"{app_settings.app_url}/accept-invite?token={token}"
 
     org = db.query(Organization).filter(Organization.id == body.org_id).first()
     org_name = org.name if org else "Norm"
     inviter_name = user.full_name
 
-    email_log_id = None
-    try:
-        email_log_id = send_system_email(
-            template_name="invite_user",
-            to=[email],
-            context={
-                "invite_url": invite_url,
+    # Someone who already has a working account has nothing to accept (the accept
+    # step refuses an active account): tell them they were added and where the
+    # switcher is, instead of sending a link that can only fail.
+    if target_user.is_active:
+        template, context = (
+            "added_to_organization",
+            {
+                "inviter_name": inviter_name,
+                "org_name": org_name,
+                "app_url": app_settings.app_url,
+                "email": email,
+            },
+        )
+    else:
+        token = create_invite_token(target_user.id)
+        template, context = (
+            "invite_user",
+            {
+                "invite_url": f"{app_settings.app_url}/accept-invite?token={token}",
                 "inviter_name": inviter_name,
                 "org_name": org_name,
                 "email": email,
             },
+        )
+
+    email_log_id = None
+    try:
+        email_log_id = send_system_email(
+            template_name=template,
+            to=[email],
+            context=context,
             db=db,
+            organization_id=body.org_id,
         )
         db.commit()
     except Exception as exc:

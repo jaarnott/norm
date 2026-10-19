@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timezone
 
 from app.agents.context_budget import estimate_tokens
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 
@@ -245,13 +246,7 @@ def build_conversation_messages(
             org_id = getattr(thread, "organization_id", None)
             user_id = getattr(thread, "user_id", None)
             if not org_id and user_id:
-                from app.db.models import OrganizationMembership
-
-                m = (
-                    db.query(OrganizationMembership)
-                    .filter(OrganizationMembership.user_id == user_id)
-                    .first()
-                )
+                m = active_org.membership_for(db, user_id)
                 org_id = m.organization_id if m else None
             if org_id and user_id:
                 index = recall_index(db, user_id=user_id, organization_id=org_id)

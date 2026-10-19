@@ -8,6 +8,7 @@ from jose import JWTError
 from app.db.engine import get_db
 from app.db.models import User
 from app.auth.security import decode_access_token
+from app.services import active_org
 
 bearer_scheme = HTTPBearer()
 
@@ -80,13 +81,9 @@ def require_permission(*permissions: str):
             return user
 
         # Load membership -> role -> permissions
-        from app.db.models import OrganizationMembership, Role
+        from app.db.models import Role
 
-        membership = (
-            db.query(OrganizationMembership)
-            .filter(OrganizationMembership.user_id == user.id)
-            .first()
-        )
+        membership = active_org.membership_for(db, user.id)
 
         if not membership or not membership.role_id:
             raise HTTPException(403, "No organization role assigned")

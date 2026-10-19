@@ -900,3 +900,16 @@ def automated_task_diagnostics(
             "always_allowed": always_allowed,
         },
     }
+
+
+@router.get("/admin/access-integrity")
+def access_integrity(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """Venue access held by someone who is not a member of the venue's
+    organisation. Should always be empty."""
+    from app.services.access_integrity import orphaned_access
+
+    rows = orphaned_access(db)
+    return {"count": len(rows), "orphans": rows}

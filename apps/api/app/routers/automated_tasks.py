@@ -22,6 +22,7 @@ from app.db.models import (
     User,
 )
 from app.auth.dependencies import get_current_user
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +80,7 @@ def _visible(query, db: Session, user: User):
 
     if getattr(user, "role", None) == "admin":
         return query
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     if membership is None:
         return query.filter(AutomatedTask.created_by == user.id)
     colleagues = db.query(OrganizationMembership.user_id).filter(

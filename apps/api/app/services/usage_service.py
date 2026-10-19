@@ -6,6 +6,7 @@ import logging
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 
@@ -52,16 +53,10 @@ def record_usage(
         "cost_usd": cost or 0,
     }
 
-    from app.db.models import OrganizationMembership
-
     # Org lookup is a plain read; the caller's session is fine for that. A
     # call with no user (an extraction) passes its organisation directly.
     if not org_id and user_id:
-        membership = (
-            db.query(OrganizationMembership)
-            .filter(OrganizationMembership.user_id == user_id)
-            .first()
-        )
+        membership = active_org.membership_for(db, user_id)
         if membership:
             org_id = membership.organization_id
 

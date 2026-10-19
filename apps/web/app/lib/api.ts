@@ -13,6 +13,26 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   localStorage.removeItem('norm_token');
   localStorage.removeItem('norm_user');
+  localStorage.removeItem('norm_org');
+}
+
+/** The organisation the person is acting in. Sent as X-Organization on every
+ *  call; the server only honours it for an organisation they belong to. */
+export function getActiveOrg(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('norm_org');
+}
+
+export function setActiveOrg(orgId: string | null): void {
+  if (orgId) localStorage.setItem('norm_org', orgId);
+  else localStorage.removeItem('norm_org');
+}
+
+/** Switch organisation: everything on the page was fetched for the old one,
+ *  so reload from the start. */
+export function switchOrganization(orgId: string): void {
+  setActiveOrg(orgId);
+  if (typeof window !== 'undefined') window.location.href = '/app';
 }
 
 /** A 401 means the session is gone — go to the login page.
@@ -29,7 +49,7 @@ function redirectToLogin(): void {
   }
 }
 
-export function getStoredUser(): { id: string; email: string; full_name: string; role: string; permissions?: string[]; org_role?: { name: string; display_name: string } | null } | null {
+export function getStoredUser(): { id: string; email: string; full_name: string; role: string; permissions?: string[]; org_role?: { name: string; display_name: string } | null; organizations?: { id: string; name: string | null }[]; active_organization_id?: string | null } | null {
   if (typeof window === 'undefined') return null;
   const raw = localStorage.getItem('norm_user');
   if (!raw) return null;
@@ -40,7 +60,7 @@ export function getStoredUser(): { id: string; email: string; full_name: string;
   }
 }
 
-export function setStoredUser(user: { id: string; email: string; full_name: string; role: string; permissions?: string[]; org_role?: { name: string; display_name: string } | null }): void {
+export function setStoredUser(user: { id: string; email: string; full_name: string; role: string; permissions?: string[]; org_role?: { name: string; display_name: string } | null; organizations?: { id: string; name: string | null }[]; active_organization_id?: string | null }): void {
   localStorage.setItem('norm_user', JSON.stringify(user));
 }
 
@@ -52,6 +72,8 @@ export async function apiStream(
   const token = getToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  const org = getActiveOrg();
+  if (org) headers['X-Organization'] = org;
 
   const res = await fetch(`${API}${url}`, {
     method: 'POST',
@@ -126,6 +148,8 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
+  const org = getActiveOrg();
+  if (org && !headers.has('X-Organization')) headers.set('X-Organization', org);
   if (!headers.has('Content-Type') && init?.body && typeof init.body === 'string') {
     headers.set('Content-Type', 'application/json');
   }

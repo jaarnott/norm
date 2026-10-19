@@ -213,6 +213,10 @@ class Thread(Base):
     session_id = Column(String, index=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     venue_id = Column(String, ForeignKey("venues.id"), nullable=True)
+    #: The organisation this conversation was started in (stamped on insert from
+    #: the active organisation). Its usage is billed here; it never follows the
+    #: user's other memberships.
+    organization_id = Column(String, nullable=True, index=True)
     intent = Column(String)
     domain = Column(String)
     status = Column(String, nullable=False, default="awaiting_user_input")
@@ -1913,3 +1917,36 @@ class UnitCheckProposal(Base):
     note = Column(Text, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
+
+
+from sqlalchemy import event as _event  # noqa: E402
+
+
+@_event.listens_for(Thread, "before_insert")
+def _stamp_thread_organization(mapper, connection, target):
+    """Every creator of a thread (chat, tasks, MCP, schedules) gets the same
+    answer: the venue's organisation, else the one the user is acting in."""
+    if target.organization_id:
+        return
+    from sqlalchemy import select
+
+    if target.venue_id:
+        org = connection.execute(
+            select(Venue.organization_id).where(Venue.id == target.venue_id)
+        ).scalar()
+        if org:
+            target.organization_id = org
+            return
+    if target.user_id:
+        from app.services.active_org import requested_org
+
+        rows = [
+            r[0]
+            for r in connection.execute(
+                select(OrganizationMembership.organization_id)
+                .where(OrganizationMembership.user_id == target.user_id)
+                .order_by(OrganizationMembership.created_at)
+            )
+        ]
+        want = requested_org.get()
+        target.organization_id = want if want in rows else (rows[0] if rows else None)

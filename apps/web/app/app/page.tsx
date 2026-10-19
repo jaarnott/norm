@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import OrgSwitcher from '../components/layout/OrgSwitcher';
 import Sidebar from '../components/layout/Sidebar';
 import ThreadList from '../components/threads/ThreadList';
 import ThreadDetail from '../components/threads/ThreadDetail';
@@ -17,7 +18,7 @@ import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../c
 import type { SendOptions } from '../components/chat/AttachmentComposer';
 import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
 import { OPEN_APP_PAGE_EVENT } from '../components/apps/AppRunner';
-import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser } from '../lib/api';
+import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser, setActiveOrg } from '../lib/api';
 import { getPageDocument } from '../lib/pageDocument';
 import { PanelLeft as PanelLeftIcon, Menu, Settings, LogOut, SquarePen, X, type LucideIcon } from 'lucide-react';
 import Icon from '../components/ui/Icon';
@@ -32,7 +33,7 @@ import type { Thread, WidgetAction, VenueDetail } from '../types';
 
 type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null };
 
-type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null };
+type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null; organizations?: { id: string; name: string | null }[]; active_organization_id?: string | null };
 
 // True once a re-fetched thread's turn has settled with a final answer — the
 // backend worker commits the answer even when the send's stream was cut, so
@@ -179,6 +180,9 @@ export default function Home() {
         .then(res => res.ok ? res.json() : null)
         .then(data => {
           if (data) {
+            // Keep the stored organisation in step with what the server says
+            // is active (it ignores one the person is not in).
+            setActiveOrg(data.active_organization_id || null);
             setTokenState(existing);
             setUser(data);
             setStoredUser(data);
@@ -1373,6 +1377,7 @@ export default function Home() {
               display: 'flex', alignItems: 'center', gap: 10, borderTop: '1px solid var(--line)',
             }}>
               <Avatar name={user.full_name} />
+              <OrgSwitcher organizations={user.organizations} activeId={user.active_organization_id} variant="row" />
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-base)', color: 'var(--text-soft)' }}>{user.full_name}</span>
               {showSettings && footerButton('sidebar-settings', 'Settings', Settings, () => { setActiveAgent('settings'); setMobileView('settings'); })}
               {footerButton('sidebar-logout', 'Sign out', LogOut, handleLogout)}

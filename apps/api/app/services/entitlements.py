@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy.orm import Session
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +60,12 @@ def _catalog(config_db: Session):
 
 
 def org_id_for_user(user_id: str | None, db: Session) -> str | None:
-    """The user's org (first membership — orgs are single-membership today)."""
+    """The organisation the user is acting in: the one the request asked for when
+    they belong to it, else their oldest membership (services/active_org.py)."""
     if not user_id:
         return None
-    from app.db.models import OrganizationMembership
 
-    m = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user_id)
-        .first()
-    )
+    m = active_org.membership_for(db, user_id)
     return m.organization_id if m else None
 
 

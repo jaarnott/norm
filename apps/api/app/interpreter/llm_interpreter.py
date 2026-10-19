@@ -263,7 +263,7 @@ def _persist_llm_call(
 
         owner = db.query(Thread.user_id).filter(Thread.id == thread_id).first()
         user_id = owner[0] if owner else None
-    org_id = _org_for_call(db, user_id)
+    org_id = _org_for_call(db, user_id, thread_id)
 
     record = LlmCall(
         thread_id=thread_id,
@@ -295,10 +295,22 @@ def _persist_llm_call(
     return record.id
 
 
-def _org_for_call(db: Session, user_id: str | None) -> str | None:
+def _org_for_call(
+    db: Session, user_id: str | None, thread_id: str | None = None
+) -> str | None:
     """The organisation a call belongs to: its user's, else the caller's scope
     (an extraction runs with no thread or user, but always for some venue)."""
     try:
+        if thread_id:
+            # The conversation's own organisation: a person in two
+            # organisations is billed to the one the conversation is in.
+            from app.db.models import Thread
+
+            org = (
+                db.query(Thread.organization_id).filter(Thread.id == thread_id).scalar()
+            )
+            if org:
+                return org
         if user_id:
             from app.services.entitlements import org_id_for_user
 

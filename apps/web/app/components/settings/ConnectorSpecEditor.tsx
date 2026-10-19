@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { ChevronRight, ChevronDown, Check, X, Plus, GripVertical } from 'lucide-react';
 import type { ConnectorSpecFull, ConnectorSpecTool, SpecInventoryRow, ToolApproval } from '../../types';
-import { apiFetch, getToken } from '../../lib/api';
+import { apiFetch, getActiveOrg, getToken } from '../../lib/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -297,6 +297,8 @@ function ConsolidatorToolEditor({
       const token = getToken();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
+      const org = getActiveOrg();
+      if (org) headers['X-Organization'] = org;
 
       const res = await fetch(`/api/connector-specs/norm/consolidator-chat`, {
         method: 'POST',

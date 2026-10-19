@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from app.services.suggestions import config as suggestion_config
 from app.services.suggestions.catalog import Entry
+from app.services import active_org
 
 #: The member whose icon an insight carries.
 AREA_ICON = {
@@ -55,15 +56,11 @@ def _now() -> datetime:
 def permissions_of(db: Session, user) -> set[str]:
     """The same answer as GET /auth/me."""
     from app.auth.permissions import ALL_ORG_PERMISSIONS
-    from app.db.models import OrganizationMembership, Role
+    from app.db.models import Role
 
     if getattr(user, "role", None) == "admin":
         return set(ALL_ORG_PERMISSIONS)
-    m = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    m = active_org.membership_for(db, user.id)
     if m and m.role_id:
         role = db.query(Role).filter(Role.id == m.role_id).first()
         return set((role.permissions or []) if role else [])

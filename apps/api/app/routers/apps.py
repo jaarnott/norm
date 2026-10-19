@@ -28,6 +28,7 @@ from app.services.app_runtime import (
     resolve_access,
     run_logic,
 )
+from app.services import active_org
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -44,18 +45,14 @@ def _load(db: Session, slug: str, user: User, config_db: Session):
     code comes from the repo, bound to the viewer's own org, and only while
     the org has its catalog App on (services/builtin_apps.py).
     """
-    from app.db.models import App, AppVersion, OrganizationMembership
+    from app.db.models import App, AppVersion
     from app.services.builtin_apps import load_for_user
 
     builtin = load_for_user(db, config_db, slug, user)
     if builtin is not None:
         return builtin
 
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     q = db.query(App).filter(App.slug == slug)
     if membership:
         q = q.filter(App.organization_id == membership.organization_id)
@@ -181,13 +178,9 @@ async def list_apps(
 ):
     """Every app this user may run — the apps built into Norm that their org
     has on, then theirs, plus whatever is shared with them."""
-    from app.db.models import App, OrganizationMembership
+    from app.db.models import App
 
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(OrganizationMembership.user_id == user.id)
-        .first()
-    )
+    membership = active_org.membership_for(db, user.id)
     if not membership:
         return {"apps": []}
 

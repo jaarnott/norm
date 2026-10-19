@@ -3,7 +3,34 @@
 from unittest.mock import patch
 
 
+import pytest
+
 from app.db.models import User, Role
+
+
+@pytest.fixture(autouse=True)
+def _system_roles(db_session):
+    """The standard roles (owner, manager, team member, payroll admin) exist in
+    every real database; a fresh test database has none until seeded."""
+    from app.db.models import Role
+    from tests.org_helpers import seed_system_roles
+
+    if not (
+        db_session.query(Role)
+        .filter(Role.name == "owner", Role.organization_id.is_(None))
+        .first()
+    ):
+        seed_system_roles(db_session)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limit():
+    """Sign-up allows 5 a minute per address; each test starts with a clean
+    count so the tests don't trip it on each other."""
+    from app.middleware.rate_limit import limiter
+
+    limiter.reset()
+    yield
 
 
 class TestRegister:
@@ -16,6 +43,8 @@ class TestRegister:
                 "email": "newuser@example.com",
                 "password": "securepass123",
                 "full_name": "New User",
+                "organization_name": "Acme Hospitality",
+                "venue_name": "Acme Bar",
             },
         )
         assert resp.status_code == 200
@@ -46,6 +75,8 @@ class TestRegister:
                     "email": "firstadmin@example.com",
                     "password": "securepass123",
                     "full_name": "First Admin",
+                    "organization_name": "Acme Hospitality",
+                    "venue_name": "Acme Bar",
                 },
             )
         assert resp.status_code == 200
@@ -59,6 +90,8 @@ class TestRegister:
                 "email": "second@example.com",
                 "password": "securepass123",
                 "full_name": "Second User",
+                "organization_name": "Acme Hospitality",
+                "venue_name": "Acme Bar",
             },
         )
         assert resp.status_code == 200
@@ -72,10 +105,63 @@ class TestRegister:
                 "email": admin_user.email,
                 "password": "securepass123",
                 "full_name": "Duplicate",
+                "organization_name": "Acme Hospitality",
+                "venue_name": "Acme Bar",
             },
         )
         assert resp.status_code == 400
         assert "already registered" in resp.json()["detail"].lower()
+
+    def test_signup_makes_your_organisation_with_you_as_owner_and_its_first_venue(
+        self, client, db_session
+    ):
+        """An account used to be created with no organisation, so a person who
+        signed up saw nothing until someone added them by hand (Oct 2026)."""
+        from app.db.models import OrganizationMembership, UserVenueAccess, Venue
+
+        resp = client.post(
+            "/api/auth/register",
+            json={
+                "email": "owner@sydneycafe.example",
+                "password": "securepass123",
+                "full_name": "Pat Owner",
+                "organization_name": "Sydney Cafe Group",
+                "venue_name": "Harbour Cafe",
+                "venue_location": "1 George St, Sydney",
+                "venue_timezone": "Australia/Sydney",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        uid = resp.json()["user"]["id"]
+        m = db_session.query(OrganizationMembership).filter_by(user_id=uid).one()
+        assert m.role_obj is not None and m.role_obj.name == "owner"
+        assert m.organization.name == "Sydney Cafe Group"
+        assert m.organization.currency == "AUD"
+        venue = (
+            db_session.query(Venue).filter_by(organization_id=m.organization_id).one()
+        )
+        assert (venue.name, venue.timezone) == ("Harbour Cafe", "Australia/Sydney")
+        assert db_session.query(UserVenueAccess).filter_by(user_id=uid).count() == 1
+        token = resp.json()["access_token"]
+        me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert me.json()["active_organization_id"] == m.organization_id
+        assert "org:members" in me.json()["permissions"]
+
+    def test_signup_needs_a_business_and_a_venue(self, client, db_session):
+        from app.db.models import User as U
+
+        resp = client.post(
+            "/api/auth/register",
+            json={
+                "email": "nobiz@example.com",
+                "password": "securepass123",
+                "full_name": "No Biz",
+                "organization_name": "  ",
+                "venue_name": "Bar",
+            },
+        )
+        assert resp.status_code == 422
+        assert db_session.query(U).filter_by(email="nobiz@example.com").first() is None
 
 
 class TestLogin:

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>You've been added to {{ org_name }}</h1>
+<p>Hi,</p>
+<p><strong>{{ inviter_name }}</strong> has added you to <strong>{{ org_name }}</strong> on Norm. You already have a Norm account, so there is nothing to accept.</p>
+<p>Sign in as usual. Because you now belong to more than one organisation, a switcher appears at the bottom of the sidebar. Choose <strong>{{ org_name }}</strong> there to work in it. Each organisation keeps its own venues, conversations and usage.</p>
+<a href="{{ app_url }}" class="btn">Open Norm</a>
+<p style="font-size: 13px; color: #999; margin-top: 16px;">If you didn't expect this, tell {{ inviter_name }}, or ignore this email.</p>
+{% endblock %}

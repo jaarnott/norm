@@ -81,8 +81,14 @@ def _fresh_suggestion_config():
 # Minimal app for tests (no startup/shutdown events)
 # ---------------------------------------------------------------------------
 _test_app = FastAPI()
+from app.services.active_org import ActiveOrgMiddleware  # noqa: E402
+
+_test_app.add_middleware(ActiveOrgMiddleware)
 _test_app.include_router(auth.router, prefix="/api")
 _test_app.include_router(admin.router, prefix="/api")
+from app.routers import admin_organizations as _admin_orgs  # noqa: E402
+
+_test_app.include_router(_admin_orgs.router, prefix="/api")
 _test_app.include_router(threads.router, prefix="/api")
 _test_app.include_router(venues.router, prefix="/api")
 _test_app.include_router(messages.router, prefix="/api")
@@ -216,6 +222,8 @@ def _setup_tables():
             # (migration fb1c2d3e4f5a, Oct 2026); without it every report
             # route 500s on a persistent local DB.
             "ALTER TABLE report_charts ADD COLUMN IF NOT EXISTS data_meta JSON",
+            # A conversation remembers its organisation (migration v5x7z9b2d4f6).
+            "ALTER TABLE threads ADD COLUMN IF NOT EXISTS organization_id VARCHAR",
         ):
             conn.execute(_sqltext(ddl))
     yield

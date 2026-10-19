@@ -4,7 +4,7 @@
  * The API judges the bytes (JPEG / PNG / GIF / WebP, ≤ 10 MB, ≤ 40 MP —
  * F3-api.md §12); the checks here only catch the obvious before a wait.
  */
-import { getToken } from '../../../lib/api';
+import { getActiveOrg, getToken } from '../../../lib/api';
 import { FnApiError } from '../shared/api';
 import { errorFromBody } from './errors';
 
@@ -34,6 +34,8 @@ export function uploadForm<T>(path: string, form: FormData, onProgress?: (fracti
     xhr.open('POST', `/api/functions${path}`);
     const token = getToken();
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    const org = getActiveOrg();
+    if (org) xhr.setRequestHeader('X-Organization', org);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.total ? e.loaded / e.total : 0);
     };

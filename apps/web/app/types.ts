@@ -555,6 +555,9 @@ export interface User {
   role: string;
   permissions: string[];
   org_role: { name: string; display_name: string } | null;
+  /** Every organisation the person belongs to (the switcher shows when 2+). */
+  organizations?: { id: string; name: string | null }[];
+  active_organization_id?: string | null;
 }
 
 /** One file in a conversation's notebook (Anthropic's memory tool, backed by Norm). */
