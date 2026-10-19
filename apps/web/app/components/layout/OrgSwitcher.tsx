@@ -29,11 +29,17 @@ export default function OrgSwitcher({ organizations, activeId, variant = 'rail' 
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
   const btn = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    // The menu is drawn apart from the button, so a press on one of its
+    // organisations must count as inside — closing on mousedown removed the
+    // menu before the click landed, and choosing one did nothing (19 Oct 2026).
     const close = (e: MouseEvent) => {
-      if (btn.current && !btn.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (btn.current?.contains(t) || menu.current?.contains(t)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
@@ -76,6 +82,7 @@ export default function OrgSwitcher({ organizations, activeId, variant = 'rail' 
       </button>
       {open && pos && (
         <div
+          ref={menu}
           role="menu"
           style={{
             position: 'fixed', left: variant === 'rail' ? pos.left : 12, bottom: pos.bottom, zIndex: 1000,
