@@ -997,6 +997,73 @@ _LIST_PAGE_SIZE = 200
 _LIST_MAX_PAGES = 25
 
 
+class ReceivedLineUnitError(Exception):
+    """A received line's unit could not be changed; the message says why."""
+
+
+def change_received_line_unit(
+    lh, invoice_id: str, line_id: str, unit: dict, *, from_unit_id: str | None
+) -> dict:
+    """Change ONE received invoice line's unit in Loaded and nothing else, then
+    read the invoice back to prove it took: still received, the same subtotal
+    and total, the line in the new unit. Returns the invoice as read back.
+
+    ``from_unit_id`` is the unit the line was checked in; a line booked in
+    anything else has been changed since, and is left alone. Only unit, linked
+    unit and its ratio change — quantities and costs stay as received, so the
+    invoice's dollars never move (the 18 Oct 2026 units repair, 1,184 lines).
+    """
+    import copy
+
+    detail = lh.invoice(invoice_id)
+    if detail.get("deletedAt") or not detail.get("isReceived"):
+        raise ReceivedLineUnitError("the invoice is no longer received in Loaded")
+    body = copy.deepcopy(detail)
+    line = next(
+        (
+            ln
+            for ln in body.get("lines") or []
+            if str(ln.get("id")) == str(line_id) and not ln.get("deletedAt")
+        ),
+        None,
+    )
+    if line is None:
+        raise ReceivedLineUnitError("the line is no longer on the invoice")
+    if from_unit_id and line.get("linkedUnitId") != from_unit_id:
+        raise ReceivedLineUnitError(
+            f"the line is now booked as '{line.get('unit')}', not the unit that "
+            "was checked — someone has changed it since"
+        )
+    line["unit"] = unit.get("name")
+    line["linkedUnitId"] = unit.get("id")
+    line["linkedUnitRatio"] = unit.get("ratio")
+    lh.request("PUT", f"/1.0/stock/internal/invoices/{invoice_id}", body)
+    after = lh.invoice(invoice_id)
+    got = next(
+        (ln for ln in after.get("lines") or [] if str(ln.get("id")) == str(line_id)),
+        {},
+    )
+
+    def _same(a: object, b: object) -> bool:
+        try:
+            return abs(float(a or 0) - float(b or 0)) <= 0.01
+        except (TypeError, ValueError):
+            return False
+
+    if (
+        not after.get("isReceived")
+        or not _same(after.get("subtotal"), detail.get("subtotal"))
+        or not _same(after.get("total"), detail.get("total"))
+        or got.get("linkedUnitId") != unit.get("id")
+    ):
+        raise ReceivedLineUnitError(
+            "Loaded didn't keep the change as sent (received "
+            f"{after.get('isReceived')}, total {detail.get('total')} → "
+            f"{after.get('total')}, line unit {got.get('unit')!r})"
+        )
+    return after
+
+
 def outstanding_invoice_rows(lh) -> list[dict]:
     """This venue's unreceived supplier invoices, as Loaded returns them.
 

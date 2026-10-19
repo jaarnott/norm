@@ -1835,3 +1835,81 @@ class SuggestionEvent(Base):
     #: The insight's value when shown, so a material change can resurface it.
     value = Column(Numeric(12, 2), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
+
+
+class UnitCheckRun(Base):
+    """One daily unit check (services/unit_check.py): every line Norm received
+    since the last run, compared with the invoice Norm read and with Norm's
+    catalogue. The unique ``slot`` (a UTC date) is the once-a-day guard,
+    inserted before the run, as InsightRun."""
+
+    __tablename__ = "unit_check_runs"
+    __table_args__ = (UniqueConstraint("slot", name="uq_unit_check_run_slot"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    slot = Column(String, nullable=False)
+    #: The receipts checked: Norm's receives from window_start to window_end.
+    window_start = Column(DateTime(timezone=True), nullable=True)
+    window_end = Column(DateTime(timezone=True), nullable=True)
+    started_at = Column(DateTime(timezone=True), default=_now)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    ok = Column(Boolean, nullable=True)
+    error = Column(Text, nullable=True)
+    #: {"venues": [{venue_id, name, invoices, lines, proposals, errors}], ...}
+    summary = Column(JSON, nullable=True)
+    emailed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class UnitCheckProposal(Base):
+    """One line for a person to review in the Dojo's daily unit check. Either a
+    correction (``kind`` "correct": the invoice or Norm's catalogue says another
+    unit) or a line Norm booked on an answer it wasn't sure of (``kind``
+    "confirm"), which a person confirms or changes once, and Norm's catalogue
+    keeps. The check itself never writes to Loaded."""
+
+    __tablename__ = "unit_check_proposals"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    run_id = Column(
+        String,
+        ForeignKey("unit_check_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    venue_id = Column(String, nullable=False, index=True)
+    venue_name = Column(String, nullable=True)
+    invoice_id = Column(String, nullable=False)
+    invoice_number = Column(String, nullable=True)
+    supplier_name = Column(String, nullable=True)
+    invoice_date = Column(String, nullable=True)
+    line_id = Column(String, nullable=False)
+    item_id = Column(String, nullable=True)
+    item_name = Column(String, nullable=True)
+    code = Column(String, nullable=True)
+    #: The line as printed on the invoice Norm read (None for Ordermentum).
+    printed = Column(JSON, nullable=True)
+    quantity = Column(Numeric(14, 4), nullable=True)
+    unit_cost = Column(Numeric(14, 4), nullable=True)
+    booked_unit_id = Column(String, nullable=True)
+    booked_unit_name = Column(String, nullable=True)
+    #: What the invoice shows, and what Norm's catalogue says, in words.
+    invoice_says = Column(String, nullable=True)
+    catalogue_says = Column(String, nullable=True)
+    proposed_unit_id = Column(String, nullable=True)
+    proposed_unit_name = Column(String, nullable=True)
+    reason = Column(Text, nullable=True)
+    #: correct | confirm
+    kind = Column(String, nullable=False, default="correct")
+    #: The product in Norm's catalogue (supplier layout + product key): where a
+    #: person's answer is kept.
+    catalog_key = Column(String, nullable=True)
+    product_key = Column(String, nullable=True)
+    #: Norm's own estimate for a "confirm" line: {unit, confidence, why}.
+    norm_estimate = Column(JSON, nullable=True)
+    #: open | applied | confirmed | dismissed | failed
+    status = Column(String, nullable=False, default="open")
+    decided_by = Column(String, nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+    note = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)

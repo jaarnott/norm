@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     # is worth a person's attention for Home's suggestions. Reads only. Off
     # switch without a deploy.
     INSIGHTS_ENABLED: bool = True
+    # The daily unit check (services/unit_check.py): every line Norm received
+    # the day before, against the invoice it read and Norm's catalogue, with
+    # proposed corrections for the Dojo. Runs on the 5-minute scheduler tick
+    # from this UTC hour (19 = 6 am Sydney / 8 am Auckland in summer).
+    UNIT_CHECK_ENABLED: bool = True
+    UNIT_CHECK_HOUR_UTC: int = 19
     # ...and then rewords what changed in the organisation's own words: one
     # small-model call per venue with changed insights, at Norm's cost (never
     # counted against a plan). Off keeps the detectors' own wording.

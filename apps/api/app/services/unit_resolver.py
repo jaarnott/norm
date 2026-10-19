@@ -37,6 +37,7 @@ import logging
 import re
 
 from app.services.invoice_units import (
+    count_first,
     is_charge_line,
     is_multipack,
     is_packaging_word,
@@ -49,7 +50,9 @@ logger = logging.getLogger(__name__)
 _CONFIDENCE = {"high", "medium", "low"}
 
 #: Bump to re-estimate every cached line (the prompt is part of the key too).
-_VERSION = "estimate-v1"
+_VERSION = (
+    "estimate-v2"  # v2: the reading's unit rules + the venue's country (18 Oct 2026)
+)
 
 #: How many lines are estimated at once.
 _WORKERS = 6
@@ -64,40 +67,56 @@ _WEB_SEARCH = {"type": "web_search_20250305", "name": "web_search", "max_uses": 
 _EFFORT = "medium"
 
 _SYSTEM_PROMPT = (
-    "You work out the net contents of ONE delivered unit on a New Zealand "
-    "hospitality supplier's invoice line, for the venue's stock system. The "
-    "size isn't printed. Work like an experienced purchasing manager, and be "
+    "You work out the unit ONE line of a hospitality supplier's invoice is "
+    "charged in, for the venue's stock system, when the invoice prints no size. "
+    "The venue's country is given with the line: use that country's suppliers, "
+    "listings and prices. Work like an experienced purchasing manager, and be "
     "accurate: this replaces a person's judgement.\n"
+    "The unit is a MEASUREMENT: a weight, a volume, or a count of identical "
+    "items. It is what ONE unit of the line's quantity is, at the line's price. "
+    "These are the rules Norm uses when it reads invoices, and they decide:\n"
+    "- A discrete item used whole (a bun, a roll, a loaf, a focaccia slab, a "
+    "slice of cake, a pie, a mop head) is 'each', even when its weight is "
+    "known.\n"
+    "- A whole piece of cured meat or cheese priced each (a salami, a "
+    "mortadella, a cheese wheel or block) is its nominal size, e.g. '2.25 kg'.\n"
+    "- Herbs and leafy greens sold by the bunch are the weight of ONE bunch, "
+    "e.g. '100 g'.\n"
+    "- A box, bag or tray of fruit or vegetables is its weight, e.g. '15 kg'.\n"
+    "- Drinks sold whole are counted: a single-serve bottle or can (about 350 ml "
+    "or less) is 'each', a carton of 24 cans is '24 each'. Bottles of a litre or "
+    "more are poured, so they are a volume ('1 L'; six of them '6x1L').\n"
+    "- Meat or produce priced per kilo is random weight: answer '1 kg'.\n"
+    "- Anything else sold in a fixed pack (a jar, a tub, a bag of flour, a "
+    "bottle of oil) is the pack's net contents.\n"
+    "Method:\n"
     "1. Identify the product precisely: brand, product, form. Abbreviations "
     "are common (CHSE = cheese, FZN = frozen, '@ SMART CHOICE' = the brand).\n"
     "2. Find the pack formats it is ACTUALLY sold in. Search whenever you are "
     "not certain: first this supplier's own listing (search the supplier name "
-    "with the product code or name), then the brand's site or other NZ "
-    "wholesalers. Real listings beat memory, and memory beats arithmetic.\n"
+    "with the product code or name), then the brand's site or other wholesalers "
+    "in the venue's country. Real listings beat memory, and memory beats "
+    "arithmetic.\n"
     "3. Read this supplier's price level from the other lines on the invoice "
     "whose size you can tell (a size in the name, or a product you know): near "
-    "NZ wholesale, or marked up like a franchise supplier?\n"
-    "4. For EACH real format, work out the $/kg or $/L this line's price "
-    "implies, and compare it with what that product costs per kg or litre at "
-    "this supplier's level. Pick the format whose implied price is most "
-    "plausible. Never invent a size from price alone.\n"
+    "wholesale, or marked up like a franchise supplier?\n"
+    "4. For EACH real format, work out the price per kg, litre or item this "
+    "line's price implies, and compare it with what that product costs at this "
+    "supplier's level. Pick the format whose implied price is most plausible. "
+    "Never invent a size from price alone.\n"
     "5. If the price can't be a whole pack of any real format (cents for a "
     "jar, $2 for a carton), it is a per-unit rate or an adjustment: ignore it "
     "and pick the format this supplier sells.\n"
-    "6. KG as the charge word, or meat/produce priced per kilo, is random "
-    "weight: answer '1 kg'. Use 'each' only for things genuinely counted as "
-    "items.\n"
-    'Reply with ONLY JSON: {"size": "<net contents of ONE delivered unit as '
-    "one total measure, e.g. '1 kg', '454 g', '4.5 L', '200 each'; 'each' for "
-    'a single counted item>", "confidence": "high|medium|low", "why": '
-    '"<one short sentence>"}'
+    'Reply with ONLY JSON: {"size": "<the unit as one total measure, e.g. '
+    "'1 kg', '454 g', '4.5 L', '24 each', '6x1L'; 'each' for a single counted "
+    'item>", "confidence": "high|medium|low", "why": "<one short sentence>"}'
 )
 
 
 def _measure(text: object) -> tuple[str, float] | None:
     """(type, amount in g / mL / count) for a size or a unit name — a
     multipack ('6x750mL', '4x6 pack') as its total."""
-    t = str(text or "").strip()
+    t = count_first(str(text or "").strip())
     if not t:
         return None
     if t.lower() in ("each", "ea"):
@@ -161,7 +180,11 @@ def unit_name_for(size: object) -> str | None:
 
 
 def line_prompt(
-    line: dict, all_lines: list[dict], supplier: str | None, evidence: str | None
+    line: dict,
+    all_lines: list[dict],
+    supplier: str | None,
+    evidence: str | None,
+    country: str | None = None,
 ) -> str:
     """What the model sees for one line: the supplier, the rest of the invoice
     (its price scale), any catalogue evidence, and the line itself."""
@@ -182,7 +205,7 @@ def line_prompt(
         "unit_price_ex_tax": line.get("unit_price"),
     }
     return (
-        f"Supplier: {supplier}\n"
+        (f"Venue country: {country}\n" if country else "") + f"Supplier: {supplier}\n"
         "Other lines on this invoice:\n"
         + ("\n".join(others[:40]) or "(none)")
         + (
@@ -297,6 +320,7 @@ def resolve_units(
     category_by_line: dict[str, str] | None = None,
     ask_llm=None,
     db=None,
+    country: str | None = None,
 ) -> dict[str, dict]:
     """{line_id: {unit, create_name, size, confidence, why}} for the lines in
     ``qualifying_ids``.
@@ -345,7 +369,11 @@ def resolve_units(
         asked_as[lid] = first_for.setdefault(key, lid)
         if asked_as[lid] == lid:
             prompts[lid] = line_prompt(
-                ln, all_lines, supplier_name, (evidence_by_line or {}).get(lid)
+                ln,
+                all_lines,
+                supplier_name,
+                (evidence_by_line or {}).get(lid),
+                country,
             )
     asked = _estimate_all(prompts, ask_llm or _default_ask(db), db) if prompts else {}
     answers = {lid: asked.get(first, {}) for lid, first in asked_as.items()}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ChartColumn, ChevronRight, Plus, Target, Trash2, TriangleAlert } from 'lucide-react';
+import { ChartColumn, ChevronRight, Plus, Ruler, Target, Trash2, TriangleAlert } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import Button from '../ui/Button';
 import IconButton from '../ui/IconButton';
@@ -17,6 +17,7 @@ import InvoicePdfPane from './InvoicePdfPane';
 import SenseiProposalCard, { type DojoAnalysis } from './SenseiProposalCard';
 import AutopilotReportPanel from './AutopilotReportPanel';
 import DojoTriagePanel from './DojoTriagePanel';
+import UnitCheckPanel from './UnitCheckPanel';
 
 // Per-supplier invoice-extraction instructions + name aliases, matched by the
 // review engine against the invoice's supplierName (normalized substring).
@@ -103,7 +104,7 @@ function StatusBadge({ status, count }: { status: string; count?: number }) {
 // A sensei chip that opens the sample: a badge you can press.
 const badgeButton: React.CSSProperties = { border: 'none', cursor: 'pointer', fontFamily: 'inherit' };
 
-export default function SupplierSpecsPanel() {
+export default function SupplierSpecsPanel({ initialView }: { initialView?: string } = {}) {
   const [specs, setSpecs] = useState<SupplierSpec[]>([]);
   const [editing, setEditing] = useState<SupplierSpec | null>(null);
   const [aliasesText, setAliasesText] = useState('');
@@ -116,6 +117,8 @@ export default function SupplierSpecsPanel() {
   const [dojoView, setDojoView] = useState<DojoView | null>(null);
   const [showDojo, setShowDojo] = useState(false);
   const [showReport, setShowReport] = useState(false);
+  // The daily unit check's review page; also opened from its email (?open=unit-check).
+  const [showUnitCheck, setShowUnitCheck] = useState(initialView === 'unit-check');
   // Sample view tab: the extraction compare vs the resolved replica.
   const [dojoRunning, setDojoRunning] = useState(false);
   const [dojoSummary, setDojoSummary] = useState<Record<string, DojoSummaryRow>>({});
@@ -745,6 +748,10 @@ export default function SupplierSpecsPanel() {
     return <AutopilotReportPanel onBack={() => setShowReport(false)} />;
   }
 
+  if (showUnitCheck) {
+    return <UnitCheckPanel onBack={() => setShowUnitCheck(false)} />;
+  }
+
   return (
     <div style={{ maxWidth: 860 }}>
       {/* The Dojo: triage every venue's outstanding invoices before they
@@ -780,6 +787,23 @@ export default function SupplierSpecsPanel() {
         <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 4 }}>
           How often accepting Norm&rsquo;s suggestions was enough to receive an invoice
           with no hand edits — per supplier, plus what Norm keeps missing.
+        </div>
+      </div>
+      {/* The daily check of yesterday's receipts against their invoices:
+          proposed unit corrections for a person to apply or dismiss. */}
+      <div className="n-card" onClick={() => setShowUnitCheck(true)}
+        style={{ padding: '12px 16px', marginBottom: 16, cursor: 'pointer' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icon icon={Ruler} size="inline" tone="muted" />
+          <strong style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Daily unit check</strong>
+          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>
+            Open
+            <Icon icon={ChevronRight} size="dense" tone="muted" />
+          </span>
+        </div>
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 4 }}>
+          Lines Norm received that look booked in the wrong unit, checked each morning against the
+          invoice and Norm&rsquo;s catalogue — apply or dismiss each correction.
         </div>
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginBottom: 12, gap: 10 }}>

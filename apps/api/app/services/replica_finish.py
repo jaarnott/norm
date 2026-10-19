@@ -290,17 +290,20 @@ def settle_units(
 ) -> None:
     """The delivered unit of every line the invoice left open.
 
-    The replica reads the unit off the invoice (variant → the page → Norm's
-    catalogue → the printed column). This finishes the rest:
+    The replica reads the unit off the invoice and Norm's own knowledge (the
+    page → Norm's catalogue → Norm's estimate → the printed column). This
+    finishes the rest:
 
     - The batched resolver's answer replaces a bare charge word ("EA") or fills
       a line Loaded has no unit for — high or medium confidence; a line still
       to be added takes only a high one.
     - A line with no unit at all (``unit_missing``) takes the resolver's answer
-      at any confidence, else the unit Loaded's line holds, else the venue's
-      chooser (``choose``, unit_guess). That is a guess: a person accepts it,
-      or the receive-without-a-unit switch lets Norm (the user, 12 Oct 2026:
-      "with this setting on we want norm to pick the unit").
+      at any confidence, else the venue's chooser (``choose``, unit_guess),
+      which picks from the venue's units by the invoice's own words. Never the
+      unit Loaded's line holds (owner, 18 Oct 2026: "i've been working hard to
+      tell agents not to rely on loaded at all"). That is a guess: a person
+      accepts it, or the receive-without-a-unit switch lets Norm (the user,
+      12 Oct 2026: "with this setting on we want norm to pick the unit").
     - A unit the invoice couldn't confirm (``unit_unconfirmed``) keeps the
       replica's stand-in, marked a guess for the same reason.
     """
@@ -340,17 +343,10 @@ def settle_units(
             and ur.get("unit_id")
             and ur.get("unit_id") != rl.get("linked_unit_id")
             and ur.get("confidence") in (("high",) if to_add else ("high", "medium"))
-            and (
-                not (ln or {}).get("linked_unit_id")
-                # A re-check of a unit Norm only guessed: a high answer
-                # replaces the guess even though Loaded's line carries it.
-                or (rl.get("unit_recheck") and ur.get("confidence") == "high")
-            )
+            and not (ln or {}).get("linked_unit_id")
         ):
             why = (
-                f"'{rl.get('unit')}' was Norm's guess for '{desc}' — {ur.get('why')}"
-                if rl.get("unit_recheck")
-                else f"no size is printed for '{desc}' — {ur.get('why')}"
+                f"no size is printed for '{desc}' — {ur.get('why')}"
                 if not rl.get("linked_unit_id")
                 else (
                     f"'{rl.get('unit')}' is how '{desc}' is charged, not the pack "
@@ -392,18 +388,11 @@ def settle_units(
                 f"no unit could be read from the invoice for '{desc}' — "
                 f"{ur.get('why') or 'the unit resolver'}"
             )
-        elif ln is not None and ln.get("linked_unit_id"):
-            pick, by = (
-                _unit(ln["linked_unit_id"], ln.get("unit"), ln.get("unit_ratio")),
-                ("Loaded"),
-            )
-            why = (
-                f"no unit could be read from the invoice for '{desc}' — "
-                f"Loaded has '{ln.get('unit')}'"
-            )
         elif choose is not None:
             try:
-                chosen = choose(ln if ln is not None else rl)
+                # The invoice's line, never Loaded's: its unit column would
+                # hand the chooser Loaded's stored unit to match.
+                chosen = choose(rl)
             except Exception as exc:  # noqa: BLE001 — a proposal, never an error
                 logger.info("unit chooser failed on %s: %s", rid, exc)
                 chosen = None

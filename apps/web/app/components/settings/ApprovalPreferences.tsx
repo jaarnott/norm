@@ -44,9 +44,9 @@ const SWITCH_NOTE: Record<string, string> = {
   auto_create_suppliers:
     'The riskiest one. Supplier identity is what picks the extraction prompt, so a duplicate supplier sends every future invoice from that business to the wrong rules. Norm refuses to create one if anything existing plausibly matches.',
   receive_without_unit:
-    'Norm picks the closest unit Loaded already has. It never invents one — that is the switch above.',
+    'Neither the invoice nor Norm\'s own knowledge gives a unit, so Norm picks the closest of the venue\'s units from the invoice\'s wording. It never invents one — that is the switch above.',
   receive_with_unconfirmed_unit:
-    'The line has a unit, it just came from Loaded rather than the invoice copy. Off means someone confirms it first; the blocker names which unit it would use.',
+    'The invoice prints a unit Norm can\'t read, so Norm uses its own answer (its catalogue or its estimate). Off means someone confirms it first; the blocker names which unit it would use.',
   receive_unit_kind_mismatch:
     'Loaded can\'t convert a weight into a count or a volume, so a product bought by the 10 kg box but counted each in stocktakes would count wrong. Off means the invoice waits; on means Norm receives it in the unit the invoice shows.',
   auto_delete_duplicates:

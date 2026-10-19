@@ -69,10 +69,13 @@ _PACKAGING_WORDS = _UOM_VAGUE | {"pack", "packs", "pk", "item", "each item"}
 
 # A charge, not a product: delivery fees, freight, levies, surcharges. Whole
 # words, so 'Charger', 'Coffee' and 'Pizza Delivery Box' are products; a line
-# that is only "Delivery" is a charge.
+# that is only "Delivery" ('Delivery - Order Under $200') is a charge.
 _CHARGE = re.compile(
     r"\b(freight|shipping|postage|courier|surcharges?|levy|levies|fees?|charges?)\b"
-    r"|^\s*delivery\s*$",
+    r"|^\s*delivery\s*(?:$|[-–:(])"
+    # A bin emptied ('Service 240l general waste bin', 'Waste Service - 660L
+    # Comingle Bin') and a rounding line — never 'Food Service' stock.
+    r"|\bservice\b.*\bbins?\b|\bwaste\s+service\b|\brounding\b",
     re.IGNORECASE,
 )
 
@@ -255,6 +258,10 @@ def parse_unit(text: object) -> tuple[str, float] | None:
     s = str(text or "").strip().lower()
     if not s:
         return None
+    # 'Pack of 2500' is a venue's name for a 2500 Pack (No Trace straws).
+    m = re.fullmatch(r"pack\s+of\s+(\d+)", s)
+    if m:
+        s = f"{m.group(1)} pack"
     num, word = "", ""
     for ch in s:
         if ch.isdigit() or (ch == "." and num and "." not in num):
@@ -281,16 +288,32 @@ def parse_unit(text: object) -> tuple[str, float] | None:
         return None
 
 
+_SIZE_FIRST = re.compile(r"^(\d+(?:\.\d+)?)([a-z]+)x(\d+)$")
+
+
+def count_first(text: object) -> str:
+    """A pack written size first, '700ml x 6' / '300gx12', as the count-first
+    form every other check reads ('6x700ml', '12x300g'). Anything else comes
+    back unchanged. Passata printed '700ml x 6' was booked as '4.2 KG' and
+    zucchini pickles '300g x 12' as '5 KG' because the size-first form was not
+    recognised as a pack at all (18 Oct 2026)."""
+    s = "".join(str(text or "").lower().split())
+    m = _SIZE_FIRST.match(s)
+    if m and parse_unit(m.group(1) + m.group(2)) is not None:
+        return f"{m.group(3)}x{m.group(1)}{m.group(2)}"
+    return str(text or "")
+
+
 def is_multipack(text: object) -> bool:
-    """True for an 'NxM' compound unit like '5x3kg' / '6x700ml' (digit-x-digit).
+    """True for an 'NxM' compound unit like '5x3kg' / '6x700ml' (digit-x-digit),
+    including one written size first ('700ml x 6', see ``count_first``).
 
     Whitespace-tolerant ('6x 750ml' / '4 x 6 pack' print with spaces but are
     the same pack). parse_unit can't compare these, so multipacks are matched
     by exact name and a to-be-created multipack's ratio/type is resolved by
     the LLM, not parsed.
-    Mirror of _is_multipack in config/consolidators/review_and_receive_invoices.py.
     """
-    s = "".join(str(text or "").lower().split())
+    s = "".join(count_first(text).lower().split())
     i = s.find("x")
     return i > 0 and s[i - 1].isdigit() and i + 1 < len(s) and s[i + 1].isdigit()
 
@@ -312,6 +335,7 @@ def multipack_equal(a: object, b: object) -> bool:
     Mirror of _multipack_equal in
     config/consolidators/review_and_receive_invoices.py.
     """
+    a, b = count_first(a), count_first(b)
     if _unit_norm(a) == _unit_norm(b):
         return True
     if not (is_multipack(a) and is_multipack(b)):
@@ -336,7 +360,7 @@ def _outer_count(u: object) -> float | None:
     """The leading count of an 'NxM' multipack name ('6x750mL' → 6.0), else None."""
     if not is_multipack(u):
         return None
-    s = "".join(str(u or "").lower().split())
+    s = "".join(count_first(u).lower().split())
     try:
         return float(s[: s.find("x")])
     except ValueError:

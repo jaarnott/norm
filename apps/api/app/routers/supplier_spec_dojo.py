@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import require_permission
 from app.db.config_models import SupplierInvoiceSpec, SupplierSpecSample
-from app.db.engine import SessionLocal, get_config_db_rw, get_db
+from app.db.engine import SessionLocal, get_config_db, get_config_db_rw, get_db
 from app.db.models import User
 from app.services import sensei_runner, spec_dojo
 
@@ -986,3 +986,166 @@ def autopilot_confidence(
             for r in scope[: max(1, min(limit, 200))]
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# The daily unit check (services/unit_check.py, owner 18 Oct 2026): proposed
+# corrections for a person to apply or dismiss. Nothing reaches Loaded until a
+# proposal is applied here.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/dojo/unit-check")
+def unit_check_overview(
+    run_id: str | None = None,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """Recent runs, and the proposals of one run (or every open one)."""
+    from sqlalchemy import func
+
+    from app.db.models import UnitCheckProposal as P
+    from app.db.models import UnitCheckRun as R
+    from app.services import unit_check as UC
+
+    runs = db.query(R).order_by(R.started_at.desc()).limit(30).all()
+    counts: dict[str, dict] = {}
+    if runs:
+        for rid, st, n in (
+            db.query(P.run_id, P.status, func.count())
+            .filter(P.run_id.in_([r.id for r in runs]))
+            .group_by(P.run_id, P.status)
+        ):
+            counts.setdefault(rid, {})[st] = n
+    q = db.query(P)
+    if run_id:
+        q = q.filter(P.run_id == run_id)
+    if status:
+        q = q.filter(P.status == status)
+    elif not run_id:
+        q = q.filter(P.status.in_(("open", "failed")))
+    proposals = (
+        q.order_by(P.venue_name, P.invoice_date.desc(), P.invoice_number, P.created_at)
+        .limit(500)
+        .all()
+    )
+    return {
+        "runs": [UC.run_view(r, counts.get(r.id)) for r in runs],
+        "proposals": [UC.proposal_view(p) for p in proposals],
+    }
+
+
+@router.post("/dojo/unit-check/run")
+def unit_check_run_now(user: User = Depends(require_permission("admin:system"))):
+    """Run the check now, in the background, over what Norm received since the
+    last run."""
+    import threading
+
+    def _go() -> None:
+        try:
+            from app.services.unit_check import run_unit_check
+
+            run_unit_check(force=True)
+        except Exception:  # noqa: BLE001
+            logger.exception("manual unit check failed")
+
+    threading.Thread(target=_go, name="unit-check-manual", daemon=True).start()
+    return {"started": True}
+
+
+class UnitCheckDecision(BaseModel):
+    note: str | None = None
+
+
+def _proposal_or_404(db: Session, proposal_id: str):
+    from app.db.models import UnitCheckProposal
+
+    p = db.get(UnitCheckProposal, proposal_id)
+    if p is None:
+        raise HTTPException(404, "No such proposal")
+    return p
+
+
+@router.post("/dojo/unit-check/proposals/{proposal_id}/apply")
+def unit_check_apply(
+    proposal_id: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """Change the line's unit in Loaded as proposed — only the unit; the
+    invoice's quantities and dollars stay as received."""
+    from app.services import unit_check as UC
+
+    p = _proposal_or_404(db, proposal_id)
+    UC.apply_proposal(db, config_db, p, user.email)
+    return UC.proposal_view(p)
+
+
+@router.post("/dojo/unit-check/proposals/{proposal_id}/confirm")
+def unit_check_confirm(
+    proposal_id: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """The unit Norm booked is right: Norm's catalogue keeps it for the
+    product. Nothing changes in Loaded."""
+    from app.services import unit_check as UC
+
+    p = _proposal_or_404(db, proposal_id)
+    UC.confirm_proposal(db, config_db, p, user.email)
+    return UC.proposal_view(p)
+
+
+class UnitCheckChange(BaseModel):
+    unit_id: str
+
+
+@router.post("/dojo/unit-check/proposals/{proposal_id}/change")
+def unit_check_change(
+    proposal_id: str,
+    body: UnitCheckChange,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db_rw),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """Book the line in the unit the person chose — only the unit — and keep
+    that answer for the product in Norm's catalogue."""
+    from app.services import unit_check as UC
+
+    p = _proposal_or_404(db, proposal_id)
+    UC.change_proposal(db, config_db, p, body.unit_id, user.email)
+    return UC.proposal_view(p)
+
+
+@router.get("/dojo/unit-check/proposals/{proposal_id}/units")
+def unit_check_units(
+    proposal_id: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(require_permission("admin:system")),
+):
+    """The venue's units a person can choose from (measurements only)."""
+    from app.services import unit_check as UC
+
+    p = _proposal_or_404(db, proposal_id)
+    try:
+        return {"units": UC.venue_units(db, config_db, p)}
+    except Exception as exc:  # noqa: BLE001 — Loaded unreachable
+        raise HTTPException(502, f"Couldn't read the venue's units: {exc}") from exc
+
+
+@router.post("/dojo/unit-check/proposals/{proposal_id}/dismiss")
+def unit_check_dismiss(
+    proposal_id: str,
+    body: UnitCheckDecision,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("admin:system")),
+):
+    from app.services import unit_check as UC
+
+    p = _proposal_or_404(db, proposal_id)
+    UC.dismiss_proposal(db, p, user.email, body.note)
+    return UC.proposal_view(p)

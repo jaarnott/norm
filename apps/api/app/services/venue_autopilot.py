@@ -59,10 +59,11 @@ GATES: dict[str, str] = {
     AUTO_CREATE_BRANDS: "create a brand in Loaded",
     AUTO_CREATE_SUPPLIERS: "create a supplier in Loaded",
     RECEIVE_WITHOUT_UNIT: "receive when no unit can be found",
-    # Distinct from the one above: there IS a unit, it just came from Loaded
-    # rather than from the paper. Different question, different answer.
+    # Distinct from the one above: the invoice prints a unit Norm can't read,
+    # so Norm's own answer (its catalogue, its estimate) is used. Never Loaded's
+    # unit (docs/unit-resolution.md, "The rule").
     RECEIVE_WITH_UNCONFIRMED_UNIT: (
-        "receive when the unit came from Loaded rather than the copy"
+        "receive when the invoice's unit can't be read and Norm's answer is used"
     ),
     RECEIVE_WITHOUT_PO: "receive without a valid purchase order",
     # Owner, 17 Oct 2026: off, an invoice whose unit is a different kind from

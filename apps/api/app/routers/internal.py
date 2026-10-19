@@ -76,6 +76,22 @@ async def run_due_tasks_endpoint(
             logger.exception("insight runs failed")
 
     threading.Thread(target=_insights, name="insights", daemon=True).start()
+
+    # The daily unit check rides the same tick: once a day from its hour, it
+    # checks the lines Norm received since the last run and records proposed
+    # corrections for the Dojo (services/unit_check.py). Its slot row is the
+    # once-a-day guard across ticks and instances.
+    def _unit_check() -> None:
+        try:
+            from app.services.unit_check import run_unit_check
+
+            out = run_unit_check()
+            if out.get("ran"):
+                logger.info("unit check ran: %s", out.get("summary"))
+        except Exception:  # noqa: BLE001
+            logger.exception("unit check failed")
+
+    threading.Thread(target=_unit_check, name="unit-check", daemon=True).start()
     if result["claimed"]:
         logger.info(
             "run-due-tasks claimed %d task(s): %s",

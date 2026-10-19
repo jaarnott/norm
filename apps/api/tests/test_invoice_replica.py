@@ -186,11 +186,12 @@ class TestDeterministicResolution:
                 },
             ],
         )
-        doc = _build(ext, matcher=matcher)
+        doc = _build(ext, matcher=matcher, unit_resolver_ask=lambda p: {})
         frt, mys = doc["lines"]
         assert frt["linked_item_id"] == "item-freight"
         assert frt["matched_by"] == "llm"
-        assert frt["linked_unit_id"] == "u-each"  # variant via full catalogue row
+        # A charge is one charge — Each — never the supplier record's unit.
+        assert frt["linked_unit_id"] == "u-each" and frt["unit_source"] == "estimate"
         assert mys["linked_item_id"] is None
         assert mys["suggested_name"] == "Mystery Product"
         assert mys["suggested_group_id"] == "g-1"
@@ -439,9 +440,11 @@ class TestPackagingWordNeverLinks:
         assert ln["linked_unit_id"] is None
         assert any(i["code"] == "unit_missing" for i in doc["issues"])
 
-    def test_a_variant_that_genuinely_says_pack_still_wins(self):
-        # The refusal is about copy EVIDENCE; a supplier variant registered
-        # in PACK is authoritative for its linked item.
+    def test_a_supplier_record_never_decides_the_unit(self):
+        # Loaded's supplier record says PACK; the invoice shows no size. The
+        # unit Loaded stores is never the answer (owner, 18 Oct 2026: "i've
+        # been working hard to tell agents not to rely on loaded at all"): the
+        # line has no unit until Norm decides one.
         catalogue = [
             {
                 "id": "item-packed",
@@ -468,7 +471,8 @@ class TestPackagingWordNeverLinks:
             ],
         )
         doc = _build(ext, units=self.UNITS_WITH_PACK, catalogue=catalogue)
-        assert doc["lines"][0]["linked_unit_id"] == "u-pack"
+        assert doc["lines"][0]["linked_unit_id"] is None
+        assert any(i["code"] == "unit_missing" for i in doc["issues"])
 
 
 class TestCatalogueTierAndResolver:
@@ -585,25 +589,29 @@ class TestCatalogueTierAndResolver:
         assert any(i["code"] == "unit_missing" for i in doc["issues"])
         assert not any("Norm catalogue" in e for e in doc["resolution_log"])
 
-    def test_resolver_offers_but_never_links(self):
-        seen = []
+    def test_norms_estimate_is_the_decision_whatever_its_confidence(self):
+        # The invoice shows no size, and nothing Norm knows sizes the line:
+        # Norm's estimate IS the line's unit (owner, 18 Oct 2026: the unit comes
+        # from the invoice and from Norm, never from Loaded). One it wasn't sure
+        # of is listed by the next morning's unit check (test_unit_check.py).
+        for confidence in ("high", "medium", "low"):
+            seen = []
 
-        def ask(prompt):
-            seen.append(prompt)
-            return {
-                "size": "6x750mL",
-                "confidence": "high",
-                "why": "sibling lines print 6x750mL at the same price",
-            }
+            def ask(prompt, confidence=confidence):
+                seen.append(prompt)
+                return {
+                    "size": "6x750mL",
+                    "confidence": confidence,
+                    "why": "sibling lines print 6x750mL at the same price",
+                }
 
-        doc = _build(self._sizeless_line(), unit_resolver_ask=ask)
-        ln = doc["lines"][0]
-        assert ln["linked_unit_id"] is None  # an offer, not a resolution
-        assert ln["unit_resolved"]["unit_id"] == "u-6x750"
-        assert ln["unit_resolved"]["confidence"] == "high"
-        assert any(i["code"] == "unit_missing" for i in doc["issues"])
-        # the whole invoice rode as context
-        assert len(seen) == 1  # asked once, about the sizeless line
+            doc = _build(self._sizeless_line(), unit_resolver_ask=ask)
+            ln = doc["lines"][0]
+            assert ln["linked_unit_id"] == "u-6x750", confidence
+            assert ln["unit_source"] == "estimate"
+            assert ln["unit_resolved"]["confidence"] == confidence
+            assert not any(i["code"] == "unit_missing" for i in doc["issues"])
+            assert len(seen) == 1  # asked once, about the sizeless line
 
     def test_a_bare_charge_word_line_still_consults_the_resolver(self):
         # 'EA' resolves Each (honest but vague — it is how the line is
@@ -689,9 +697,11 @@ class TestCatalogueTierAndResolver:
             },
         )
         ln = doc["lines"][0]
-        assert ln["linked_unit_id"] is None  # an offer, never a silent link
-        assert ln["unit_resolved"]["unit_id"] == "u-6x750"
-        assert any(i["code"] == "unit_unconfirmed" for i in doc["issues"])
+        # Norm's estimate is the unit in use, but an unreadable copy unit
+        # always keeps its blocker — and the blocker names who supplied it.
+        assert ln["linked_unit_id"] == "u-6x750"
+        issue = next(i for i in doc["issues"] if i["code"] == "unit_unconfirmed")
+        assert issue["data"] == {"unit_chosen_by": "estimate", "unit_id": "u-6x750"}
 
     def test_the_blocker_carries_the_stand_ins_source(self):
         # The card finishes unit blockers with the unit in use; crediting
@@ -763,11 +773,13 @@ class TestCatalogueTierAndResolver:
 
 
 class TestAGuessIsCheckedAgain:
-    """A receive saves the line's unit on Loaded's supplier product, and the
-    next invoice reads it back FIRST. When that unit was only Norm's guess it
-    must not stick (14 Oct 2026): the line is asked about again until Norm
-    has a verdict, and the verdict then outranks the guessed unit. A unit the
-    venue set up itself (never guessed by Norm) is left exactly as it was."""
+    """The unit Loaded stores on the supplier product is never the answer for
+    a line whose invoice shows no size (owner, 18 Oct 2026: basil bunches had
+    been booked as Kilo and whole salami as 1 Kilo from it). Norm's verdict
+    decides; else Norm's own earlier estimate, reused so every invoice books
+    the product the same way and worked out again once it is a month old;
+    else a fresh estimate. Loaded's unit only stands in when Norm can't
+    decide, and then the line is flagged."""
 
     FREIGHT = {
         # Loaded's supplier product for this code says Each. (A product, not
@@ -823,9 +835,24 @@ class TestAGuessIsCheckedAgain:
             unit_resolver_ask=ask,
         )
 
-    def test_a_unit_norm_only_guessed_is_asked_about_again(self, db_session):
+    def _age(self, db, days):
+        import copy
+        from datetime import datetime, timedelta, timezone
+
+        from app.db.config_models import SupplierProduct
+
+        row = db.query(SupplierProduct).filter_by(code="FGT001").one()
+        ev = copy.deepcopy(row.evidence)
+        ev["guess"]["at"] = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat()
+        row.evidence = ev
+        db.flush()
+
+    def test_a_month_old_estimate_is_worked_out_again(self, db_session):
         self._spec(db_session)
-        self._learn(db_session, "low", unit_name="Each")
+        self._learn(db_session, "medium")
+        self._age(db_session, 40)
         asked = []
 
         def ask(prompt):
@@ -833,10 +860,41 @@ class TestAGuessIsCheckedAgain:
             return {"size": "6x750mL", "confidence": "high", "why": "listed"}
 
         ln = self._build(db_session, ask)["lines"][0]
-        assert asked, "a guessed unit must be checked again"
-        assert ln["unit_source"] == "variant" and ln["linked_unit_id"] == "u-each"
-        assert ln["unit_recheck"] is True and ln["unit_asked"] is True
-        assert ln["unit_resolved"]["unit_id"] == "u-6x750"
+        assert asked, "a stale estimate is checked again"
+        assert ln["linked_unit_id"] == "u-6x750" and ln["unit_source"] == "estimate"
+        assert ln["unit_asked"] is True
+
+    def test_a_fresh_unsure_estimate_is_not_paid_for_again(self, db_session):
+        # Norm wasn't sure, but it is Norm's answer: it decides — not Loaded's
+        # Each — and no new estimate is bought on every invoice within the
+        # month, so every invoice books the product the same way.
+        self._spec(db_session)
+        self._learn(db_session, "medium")
+        doc = self._build(db_session, lambda p: pytest.fail("not asked again"))
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] == "u-6x750" and ln["unit_source"] == "estimate"
+        assert ln["unit_resolved"]["confidence"] == "medium"
+        assert not [i for i in doc["issues"] if i["code"].startswith("unit_")]
+
+    def test_loadeds_unit_is_never_taken(self, db_session):
+        # No verdict, no earlier estimate, and the estimator has no answer:
+        # the line has no unit — Loaded's Each never stands in. The review's
+        # chooser picks from the venue's units (test_every_blocker_has_a_fix).
+        self._spec(db_session)
+        doc = self._build(db_session, lambda p: {})
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] is None and ln["unit_source"] is None
+        assert any(i["code"] == "unit_missing" for i in doc["issues"])
+
+    def test_norms_estimate_outranks_loadeds_unit(self, db_session):
+        self._spec(db_session)
+        doc = self._build(
+            db_session,
+            lambda p: {"size": "6x750mL", "confidence": "high", "why": "listed"},
+        )
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] == "u-6x750" and ln["unit_source"] == "estimate"
+        assert not [i for i in doc["issues"] if i["code"].startswith("unit_")]
 
     def test_norms_verdict_outranks_a_unit_it_guessed(self, db_session):
         self._spec(db_session)
@@ -848,49 +906,15 @@ class TestAGuessIsCheckedAgain:
         assert ln["linked_unit_id"] == "u-6x750"
         assert ln["unit_source"] == "catalogue"
 
-    def test_a_venues_own_unit_is_left_alone(self, db_session):
-        # A verdict exists, but Norm never guessed this product: the unit on
-        # Loaded's supplier product is the venue's own, and stays.
+    def test_norms_verdict_decides_not_loadeds_unit(self, db_session):
+        # Norm never guessed this product, and Loaded's supplier product says
+        # Each: Norm's verdict still decides (owner, 18 Oct 2026).
         self._spec(db_session)
         self._learn(db_session, "high")
-        ln = self._build(db_session, lambda p: pytest.fail("nothing to re-check"))[
+        ln = self._build(db_session, lambda p: pytest.fail("a verdict needs no call"))[
             "lines"
         ][0]
-        assert ln["linked_unit_id"] == "u-each" and ln["unit_source"] == "variant"
-        assert "unit_recheck" not in ln
-
-    def test_only_a_high_answer_replaces_the_guess(self):
-        from app.services import replica_finish as RF
-
-        def settle(confidence):
-            replica = {
-                "lines": [
-                    {
-                        "id": "rep-0",
-                        "description": "CIDER MYSTERY BOX",
-                        "unit": "Each",
-                        "linked_unit_id": "u-each",
-                        "unit_recheck": True,
-                        "unit_resolved": {
-                            "unit_id": "u-6x750",
-                            "unit_name": "6x750mL",
-                            "unit_ratio": 4.5,
-                            "confidence": confidence,
-                            "why": "listed at 6x750mL",
-                        },
-                    }
-                ],
-                "issues": [],
-            }
-            data = {"lines": [{"id": "ld-1", "linked_unit_id": "u-each"}]}
-            RF.settle_units(data, replica, {"rep-0": "ld-1"}, UNITS, None, [])
-            return replica["lines"][0]
-
-        high = settle("high")
-        assert high["linked_unit_id"] == "u-6x750"
-        assert high["unit_guess"] is False  # a verdict, applied as sure
-        assert "was Norm's guess" in high["unit_why"]
-        assert settle("medium")["linked_unit_id"] == "u-each"  # still a guess
+        assert ln["linked_unit_id"] == "u-6x750" and ln["unit_source"] == "catalogue"
 
 
 class TestDocumentFlags:
@@ -1352,7 +1376,7 @@ class TestTheInvoicesUnitIsTheUnit:
             units=units,
         )
         assert doc["lines"][0]["linked_unit_id"] == "u-750"
-        assert any("per the copy" in e for e in doc["resolution_log"])
+        assert doc["lines"][0]["unit_source"] == "copy"
 
     def test_a_sized_multipack_beats_a_bare_count(self):
         """Hancocks 4362108, still true — now by the general rule rather than
@@ -1364,7 +1388,7 @@ class TestTheInvoicesUnitIsTheUnit:
             ln = doc["lines"][0]
             assert ln["linked_unit_id"] == "u-6x750"
             assert ln["unit_ratio"] == 4.5
-            assert any("per the copy" in e for e in doc["resolution_log"])
+            assert ln["unit_source"] == "copy"
 
     def test_the_same_pack_spelled_differently_moves_nothing(self):
         """What the equivalence check was protecting, done by the resolution
@@ -1375,22 +1399,21 @@ class TestTheInvoicesUnitIsTheUnit:
         assert not any("per the copy" in e for e in doc["resolution_log"])
 
     def test_a_unit_the_venue_lacks_is_flagged_to_create(self):
-        """The copy still wins — it just has to exist first. The variant's unit
-        stays on the line so there is something to receive against once it
-        does, and the replica line carries the copy's unit name so the review
-        raises a create_unit SUGGESTION (no longer a non-blocking "note"
-        issue)."""
+        """The copy still wins — it just has to exist first. Nothing stands in
+        meanwhile (never the supplier record's unit): the replica line carries
+        the copy's unit name, so the review raises a create_unit SUGGESTION
+        (no longer a non-blocking "note" issue)."""
         for printed in ("12x375ml", "9x123ml", "9x 123ml"):
             doc = _build(self._line(unit_of_measure=printed), received_feed=[])
             ln = doc["lines"][0]
             assert ln["unit_create_name"] == printed, printed
-            assert ln["linked_unit_id"] == "u-kilo", printed  # variant kept
+            assert ln["linked_unit_id"] is None, printed
             assert any("unit would need creating" in e for e in doc["resolution_log"])
             assert not any(i["code"] == "unit_not_in_loaded" for i in doc["issues"])
 
     def test_an_unreadable_copy_unit_displaces_nothing(self):
         """`confident` is the only guard left on the override, so it has to
-        stay load-bearing. The variant's registered unit fills the gap, but an
+        stay load-bearing. The printed column ('Kilo') fills the gap, but an
         unreadable copy unit still needs a human eye: the warning stays, and
         the review asks for confirmation (unit_unconfirmed) rather than
         reporting no unit (unit_missing)."""
@@ -1398,7 +1421,8 @@ class TestTheInvoicesUnitIsTheUnit:
             self._line(unit_of_measure=None, unit_unrecognisable=True),
             received_feed=[],
         )
-        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"  # variant's unit
+        assert doc["lines"][0]["linked_unit_id"] == "u-kilo"
+        assert doc["lines"][0]["unit_source"] == "printed"
         assert any("can't be read from the copy" in w for w in doc["warnings"])
         codes = {i["code"] for i in doc["issues"]}
         assert "unit_unconfirmed" in codes
@@ -1582,3 +1606,110 @@ class TestGstPerLineFromTheInvoice:
     def test_a_line_with_no_mark_keeps_todays_rule(self):
         doc = _build(self._ext([None]), tax_rates=self.AU)
         assert not doc["lines"][0].get("sale_tax_rate_set")
+
+
+class TestNormSizesALineWithNoSize:
+    """Owner, 18 Oct 2026: the unit comes from the invoice and from Norm, never
+    from the unit Loaded stores."""
+
+    LINE = {
+        "code": "NEW1",
+        "description": "CIDER MYSTERY PACK",
+        "quantity": 1,
+        "unit": None,
+        "unit_of_measure": None,
+        "unit_price_ex_tax": 54.88,
+        "line_total_ex_tax": 54.88,
+    }
+
+    def test_a_size_first_pack_finds_the_venues_unit(self):
+        # Passata printed '700ml x 6' was booked as '4.2 KG'.
+        units = UNITS + [
+            {"id": "u-42kg", "name": "4.2 KG", "ratio": 4.2, "stockUnitType": "Weight"},
+            {
+                "id": "u-6x700",
+                "name": "6x700ml",
+                "ratio": 4.2,
+                "stockUnitType": "Volume",
+            },
+        ]
+        assert _resolve_unit_record("700ml x 6", units)["id"] == "u-6x700"
+        doc = _build(
+            dict(EXTRACTION, lines=[dict(self.LINE, unit_of_measure="700ml x 6")]),
+            units=units,
+        )
+        assert doc["lines"][0]["linked_unit_id"] == "u-6x700"
+        assert doc["lines"][0]["unit_source"] == "copy"
+
+    def test_an_ordermentum_lines_unit_is_not_the_invoices_word(self):
+        # extraction_from_loaded: the line's unit is Loaded's, so it is never
+        # the charge word, and the estimator doesn't see it as one.
+        asked = []
+
+        def ask(prompt):
+            asked.append(prompt)
+            return {"size": "1 kg", "confidence": "high", "why": "priced per kilo"}
+
+        line = dict(self.LINE, unit="Each", unit_from_loaded=True)
+        doc = _build(dict(EXTRACTION, lines=[line]), unit_resolver_ask=ask)
+        ln = doc["lines"][0]
+        assert asked and '"charge_word": null' in asked[0]
+        assert ln["linked_unit_id"] == "u-kilo" and ln["unit_source"] == "estimate"
+
+    def test_a_printed_pack_count_is_not_the_unit(self):
+        # Hancocks wine charged per '6 PK' with no size became '6 Pack'; six
+        # bottles of poured wine are 6x750mL. The estimator decides, and the
+        # count is only its fallback.
+        units = UNITS + [
+            {"id": "u-6pk", "name": "6 Pack", "ratio": 6, "stockUnitType": "Count"}
+        ]
+        line = dict(self.LINE, description="AKARUA PINOT NOIR 24 (6X75", unit="6 PK")
+        doc = _build(
+            dict(EXTRACTION, lines=[line]),
+            units=units,
+            unit_resolver_ask=lambda p: {
+                "size": "6x750mL",
+                "confidence": "high",
+                "why": "a case of wine",
+            },
+        )
+        assert doc["lines"][0]["linked_unit_id"] == "u-6x750"
+        assert doc["lines"][0]["unit_source"] == "estimate"
+        # No estimate at all: the invoice's own count beats Loaded's unit.
+        doc = _build(
+            dict(EXTRACTION, lines=[line]), units=units, unit_resolver_ask=lambda p: {}
+        )
+        ln = doc["lines"][0]
+        assert ln["linked_unit_id"] == "u-6pk" and ln["unit_source"] == "printed"
+        assert ln["unit_resolved"]["confidence"] == "low"
+
+    def test_the_estimator_is_told_the_venues_country(self):
+        # The Sydney venues were being estimated against NZ wholesalers.
+        class _Venue:
+            timezone = "Australia/Sydney"
+
+        class _DB:
+            def get(self, model, key):
+                return _Venue()
+
+        asked = []
+
+        def ask(prompt):
+            asked.append(prompt)
+            return {}
+
+        build_replica(
+            _DB(),
+            None,
+            "v-1",
+            dict(EXTRACTION, lines=[self.LINE]),
+            lh=object(),
+            catalogue=CATALOGUE,
+            units=UNITS,
+            suppliers=SUPPLIERS,
+            tax_rates=TAX,
+            aliases_by_id={},
+            item_matcher=lambda *a, **k: {},
+            unit_resolver_ask=ask,
+        )
+        assert asked and asked[0].startswith("Venue country: Australia\n")

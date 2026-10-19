@@ -309,35 +309,31 @@ class TestLineSuggestions:
         answer.update(over)
         return lambda prompt: answer
 
-    def test_resolver_pick_is_the_blockers_fix_behind_its_switch(self):
-        # The review's wiring of the unit-blocker rule. Medium and low answers
-        # are proposed the same way — Norm always proposes a fix (user, 11 Oct
-        # 2026) — pinned on the rule itself in test_every_blocker_has_a_fix.py
-        # (test_the_resolvers_answer_is_proposed_at_any_confidence).
-        data = self._sizeless_case(self._resolver_answer())
-        s = next(s for s in data["suggestions"] if s["field"] == "unit")
-        assert s["apply"]["linked_unit_id"] == "u-5l"
-        assert s["confidence"] == "high"
-        assert "sibling lines" in s["explanation"]
-        # the line itself is untouched — an offer, not a resolution
-        assert data["lines"][0]["linked_unit_id"] is None
-        issue = next(i for i in data["issues"] if i["code"] == "unit_missing")
-        # ONE decision: the blocker points at the suggestion, and picking a
-        # unit is what receive_without_unit authorises Norm to do alone.
-        assert issue["fix"] == [s["id"]]
-        assert s["gate"] == "receive_without_unit"
-        assert s["sure"] is False
+    def test_norms_pick_is_its_decision_whatever_its_confidence(self):
+        # The invoice shows no size and nothing Norm knows sizes the line:
+        # Norm's estimate is the line's unit, not a guess waiting on
+        # receive_without_unit (owner, 18 Oct 2026: never Loaded's unit; an
+        # unsure one goes to the morning unit check). Loaded's draft has no unit
+        # here, so the decision arrives as the line's unit change, ungated.
+        for confidence in ("high", "medium", "low"):
+            data = self._sizeless_case(self._resolver_answer(confidence=confidence))
+            assert "unit_missing" not in _issue_codes(data), confidence
+            s = next(s for s in data["suggestions"] if s["field"] == "unit")
+            assert s["apply"]["linked_unit_id"] == "u-5l"
+            assert not s.get("gate")
 
-    def _copy_only_freight_case(self, confidence="high"):
+    def _copy_only_freight_case(self, confidence="high", description="Freight"):
         # Aitkens 173670: the freight lines exist only on the copy. Loaded's
-        # draft has one line; the extraction bills two.
+        # draft has one line; the extraction bills two. (A charge is never
+        # asked about — it is always Each — so `confidence` only matters for a
+        # product line, passed as `description`.)
         det = DETAIL()
         ext = EXTRACTION(
             lines=list(EXTRACTION()["lines"])
             + [
                 {
                     "code": None,
-                    "description": "Freight",
+                    "description": description,
                     "quantity": 1,
                     "unit": None,
                     "unit_of_measure": None,
@@ -351,8 +347,8 @@ class TestLineSuggestions:
         )
 
         def ask(prompt):
-            # Only the copy-only Freight line is asked about.
-            assert "Freight" in prompt.split("Line:")[1]
+            # Only the copy-only line is asked about.
+            assert description in prompt.split("Line:")[1]
             return {
                 "size": "each",
                 "confidence": confidence,
@@ -364,47 +360,23 @@ class TestLineSuggestions:
         )
 
     def test_a_copy_only_lines_pick_arrives_with_the_line(self):
-        # A copy-only line never meets the paired-line unit walk, so the
-        # resolver's decisive pick died as metadata: the added line arrived
-        # unitless and its blocker demanded a decision the resolver had
-        # already made (Aitkens 173670 freight, 19 Aug 2026). The pick is the
-        # added line's own unit suggestion — the card's Accept on the add
-        # lands both — and it stays behind receive_without_unit, because
-        # adding a line is applied unattended and a unit pick is not.
-        data = self._copy_only_freight_case()
-        add = next(s for s in data["suggestions"] if s["kind"] == "add_line")
-        unit = next(
-            s
-            for s in data["suggestions"]
-            if s["field"] == "unit" and s["line_id"] == add["line_id"]
-        )
-        assert unit["apply"]["linked_unit_id"] == "u-each"
-        assert unit["apply"]["unit"] == "Each"
-        assert "service charge" in unit["explanation"]
-        assert unit["gate"] == "receive_without_unit"
-        issue = next(
-            i
-            for i in data["issues"]
-            if i["code"] == "unit_missing" and i["line_id"] == add["line_id"]
-        )
-        assert issue["fix"] == [unit["id"]]
-        # accepting both lands the line complete
-        from app.services import invoice_review as IR2
-
-        IR2.apply_suggestion(data, add)
-        IR2.apply_suggestion(data, unit)
-        added = next(
-            ln for ln in data["lines"] if str(ln.get("id")) == str(add["line_id"])
-        )
-        assert added["linked_unit_id"] == "u-each"
-
-    def test_a_medium_pick_never_rides_along(self):
-        # add_line is auto-accepted wherever autopilot runs, and the gate
-        # doctrine forbids acting on a "likely" — medium stays out.
-        data = self._copy_only_freight_case(confidence="medium")
-        s = next(s for s in data["suggestions"] if s["kind"] == "add_line")
-        assert not s["payload"].get("linked_unit_id")
-        assert "delivered as" not in s["explanation"]
+        # A copy-only line never meets the paired-line unit walk (Aitkens
+        # 173670 freight, 19 Aug 2026). Norm's confident answer is the added
+        # line's own unit now (owner, 18 Oct 2026), so the add lands complete.
+        for description, confidence in (
+            ("Freight", "high"),
+            ("CIDER MYSTERY BOX", "high"),
+            ("CIDER MYSTERY BOX", "medium"),
+            ("CIDER MYSTERY BOX", "low"),
+        ):
+            data = self._copy_only_freight_case(confidence, description)
+            add = next(s for s in data["suggestions"] if s["kind"] == "add_line")
+            assert add["payload"].get("linked_unit_id") == "u-each", description
+            assert not [
+                i
+                for i in data["issues"]
+                if i["code"] == "unit_missing" and i["line_id"] == add["line_id"]
+            ]
 
     def test_charge_word_upgrade_replaces_the_each_suggestion(self):
         # The Trents shape proper: 'EA' printed → the replica resolves Each
@@ -649,13 +621,46 @@ class TestBlockingIssues:
             # Ordermentum invoices carry no order number (OMI1107031).
             detail=DETAIL(fileId=None, source="Ordermentum", purchaseOrderNumber=None),
             extraction=None,
-            reference=REFERENCE(),
+            # Ordermentum's unit is Loaded's: Norm sizes the line itself.
+            reference=REFERENCE(
+                unit_resolver_ask=lambda p: {
+                    "size": "1 kg",
+                    "confidence": "high",
+                    "why": "priced per kilo",
+                }
+            ),
         )
         assert "no_copy_attached" not in _issue_codes(data)
         assert not [s for s in data["suggestions"] if s["kind"] == "delete_invoice"]
         assert data["replica"]["replica"] is True
         assert data["extracted_snapshot"]["header"]["invoice_number"] == "F100"
         assert data["confidence"] == "ready"
+
+    def test_a_feed_lines_loaded_unit_is_never_used_when_norm_cant_size_it(
+        self, monkeypatch
+    ):
+        # Loaded's 'Kilo' on an Ordermentum line is not the supplier's word:
+        # with no answer from Norm the line has no unit, and nothing offers to
+        # keep Loaded's (owner, 18 Oct 2026: never rely on Loaded).
+        monkeypatch.setattr(
+            IR, "extract_invoice_copy", lambda *a, **k: pytest.fail("no copy")
+        )
+        data = review_invoice(
+            None,
+            None,
+            "v-1",
+            "inv-1",
+            lh=object(),
+            detail=DETAIL(fileId=None, source="Ordermentum", purchaseOrderNumber=None),
+            extraction=None,
+            reference=REFERENCE(unit_resolver_ask=lambda p: {}),
+        )
+        assert "unit_missing" in _issue_codes(data)
+        assert not any(
+            "Loaded" in str(s.get("explanation")) and s.get("field") == "unit"
+            for s in data["suggestions"]
+        )
+        assert data["confidence"] == "needs_review"
 
     def test_no_copy_from_an_order_or_typed_in_is_still_offered_for_deletion(self):
         for source in ("Po", "Manual", None):
@@ -2062,8 +2067,10 @@ class TestAnUnlinkIsItsBlockersFix:
 class TestAUnitDecisionSaysWhichUnitWillBeUsed:
     """The blocker read "no unit could be determined … set the unit before
     receiving" while the dropdown plainly showed 750 mL (Soho 00162798). When
-    Norm agrees with the unit already there, the fix is to KEEP it — and it
-    says which unit, and where it came from.
+    Norm's own answer is the unit already there, the fix is to KEEP it — and it
+    says which unit, and which of Norm's answers it is. A unit only Loaded
+    holds is never kept (owner, 18 Oct 2026: "i've been working hard to tell
+    agents not to rely on loaded at all").
     """
 
     def _issue(self, code="unit_missing"):
@@ -2072,26 +2079,22 @@ class TestAUnitDecisionSaysWhichUnitWillBeUsed:
             "code": code,
             "blocking": True,
             "line_id": "ld-1",
+            "replica_line_id": "rep-0",
             "message": "line 1 'SOHO Harry Rose 2025': no unit could be read from the invoice",
         }
 
-    def _confirm(self, data, issue):
+    def _confirm(self, data, issue, **norms_line):
+        replica = {"lines": [{"id": "rep-0", **norms_line}]}
         suggestions: list = []
-        IR.link_fixes(data, None, [issue], suggestions)
+        IR.link_fixes(data, replica, [issue], suggestions)
         assert issue["fix"] == [s["id"] for s in suggestions]
         return suggestions[0] if suggestions else None
 
-    def test_it_keeps_the_unit_loaded_supplied(self):
-        """And it is its own switch: a unit Loaded supplied is not "no unit" —
-        a different question with a different answer, so it has its own
-        toggle."""
+    def test_a_unit_only_loaded_holds_is_never_kept(self):
         data = {"lines": [{"id": "ld-1", "unit": "750 mL", "linked_unit_id": "u-750"}]}
         issue = self._issue()
-        c = self._confirm(data, issue)
-        assert c["kind"] == "confirm"
-        assert c["explanation"].endswith("keep Loaded's '750 mL'")
-        assert issue["gate"] == VA.RECEIVE_WITH_UNCONFIRMED_UNIT
-        assert c["gate"] == VA.RECEIVE_WITH_UNCONFIRMED_UNIT
+        assert self._confirm(data, issue) is None
+        assert issue["fix"] == []
 
     def test_with_nothing_anywhere_there_is_nothing_to_keep(self):
         data = {"lines": [{"id": "ld-1", "unit": None, "linked_unit_id": None}]}
@@ -2099,33 +2102,43 @@ class TestAUnitDecisionSaysWhichUnitWillBeUsed:
         assert self._confirm(data, issue) is None
         assert issue["gate"] == VA.RECEIVE_WITHOUT_UNIT
 
-    def test_an_unreadable_unit_is_named_too(self):
+    def test_the_venue_choosers_pick_is_named_as_norms(self):
+        data = {"lines": [{"id": "ld-1", "unit": "750 mL", "linked_unit_id": "u-750"}]}
+        issue = self._issue()
+        c = self._confirm(data, issue, linked_unit_id="u-750", unit_by="chooser")
+        assert c["kind"] == "confirm"
+        assert c["explanation"].endswith(
+            "Norm picks '750 mL' from the venue's units; keep it"
+        )
+        assert c["gate"] == issue["gate"] == VA.RECEIVE_WITHOUT_UNIT
+
+    def test_a_printed_unit_is_named_too(self):
         data = {"lines": [{"id": "ld-1", "unit": "Kilo", "linked_unit_id": "u-kilo"}]}
-        c = self._confirm(data, self._issue("unit_unconfirmed"))
-        assert "keep Loaded's 'Kilo'" in c["explanation"]
+        c = self._confirm(
+            data,
+            self._issue("unit_unconfirmed"),
+            linked_unit_id="u-kilo",
+            unit_source="printed",
+        )
+        assert "the printed column says 'Kilo'" in c["explanation"]
 
     def test_a_catalogue_supplied_unit_is_credited_to_the_catalogue(self):
-        # "Loaded's '700 mL'" was false when Norm's own catalogue answered the
-        # unit (HIGHLAND PARK 15, 4366904, 19 Aug 2026).
+        # (HIGHLAND PARK 15, 4366904, 19 Aug 2026.)
         data = {"lines": [{"id": "ld-1", "unit": "700 mL", "linked_unit_id": "u-700"}]}
         issue = self._issue("unit_unconfirmed")
         issue["data"] = {"unit_chosen_by": "catalogue", "unit_id": "u-700"}
-        c = self._confirm(data, issue)
+        c = self._confirm(data, issue, linked_unit_id="u-700", unit_source="catalogue")
         assert "Norm's catalogue says '700 mL'" in c["explanation"]
 
-    def test_the_stamp_is_dropped_when_the_working_line_shows_another_unit(self):
+    def test_another_unit_on_the_line_is_not_kept(self):
+        # Norm's answer is 700 mL; the line shows Each: the swap to Norm's
+        # unit is the fix, never a "keep".
         data = {"lines": [{"id": "ld-1", "unit": "Each", "linked_unit_id": "u-each"}]}
         issue = self._issue("unit_unconfirmed")
-        issue["data"] = {"unit_chosen_by": "catalogue", "unit_id": "u-700"}
-        c = self._confirm(data, issue)
-        assert c["explanation"].endswith("keep Loaded's 'Each'")
-
-    def test_a_printed_charge_word_is_named_as_the_fallback_it_is(self):
-        data = {"lines": [{"id": "ld-1", "unit": "each", "linked_unit_id": "u-each"}]}
-        issue = self._issue("unit_unconfirmed")
-        issue["data"] = {"unit_chosen_by": "printed", "unit_id": "u-each"}
-        c = self._confirm(data, issue)
-        assert "the printed column says 'each'" in c["explanation"]
+        assert (
+            self._confirm(data, issue, linked_unit_id="u-700", unit_source="catalogue")
+            is None
+        )
 
 
 class TestAutopilotHonoursTheVenuesToggles:

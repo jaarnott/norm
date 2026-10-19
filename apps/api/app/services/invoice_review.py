@@ -1700,6 +1700,8 @@ def _finalise_issues(
         if lid and lid in pairs:
             i["line_id"] = pairs[lid]
             i["id"] = f"{i['code']}:{pairs[lid]}"
+            # Norm's own line behind the blocker (_confirm_for names its unit).
+            i["replica_line_id"] = lid
         clears = _LINE_ISSUE_CLEARS.get(i.get("code"))
         if clears and i.get("line_id"):
             i["clears_when"] = {
@@ -1842,22 +1844,36 @@ def _confirm_for(data: dict, replica: dict | None, issue: dict) -> dict | None:
         ln = _line(data, issue.get("line_id"))
         if not ln or not ln.get("linked_unit_id"):
             return None
+        # Only a unit Norm chose itself is kept: the Replica's line must hold
+        # the unit the working line shows. A unit only Loaded holds is never
+        # confirmed (owner, 18 Oct 2026: "i've been working hard to tell agents
+        # not to rely on loaded at all") — the chooser's pick replaces it.
+        rid = issue.get("replica_line_id") or issue.get("line_id")
+        rl = next(
+            (
+                r
+                for r in (replica or {}).get("lines") or []
+                if str(r.get("id")) == str(rid)
+            ),
+            None,
+        )
+        if not rl or rl.get("linked_unit_id") != ln.get("linked_unit_id"):
+            return None
         desc = ln.get("item_name") or ln.get("description") or ln.get("code") or "line"
         field, proposed = "unit", ln.get("unit")
         unit = ln.get("unit")
-        # Say where the unit came from. The replica stamps the tier behind its
-        # stand-in, but the stamp only holds while the line shows THAT unit —
-        # any other is Loaded's own (HIGHLAND PARK 15, 4366904, 19 Aug 2026:
-        # "Loaded's 700 mL" was Norm's catalogue answering).
-        d = issue.get("data") or {}
-        source = d.get("unit_chosen_by")
-        if d.get("unit_id") and d.get("unit_id") != ln.get("linked_unit_id"):
-            source = None
+        source = (issue.get("data") or {}).get("unit_chosen_by")
+        if rl.get("unit_by") in ("resolver", "chooser"):
+            source = rl.get("unit_by")
+        source = source or rl.get("unit_source")
         said = {
             "copy": f"the invoice says '{unit}'; keep it",
             "catalogue": f"Norm's catalogue says '{unit}'; keep it",
+            "estimate": f"Norm works it out as '{unit}'; keep it",
+            "resolver": f"Norm works it out as '{unit}'; keep it",
             "printed": f"the printed column says '{unit}'; keep it",
-        }.get(source, f"keep Loaded's '{unit}'")
+            "chooser": f"Norm picks '{unit}' from the venue's units; keep it",
+        }.get(source, f"Norm's answer is '{unit}'; keep it")
         explanation = f"the invoice doesn't confirm the unit for '{desc}' — {said}"
     elif code == "unit_kind_mismatch":
         ln = _line(data, issue.get("line_id"))
@@ -1902,9 +1918,10 @@ def link_fixes(
     """Give every blocker ``fix`` — the ids of the suggestions that clear it —
     adding a ``confirm`` where Norm agrees with what is there. In place.
 
-    A unit decision takes the blocker's switch: picking a unit, or keeping
-    one the invoice doesn't confirm, is exactly what "receive without a unit"
-    / "receive with an unconfirmed unit" authorise Norm to do alone."""
+    A unit decision takes the blocker's switch: picking a unit when nothing
+    gave one, or using Norm's answer where the invoice's unit can't be read, is
+    exactly what "receive without a unit" / "receive with an unconfirmed unit"
+    authorise Norm to do alone."""
     for issue in issues:
         fix = [s for s in suggestions if _answers(s, issue)]
         if not fix:
@@ -1916,12 +1933,10 @@ def link_fixes(
             if any(s.get("kind") == "create_unit" for s in fix):
                 issue["gate"] = _VA.AUTO_CREATE_UNITS
             elif issue.get("code") in ("unit_missing", "unit_unknown"):
-                ln = _line(data, issue.get("line_id"))
-                issue["gate"] = (
-                    _VA.RECEIVE_WITH_UNCONFIRMED_UNIT
-                    if (ln or {}).get("linked_unit_id")
-                    else _VA.RECEIVE_WITHOUT_UNIT
-                )
+                # Neither the invoice nor Norm's knowledge gave a unit: the
+                # chooser's pick is "receive without a unit", whatever unit
+                # Loaded's draft line happens to hold (never a reason).
+                issue["gate"] = _VA.RECEIVE_WITHOUT_UNIT
             for s in fix:
                 if s.get("kind") in ("line_value", "confirm") and not s.get("gate"):
                     s["gate"] = issue.get("gate")
@@ -2860,9 +2875,9 @@ def review_invoice(
                 pairs,
                 require_valid_po=require_valid_po,
             )
-            # A unit the invoice names but Loaded lacks, on a line that holds a
-            # variant default: without its own blocker autopilot received with
-            # the default instead of the unit on the paper.
+            # A unit the invoice names but Loaded lacks, on a line whose Loaded
+            # draft holds some unit: without its own blocker autopilot received
+            # with Loaded's unit instead of the unit on the paper.
             unit_blocked = {
                 str(i.get("line_id")) for i in issues if i.get("code") in _UNIT_ISSUES
             }

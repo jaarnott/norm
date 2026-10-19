@@ -37,6 +37,9 @@ def _decide_unit(data, replica, pairs, *, issue, units=(), choose=None):
     """The unit rule, the comparison and the blocker link — the three steps
     a review runs — on one line."""
     RF.settle_units(data, replica, pairs, list(units), choose, [])
+    for rid, wid in pairs.items():  # as review._finalise_issues does
+        if wid == issue.get("line_id"):
+            issue.setdefault("replica_line_id", rid)
     working = {ln["id"]: ln for ln in data["lines"]}
     suggestions: list = []
     for rl in replica["lines"]:
@@ -96,18 +99,35 @@ class TestUnitBlockersCarryAUnit:
             # ...and the Replica says so: the Replica tab shows what the card does.
             assert replica["lines"][0]["linked_unit_id"] == "u-each"
 
-    def test_a_line_already_holding_the_unit_is_kept(self):
-        # The Aitkens freight shape: Loaded's line had Each, so nothing was
-        # proposed and the blocker said "set one" with nothing to accept.
+    def test_a_unit_only_loaded_holds_is_never_the_fix(self):
+        # The Aitkens freight shape: Loaded's line had Each. Keeping it was the
+        # fix until the owner's rule (18 Oct 2026: never rely on Loaded); now
+        # Norm's chooser decides, and keeping Each is Norm's choice when it
+        # agrees.
+        each = {"id": "u-each", "name": "Each", "ratio": 1}
+        issue = _unit_issue()
+        assert (
+            _decide_unit(
+                self._data("Each", "u-each"),
+                self._replica(),
+                {"rep-0": "ld-1"},
+                issue=issue,
+            )
+            is None
+        )
         issue = _unit_issue()
         fix = _decide_unit(
             self._data("Each", "u-each"),
             self._replica(),
             {"rep-0": "ld-1"},
             issue=issue,
+            units=[each],
+            choose=lambda ln: each,
         )
         assert fix["kind"] == "confirm" and fix["proposed"] == "Each"
-        assert issue["gate"] == fix["gate"] == VA.RECEIVE_WITH_UNCONFIRMED_UNIT
+        assert "Norm picks 'Each'" in fix["explanation"]
+        # Loaded's draft holding a unit doesn't change the question either.
+        assert issue["gate"] == fix["gate"] == VA.RECEIVE_WITHOUT_UNIT
 
     def test_an_unconfirmed_unit_takes_the_replicas_answer(self):
         # The invoice's unit can't be read; the resolver names a 6 pack while

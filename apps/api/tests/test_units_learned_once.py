@@ -148,6 +148,10 @@ class TestChargesAreNotEstimated:
             _charge("Environment & Energy Charge", code="CENVLEVY"),
             _charge("Surcharge (direct)"),
             _charge("Total Admin Fee for Invoice"),
+            _charge("03/01/26 Service 660l comingle bin"),
+            _charge("Waste Service - 660L General Waste"),
+            _charge("Invoice Rounding"),
+            _charge("Delivery - Order Under $200"),
         ]
         doc = _review(db_session, _invoice(charges), ask)
         assert ask.prompts == []
@@ -160,8 +164,15 @@ class TestChargesAreNotEstimated:
     ):
         _seed(db_session)
         ask = _Asker()
-        _review(db_session, _invoice([_charge("Pizza Delivery Box 12in", "PDB12")]), ask)
-        assert _asked_about(ask) == ["Pizza Delivery Box 12in"]
+        products = [
+            _charge("Pizza Delivery Box 12in", "PDB12"),
+            _charge("Hot Cross Bun Classic Fruit 12 PCK - Food Service", "HCB12"),
+        ]
+        _review(db_session, _invoice(products), ask)
+        assert sorted(_asked_about(ask)) == [
+            "Hot Cross Bun Classic Fruit 12 PCK - Food Service",
+            "Pizza Delivery Box 12in",
+        ]
 
 
 class TestLearnedOnceServesTheNextInvoice:

@@ -348,3 +348,30 @@ class TestOnlyMeasurementUnits:
         assert U.hide_non_measurement_units("/1.0/stock/internal/items", rows) == [
             {"id": "x", "name": "Box", "ratio": 250, "stockUnitType": "Volume"}
         ]
+
+
+class TestSizeFirstPacks:
+    """A pack printed size first is the same pack as its count-first spelling:
+    passata '700ml x 6' was booked as '4.2 KG', and zucchini pickles
+    '300g x 12' as '5 KG', because the form wasn't recognised (18 Oct 2026)."""
+
+    @pytest.mark.parametrize(
+        "printed, count_first",
+        [
+            ("700ml x 6", "6x700ml"),
+            ("300g x 12", "12x300g"),
+            ("300gx12", "12x300g"),
+            ("6x700ml", "6x700ml"),
+            ("4 x 6 pack", "4 x 6 pack"),
+            ("12PK", "12PK"),
+            ("Box", "Box"),
+        ],
+    )
+    def test_read_count_first(self, printed, count_first):
+        assert U.count_first(printed) == count_first
+
+    def test_a_size_first_pack_is_its_count_first_pack(self):
+        assert U.is_multipack("700ml x 6")
+        assert U.multipack_equal("6x700ml", "700ml x 6")
+        assert U.multipack_equal("12x300g", "300g x 12")
+        assert not U.multipack_equal("4.2 KG", "700ml x 6")

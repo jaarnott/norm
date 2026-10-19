@@ -368,6 +368,9 @@ def extraction_from_loaded(detail: dict) -> dict:
                 "description": ln.get("description"),
                 "quantity": ln.get("quantityReceived"),
                 "unit": ln.get("unit"),
+                # Loaded's unit, not the supplier's: the review never takes it
+                # as the invoice's charge word (owner, 18 Oct 2026).
+                "unit_from_loaded": True,
                 "unit_of_measure": None,
                 "unit_unrecognisable": False,
                 "unit_price_ex_tax": cost if cost is not None else ln.get("unitCost"),

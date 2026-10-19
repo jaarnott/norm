@@ -105,8 +105,10 @@ export default function Home() {
   const [quotaExceeded, setQuotaExceeded] = useState(false);
   // Which Settings tab to open on — set by "Open billing" in the paused dialog.
   const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
+  // A view inside a settings tab, from a link (?open=unit-check → Supplier specs' daily unit check).
+  const [settingsView, setSettingsView] = useState<string | undefined>(undefined);
   // …only for that visit: leaving Settings forgets it.
-  useEffect(() => { if (activeAgent !== 'settings') setSettingsTab(undefined); }, [activeAgent]);
+  useEffect(() => { if (activeAgent !== 'settings') { setSettingsTab(undefined); setSettingsView(undefined); } }, [activeAgent]);
   const openBilling = useCallback(() => {
     setQuotaExceeded(false);
     setSettingsTab('billing');
@@ -212,6 +214,15 @@ export default function Home() {
       // staff emails link to ?page=functions-events&event=<id>); the page reads
       // its own extra params. Chat threads keep ?thread=, so pages use other
       // names (Functions' mail threads are ?mail_thread=).
+      // ?open=unit-check: the daily unit check's email links straight to its
+      // page in the Dojo (Settings → Supplier specs).
+      if (params.get('open') === 'unit-check' && !threadId) {
+        setActivePage(null);
+        setActiveAgent('settings');
+        setSettingsTab('supplier-specs');
+        setSettingsView('unit-check');
+        setMobileView('settings');
+      }
       const page = params.get('page');
       const pageCfg = page && !threadId ? FUNCTIONAL_PAGES.find(p => p.id === page) : undefined;
       if (pageCfg) {
@@ -1269,7 +1280,7 @@ export default function Home() {
 
     // Settings view
     if (mobileView === 'settings') {
-      return mobileShell('Settings', <SettingsPanel key={settingsTab} initialTab={settingsTab} />);
+      return mobileShell('Settings', <SettingsPanel key={settingsTab} initialTab={settingsTab} initialView={settingsView} />);
     }
 
     // List view (hamburger destination) — team members + menu + user footer
@@ -1473,7 +1484,7 @@ export default function Home() {
         )}
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
           {activeAgent === 'settings' ? (
-            <SettingsPanel key={settingsTab} initialTab={settingsTab} />
+            <SettingsPanel key={settingsTab} initialTab={settingsTab} initialView={settingsView} />
           ) : connectPanel ? (
             connectPanel
           ) : activePage ? (() => {

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{% if ok %}Daily unit check: {{ proposals }} line{% if proposals != 1 %}s{% endif %} to review{% else %}The daily unit check didn't finish{% endif %}</h1>
+{% if ok %}
+<p>Norm checked {{ lines }} line{% if lines != 1 %}s{% endif %} on {{ invoices }} invoice{% if invoices != 1 %}s{% endif %} it received up to {{ date }}, comparing the unit each line is booked in with the invoice and with Norm's catalogue.</p>
+{% if venues %}
+<table style="border-collapse:collapse;margin:12px 0">
+  <tr><th align="left" style="padding:4px 12px 4px 0">Venue</th><th align="right" style="padding:4px 12px">Invoices</th><th align="right" style="padding:4px 12px">Lines</th><th align="right" style="padding:4px 12px">Corrections</th><th align="right" style="padding:4px 0 4px 12px">To confirm</th></tr>
+  {% for v in venues %}
+  <tr><td style="padding:4px 12px 4px 0">{{ v.name }}</td><td align="right" style="padding:4px 12px">{{ v.invoices }}</td><td align="right" style="padding:4px 12px">{{ v.lines }}</td><td align="right" style="padding:4px 12px">{{ v.corrections or 0 }}</td><td align="right" style="padding:4px 0 4px 12px">{{ v.to_confirm or 0 }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% if corrections %}
+<p><strong>{{ corrections }} proposed correction{% if corrections != 1 %}s{% endif %}:</strong> the invoice or Norm's catalogue says the line should be in another unit. Nothing has been changed in Loaded: apply the ones you agree with, and dismiss the rest.</p>
+{% endif %}
+{% if to_confirm %}
+<p><strong>{{ to_confirm }} line{% if to_confirm != 1 %}s{% endif %} to confirm:</strong> the invoice shows no size and Norm wasn't sure of the product, so it booked its best answer. Confirm it or choose the right unit; Norm keeps your answer, so the product isn't asked about again.</p>
+{% endif %}
+{% if not proposals %}
+<p>Every line matched its invoice and Norm's catalogue. Nothing to review.</p>
+{% endif %}
+{% else %}
+<p>The check stopped with an error: {{ error }}</p>
+{% endif %}
+<a href="{{ link }}" class="btn">Open the unit check</a>
+{% endblock %}

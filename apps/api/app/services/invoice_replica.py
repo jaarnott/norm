@@ -20,9 +20,11 @@ Resolution order per line (conservative → generous):
    description → ≥8-char substring, unique hits only.
 2. LLM fallback (``item_match.suggest_item_matches``) for the unresolved
    tail — supplier-aware; returns a match or a create suggestion.
-3. Unit: the matched variant's unit first, else the extracted unit text
-   resolved against the venue's unit records (name → multipack →
-   magnitude — the ``invoice_units`` tiers).
+3. Unit: the invoice's size, else Norm's own knowledge (its catalogue
+   verdict, its earlier estimate, the printed charge word, the estimator),
+   resolved against the venue's unit records (name → multipack → magnitude —
+   the ``invoice_units`` tiers). Never the unit Loaded stores for the supplier
+   product: see docs/unit-resolution.md, "The rule".
 4. Tax: the matched item's ``globalSalesTaxSortOrder`` decoded via the
    sales-tax API (verified live: Exempt 0.0 / GST 0.15); unmatched lines
    take the invoice's prevailing rate, else the copy-derived rate.
@@ -301,6 +303,16 @@ def fetch_brands(lh) -> list[dict]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("brands fetch failed: %s", exc)
         return []
+
+
+#: How sure Norm's unit estimate must be to decide a line whose invoice shows
+#: no size on its own (owner, 18 Oct 2026: the unit comes from the invoice and
+#: from Norm, never from the unit Loaded stores). Any answer Norm has: when
+#: Norm isn't sure, its answer still beats the unit Loaded happens to store
+#: ("we shouldn't be relying on loaded"), and the next morning's unit check lists
+#: the line for a person to confirm or correct (services/unit_check.py). Settled
+#: products answer from the catalogue first, so only new products get here.
+ESTIMATE_DECIDES = ("high", "medium", "low")
 
 
 def _resolve_unit_record(name: object, units: list[dict]) -> dict | None:
@@ -638,6 +650,24 @@ def build_replica(
         except Exception as exc:  # noqa: BLE001 — the catalogue never blocks
             logger.info("supplier catalogue unavailable: %s", exc)
 
+    # The venue's country, for the unit estimator's listings and prices: the
+    # Sydney venues were being estimated against New Zealand wholesalers.
+    venue_country = None
+    if db is not None:
+        try:
+            from app.db.models import Venue
+
+            tz = str(getattr(db.get(Venue, venue_id), "timezone", "") or "")
+            venue_country = (
+                "Australia"
+                if tz.startswith("Australia/")
+                else "New Zealand"
+                if tz in ("Pacific/Auckland", "Pacific/Chatham", "NZ")
+                else None
+            )
+        except Exception:  # noqa: BLE001 — the estimate works without it
+            venue_country = None
+
     # ---- Lines: deterministic pass ----
     idx = line_match.CatalogueIndex.build(catalogue or [])
     ext_lines = [
@@ -735,6 +765,9 @@ def build_replica(
     # ---- Assemble lines ----
     out_lines: list[dict] = []
     unit_residual: list[int] = []  # line indexes for the batched unit resolver
+    # Norm's own answer for a line when the estimator gives none: its earlier
+    # unsure estimate, or the invoice's pack count.
+    low_guess: dict[int, dict] = {}
     for i, el in enumerate(ext_lines):
         r = resolved[i]
         item = r.get("item")
@@ -744,10 +777,13 @@ def build_replica(
             else None
         )
         unit_rec = None
-        # Which tier supplied unit_rec ("variant" | "copy" | "catalogue" |
-        # "printed") — the card finishes unit blockers with the unit in use,
-        # and crediting every stand-in to Loaded misattributed the ones
-        # Norm's catalogue answered (4366904, 19 Aug 2026).
+        # Which tier supplied unit_rec ("copy" | "catalogue" | "estimate" |
+        # "printed") — the card finishes unit blockers with the unit in use.
+        # Never the unit Loaded stores for the supplier product (owner, 18 Oct
+        # 2026: "i've been working hard to tell agents not to rely on loaded at
+        # all" — basil bunches had been booked as Kilo and whole salami as 1
+        # Kilo from it). A line Norm can't size has no unit here; the review's
+        # unit chooser then picks from the venue's units.
         unit_source = None
         # The copy's confidently-read delivered unit that isn't in Loaded yet —
         # carried onto the replica line so the review layer can offer a
@@ -765,156 +801,131 @@ def build_replica(
             and not is_packaging_word(derived)
             and (is_multipack(derived) or parse_unit(derived) is not None)
         )
-        variant_unit = (
-            next((u for u in units if u.get("id") == variant.get("unitId")), None)
-            if variant and variant.get("unitId")
-            else None
-        )
-        # A deleted unit on the supplier record — Loaded's, or a non-measurement
-        # unit Norm hides (invoice_units.hide_non_measurement_units: Box, Bunch,
-        # Market) — is no unit: the line goes on to the copy, the catalogue and
-        # the estimate like any line without one.
-        variant_unit_usable = bool(variant and variant.get("unitId")) and not (
-            variant_unit is not None and variant_unit.get("datestampDeleted")
-        )
-        if variant_unit_usable:
-            unit_rec = variant_unit or {
-                "id": variant.get("unitId"),
-                "name": None,
-                "ratio": None,
-            }
-            unit_source = "variant"
-            # The unit is whatever the INVOICE says. A variant default is
-            # user-entered data in Loaded; the copy is the delivery, and
-            # receiving it accurately is the job. A venue counting wine
-            # bottles as 'Each' is the venue's business — not a reason to book
-            # 'Each' against a copy that says 750 mL.
-            #
-            # This used to be gated on the two units not being
-            # `units_equivalent`, plus a `copy_is_more_specific` exception
-            # carved out for one Hancocks invoice. Everything outside that
-            # exception's shape fell through to Loaded, so '750 mL' lost to
-            # 'Each'. The gate is gone: `_resolve_unit_record` already matches
-            # by name, by multipack components and by parsed magnitude, so a
-            # copy saying '0.7 L' against a variant saying '700 mL' still
-            # lands on the same record and nothing moves.
-            #
-            # `confident` is the whole guard now, which is why a bare
-            # packaging word had to be excluded from it above: 'PACK' parses
-            # as a count of 1, so without that it would read as trustworthy
-            # and override a real variant unit (Trents 5973784).
-            if confident:
-                copy_rec = _resolve_unit_record(derived, units)
-                if copy_rec and copy_rec.get("id") != unit_rec.get("id"):
-                    log.append(
-                        f"line {i + 1} unit: variant default "
-                        f"'{unit_rec.get('name')}' → '{copy_rec.get('name')}' "
-                        "(per the copy)"
-                    )
-                    unit_rec = copy_rec
+        skip_estimate = False
+        if confident:
+            # The unit is whatever the INVOICE says: the copy is the delivery.
+            copy_rec = _resolve_unit_record(derived, units)
+            if copy_rec is not None:
+                unit_rec, unit_source = copy_rec, "copy"
+            else:
+                # The copy's size is not a unit the venue has yet: the review
+                # layer turns this into a `create_unit` suggestion.
+                log.append(
+                    f"line {i + 1} unit: copy says '{derived}' but the venue has "
+                    "no such unit (unit would need creating)"
+                )
+                unit_create_name = str(derived)
+        else:
+            # No size on the invoice: Norm decides, from what it knows.
+            if derived and not is_packaging_word(derived):
+                # An unreadable size that still names a unit (the unconfirmed
+                # path below flags it).
+                unit_rec = _resolve_unit_record(derived, units)
+                if unit_rec is not None:
                     unit_source = "copy"
-                elif copy_rec is None:
-                    log.append(
-                        f"line {i + 1} unit: copy says '{derived}' but the venue "
-                        f"has no such unit — kept variant default "
-                        f"'{unit_rec.get('name')}' (unit would need creating)"
-                    )
-                    # Marker (not an issue): the review layer turns this into a
-                    # `create_unit` SUGGESTION the user can accept, rather than a
-                    # non-blocking note. Only set for a unit WE read off the copy
-                    # — never a bare unlinked string Loaded's OCR left behind.
-                    unit_create_name = str(derived)
-        # A unit Loaded holds for this product may be one Norm only GUESSED
-        # (a receive saves the line's unit on the supplier product, and the
-        # next invoice reads it back first). Norm's verdict outranks such a
-        # unit; with no verdict yet, the line is asked about again below.
-        unit_recheck = False
-        if unit_source == "variant" and catalog_key:
-            try:
-                from app.services import supplier_catalog
+            prow = None
+            if unit_rec is None and catalog_key:
+                try:
+                    from app.services import supplier_catalog
 
-                pkey = supplier_catalog.product_key(
-                    el.get("code"), el.get("description")
-                )
-                prow = supplier_catalog.lookup(config_db, catalog_key, pkey)
-                verdict = (
-                    supplier_catalog.catalog_unit_for_line(config_db, catalog_key, pkey)
-                    if supplier_catalog.guessed_before(prow)
-                    else None
-                )
-                if verdict:
-                    vrec = _resolve_unit_record(verdict["unit_name"], units)
-                    if vrec is not None and vrec.get("id") != unit_rec.get("id"):
-                        log.append(
-                            f"line {i + 1} unit: '{unit_rec.get('name')}' was Norm's "
-                            f"guess — Norm's verdict is '{vrec.get('name')}'"
-                        )
-                        unit_rec, unit_source = vrec, "catalogue"
-                elif supplier_catalog.unsettled_guess(prow):
-                    unit_recheck = True
-            except Exception:  # noqa: BLE001 — the catalogue never blocks
-                pass
-        if unit_rec is None and derived and not is_packaging_word(derived):
-            # The page's own derived unit — the page outranks everything
-            # below for the document in hand.
-            unit_rec = _resolve_unit_record(derived, units)
-            if unit_rec is not None:
-                unit_source = "copy"
-        if unit_rec is None and catalog_key:
-            # Norm's supplier-product catalogue: what this (supplier, code)
-            # physically IS, learned from sizes printed on OTHER invoices
-            # (provenance printed-or-better; venue practice never answers).
-            try:
-                from app.services import supplier_catalog
-
-                answer = supplier_catalog.catalog_unit_for_line(
-                    config_db,
-                    catalog_key,
-                    supplier_catalog.product_key(el.get("code"), el.get("description")),
-                )
-            except Exception:  # noqa: BLE001 — the catalogue never blocks
-                answer = None
-            if answer:
-                unit_rec = _resolve_unit_record(answer["unit_name"], units)
-                if unit_rec is not None:
-                    unit_source = "catalogue"
-                    log.append(
-                        f"line {i + 1} unit: Norm catalogue says "
-                        f"'{answer['unit_name']}' ({answer['provenance']}) → "
-                        f"'{unit_rec.get('name')}'"
+                    pkey = supplier_catalog.product_key(
+                        el.get("code"), el.get("description")
                     )
-                elif unit_create_name is None:
-                    # The catalogue knows the pack but the venue has no such
-                    # unit — the existing create-unit suggestion path.
-                    unit_create_name = str(answer["unit_name"])
-                    log.append(
-                        f"line {i + 1} unit: Norm catalogue says "
-                        f"'{answer['unit_name']}' ({answer['provenance']}) but "
-                        "the venue has no such unit (unit would need creating)"
+                    prow = supplier_catalog.lookup(config_db, catalog_key, pkey)
+                    # 1. Norm's settled answer for this supplier product.
+                    answer = supplier_catalog.catalog_unit_for_line(
+                        config_db, catalog_key, pkey
                     )
-        if unit_rec is None:
-            # Last: the printed unit column — refusing bare packaging words
-            # ('PACK', 'CARTON'): they say how goods were bundled, not what
-            # ONE delivered item is, so such a line raises unit_missing and
-            # parks instead of silently linking a meaningless unit.
+                    if answer:
+                        rec = _resolve_unit_record(answer["unit_name"], units)
+                        if rec is not None:
+                            unit_rec, unit_source = rec, "catalogue"
+                            log.append(
+                                f"line {i + 1} unit: Norm catalogue says "
+                                f"'{answer['unit_name']}' ({answer['provenance']}) → "
+                                f"'{rec.get('name')}'"
+                            )
+                        else:
+                            unit_create_name = str(answer["unit_name"])
+                            log.append(
+                                f"line {i + 1} unit: Norm catalogue says "
+                                f"'{answer['unit_name']}' ({answer['provenance']}) "
+                                "but the venue has no such unit (unit would need "
+                                "creating)"
+                            )
+                    # 2. Norm's own earlier estimate, when it wasn't sure
+                    # enough to be a verdict (a high answer is one, step 1):
+                    # within the month it isn't bought again on every
+                    # invoice, and its answer rides along. Once it is a month
+                    # old the estimator works the product out again.
+                    elif unit_create_name is None:
+                        guess = supplier_catalog.earlier_estimate(prow)
+                        if guess and guess["fresh"]:
+                            skip_estimate = True
+                            rec = (
+                                _resolve_unit_record(guess["unit"], units)
+                                if guess["unit"]
+                                else None
+                            )
+                            if rec is not None:
+                                conf = guess["confidence"]
+                                low_guess[i] = {
+                                    "unit_id": rec.get("id"),
+                                    "unit_name": rec.get("name"),
+                                    "unit_ratio": rec.get("ratio"),
+                                    "confidence": conf,
+                                    "why": f"Norm's earlier estimate ({conf} confidence)"
+                                    + (f": {guess['why']}" if guess["why"] else ""),
+                                }
+                except Exception:  # noqa: BLE001 — the catalogue never blocks
+                    pass
+            # 3. The invoice's own charge word, when that is a measurement
+            # ('Each', 'Kilo'). Refusing bare packaging words ('PACK', 'CARTON'):
+            # they say how goods were bundled, not what ONE delivered item is.
+            # An Ordermentum line's unit is Loaded's, never the supplier's.
             printed = el.get("unit")
-            if printed and not is_packaging_word(printed):
+            if (
+                unit_rec is None
+                and unit_create_name is None
+                and printed
+                and not is_packaging_word(printed)
+                and not el.get("unit_from_loaded")
+            ):
                 unit_rec = _resolve_unit_record(printed, units)
-                if unit_rec is not None:
+                p = parse_unit(printed)
+                if unit_rec is not None and p and p[0] == "count" and p[1] > 1:
+                    # A pack count with no size ('6 PK') says how many, not
+                    # what: six cans are a 6 Pack, six bottles of wine are
+                    # 6x750ml (poured drinks are volumes). The estimator
+                    # decides; the count is only its low-confidence fallback
+                    # (Hancocks wine, 18 Oct 2026).
+                    low_guess.setdefault(
+                        i,
+                        {
+                            "unit_id": unit_rec.get("id"),
+                            "unit_name": unit_rec.get("name"),
+                            "unit_ratio": unit_rec.get("ratio"),
+                            "confidence": "low",
+                            "why": f"the invoice charges per '{printed}' and "
+                            "shows no size",
+                            "by": "printed",
+                        },
+                    )
+                    unit_rec = None
+                elif unit_rec is not None:
                     unit_source = "printed"
-                if unit_rec is not None and not derived:
                     # Resolved ONLY by a bare count word ('EA' → Each): that
-                    # is how the line is CHARGED, not the pack size (the
-                    # user's Trents observation, 18 Aug 2026). Honest but
-                    # vague — mark it so the batched resolver can offer the
-                    # real pack as an upgrade suggestion.
-                    p = parse_unit(printed)
+                    # is how the line is CHARGED, not the pack size (the user's
+                    # Trents observation, 18 Aug 2026). Honest but vague — mark
+                    # it so the batched resolver can offer the real pack as an
+                    # upgrade suggestion.
                     count_word_unit = bool(
                         p
                         and p[0] == "count"
                         and p[1] == 1
                         and not any(ch.isdigit() for ch in str(printed))
                     )
+            # 4. Nothing above: Norm's unit estimator decides (below).
         # GST per line, as the invoice marks it (16 Oct 2026: Australian food
         # is GST-free, and with 10% on every line the totals spread cut every
         # cost to make the total — 64 Applegum invoices). Read on 12 test reads,
@@ -992,7 +1003,9 @@ def build_replica(
                 "brand": None,
                 "unit": (unit_rec or {}).get("name")
                 or el.get("unit_of_measure")
-                or el.get("unit"),
+                # An Ordermentum line's unit column is Loaded's: never shown
+                # as the invoice's, nor handed to the unit chooser.
+                or (None if el.get("unit_from_loaded") else el.get("unit")),
                 "linked_unit_id": (unit_rec or {}).get("id"),
                 "original_unit_id": (unit_rec or {}).get("id"),
                 "unit_ratio": (unit_rec or {}).get("ratio"),
@@ -1063,7 +1076,7 @@ def build_replica(
             # 'HIGHLAND PARK 15 YEAR OLD GIFT BOX (1X7' at "set one before
             # receiving" with the resolver never consulted (4366904,
             # 19 Aug 2026).
-            if unit_create_name is None:
+            if unit_create_name is None and not skip_estimate:
                 unit_residual.append(i)
         elif count_word_unit:
             # Resolved only by a bare charge word (EA → Each): honest but
@@ -1074,12 +1087,6 @@ def build_replica(
             # stands regardless, and the resolver's offer turns that Accept
             # from a shrug into an informed choice.
             unit_residual.append(i)
-        elif unit_recheck:
-            # The unit in use is one Norm only guessed for this product (see
-            # above): ask again. The guess stands as the line's unit until a
-            # high-confidence answer replaces it (replica_finish).
-            unit_residual.append(i)
-            out_lines[-1]["unit_recheck"] = True
 
     # ---- The unit estimator: every line nothing above could size ----
     # One web-searching call per line (unit_resolver), the whole invoice as
@@ -1129,7 +1136,7 @@ def build_replica(
                         "code": xl.get("code"),
                         "description": xl.get("description"),
                         "quantity": xl.get("quantity"),
-                        "unit": xl.get("unit"),
+                        "unit": None if xl.get("unit_from_loaded") else xl.get("unit"),
                         "unit_of_measure": xl.get("unit_of_measure"),
                         "unit_price": xl.get("unit_price_ex_tax"),
                     }
@@ -1142,6 +1149,7 @@ def build_replica(
                 category_by_line=category_by_line,
                 ask_llm=unit_resolver_ask,
                 db=db,
+                country=venue_country,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to unit_missing
             logger.info("unit resolver failed: %s", exc)
@@ -1171,12 +1179,12 @@ def build_replica(
             out_lines[j]["unit_resolved"] = answer
             # "The right unit doesn't exist here yet" feeds the existing
             # create-unit suggestion path (human-accepted; autopilot gates it
-            # behind auto_create_units). Medium counts: picking a wrong-sized
-            # existing unit instead would book the wrong stock.
+            # behind auto_create_units) when the estimate decides
+            # (ESTIMATE_DECIDES).
             if (
                 unit_j is None
                 and r_j.get("create_name")
-                and r_j.get("confidence") in ("high", "medium")
+                and r_j.get("confidence") in ESTIMATE_DECIDES
                 and not out_lines[j].get("unit_create_name")
             ):
                 out_lines[j]["unit_create_name"] = r_j["create_name"]
@@ -1186,6 +1194,59 @@ def build_replica(
                 f"'{(unit_j or {}).get('name') or r_j.get('create_name')}' "
                 f"({r_j.get('confidence')}: {r_j.get('why')})"
             )
+
+    # ---- Norm decides the sizeless lines (owner, 18 Oct 2026) ----
+    # A line whose invoice shows no size, and that Norm's catalogue, its earlier
+    # estimate and the printed charge word couldn't size, takes Norm's own
+    # answer (ESTIMATE_DECIDES): that is Norm's decision, not a guess waiting on
+    # the "receive without a unit" switch. An answer Norm wasn't sure of is
+    # listed by the next morning's unit check. With no answer at all the line
+    # keeps its unit_missing blocker, and the review's unit chooser picks from
+    # the venue's units (replica_finish.settle_units) — never Loaded's unit.
+    for j, ol in enumerate(out_lines):
+        missing_id = f"unit_missing:rep-{j}"
+        if ol.get("linked_unit_id") or not any(
+            iss.get("id") == missing_id for iss in issues
+        ):
+            continue
+        if low_guess.get(j) is not None:
+            # Norm's own answer for the line, when the estimator gave none.
+            ol.setdefault("unit_resolved", low_guess[j])
+        ur = (
+            ol.get("unit_resolved")
+            if isinstance(ol.get("unit_resolved"), dict)
+            else None
+        )
+        if not (
+            ur
+            and ur.get("unit_id")
+            and ur.get("confidence") in ESTIMATE_DECIDES
+            and not ol.get("unit_create_name")
+        ):
+            continue
+        source = ur.get("by") or "estimate"
+        ol.update(
+            unit=ur.get("unit_name"),
+            linked_unit_id=ur["unit_id"],
+            original_unit_id=ur["unit_id"],
+            unit_ratio=ur.get("unit_ratio"),
+            unit_source=source,
+        )
+        issues[:] = [iss for iss in issues if iss.get("id") != missing_id]
+        for iss in issues:
+            # An unreadable copy unit keeps its blocker; it now names who
+            # supplied the unit in use.
+            if iss.get("id") == f"unit_unconfirmed:rep-{j}":
+                iss["data"] = {"unit_chosen_by": source, "unit_id": ur["unit_id"]}
+        log.append(
+            f"line {j + 1} unit: no size is printed — Norm decides "
+            f"'{ur.get('unit_name')}' ({ur.get('confidence')}: {ur.get('why')})"
+            + (
+                ""
+                if ur.get("confidence") == "high"
+                else " — not sure, so the morning unit check lists it"
+            )
+        )
 
     # ---- Totals reconciliation (the engine's `totals` gate, copy-side) ----
     # Loaded's own entry validation absorbs up to 10c of rounding on

@@ -507,17 +507,67 @@ def learn_from_resolver(config_db: Session, supplier_key: str | None, lines) -> 
                 row.evidence = ev
         else:
             ev = copy.deepcopy(row.evidence or {})
+            from app.services.unit_resolver import _VERSION
+
             ev["guess"] = {
                 "unit": unit_name or None,
                 "confidence": ur.get("confidence") or "none",
                 "why": why,
                 "at": now.isoformat(),
                 "settled": False,
+                # The estimator's rules it was made under: an estimate from
+                # older rules is never reused (focaccia slabs were estimated
+                # "2.1 KG" before bread priced per piece became "each").
+                "v": _VERSION,
             }
             row.evidence = ev
             row.updated_at = now
         written += 1
     return written
+
+
+def record_answer(
+    config_db: Session,
+    supplier_key: str,
+    key: str,
+    unit_name: str,
+    *,
+    description: str | None,
+    why: str,
+) -> SupplierProduct:
+    """A person's answer for one product (the Dojo's daily unit check):
+    written as Norm's verdict, so every later invoice for the product answers
+    from it, and Norm's own unsure estimate is settled. Raises ValueError for a
+    unit that isn't a measurement. Caller owns the commit."""
+    classified = _classify_uom(unit_name)
+    if classified is None and (parse_unit(unit_name) or ("",))[0] == "count":
+        classified = ("fixed", _unit_norm(unit_name), "count")
+    if classified is None:
+        raise ValueError(f"'{unit_name}' is not a measurement")
+    row = lookup(config_db, supplier_key, key)
+    if row is None:
+        row = SupplierProduct(
+            supplier_key=supplier_key,
+            code=key,
+            description=str(description or "").strip(),
+            provenance="enriched",
+        )
+        config_db.add(row)
+    apply_enrichment(
+        config_db,
+        row,
+        unit_name=unit_name,
+        pack_type=classified[0],
+        unit_type=classified[2] or None,
+        category=None,
+        why=why,
+        confidence="high",
+    )
+    ev = copy.deepcopy(row.evidence or {})
+    if isinstance(ev.get("guess"), dict):
+        ev["guess"]["settled"] = True
+        row.evidence = ev
+    return row
 
 
 def unsettled_guess(row: SupplierProduct | None) -> bool:
@@ -526,6 +576,42 @@ def unsettled_guess(row: SupplierProduct | None) -> bool:
     asks again rather than trusting it."""
     guess = ((row.evidence or {}) if row is not None else {}).get("guess")
     return isinstance(guess, dict) and not guess.get("settled")
+
+
+#: How long Norm reuses its own earlier estimate before working it out again.
+ESTIMATE_REUSE_DAYS = 30
+
+
+def earlier_estimate(row: SupplierProduct | None) -> dict | None:
+    """Norm's own earlier estimate for a product it has no settled answer for
+    (``evidence['guess']``), or None.
+
+    ``{"unit", "confidence", "why", "fresh"}`` — ``fresh`` while it is younger
+    than ESTIMATE_REUSE_DAYS. The review reuses it so every invoice for the
+    product books the same unit, and asks again only once it is stale (owner,
+    18 Oct 2026: the unit comes from Norm, never from the unit Loaded stores)."""
+    from app.services.unit_resolver import _VERSION
+
+    guess = ((row.evidence or {}) if row is not None else {}).get("guess")
+    if not isinstance(guess, dict) or guess.get("settled"):
+        return None
+    if guess.get("v") != _VERSION:
+        return None  # made under older rules: worked out again
+    conf = str(guess.get("confidence") or "none").strip().lower()
+    fresh = False
+    try:
+        at = datetime.fromisoformat(str(guess.get("at")))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        fresh = (datetime.now(timezone.utc) - at).days < ESTIMATE_REUSE_DAYS
+    except (TypeError, ValueError):
+        fresh = False
+    return {
+        "unit": str(guess.get("unit") or "").strip() or None,
+        "confidence": conf if conf in ("high", "medium", "low") else "none",
+        "why": str(guess.get("why") or "").strip(),
+        "fresh": fresh,
+    }
 
 
 def guessed_before(row: SupplierProduct | None) -> bool:

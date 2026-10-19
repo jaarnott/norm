@@ -1358,7 +1358,7 @@ function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   return perms.some(p => can(user, p));
 }
 
-export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab } = {}) {
+export default function SettingsPanel({ initialTab, initialView }: { initialTab?: SettingsTab; initialView?: string } = {}) {
   // Opens on a given tab when asked (the quota dialog's "Top up" → Billing).
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'preferences');
   const [orgId, setOrgId] = useState<string | null>(null);
@@ -1983,7 +1983,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: SettingsTab
           {/* ============ SECRETS TAB ============ */}
           {tab === 'components' && <ComponentsPanel />}
           {tab === 'playbooks' && <PlaybooksPanel />}
-          {tab === 'supplier-specs' && <SupplierSpecsPanel />}
+          {tab === 'supplier-specs' && <SupplierSpecsPanel initialView={initialView} />}
           {tab === 'templates' && <TemplatesPanel />}
           {tab === 'secrets' && <SecretsPanel />}
         </div>

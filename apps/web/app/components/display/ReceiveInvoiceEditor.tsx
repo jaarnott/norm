@@ -163,7 +163,7 @@ const gateLabels: Record<string, string> = {
   auto_create_brands: 'auto-create brands',
   auto_create_suppliers: 'auto-create suppliers',
   receive_without_unit: 'receive when no unit can be found',
-  receive_with_unconfirmed_unit: 'receive when the unit came from Loaded rather than the invoice',
+  receive_with_unconfirmed_unit: 'receive when the invoice\'s unit can\'t be read and Norm\'s answer is used',
   receive_without_po: 'receive without a valid purchase order',
   receive_unit_kind_mismatch: 'receive in a unit of a different kind from the stocktake unit',
   auto_strike_phantom_lines: "strike lines the invoice doesn't bill",
