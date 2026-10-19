@@ -205,6 +205,15 @@ class TestOneLine:
         )
 
 
+@pytest.fixture(autouse=True)
+def _unit_check_on(monkeypatch):
+    """conftest switches the check off for the suite (a background thread on
+    the real clock); these tests run it on their own fixed clock."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "UNIT_CHECK_ENABLED", True)
+
+
 @pytest.fixture()
 def world(db_session, venue):
     from app.db.config_models import SupplierInvoiceSpec

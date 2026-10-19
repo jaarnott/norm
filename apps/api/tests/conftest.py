@@ -65,6 +65,14 @@ from app.routers import (
 # switches it on and fakes the call (test_insight_wording.py).
 settings.INSIGHT_WORDING_ENABLED = False
 
+# The daily unit check rides /internal/run-due-tasks in a background thread on
+# the REAL clock and its own committing session. From its hour (19:00 UTC) a
+# test calling that route (test_task_scheduler.py) left a real run for today
+# in the test database, and test_unit_check.py — whose fixed clock is 19 Oct
+# 2026 19:30 UTC — then found today's slot taken (19 Oct 2026, 19:47 UTC).
+# Off for the suite; test_unit_check.py switches it on for its own runs.
+settings.UNIT_CHECK_ENABLED = False
+
 
 @pytest.fixture(autouse=True)
 def _fresh_suggestion_config():
