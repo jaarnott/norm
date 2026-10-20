@@ -457,17 +457,58 @@ LEVELLED_ACTIONS = {
 }
 
 
-def _stored(user: User | None) -> dict:
+#: Since Oct 2026 the store is per organisation:
+#:   {"by_org": {"<org id>": {<key>: <entry>, ...}, ...}}
+#: A person in two organisations may run Autopilot in one and ask in the other.
+#: A store without "by_org" is the older, one-for-everything shape; it is read
+#: as the setting in every organisation until the person next saves one.
+BY_ORG = "by_org"
+
+
+def _org_for(user: User | None, org_id: str | None = None) -> str | None:
+    """The organisation a preference is read or written for: the one named,
+    else the caller's scope (a conversation's or a task run's organisation),
+    else the one the request is acting in (services/active_org)."""
+    if org_id:
+        return org_id
+    from app.services.caller_scope import current
+
+    scope = current()
+    if scope is not None and scope.org_id:
+        return scope.org_id
+    if user is None:
+        return None
+    from sqlalchemy.orm import object_session
+
+    from app.services import active_org
+
+    db = object_session(user)
+    return active_org.org_id_for(db, user.id) if db is not None else None
+
+
+def _raw(user: User | None) -> dict:
     prefs = getattr(user, "approval_preferences", None)
     return prefs if isinstance(prefs, dict) else {}
 
 
-def preference(user: User | None, key: str) -> dict:
-    entry = _stored(user).get(key)
+def _stored(user: User | None, org_id: str | None = None) -> dict:
+    """This person's preferences in one organisation."""
+    raw = _raw(user)
+    if BY_ORG not in raw:
+        return {k: v for k, v in raw.items() if k != BY_ORG}
+    org = _org_for(user, org_id)
+    entry = (raw.get(BY_ORG) or {}).get(org) if org else None
     return entry if isinstance(entry, dict) else {}
 
 
-def always_allowed(user: User | None, key: str, row: dict | None) -> bool:
+def preference(user: User | None, key: str, org_id: str | None = None) -> dict:
+    entry = _stored(user, org_id).get(key)
+    return entry if isinstance(entry, dict) else {}
+
+
+def always_allowed(
+    user: User | None, key: str, row: dict | None, org_id: str | None = None
+) -> bool:
     """Does this person let Norm run this write without asking?
 
     Only when the tool allows it at all: changing an approval preference
@@ -477,13 +518,13 @@ def always_allowed(user: User | None, key: str, row: dict | None) -> bool:
 
     if user is None or not spec_rows.approval(row).get("allow_auto"):
         return False
-    return preference(user, key).get("always") is True
+    return preference(user, key, org_id).get("always") is True
 
 
-def level(user: User | None, key: str) -> str:
+def level(user: User | None, key: str, org_id: str | None = None) -> str:
     """This person's level for a tool with levels; the first (writes nothing)
     when they haven't chosen one."""
-    chosen = preference(user, key).get("level")
+    chosen = preference(user, key, org_id).get("level")
     return chosen if chosen in LEVELS else LEVELS[0]
 
 
@@ -496,19 +537,21 @@ def at_most(chosen: str, ceiling: str | None) -> str:
     return LEVELS[min(LEVELS.index(chosen), LEVELS.index(ceiling))]
 
 
-def receiving_settings(user: User | None) -> dict:
-    """The receiving policy for this person, in the shape the review service
-    reads: ``{"mode": level, <switch>: bool, ...}``. No person — a background
-    review — is the safest policy."""
+def receiving_settings(user: User | None, org_id: str | None = None) -> dict:
+    """The receiving policy for this person in an organisation, in the shape
+    the review service reads: ``{"mode": level, <switch>: bool, ...}``. No
+    person — a background review — is the safest policy."""
     from app.services import venue_autopilot as VA
 
-    entry = preference(user, RECEIVE_KEY)
+    entry = preference(user, RECEIVE_KEY, org_id)
     return VA.settings_from(
-        {"mode": level(user, RECEIVE_KEY), **(entry.get("options") or {})}
+        {"mode": level(user, RECEIVE_KEY, org_id), **(entry.get("options") or {})}
     )
 
 
 def receiving_settings_for_thread(db: Session, thread_id: str | None) -> dict:
+    """The conversation owner's policy in the CONVERSATION's organisation —
+    never whichever organisation they happen to have open elsewhere."""
     thread = (
         db.query(Thread).filter(Thread.id == thread_id).first() if thread_id else None
     )
@@ -517,7 +560,14 @@ def receiving_settings_for_thread(db: Session, thread_id: str | None) -> dict:
         if thread is not None and thread.user_id
         else None
     )
-    return receiving_settings(user)
+    org = thread.organization_id if thread is not None else None
+    if thread is not None and not org and thread.venue_id:
+        from app.db.models import Venue
+
+        org = (
+            db.query(Venue.organization_id).filter(Venue.id == thread.venue_id).scalar()
+        )
+    return receiving_settings(user, org)
 
 
 def validate(row: dict | None, value) -> dict:
@@ -564,21 +614,62 @@ def validate(row: dict | None, value) -> dict:
     return {"always": value == "always"}
 
 
-def set_preference(
-    db: Session, user: User, key: str, row: dict | None, value, *, via: str
-) -> dict:
-    """Save one preference for ``user`` and record who changed what, where.
+def _as_by_org(db: Session, user: User) -> dict:
+    """The store in its per-organisation shape. An older, one-for-everything
+    store becomes that same setting in every organisation the person is in."""
+    raw = _raw(user)
+    if BY_ORG in raw:
+        return {BY_ORG: {o: dict(v) for o, v in (raw[BY_ORG] or {}).items()}}
+    from app.services import active_org
 
-    ``via`` says where it was set: "settings", "card" or "chat".
-    """
+    flat = {k: v for k, v in raw.items() if k != BY_ORG}
+    return {
+        BY_ORG: {
+            m.organization_id: dict(flat)
+            for m in active_org.memberships_for(db, user.id)
+        }
+    }
+
+
+def set_preference(
+    db: Session,
+    user: User,
+    key: str,
+    row: dict | None,
+    value,
+    *,
+    via: str,
+    org_id: str | None = None,
+) -> dict:
+    """Save one preference for ``user`` in one organisation and record who
+    changed what, where. ``via`` says where it was set: "settings", "card" or
+    "chat"."""
     clean = validate(row, value)
-    prefs = dict(_stored(user))
+    from app.services import active_org
+
+    org = _org_for(user, org_id)
+    is_member = bool(org) and any(
+        m.organization_id == org for m in active_org.memberships_for(db, user.id)
+    )
+    if is_member:
+        store = _as_by_org(db, user)
+        prefs = dict(store[BY_ORG].get(org) or {})
+    else:
+        # In no organisation (or a platform admin outside one): the one store,
+        # as before — it becomes every organisation's when they join one.
+        org = None
+        store = None
+        prefs = {k: v for k, v in _raw(user).items() if k != BY_ORG}
     before = prefs.get(key)
     if clean == {"always": False}:
         prefs.pop(key, None)  # asking is the default; store nothing
     else:
         prefs[key] = clean
-    user.approval_preferences = prefs
+    if store is not None:
+        store[BY_ORG][org] = prefs
+    else:
+        store = prefs
+    user.approval_preferences = store
     flag_modified(user, "approval_preferences")
     db.add(
         Approval(
@@ -586,16 +677,18 @@ def set_preference(
             action="approval_preference_set",
             performed_by=user.email,
             user_id=user.id,
-            notes=f"{key}: {before} -> {clean} (via {via})",
+            notes=f"{key}: {before} -> {clean} (via {via}, organisation {org})",
         )
     )
     db.flush()
     return clean
 
 
-def describe(user: User | None, key: str, row: dict | None) -> str:
+def describe(
+    user: User | None, key: str, row: dict | None, org_id: str | None = None
+) -> str:
     """This person's setting for a tool, in words."""
-    return describe_entry(row, preference(user, key))
+    return describe_entry(row, preference(user, key, org_id))
 
 
 def describe_entry(row: dict | None, entry: dict | None) -> str:

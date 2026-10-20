@@ -93,7 +93,20 @@ def get_approval_preferences(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    return {"tools": [_view(user, e) for e in _entries(db, config_db, user)]}
+    # Settings are per organisation: say which one these are for.
+    from app.db.models import Organization
+    from app.services import active_org
+
+    org_id = active_org.org_id_for(db, user.id)
+    org = (
+        db.query(Organization).filter(Organization.id == org_id).first()
+        if org_id
+        else None
+    )
+    return {
+        "organization": {"id": org.id, "name": org.name} if org else None,
+        "tools": [_view(user, e) for e in _entries(db, config_db, user)],
+    }
 
 
 class SetPreference(BaseModel):

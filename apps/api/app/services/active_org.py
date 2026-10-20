@@ -49,7 +49,10 @@ def memberships_for(db: Session, user_id: str | None) -> list:
     return (
         db.query(OrganizationMembership)
         .filter(OrganizationMembership.user_id == user_id)
-        .order_by(OrganizationMembership.created_at, OrganizationMembership.id)
+        .order_by(
+            OrganizationMembership.created_at.asc().nulls_last(),
+            OrganizationMembership.id,
+        )
         .all()
     )
 

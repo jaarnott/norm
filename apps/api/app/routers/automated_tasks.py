@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db.engine import get_db
+from app.db.engine import get_config_db, get_db
 from app.db.models import (
     AutomatedTask,
     AutomatedTaskRun,
@@ -86,10 +86,16 @@ def _visible(query, db: Session, user: User):
     colleagues = db.query(OrganizationMembership.user_id).filter(
         OrganizationMembership.organization_id == membership.organization_id
     )
+    # A task belongs to the organisation it was made in (Oct 2026); one from
+    # before then, with none recorded, still shows to its creator's colleagues.
     return query.filter(
         or_(
-            AutomatedTask.created_by == user.id,
-            AutomatedTask.created_by.in_(colleagues),
+            AutomatedTask.organization_id == membership.organization_id,
+            AutomatedTask.organization_id.is_(None)
+            & or_(
+                AutomatedTask.created_by == user.id,
+                AutomatedTask.created_by.in_(colleagues),
+            ),
         )
     )
 
@@ -181,19 +187,59 @@ def _message_to_dict(m: Message) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def task_member(task, config_db: Session) -> str:
+    """The team member a task belongs to. Its own, unless it was filed under
+    no member ("norm" — every task made in chat since the router went in Sep
+    2026): then the member whose Apps own most of the tools it uses. Without
+    this those tasks showed on no member's Tasks board, so an owner couldn't
+    find, or switch on, the hourly invoice task he had just made (20 Oct 2026).
+    """
+    from app.agents.registry import MEMBERS
+
+    if task.agent_slug in MEMBERS:
+        return task.agent_slug
+    from collections import Counter
+
+    from app.services.entitlements import (
+        ALL_MEMBERS,
+        _catalog,
+        app_member,
+        tool_owners,
+    )
+
+    catalog = {a.slug: a for a in _catalog(config_db)}
+    by_action: dict[str, str] = {}
+    for key, app_slug in tool_owners(config_db).items():
+        app = catalog.get(app_slug)
+        member = app_member(app) if app is not None else None
+        if member and member != ALL_MEMBERS:
+            by_action.setdefault(key.split(".", 1)[-1], member)
+    votes = Counter(
+        by_action[t.split("__", 1)[-1].split(".", 1)[-1]]
+        for t in (task.tool_filter or [])
+        if isinstance(t, str) and t.split("__", 1)[-1].split(".", 1)[-1] in by_action
+    )
+    return votes.most_common(1)[0][0] if votes else task.agent_slug
+
+
 @router.get("/automated-tasks")
 async def list_tasks(
     agent_slug: str | None = None,
     status: str | None = None,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     query = _visible(db.query(AutomatedTask), db, user)
     if agent_slug:
-        query = query.filter(AutomatedTask.agent_slug == agent_slug)
+        # A task filed under no member is listed under the member its tools
+        # belong to (task_member).
+        query = query.filter(AutomatedTask.agent_slug.in_([agent_slug, "norm"]))
     if status:
         query = query.filter(AutomatedTask.status == status)
     tasks = query.order_by(AutomatedTask.created_at.desc()).all()
+    if agent_slug:
+        tasks = [t for t in tasks if task_member(t, config_db) == agent_slug]
     waiting = _waiting_counts(db, [t.id for t in tasks])
     return {
         "tasks": [

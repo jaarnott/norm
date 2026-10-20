@@ -737,6 +737,10 @@ class AutomatedTask(Base):
     )  # {hour, minute, day_of_week, day_of_month}
     status = Column(String, nullable=False, default="draft")  # active|paused|draft
     created_by = Column(String, ForeignKey("users.id"), nullable=True)
+    #: The organisation the task was made in (stamped on insert). Its runs act
+    #: there: its venues, and its creator's settings THERE — a person in two
+    #: organisations may run Autopilot in one and not the other (Oct 2026).
+    organization_id = Column(String, nullable=True, index=True)
     last_run_at = Column(DateTime(timezone=True), nullable=True)
     next_run_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
@@ -1949,18 +1953,53 @@ def _stamp_thread_organization(mapper, connection, target):
             target.organization_id = org
             return
     if target.user_id:
-        from app.services.active_org import requested_org
+        target.organization_id = _acting_org(connection, target.user_id)
 
-        rows = [
-            r[0]
-            for r in connection.execute(
-                select(OrganizationMembership.organization_id)
-                .where(OrganizationMembership.user_id == target.user_id)
-                .order_by(OrganizationMembership.created_at)
+
+def _acting_org(connection, user_id: str) -> str | None:
+    """The organisation a person is acting in when something of theirs is
+    made: the caller's scope (a conversation's or a task run's), else the one
+    the request asked for, among the person's memberships; else their oldest."""
+    from sqlalchemy import select
+
+    from app.services.active_org import requested_org
+    from app.services.caller_scope import current
+
+    rows = [
+        r[0]
+        for r in connection.execute(
+            select(OrganizationMembership.organization_id)
+            .where(OrganizationMembership.user_id == user_id)
+            .order_by(
+                OrganizationMembership.created_at.asc().nulls_last(),
+                OrganizationMembership.id,
             )
-        ]
-        want = requested_org.get()
-        target.organization_id = want if want in rows else (rows[0] if rows else None)
+        )
+    ]
+    scope = current()
+    for want in ((scope.org_id if scope else None), requested_org.get()):
+        if want and want in rows:
+            return want
+    return rows[0] if rows else None
+
+
+@_event.listens_for(AutomatedTask, "before_insert")
+def _stamp_task_organization(mapper, connection, target):
+    """A task belongs to its venue's organisation, else the one its creator
+    was acting in when they made it."""
+    if target.organization_id:
+        return
+    from sqlalchemy import select
+
+    if target.venue_id:
+        org = connection.execute(
+            select(Venue.organization_id).where(Venue.id == target.venue_id)
+        ).scalar()
+        if org:
+            target.organization_id = org
+            return
+    if target.created_by:
+        target.organization_id = _acting_org(connection, target.created_by)
 
 
 class InvoiceActivityEvent(Base):

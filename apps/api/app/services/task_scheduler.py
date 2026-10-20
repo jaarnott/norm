@@ -339,7 +339,53 @@ def _post_run_to_conversation(
         logger.exception("Could not post run %s to task conversation", str(run.id)[:12])
 
 
+def _task_org(task_id: str, db=None) -> str | None:
+    """The organisation a task acts in: its own, else its venue's, else its
+    conversation's. Never "the creator's oldest membership" — that ran a
+    Major Venues Group task against Lott Group's venues and settings."""
+    from app.db.engine import SessionLocal
+    from app.db.models import AutomatedTask, Thread, Venue
+
+    own = db is None
+    s = SessionLocal() if own else db
+    try:
+        task = s.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
+        if task is None:
+            return None
+        if task.organization_id:
+            return task.organization_id
+        if task.venue_id:
+            org = (
+                s.query(Venue.organization_id)
+                .filter(Venue.id == task.venue_id)
+                .scalar()
+            )
+            if org:
+                return org
+        if task.conversation_thread_id:
+            return (
+                s.query(Thread.organization_id)
+                .filter(Thread.id == task.conversation_thread_id)
+                .scalar()
+            )
+        return None
+    finally:
+        if own:
+            s.close()
+
+
 def execute_task_now(
+    task_id: str, mode: str = "live", db=None, unattended: bool = False
+) -> dict:
+    """Run a task as its own organisation: its venues, its creator's settings
+    THERE (services/active_org, services/approvals)."""
+    from app.services import active_org
+
+    with active_org.use(_task_org(task_id, db)):
+        return _execute_task_now(task_id, mode=mode, db=db, unattended=unattended)
+
+
+def _execute_task_now(
     task_id: str, mode: str = "live", db=None, unattended: bool = False
 ) -> dict:
     """Execute an automated task immediately. Returns the run result dict.

@@ -244,6 +244,8 @@ def _setup_tables():
             "ALTER TABLE report_charts ADD COLUMN IF NOT EXISTS data_meta JSON",
             # A conversation remembers its organisation (migration v5x7z9b2d4f6).
             "ALTER TABLE threads ADD COLUMN IF NOT EXISTS organization_id VARCHAR",
+            # A task remembers its organisation (migration wd9f1h3j5l7n).
+            "ALTER TABLE automated_tasks ADD COLUMN IF NOT EXISTS organization_id VARCHAR",
         ):
             conn.execute(_sqltext(ddl))
     yield

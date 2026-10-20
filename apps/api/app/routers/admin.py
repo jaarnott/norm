@@ -835,14 +835,18 @@ def automated_task_diagnostics(
     # means nothing is ever written, so it is the first thing to check on a
     # "it runs but nothing happens" report. A write that asks, unattended,
     # waits for its owner.
+    # Read in the TASK's organisation: the owner may run Autopilot in one
+    # organisation and ask in another (Oct 2026).
+    from app.services.task_scheduler import _task_org
+
+    task_org = _task_org(task.id, db)
     effective_levels = {
-        key: approvals.level(owner, key) for key in approvals.LEVELLED_ACTIONS.values()
+        key: approvals.level(owner, key, task_org)
+        for key in approvals.LEVELLED_ACTIONS.values()
     }
     always_allowed = sorted(
         key
-        for key, entry in (
-            (owner.approval_preferences if owner else None) or {}
-        ).items()
+        for key, entry in approvals._stored(owner, task_org).items()
         if isinstance(entry, dict) and entry.get("always") is True
     )
 
@@ -859,6 +863,7 @@ def automated_task_diagnostics(
             "next_run_at": _iso(task.next_run_at),
             "last_run_at": _iso(task.last_run_at),
             "venue_id": task.venue_id,
+            "organization_id": task_org,
             "tool_filter": tool_filter,
             "conversation_thread_id": task.conversation_thread_id,
             "overrides_next_run": task.overrides_next_run,

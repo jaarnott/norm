@@ -100,6 +100,8 @@ function segmentLabel(text: string) {
 
 export default function ApprovalPreferences() {
   const [tools, setTools] = useState<ToolPref[]>([]);
+  // These settings are per organisation: the one you're working in.
+  const [orgName, setOrgName] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -110,7 +112,9 @@ export default function ApprovalPreferences() {
     apiFetch('/api/approval-preferences')
       .then(async r => {
         if (!r.ok) throw new Error(`Could not load your approval settings (${r.status})`);
-        setTools((await r.json()).tools || []);
+        const d = await r.json();
+        setTools(d.tools || []);
+        setOrgName(d.organization?.name || null);
       })
       .catch(e => setError(e instanceof Error ? e.message : 'Could not load your approval settings'))
       .finally(() => setLoaded(true));
@@ -147,7 +151,7 @@ export default function ApprovalPreferences() {
       </h2>
       <p style={{ margin: '4px 0 16px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
         Norm asks before it changes anything, with a card that shows exactly what will change. Choose
-        where it needn&apos;t ask. These settings are yours alone — you can also change them from an
+        where it needn&apos;t ask. These settings are yours alone{orgName ? <> and apply in <strong>{orgName}</strong> only — switch organisation to set them for another</> : null}. You can also change them from an
         approval card, or by asking Norm.
       </p>
     </>
