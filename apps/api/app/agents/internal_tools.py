@@ -1836,9 +1836,13 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
             .all()
         )
         actions = {a[0] for a in used if a[0]}
-        # Always include utility + email tools
+        # Always include utility + email tools. The report email is
+        # norm_email.send_report_email: "send_email" (added here until Oct
+        # 2026) is a different tool — sending from a connected Gmail — and no
+        # task made in chat could email its summary (an hourly invoice task's
+        # first run said "the email tool wasn't available", 20 Oct 2026).
         actions |= {"resolve_dates", "search_tool_result"}
-        actions |= {"send_notification", "send_email"}
+        actions |= {"send_report_email"}
         # Remove internal-only tools not useful for scheduled runs
         internal_only = {
             "update_task_config",
@@ -1855,8 +1859,7 @@ def _create_automated_task(params: dict, db: Session, thread_id: str | None) -> 
         utility_tools = {
             "resolve_dates",
             "search_tool_result",
-            "send_notification",
-            "send_email",
+            "send_report_email",
         }
         domain_actions = actions - utility_tools
         if len(domain_actions) >= 1:

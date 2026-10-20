@@ -119,3 +119,63 @@ class TestRefusal:
     def test_every_op_maps_to_a_real_handler(self):
         assert set(it._TASK_OPS) == {"create", "update", "set_config", "set_override"}
         assert all(callable(fn) for fn in it._TASK_OPS.values())
+
+
+class TestANewTaskCanEmail:
+    def test_a_task_made_in_chat_gets_the_report_email_tool(
+        self, db_session, monkeypatch
+    ):
+        """Creation used to add "send_email" — another tool (sending from a
+        connected Gmail) — so a task made in chat could never email its
+        summary (an hourly invoice task's first run, 20 Oct 2026)."""
+        from app.db.models import ToolCall, User
+
+        user = User(
+            id=str(uuid.uuid4()),
+            email=f"t-{uuid.uuid4().hex[:6]}@x.com",
+            hashed_password="x",
+            full_name="T",
+            role="user",
+        )
+        db_session.add(user)
+        thread = Thread(user_id=user.id, domain="norm", intent="x")
+        db_session.add(thread)
+        db_session.flush()
+        db_session.add(
+            ToolCall(
+                id=str(uuid.uuid4()),
+                thread_id=thread.id,
+                iteration=1,
+                tool_name="loadedhub__review_and_receive_invoices",
+                connector_name="loadedhub",
+                action="review_and_receive_invoices",
+                method="GET",
+                status="executed",
+                input_params={},
+            )
+        )
+        db_session.flush()
+        import app.interpreter.llm_interpreter as li
+
+        monkeypatch.setattr(
+            li,
+            "call_llm",
+            lambda *a, **k: (
+                {
+                    "title": "Hourly receive",
+                    "prompt": "receive",
+                    "schedule_type": "hourly",
+                    "schedule_config": {"interval_minutes": 60},
+                },
+                None,
+            ),
+        )
+        out = it._create_automated_task(
+            {"intent": "receive invoices every hour and email me"},
+            db_session,
+            thread.id,
+        )
+        task = db_session.query(AutomatedTask).filter_by(id=out["data"]["id"]).one()
+        assert "send_report_email" in task.tool_filter
+        assert "send_email" not in task.tool_filter
+        assert "review_and_receive_invoices" in task.tool_filter
