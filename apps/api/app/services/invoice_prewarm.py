@@ -14,11 +14,9 @@ picks it up for free.
 
 Three things this deliberately does NOT do:
 
-- **It never creates a working document.** ``mcp/app_tools._receive_invoice``
-  uses "does an open received_invoice draft exist" as proof a model was shown
-  the invoice, "so a model that fabricates an invoice id it was never shown
-  cannot receive it". Pre-minting drafts for every outstanding invoice would
-  make that check vacuous for the whole venue.
+- **It never creates a working document.** An open received_invoice draft is
+  what a card and a batch work from; pre-minting drafts for every outstanding
+  invoice would put cards nobody opened on the activity page.
 - **It never writes to Loaded** and never starts a sensei study. It calls
   ``extract_invoice_copy`` and nothing else.
 - **It is not parallel.** The batch path fans extraction out 10-wide to shorten

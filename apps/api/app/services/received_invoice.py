@@ -1,8 +1,8 @@
 """Receiving a supplier invoice into Loaded — the shared primitives.
 
-Two things live here so both the web REST router (`routers/invoice_fixes.py`)
-and the MCP submit tool (`mcp/app_tools.py::norm__receive_invoice`) call ONE
-implementation, never a second hand-rolled PUT:
+Two things live here so the web REST router (`routers/invoice_fixes.py`) and
+Autopilot's batch (`services/invoice_review.py`) call ONE implementation,
+never a second hand-rolled PUT:
 
 - ``LoadedInvoiceClient`` — a thin authenticated LoadedHub client scoped to one
   venue connector (formerly ``invoice_fixes._Loaded``).

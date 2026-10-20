@@ -1404,26 +1404,6 @@ class TestPairLines:
         assert unpaired_rep == []
 
 
-class TestSuggestionSummaryEmbedded:
-    def test_summary_reads_confidence_issues_and_suggestions(self):
-        from app.mcp.receive_display import _suggestion_summary
-
-        det = DETAIL(fileId=None)
-        data = _review(detail=det)
-        s = _suggestion_summary(data)
-        assert "needs review" in s and "1 blocking issue(s)" in s
-        assert "no invoice is attached" in s
-
-        clean = _review()
-        s2 = _suggestion_summary(clean)
-        assert "ready to receive" in s2
-
-    def test_nothing_reviewed_returns_none(self):
-        from app.mcp.receive_display import _suggestion_summary
-
-        assert _suggestion_summary({"lines": []}) is None
-
-
 class TestDerivedSubtotal:
     def test_subtotal_is_never_suggested(self):
         # subtotal is derived from the lines; only tax/discount/total are

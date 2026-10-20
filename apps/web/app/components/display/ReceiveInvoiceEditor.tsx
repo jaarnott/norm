@@ -5,17 +5,11 @@
  *
  * The invoice analogue of PurchaseOrderEditor: it reads and PATCHes a Norm
  * working document (doc_type "received_invoice") so every edit persists — a
- * reload or the agent refining the draft both survive. It is dual-surface:
- *
- * - **Web** (the Invoices page inline-expand, and web chat): doc I/O over the
- *   session-auth working-documents REST; reference data from /invoice-fixes/*.
- * - **Claude** (embedded MCP App): the build swaps lib/api for the sandbox
- *   shim, which routes the /api/invoice-documents URL to norm__update_invoice_
- *   document (scope mcp:invoices:draft) and the receive POST to
- *   norm__receive_invoice. Units and orders are pre-baked into the block by
- *   receive_display.py; the other pickers' lists and the create buttons route
- *   to norm__invoice_catalog / norm__invoice_create. The PDF viewer degrades
- *   to "open in Norm".
+ * reload or the agent refining the draft both survive. Web only — the
+ * Invoices page, the activity page's record view and web chat: doc I/O over
+ * the session-auth working-documents REST; reference data from
+ * /invoice-fixes/*. (Its copy inside Claude was removed on 20 Oct 2026 —
+ * unused for 90 days.)
  *
  * The SERVER computes everything (app/services/invoice_review.py): the doc's
  * top-level working values are Loaded's draft + accepted suggestions + manual
@@ -370,21 +364,17 @@ export const INVOICE_ACTIONED_EVENT = 'norm:invoice-actioned';
 const LOADED_APP_URL = 'https://loadedhub.com/App/#';
 const loadedInvoiceUrl = (id: string) => `${LOADED_APP_URL}/stock/invoices/${id}`;
 const loadedPoUrl = (id: string) => `${LOADED_APP_URL}/stock/ordering/purchase-orders/${id}`;
-function fetchReferenceData(venueId: string, invoiceId: string, embedded: boolean): Promise<ReferenceData> {
+function fetchReferenceData(venueId: string): Promise<ReferenceData> {
   const hit = _referenceCache.get(venueId);
   if (hit) return hit;
-  // invoice_id: inside Claude these reads are tools that answer only for an
-  // invoice with an open draft (the web endpoints ignore it).
   const get = <T,>(path: string, key: string, fallback: T): Promise<T> =>
-    apiFetch(`/api/invoice-fixes/${path}?venue_id=${venueId}&invoice_id=${encodeURIComponent(invoiceId)}`)
+    apiFetch(`/api/invoice-fixes/${path}?venue_id=${venueId}`)
       .then((r) => (r.ok ? r.json() : {}))
       .then((d: Record<string, unknown>) => ((d?.[key] as T) ?? fallback))
       .catch(() => fallback);
-  // Units and orders come baked into the Claude block; it has no route to the
-  // order list at all.
   const p = Promise.all([
-    embedded ? Promise.resolve([] as Unit[]) : get<Unit[]>('units', 'units', []),
-    embedded ? Promise.resolve([] as PO[]) : get<PO[]>('purchase-orders', 'purchase_orders', []),
+    get<Unit[]>('units', 'units', []),
+    get<PO[]>('purchase-orders', 'purchase_orders', []),
     get<Supplier[]>('suppliers', 'suppliers', []),
     get<StockItem[]>('stock-items', 'stock_items', []),
     get<StockGroup[]>('stock-groups', 'groups', []),
@@ -502,7 +492,6 @@ function evalClears(data: DocData, issue: Issue): boolean {
 }
 
 export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayBlockProps) {
-  const embedded = !!props?.embedded;
   // Dojo: a supplier-spec regression run rendered in this component. The data
   // is an ephemeral local sandbox (no venue, no working document — every
   // network effect below is already guarded off); suggestions/issues/receive
@@ -541,7 +530,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const workingDocId = (data as Record<string, unknown>)?.working_document_id as string | undefined;
   const venueId = (props?.activeVenueId as string) || (data as Record<string, unknown>)?.venue_id as string | undefined;
 
-  // Reference data: baked into the block when embedded, fetched on the web.
+  // Reference data (the pickers' lists) is fetched once the venue is known.
   // `lines` is coerced to an array up front: opened from the Invoices page the
   // block carries only { working_document_id }, so the draft (lines, totals,
   // invoice_id) only arrives once the fetch below resolves.
@@ -663,9 +652,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // returns to the stock-item form, and (inside Claude) where to pin it.
   const [picker, setPicker] = useState<{
     kind: 'item' | 'unit' | 'brand'; lineId: string; mode: 'pick' | 'create';
-    query: string; back?: boolean; top?: number;
+    query: string; back?: boolean;
   } | null>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
   // Same two-step for creating the copy's supplier in Loaded (create-supplier).
   const [creatingSupplier, setCreatingSupplier] = useState(false);
   const [linkQuery, setLinkQuery] = useState('');
@@ -683,11 +671,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const uid = useRef(Math.random().toString(36).slice(2, 8)).current;
   const isPlatformAdmin = getStoredUser()?.role === 'admin';
 
-  // Embedded uses a distinct URL so the sandbox routes it to the invoice-scoped
-  // tools; the web uses the session-auth working-documents REST.
-  const docBase = embedded ? 'invoice-documents' : 'working-documents';
   const docUrl = workingDocId
-    ? (threadId ? `/api/threads/${threadId}/${docBase}/${workingDocId}` : `/api/${docBase}/${workingDocId}`)
+    ? (threadId ? `/api/threads/${threadId}/working-documents/${workingDocId}` : `/api/working-documents/${workingDocId}`)
     : null;
 
   // Bumped when a SIBLING card receives/deletes an invoice — refetches this
@@ -695,7 +680,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // the review effect below) and the reference data (PO list went stale).
   const [refreshTick, setRefreshTick] = useState(0);
   useEffect(() => {
-    if (embedded) return;
     const onActioned = (e: Event) => {
       const d = (e as CustomEvent).detail || {};
       if (!venueId || d.venueId !== venueId) return;
@@ -707,7 +691,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     };
     window.addEventListener(INVOICE_ACTIONED_EVENT, onActioned);
     return () => window.removeEventListener(INVOICE_ACTIONED_EVENT, onActioned);
-  }, [embedded, venueId, workingDocId]);
+  }, [venueId, workingDocId]);
 
   // Load the draft (both surfaces) — gives the latest lines + the version.
   useEffect(() => {
@@ -732,24 +716,20 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     return () => { live = false; };
   }, [docUrl, refreshTick]);
 
-  // Reference reads for the pickers. Inside Claude only for an invoice still
-  // to receive (a received card has nothing left to pick), and the baked
-  // units and orders are kept.
+  // Reference reads for the pickers, once the invoice is known.
   const refsInvoiceId = doc.invoice_id ? String(doc.invoice_id) : '';
-  const refsWanted = !!venueId && !!refsInvoiceId && !(embedded && doc.is_received);
+  const refsWanted = !!venueId && !!refsInvoiceId;
   useEffect(() => {
     if (!refsWanted || !venueId) return;
-    fetchReferenceData(venueId, refsInvoiceId, embedded).then((refs) => {
-      if (!embedded) {
-        setUnits(refs.units);
-        setPos(refs.purchase_orders);
-      }
+    fetchReferenceData(venueId).then((refs) => {
+      setUnits(refs.units);
+      setPos(refs.purchase_orders);
       setSuppliers(refs.suppliers);
       setStockItems(refs.stock_items);
       setStockGroups(refs.groups);
       setBrands(refs.brands);
     });
-  }, [embedded, venueId, refsInvoiceId, refsWanted, refreshTick]);
+  }, [venueId, refsInvoiceId, refsWanted, refreshTick]);
 
   // Fetch this card's OWN doc and adopt it (state + version). The review and
   // receive endpoints land on ALL twin docs server-side, and their response
@@ -771,12 +751,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // spec and re-reviews this invoice's stored draft (spec_dojo._heal_source_review
   // → heal_review). This open card has no other trigger to see that, so while the
   // "studying" flag is set we poll our own doc and adopt the healed version the
-  // moment it lands — the flag clears with it, ending the poll. Web only; the
-  // embedded chat card re-renders on its own and cannot refetch. Capped so a
+  // moment it lands — the flag clears with it, ending the poll. Capped so a
   // stuck/failed study never polls forever (the note + Re-analyse still work).
   const studyPollsRef = useRef(0);
   useEffect(() => {
-    if (embedded || !docLive.sensei_studying) { studyPollsRef.current = 0; return; }
+    if (!docLive.sensei_studying) { studyPollsRef.current = 0; return; }
     const id = setInterval(() => {
       studyPollsRef.current += 1;
       if (studyPollsRef.current > 20) { clearInterval(id); return; } // ~4 min cap
@@ -786,16 +765,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     // refetchOwnDoc reads only stable values (docUrl + setters); re-running on
     // its identity would needlessly reset the interval, so it is left out.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embedded, docLive.sensei_studying]);
+  }, [docLive.sensei_studying]);
 
   // The server review (POST /invoice-fixes/review) — builds/rebuilds the
-  // REVIEW_SCHEMA payload. Web-only (embedded cards are pre-reviewed at block
-  // build). force=true recomputes it; either way the card is rebuilt from
-  // Loaded and what was decided on it — accepted suggestions, then a person's
-  // own edits — is replayed (services/invoice_edits). Only Re-analyse (reset
-  // validation) starts the card from scratch.
+  // REVIEW_SCHEMA payload. force=true recomputes it; either way the card is
+  // rebuilt from Loaded and what was decided on it — accepted suggestions,
+  // then a person's own edits — is replayed (services/invoice_edits). Only
+  // Re-analyse (reset validation) starts the card from scratch.
   const runReview = async (explicit = false, force = false) => {
-    if (embedded || !venueId || !doc.invoice_id || doc.is_deleted) return;
+    if (!venueId || !doc.invoice_id || doc.is_deleted) return;
     // One review at a time — but NEVER a dead-end: if the review state gets
     // cleared while a run is in flight, queue exactly one follow-up run. (A
     // plain early-return left cards stranded on "not yet reviewed": the ref
@@ -848,10 +826,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // While the background dojo study runs, the on-screen review is the main-prompt
   // ("dud") read — a spec will replace it shortly. Don't dress it up as a finished
   // review: suppress the confidence chip, the suggestions block, the reviewed
-  // timestamp and the resolved units, and say "studying" instead. Web only.
-  const studying = !embedded && !!docLive.sensei_studying;
+  // timestamp and the resolved units, and say "studying" instead.
+  const studying = !!docLive.sensei_studying;
   useEffect(() => {
-    if (embedded || record || !venueId || !doc.invoice_id) return;
+    if (record || !venueId || !doc.invoice_id) return;
     if (doc.is_deleted) return; // tombstone — nothing left to review
     // (Re)build whenever the doc is not a reviewed REVIEW_SCHEMA payload — an
     // older shape (re-reviewed once, its decisions carried over), or one
@@ -862,7 +840,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     // cleared (server invalidation) — the guard above stops a re-run once
     // the review returns.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embedded, record, venueId, doc.invoice_id, reviewed]);
+  }, [record, venueId, doc.invoice_id, reviewed]);
 
 
   // Serialized patches: one at a time, each using the LATEST version.
@@ -1022,7 +1000,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // dropdown: accepting Norm's own "link it" suggestion left the number in the
   // header with no order date and "—" in every Qty Ordered cell.
   const refreshOrderReference = async () => {
-    if (embedded || !venueId || !workingDocId || !docRef.current.invoice_id) return;
+    if (!venueId || !workingDocId || !docRef.current.invoice_id) return;
     try {
       const res = await apiFetch('/api/invoice-fixes/draft', {
         method: 'POST',
@@ -1150,20 +1128,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     };
   };
 
-  // Deleting the draft is the one Loaded write still web-only (the card in
-  // Claude has no route to /accept); the creates reach Loaded from both
-  // surfaces. Said out loud rather than a ✓ that silently did nothing — the
-  // same honesty rule as the Can't-receive button: report what happened, not
-  // what was asked.
   const acceptSuggestion = (s: Suggestion) => {
     if (doneState) return;
-    if (embedded && s.kind === 'delete_invoice') {
-      setStatus('error');
-      setMessage('This one has to be done in Norm — open the invoice there to apply it.');
-      return;
-    }
     if (s.kind === 'delete_invoice') {
-      // A Loaded write (verified DELETE endpoint) — server applier, web only.
+      // A Loaded write (verified DELETE endpoint) — the server applies it.
       void acceptFix(s);
       return;
     }
@@ -1573,7 +1541,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // every press): the reset is recoverable by re-accepting, and the button
   // is pressed deliberately. Twin cards refetch via the actioned event.
   const reanalyse = async () => {
-    if (embedded || !venueId || !doc.invoice_id || reviewing) return;
+    if (!venueId || !doc.invoice_id || reviewing) return;
     setReviewing(true);
     try {
       const r = await apiFetch('/api/invoice-fixes/reset-validation', {
@@ -1607,7 +1575,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // copy (the already-received duplicate sibling — its file id rides on the
   // delete suggestion because received invoices can't be resolved by id).
   const openCopy = async (opts?: { fileId?: string; nameHint?: string }) => {
-    if (embedded || !venueId) return;
+    if (!venueId) return;
     const query = opts?.fileId
       ? `venue_id=${venueId}&file_id=${encodeURIComponent(opts.fileId)}`
       : `venue_id=${venueId}&invoice_id=${doc.invoice_id}`;
@@ -1640,9 +1608,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   };
 
   // Accept the delete_invoice suggestion: the ONE server-applied fix left —
-  // POST /invoice-fixes/accept with the suggestion's payload (web only).
+  // POST /invoice-fixes/accept with the suggestion's payload.
   const acceptFix = async (s: Suggestion) => {
-    if (embedded || !venueId) return;
+    if (!venueId) return;
     setAccepting(s.id);
     setMessage('');
     try {
@@ -2163,16 +2131,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // ---- The line's pickers (CatalogPicker) ---------------------------------
   // Tap the stock item, unit or brand box → search what Loaded has, pick, or
   // create a new one. One dialog for all three, so they behave alike.
-  const openPicker = (kind: 'item' | 'unit' | 'brand', l: Line, e?: React.MouseEvent<HTMLElement>) => {
-    let top: number | undefined;
-    if (embedded && e && rootRef.current) {
-      top = e.currentTarget.getBoundingClientRect().top - rootRef.current.getBoundingClientRect().top;
-    }
+  const openPicker = (kind: 'item' | 'unit' | 'brand', l: Line) => {
     // The search opens empty for all three; the stock-item list meanwhile
     // shows the best matches for the line (matchItems), so an item Loaded
     // already has shows up before anyone makes a second one.
     setLinkQuery('');
-    setPicker({ kind, lineId: l.id, mode: 'pick', query: '', top });
+    setPicker({ kind, lineId: l.id, mode: 'pick', query: '' });
   };
   // Switch the open picker to creating a new one. `back`: the create was
   // started from the stock-item form (its unit or brand), so it returns there.
@@ -2274,7 +2238,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       // Tell sibling cards: their duplicate/PO issues may have just flipped
       // (the server cleared conflicting cached reviews) and twin docs of this
       // invoice are now received.
-      if (!embedded && venueId) window.dispatchEvent(new CustomEvent(INVOICE_ACTIONED_EVENT, {
+      if (venueId) window.dispatchEvent(new CustomEvent(INVOICE_ACTIONED_EVENT, {
         detail: { venueId, invoiceId: doc.invoice_id, sourceDocId: workingDocId },
       }));
     } catch (e) {
@@ -2570,7 +2534,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       );
     }
     return (
-      <PickerDialog title={title} subtitle={subtitle} top={picker.top} onClose={close}>
+      <PickerDialog title={title} subtitle={subtitle} onClose={close}>
         {body}
       </PickerDialog>
     );
@@ -2644,7 +2608,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           {byNorm && !r.open && (
             <Badge title={decided?.at ? `by Norm at ${decided.at}` : 'by Norm'}>Applied by Norm</Badge>
           )}
-          {!embedded && links.length > 0 && (
+          {links.length > 0 && (
             <span style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
               {links.map((lk) =>
                 lk.href ? (
@@ -2667,7 +2631,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               Undo
             </Button>
           )}
-          {live && hasFix && !(embedded && destructive) && (
+          {live && hasFix && (
             <Button variant={destructive ? 'danger' : 'secondary'} size="xs" onClick={() => { void acceptRows([r]); }}
               disabled={busy} style={busy ? { opacity: 1 } : undefined} title={acceptTitle}>
               {busy ? 'Applying…' : 'Accept'}
@@ -2739,7 +2703,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const card = (
     // In the overlay the card fills its 1200px-capped wrapper; a 96vw width
     // used to overrun the wrapper's 16px gutters on a phone.
-    <div className="n-card" ref={rootRef} style={{ overflow: 'hidden', position: 'relative' }}>
+    <div className="n-card" style={{ overflow: 'hidden', position: 'relative' }}>
     {pickerView()}
     {/* Admin X-ray: the whole body renders read-only while a non-Norm view is
         on (the slider itself is span-based, so it stays clickable inside the
@@ -2782,7 +2746,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             {/* Admin X-ray slider: Norm's editable draft | the verbatim PDF
                 extraction | Loaded's pristine snapshot | the replica (our full
                 resolution, read-only). */}
-            {!embedded && isPlatformAdmin && docLive.loaded_snapshot && (
+            {isPlatformAdmin && docLive.loaded_snapshot && (
               <span role="group" aria-label="Data source"
                 title="Admin: flip every field between Norm's draft, what the AI read off the invoice, what Loaded currently holds, and the replica"
                 style={{ display: 'inline-flex', height: 30, padding: 2, gap: 2, boxSizing: 'border-box', border: `1px solid ${viewLoaded ? 'var(--brand-soft)' : 'var(--line-strong)'}`, borderRadius: 'var(--radius)', background: 'var(--bg)', fontSize: 'var(--fs-sm)', userSelect: 'none' }}>
@@ -2825,7 +2789,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 can't fix (attach/replace a copy, credit notes…). Received
                 invoices resolve directly; unreceived drafts don't resolve on
                 the invoice route, so they land on the invoices list. */}
-            {!embedded && !doc.is_deleted && (
+            {!doc.is_deleted && (
               <a href={doc.is_received ? loadedInvoiceUrl(doc.invoice_id) : `${LOADED_APP_URL}/stock/invoices`}
                 target="_blank" rel="noreferrer"
                 title={doc.is_received ? 'Open this invoice in Loaded' : 'Open Loaded invoices'}
@@ -2834,7 +2798,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 Open in Loaded<Icon icon={ExternalLink} size={14} />
               </a>
             )}
-            {!embedded && doc.file_id && (
+            {doc.file_id && (
               <IconButton
                 icon={FileText}
                 label={copyOpen ? 'Hide the invoice copy' : 'View invoice copy'}
@@ -3069,7 +3033,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                       Extracted tab. */}
                   {editable ? (
                     <>
-                      <button type="button" className="n-select" onClick={(e) => openPicker('item', l, e)}
+                      <button type="button" className="n-select" onClick={() => openPicker('item', l)}
                         title={l.item_name ? `${l.item_name} — change the stock item` : 'choose or create the stock item'}
                         style={{ ...pickerBox, ...(!l.linked_item_id ? fieldMissing : {}) }}>
                         {l.item_name || (l.linked_item_id ? l.description : 'Choose stock item')}
@@ -3124,7 +3088,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 </td>
                 <td style={{ color: l.brand && !struck ? 'var(--text-soft)' : 'var(--muted)', ...(l.brand ? {} : { whiteSpace: 'nowrap' }) }}>
                   {editable ? (
-                    <button type="button" className="n-select" onClick={(e) => openPicker('brand', l, e)}
+                    <button type="button" className="n-select" onClick={() => openPicker('brand', l)}
                       title={l.brand && !l.linked_brand_id
                         ? "Loaded has no record for this brand and won't receive the line until it does"
                         : 'choose a brand, no brand, or create one'}
@@ -3169,7 +3133,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', fontStyle: 'italic' }}>Studying…</span>
                   ) : (
                   <button type="button" className="n-select" disabled={!editable}
-                    onClick={(e) => openPicker('unit', l, e)}
+                    onClick={() => openPicker('unit', l)}
                     title={l.linked_unit_id ? 'change the unit' : 'choose or create the unit'}
                     style={{ ...pickerBox, minWidth: 120, ...unitField }}>
                     {/* The unresolved state lives INSIDE the box: an unlinked
@@ -3511,7 +3475,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               </div>
               {/* "Can't receive" was removed 19 Oct 2026 (owner): training
                   starts on its own when the supplier has no layout. */}
-              {!doneState && !embedded && openRows.length > 1 && (
+              {!doneState && openRows.length > 1 && (
                 <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   <Button size="xs" onClick={() => { void acceptRows(openRows); }} disabled={acceptingRows}
                     title="apply every fix Norm suggests, including creating what Loaded is missing">
@@ -3555,7 +3519,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
 
       {/* The one recovery control: re-analyse from scratch (confirmed —
           discards local edits and the accept record). */}
-      {!dojo && !collapsed && !embedded && !doneState && (
+      {!dojo && !collapsed && !doneState && (
         <div style={{ ...section, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, paddingTop: 8, paddingBottom: 8 }}>
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
             {reviewing ? 'Reviewing…' : studying ? 'Norm is studying this supplier…' : reviewed ? `Reviewed ${String(docLive.reviewed_at).replace('T', ' ').slice(0, 16)}` : 'Not yet reviewed'}
@@ -3625,7 +3589,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // The copy and the card side by side, half the width each — the dojo's
   // pane in the dojo's layout (Settings → Supplier specs).
   const copySrc =
-    copyOpen && !embedded && venueId && doc.file_id
+    copyOpen && venueId && doc.file_id
       ? `/api/invoice-fixes/file?venue_id=${venueId}&file_id=${encodeURIComponent(doc.file_id)}`
       : null;
   const view = copySrc ? (

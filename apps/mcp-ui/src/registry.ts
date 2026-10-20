@@ -21,7 +21,6 @@ import type { ComponentType } from 'react';
 import GenericTable from '../../web/app/components/display/GenericTable';
 import RosterEditor from '../../web/app/components/display/RosterEditor';
 import PurchaseOrderEditor from '../../web/app/components/display/PurchaseOrderEditor';
-import ReceiveInvoiceEditor from '../../web/app/components/display/ReceiveInvoiceEditor';
 import MenuEditor from '../../web/app/components/display/MenuEditor';
 import RecipeEditor from '../../web/app/components/display/RecipeEditor';
 import WorkflowResult from './WorkflowResult';
@@ -45,11 +44,6 @@ export const REGISTRY: Record<string, ComponentType<BlockProps>> = {
   // norm__update_working_document, and Place Order submits through
   // norm__place_stock_order — the user's click is the approval.
   purchase_order_editor: PurchaseOrderEditor as ComponentType<BlockProps>,
-  // The receive-invoice editor, working-document-backed like the PO editor:
-  // reference data pre-resolved (receive_display.py), edits patch the draft
-  // through norm__update_invoice_document, and Accept & Receive submits through
-  // norm__receive_invoice — the user's click is the approval.
-  receive_invoice_editor: ReceiveInvoiceEditor as ComponentType<BlockProps>,
   // The menu editor: reads the menu list + recipe options through
   // norm__menu_component_api (mcp:menus:read), edits locally, and Save writes
   // back to Loaded through norm__save_menu — the user's click is the approval.

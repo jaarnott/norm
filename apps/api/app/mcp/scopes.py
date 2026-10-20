@@ -55,7 +55,6 @@ ALLOWED_ACCESS_LEVELS = frozenset({ACCESS_READ, ACCESS_DRAFT, ACCESS_WRITE})
 _WRITE_SCOPES = frozenset(
     {
         "mcp:orders:submit",
-        "mcp:invoices:receive",
         "mcp:menus:write",
         "mcp:recipes:write",
     }
@@ -144,10 +143,9 @@ MCP_SCOPES: dict[str, McpScope] = {
         access_level=ACCESS_WRITE,
         requires=frozenset({"orders:read", "orders:write"}),
     ),
-    # Invoices — a distinct vocabulary from orders. Receiving an invoice is a
-    # different action and a different consent than placing an order (it marks
-    # stock received, links a PO and can change supplier variant units), so it
-    # gets its own scopes rather than reusing mcp:orders:*.
+    # Invoices — reads only. The invoice card inside Claude, and the draft and
+    # receive scopes it needed, were removed on 20 Oct 2026 (unused for 90
+    # days): invoices are reviewed and received on the web card.
     "mcp:invoices:read": McpScope(
         name="mcp:invoices:read",
         label="View supplier invoices",
@@ -155,28 +153,6 @@ MCP_SCOPES: dict[str, McpScope] = {
         "items, linked purchase orders and totals.",
         access_level=ACCESS_READ,
         requires=frozenset({"orders:read"}),
-    ),
-    "mcp:invoices:draft": McpScope(
-        name="mcp:invoices:draft",
-        label="Prepare invoices for receiving",
-        description="Prepare a supplier invoice for you to review and receive in "
-        "Norm — matching units, quantities and the purchase order. Claude cannot "
-        "receive it into Loaded.",
-        access_level=ACCESS_DRAFT,
-        requires=frozenset({"orders:read", "orders:write"}),
-    ),
-    "mcp:invoices:receive": McpScope(
-        name="mcp:invoices:receive",
-        label="Receive invoices you approve",
-        description="Lets YOU receive a prepared supplier invoice into Loaded by "
-        "pressing Accept & Receive inside the embedded invoice editor. This marks "
-        "the stock received, links the purchase order and may update the "
-        "supplier's unit on matched items. The editor's create buttons also add "
-        "the stock items, units, brands or suppliers a line needs to Loaded. "
-        "Claude cannot trigger these itself — only your click receives the "
-        "invoice, exactly as shown, or creates what you entered.",
-        access_level=ACCESS_WRITE,
-        requires=frozenset({"orders:read", "orders:write"}),
     ),
     # Menus — a venue's menus (sections, dishes, sell prices, linked recipes).
     # There is no stock/menu org scope, so these gate on orders:read/write (the

@@ -99,14 +99,6 @@ RECIPE_COMPONENT_API_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
 # they are created, not an invariant worth resting authorization on.
 ORDER_DOC_TYPES: frozenset[str] = frozenset({"order", "purchase_order"})
 
-# The kinds the INVOICE draft tools may open. Kept a separate set from
-# ORDER_DOC_TYPES, and reached only through the dedicated invoice doc tools
-# (scoped to mcp:invoices:draft) — so an orders scope can never open an invoice
-# draft, nor the reverse. MCP scope projection is subset/all-of, so a single
-# shared tool couldn't be gated on "orders OR invoices" without regressing
-# one-scope connectors; dedicated tools per kind is the clean split.
-INVOICE_DOC_TYPES: frozenset[str] = frozenset({"received_invoice"})
-
 # Keys kept when slimming stock items for transport. The purchase-order
 # editor reads exactly these (see PurchaseOrderEditor.tsx reference-data load).
 _STOCK_ITEM_KEYS = (
@@ -130,19 +122,6 @@ _SUPPLIER_VARIANT_KEYS = (
     "brandId",
     "defaultForSupplier",
 )
-
-
-# The invoice editor's catalogue reads and creates (norm__invoice_catalog /
-# norm__invoice_create). Fixed vocabularies: neither tool takes a path.
-CATALOG_LISTS = (
-    "units",
-    "brands",
-    "stock_groups",
-    "stock_items",
-    "suppliers",
-    "unit_spec",
-)
-CATALOG_KINDS = ("item", "unit", "brand", "supplier")
 
 
 class AppToolError(Exception):
@@ -199,60 +178,6 @@ def app_tool_defs(mcp_ui_enabled: bool) -> list[dict]:
                         "type": "array",
                         "description": "Patch operations, e.g. "
                         '{"op":"update_line","index":0,"fields":{"quantity":2}}.',
-                        "items": {"type": "object"},
-                    },
-                    "version": {
-                        "type": "integer",
-                        "description": "The draft version these ops were made "
-                        "against (optimistic concurrency).",
-                    },
-                },
-                "required": ["working_document_id", "ops", "version"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "norm__get_invoice_document",
-            "method": "GET",
-            "access": ACCESS_READ,
-            "scopes": frozenset({"mcp:invoices:draft"}),
-            "description": (
-                "Read a received-invoice draft by id. Used by Norm's embedded "
-                "invoice editor to load the draft it renders; you rarely need "
-                "to call it yourself."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "working_document_id": {
-                        "type": "string",
-                        "description": "The draft's id, from the workflow result.",
-                    }
-                },
-                "required": ["working_document_id"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "norm__update_invoice_document",
-            "method": "POST",
-            "access": ACCESS_DRAFT,
-            "scopes": frozenset({"mcp:invoices:draft"}),
-            "description": (
-                "Apply edits (unit, quantity, unit cost, link a purchase order) "
-                "to a received-invoice draft. This edits the DRAFT only — "
-                "nothing is received into Loaded. Used by Norm's embedded "
-                "invoice editor when the user edits lines."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "working_document_id": {"type": "string"},
-                    "ops": {
-                        "type": "array",
-                        "description": "Patch operations, e.g. "
-                        '{"op":"update_line","index":0,"fields":'
-                        '{"quantity_received":2}}.',
                         "items": {"type": "object"},
                     },
                     "version": {
@@ -428,109 +353,6 @@ def app_tool_defs(mcp_ui_enabled: bool) -> list[dict]:
                 "additionalProperties": False,
             },
         },
-        {
-            "name": "norm__receive_invoice",
-            "method": "POST",
-            "access": ACCESS_WRITE,
-            "scopes": frozenset({"mcp:invoices:receive"}),
-            "description": (
-                "Receive a supplier invoice into Loaded. ONLY call this when the "
-                "user has pressed Accept & Receive in the embedded invoice "
-                "editor — never on your own initiative. Norm receives the "
-                "reviewed draft exactly as the editor shows it."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "venue_id": {"type": "string"},
-                    "invoice": {
-                        "type": "object",
-                        "description": "{invoice_id} — the invoice the editor shows.",
-                    },
-                },
-                "required": ["venue_id", "invoice"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "norm__invoice_catalog",
-            "method": "GET",
-            "access": ACCESS_READ,
-            "scopes": frozenset({"mcp:invoices:draft"}),
-            "description": (
-                "Read the lists Norm's embedded invoice editor picks from — the "
-                "venue's units, brands, stock groups, stock items or suppliers "
-                "in Loaded — or what Loaded already has for a unit name. Used by "
-                "the editor; you rarely need to call it yourself."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "venue_id": {"type": "string"},
-                    "invoice_id": {
-                        "type": "string",
-                        "description": "The invoice the editor shows.",
-                    },
-                    "list": {"type": "string", "enum": list(CATALOG_LISTS)},
-                    "name": {
-                        "type": "string",
-                        "description": "unit_spec only: the unit name to check.",
-                    },
-                    "page": {
-                        "type": "integer",
-                        "description": "stock_items only: the page to read (0-based).",
-                    },
-                },
-                "required": ["venue_id", "invoice_id", "list"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "norm__invoice_create",
-            "method": "POST",
-            "access": ACCESS_WRITE,
-            "scopes": frozenset({"mcp:invoices:receive"}),
-            "description": (
-                "Create a stock item, unit, brand or supplier in Loaded so a line "
-                "of an invoice can be received. ONLY call this when the user has "
-                "pressed a create button in the embedded invoice editor — never "
-                "on your own initiative. A record Loaded already has under that "
-                "name is returned instead of a duplicate."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "venue_id": {"type": "string"},
-                    "invoice_id": {"type": "string"},
-                    "kind": {"type": "string", "enum": list(CATALOG_KINDS)},
-                    "name": {"type": "string"},
-                    "line_id": {
-                        "type": "string",
-                        "description": "item: the invoice line it is for.",
-                    },
-                    "group_id": {
-                        "type": "string",
-                        "description": "item: an existing stock group.",
-                    },
-                    "unit_id": {"type": "string", "description": "item: its unit."},
-                    "brand_id": {"type": "string", "description": "item: its brand."},
-                    "supplier_id": {
-                        "type": "string",
-                        "description": "item: the invoice's supplier.",
-                    },
-                    "ratio": {
-                        "type": "number",
-                        "description": "unit: its size in kg, litres or items.",
-                    },
-                    "unit_type": {
-                        "type": "string",
-                        "enum": ["Weight", "Volume", "Count"],
-                    },
-                },
-                "required": ["venue_id", "invoice_id", "kind"],
-                "additionalProperties": False,
-            },
-        },
     ]
 
 
@@ -627,10 +449,6 @@ def execute_app_tool(
         return _get_working_document(params, principal, db)
     if name == "norm__update_working_document":
         return _update_working_document(params, principal, db)
-    if name == "norm__get_invoice_document":
-        return _get_invoice_document(params, principal, db)
-    if name == "norm__update_invoice_document":
-        return _update_invoice_document(params, principal, db)
     if name == "norm__component_api":
         return _component_api(params, principal, db, config_db)
     if name == "norm__menu_component_api":
@@ -645,23 +463,13 @@ def execute_app_tool(
         return _save_recipe(params, principal, db, config_db)
     if name == "norm__place_stock_order":
         return _place_stock_order(params, principal, db, config_db)
-    if name == "norm__receive_invoice":
-        return _receive_invoice(params, principal, db, config_db)
     if name == "norm__save_menu":
         return _save_menu(params, principal, db, config_db)
-    if name == "norm__invoice_catalog":
-        return _invoice_catalog(params, principal, db, config_db)
-    if name == "norm__invoice_create":
-        return _invoice_create(params, principal, db, config_db)
     raise AppToolError(f"Unknown app tool: {name}")
 
 
 def _get_working_document(params: dict, principal: McpPrincipal, db: Session) -> dict:
     return _get_doc(params, principal, db, ORDER_DOC_TYPES)
-
-
-def _get_invoice_document(params: dict, principal: McpPrincipal, db: Session) -> dict:
-    return _get_doc(params, principal, db, INVOICE_DOC_TYPES)
 
 
 def _get_doc(
@@ -677,12 +485,6 @@ def _update_working_document(
     params: dict, principal: McpPrincipal, db: Session
 ) -> dict:
     return _update_doc(params, principal, db, ORDER_DOC_TYPES)
-
-
-def _update_invoice_document(
-    params: dict, principal: McpPrincipal, db: Session
-) -> dict:
-    return _update_doc(params, principal, db, INVOICE_DOC_TYPES)
 
 
 def _update_doc(
@@ -984,207 +786,3 @@ def _place_stock_order(
         "status_code": result.get("status_code"),
         "detail": result.get("data"),
     }
-
-
-def _receive_invoice(
-    params: dict, principal: McpPrincipal, db: Session, config_db: Session
-) -> dict:
-    """Receive one supplier invoice — the invoice editor's Accept & Receive.
-
-    The same receive as the web editor's (``received_invoice.receive_from_draft``):
-    the request is built server-side from the reviewed draft, and refused when
-    the invoice changed in Loaded since the review. It used to accept the
-    editor's own ``lines`` too — nothing sent them any more — and its
-    draft-driven branch skipped that changed-since-review check.
-
-    Stricter than ``_place_stock_order``: an open ``received_invoice`` draft
-    must exist for this invoice, so a model that fabricates an invoice id it
-    was never shown cannot receive it.
-    """
-    from fastapi import HTTPException
-
-    from app.services.received_invoice import (
-        LoadedInvoiceClient,
-        open_drafts,
-        receive_from_draft,
-    )
-
-    venue_id = str(params.get("venue_id") or "")
-    _authorize_venue_id(principal, venue_id, db)
-
-    inv = params.get("invoice")
-    if not isinstance(inv, dict) or not inv.get("invoice_id"):
-        raise AppToolError("invoice must be an object with an invoice_id.")
-    invoice_id = str(inv.get("invoice_id"))
-    if not open_drafts(db, venue_id, invoice_id):
-        # Indistinguishable from any other refusal — never confirm an id exists.
-        raise AppToolError("No open invoice draft to receive.")
-
-    logger.info(
-        "mcp_receive_invoice",
-        extra={
-            "venue_id": venue_id,
-            "invoice_id": invoice_id,
-            "user_id": principal.user_id,
-        },
-    )
-    try:
-        lh = LoadedInvoiceClient(db, config_db, venue_id)
-        result, _doc = receive_from_draft(
-            db,
-            config_db,
-            lh,
-            venue_id,
-            invoice_id,
-            mode="mcp_card",
-            user_id=principal.user_id,
-        )
-    except HTTPException as e:
-        # Upstream/validation refusal — inline data, not a tool error.
-        return {"submitted": False, "detail": e.detail}
-    except Exception as e:  # noqa: BLE001 — surface the reason next to the button
-        logger.warning("receive_invoice failed: %s", e)
-        return {"submitted": False, "detail": str(e)}
-    return {"submitted": True, "detail": result}
-
-
-def _invoice_scope(params: dict, principal: McpPrincipal, db: Session) -> tuple:
-    """(venue_id, invoice_id) for the invoice editor's catalogue tools — a venue
-    this person may act at AND an invoice with an open draft there, the same
-    bar as _receive_invoice: the tools exist for the card, not as a general
-    catalogue reader or writer."""
-    from app.services.received_invoice import open_drafts
-
-    venue_id = str(params.get("venue_id") or "")
-    _authorize_venue_id(principal, venue_id, db)
-    invoice_id = str(params.get("invoice_id") or "")
-    if not invoice_id or not open_drafts(db, venue_id, invoice_id):
-        raise AppToolError("No open invoice draft.")
-    return venue_id, invoice_id
-
-
-def _invoice_catalog(
-    params: dict, principal: McpPrincipal, db: Session, config_db: Session
-) -> dict:
-    """One of the invoice editor's picker lists — the web card's
-    /invoice-fixes/{units,brands,…} reads, through services/invoice_catalog.
-    Stock items are paged (a catalogue runs to a thousand items)."""
-    from app.services import invoice_catalog as catalog
-    from app.services.received_invoice import LoadedInvoiceClient
-
-    venue_id, _ = _invoice_scope(params, principal, db)
-    which = params.get("list")
-    if which not in CATALOG_LISTS:
-        raise AppToolError(f"list must be one of {', '.join(CATALOG_LISTS)}.")
-    try:
-        if which == "stock_items":
-            rows = catalog.stock_items(venue_id, db, config_db)
-            page = max(0, int(params.get("page") or 0))
-            chunk = rows[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]
-            more = (page + 1) * PAGE_SIZE < len(rows)
-            return {
-                "ok": True,
-                "stock_items": chunk,
-                "next_page": page + 1 if more else None,
-            }
-        if which == "suppliers":
-            return {
-                "ok": True,
-                "suppliers": catalog.suppliers(venue_id, db, config_db),
-            }
-        lh = LoadedInvoiceClient(db, config_db, venue_id)
-        if which == "unit_spec":
-            return {
-                "ok": True,
-                **catalog.suggest_unit(lh, str(params.get("name") or ""), db),
-            }
-        if which == "units":
-            return {"ok": True, "units": catalog.units(lh)}
-        if which == "brands":
-            return {"ok": True, "brands": catalog.brands(lh)}
-        return {"ok": True, "groups": catalog.stock_groups(lh)}
-    except catalog.CatalogError as e:
-        return {"ok": False, "detail": e.message}
-    except Exception as e:  # noqa: BLE001 — the picker says why it is empty
-        logger.warning("invoice_catalog %s failed: %s", which, e)
-        return {"ok": False, "detail": str(e)}
-
-
-def _invoice_create(
-    params: dict, principal: McpPrincipal, db: Session, config_db: Session
-) -> dict:
-    """The invoice editor's create buttons, inside Claude — the same creates
-    the web card makes (services/invoice_catalog), resolve-first, recorded the
-    same way. The click is the approval, as for Accept & Receive."""
-    from app.db.models import User
-    from app.services import card_actions
-    from app.services import invoice_catalog as catalog
-    from app.services.received_invoice import LoadedInvoiceClient
-
-    venue_id, invoice_id = _invoice_scope(params, principal, db)
-    kind = params.get("kind")
-    if kind not in CATALOG_KINDS:
-        raise AppToolError(f"kind must be one of {', '.join(CATALOG_KINDS)}.")
-    name = str(params.get("name") or "")
-    logger.info(
-        "mcp_invoice_create",
-        extra={
-            "venue_id": venue_id,
-            "invoice_id": invoice_id,
-            "kind": kind,
-            "user_id": principal.user_id,
-        },
-    )
-    try:
-        lh = LoadedInvoiceClient(db, config_db, venue_id)
-        if kind == "item":
-            out = catalog.create_item(
-                lh,
-                db,
-                config_db,
-                venue_id=venue_id,
-                invoice_id=invoice_id,
-                line_id=str(params.get("line_id") or ""),
-                name=name,
-                group_id=str(params.get("group_id") or ""),
-                unit_id=params.get("unit_id"),
-                brand_id=params.get("brand_id"),
-                supplier_id=params.get("supplier_id"),
-            )
-            created, label = out["created"], out["item_name"]
-        elif kind == "unit":
-            unit, created = catalog.get_or_create_unit(
-                lh,
-                name,
-                db,
-                ratio=params.get("ratio"),
-                unit_type=params.get("unit_type"),
-            )
-            out = {
-                "unit_id": unit.get("id"),
-                "unit_name": unit.get("name"),
-                "unit_ratio": unit.get("ratio"),
-            }
-            label = unit.get("name")
-        elif kind == "brand":
-            brand, created = catalog.get_or_create_brand(lh, name)
-            out = {"brand_id": brand["id"], "brand_name": brand["name"]}
-            label = brand["name"]
-        else:
-            supplier, created = catalog.get_or_create_supplier(
-                lh, name, catalog.draft_supplier_details(db, venue_id, invoice_id)
-            )
-            out = {"supplier_id": supplier["id"], "supplier_name": supplier["name"]}
-            label = supplier["name"]
-    except catalog.CatalogError as e:
-        return {"ok": False, "detail": e.message}
-    except Exception as e:  # noqa: BLE001 — surface the reason next to the button
-        logger.warning("invoice_create %s failed: %s", kind, e)
-        return {"ok": False, "detail": str(e)}
-    if created:
-        user = db.query(User).filter(User.id == principal.user_id).first()
-        if user is not None:
-            what = {"item": "a stock item"}.get(kind, f"a {kind}")
-            card_actions.record(db, user, venue_id, f"created {what}", f"'{label}'")
-            db.commit()
-    return {"ok": True, **out, "created": created}

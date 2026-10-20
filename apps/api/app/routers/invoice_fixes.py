@@ -20,7 +20,7 @@ single suggestion engine); this router wires it to the web editor:
 - ``/create-item``, ``/create-unit``, ``/create-brand``, ``/create-supplier``
   create catalogue entries so blocked lines become receivable; the
   reference-data GETs feed the editor's pickers. Both live in
-  ``services/invoice_catalog``, shared with the claude.ai card and autopilot.
+  ``services/invoice_catalog``, shared with autopilot.
 
 Loaded write contracts verified live in the LoadedHub test env (18 Jul 2026),
 written today by ``do_receive`` at receive time: a PO link is a PUT of the
@@ -686,8 +686,8 @@ def create_receive_draft(
     review survive.
 
     ``sync_mode="submit"`` deliberately: receiving is one atomic PUT, so edits
-    accumulate locally and flush once via ``norm__receive_invoice`` /
-    ``/invoice-fixes/receive`` — never per-keystroke through document_sync.
+    accumulate locally and flush once via ``/invoice-fixes/receive`` — never
+    per-keystroke through document_sync.
     """
     card_actions.venue_for(db, user, body.venue_id)
     from app.db.models import WorkingDocument

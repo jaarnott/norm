@@ -9,10 +9,8 @@
  * so the box doesn't shrink and jump as the search narrows or a form's notes
  * come and go.
  *
- * Its own small dialog rather than ui/Dialog because it also runs inside
- * Claude's card, where the iframe is as tall as the card: a full-page
- * overlay would centre the box far from the line that was tapped. There it
- * is pinned at the tapped line instead (`top`).
+ * Its own small dialog rather than ui/Dialog: a fixed-height box that keeps
+ * the page behind it still while it is open.
  */
 
 import { useEffect, useRef } from 'react';
@@ -36,11 +34,9 @@ export interface PickerOption {
   sub?: string | null;
 }
 
-export function PickerDialog({ title, subtitle, top, onClose, children }: {
+export function PickerDialog({ title, subtitle, onClose, children }: {
   title: string;
   subtitle?: string | null;
-  /** Inside Claude's card: pin the box this far from the card's top. */
-  top?: number;
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -58,25 +54,20 @@ export function PickerDialog({ title, subtitle, top, onClose, children }: {
       if (opener?.isConnected) opener.focus();
     };
   }, []);
-  const pinned = typeof top === 'number';
   // The page behind stays still while the dialog is open: a scroll there is
-  // another way iOS moves a fixed box. (Not inside Claude's card — that
-  // frame is the card's own height and never scrolls.)
+  // another way iOS moves a fixed box.
   useEffect(() => {
-    if (pinned) return;
     const body = document.body;
     const before = body.style.overflow;
     body.style.overflow = 'hidden';
     return () => { body.style.overflow = before; };
-  }, [pinned]);
+  }, []);
   return (
     <div
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
       style={{
-        position: pinned ? 'absolute' : 'fixed', inset: 0, zIndex: 1000, padding: 16,
-        display: 'flex', justifyContent: 'center',
-        alignItems: pinned ? 'flex-start' : 'center',
-        paddingTop: pinned ? Math.max(16, top - 40) : 16,
+        position: 'fixed', inset: 0, zIndex: 1000, padding: 16,
+        display: 'flex', justifyContent: 'center', alignItems: 'center',
         backgroundColor: 'rgba(26, 26, 26, 0.35)',
       }}
     >
@@ -87,7 +78,7 @@ export function PickerDialog({ title, subtitle, top, onClose, children }: {
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 460, maxWidth: '100%', height: pinned ? 480 : 'min(520px, 85vh)', overflow: 'hidden',
+          width: 460, maxWidth: '100%', height: 'min(520px, 85vh)', overflow: 'hidden',
           boxSizing: 'border-box', padding: 20, borderRadius: 'var(--radius-lg)',
           backgroundColor: 'var(--bg)', boxShadow: '0 12px 40px rgba(26, 26, 26, 0.18)',
           display: 'flex', flexDirection: 'column', gap: 12, lineHeight: 1.45,

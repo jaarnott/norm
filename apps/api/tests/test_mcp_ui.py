@@ -339,13 +339,10 @@ class TestBundleFreshness:
         "apps/web/app/components/display/GenericTable.tsx",
         "apps/web/app/components/display/RosterEditor.tsx",
         "apps/web/app/components/display/PurchaseOrderEditor.tsx",
-        "apps/web/app/components/display/ReceiveInvoiceEditor.tsx",
         "apps/web/app/components/display/MenuEditor.tsx",
         "apps/web/app/components/display/RecipeEditor.tsx",
         "apps/web/app/components/display/Combobox.tsx",
         "apps/web/app/components/display/recipeCost.ts",
-        "apps/web/app/components/display/invoiceReview.ts",
-        "apps/web/app/components/display/CatalogPicker.tsx",
         "apps/web/app/components/display/HtmlField.tsx",
         "apps/web/app/lib/pageDocument.ts",
         "apps/web/app/lib/sidePanel.ts",
@@ -372,7 +369,6 @@ class TestBundleFreshness:
         "apps/mcp-ui/src/registry.ts",
         "apps/mcp-ui/src/main.tsx",
         "apps/mcp-ui/src/sandbox-api.ts",
-        "apps/mcp-ui/src/web-only-stub.tsx",
         "apps/mcp-ui/src/WorkflowResult.tsx",
         "apps/mcp-ui/vite.config.ts",
         "apps/mcp-ui/index.html",
@@ -438,8 +434,12 @@ class TestSharedTokens:
             for selector in (":root {", ':root[data-theme="light"] {'):
                 light = self._vars(css, selector)
                 shared = sorted(set(web) & set(light))
-                assert len(shared) >= 10, f"expected the shared palette in {rel} {selector}, got {shared}"
-                mismatched = {k: (light[k], web[k]) for k in shared if light[k] != web[k]}
+                assert len(shared) >= 10, (
+                    f"expected the shared palette in {rel} {selector}, got {shared}"
+                )
+                mismatched = {
+                    k: (light[k], web[k]) for k in shared if light[k] != web[k]
+                }
                 assert not mismatched, (
                     f"{rel} {selector} disagrees with tokens.css (theirs, web): {mismatched}"
                 )
