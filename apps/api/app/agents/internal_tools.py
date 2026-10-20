@@ -1922,6 +1922,25 @@ Return ONLY valid JSON — no markdown, no explanation:
         schedule_type = "manual"
         schedule_config = {}
 
+    # A schedule that can't run is not saved: "every hour" once came back as
+    # daily at hour -1, and the owner's Activate failed until it was fixed by
+    # hand (20 Oct 2026). Hourly wording becomes the hourly schedule; anything
+    # else goes back to the model to ask again.
+    from app.services.task_scheduler import schedule_problem
+
+    problem = schedule_problem(schedule_type, schedule_config)
+    if problem:
+        wording = f"{intent} {schedule_hint}".lower()
+        if "every hour" in wording or "hourly" in wording:
+            schedule_type, schedule_config = "hourly", {"interval_minutes": 60}
+        else:
+            return {
+                "success": False,
+                "data": {},
+                "error": f"The schedule couldn't be read: {problem}. Say when "
+                "it should run in plain words (e.g. 'daily at 7am') and try again.",
+            }
+
     task = AutomatedTask(
         title=title,
         description=description,
@@ -1991,7 +2010,13 @@ def _list_automated_tasks(params: dict, db: Session, thread_id: str | None) -> d
             cdb.close()
     return {
         "success": True,
-        "data": {"tasks": [_automated_task_to_dict(t) for t in tasks]},
+        # The page's member, so the board reloads the same list after a
+        # button: it took the first task's member, now often "norm", and the
+        # list emptied after Activate (20 Oct 2026).
+        "data": {
+            "tasks": [_automated_task_to_dict(t) for t in tasks],
+            "agent_slug": agent_slug,
+        },
     }
 
 
@@ -2044,6 +2069,21 @@ def _update_automated_task(params: dict, db: Session, thread_id: str | None) -> 
     task, why = _task_to_update(params, db, thread_id)
     if task is None:
         return {"success": False, "data": {}, "error": why}
+
+    from app.services.task_scheduler import schedule_problem
+
+    status = params.get("status", task.status)
+    if status == "active":
+        problem = schedule_problem(
+            params.get("schedule_type", task.schedule_type),
+            params.get("schedule_config", task.schedule_config),
+        )
+        if problem:
+            return {
+                "success": False,
+                "data": {},
+                "error": f"Not changed: {problem}. Give a schedule it can run on.",
+            }
 
     for field in _TASK_FIELDS:
         if field in params:

@@ -73,6 +73,44 @@ def compute_next_run_at(
     return nxt.astimezone(timezone.utc) if nxt else None
 
 
+SCHEDULE_TYPES = ("manual", "hourly", "daily", "weekly", "monthly")
+
+
+def schedule_problem(schedule_type: str | None, config: dict | None) -> str | None:
+    """Why a schedule can't run, in words — or None when it can.
+
+    A task made in chat was saved as "daily at hour -1" for "every hour"; its
+    owner's Activate then failed with a server error twice and the task
+    stayed a draft (20 Oct 2026).
+    """
+    config = config or {}
+    if schedule_type not in SCHEDULE_TYPES:
+        return f"its schedule type {schedule_type!r} isn't one of {', '.join(SCHEDULE_TYPES)}"
+    if schedule_type in ("manual", "hourly"):
+        return None
+
+    def _int(key, default):
+        try:
+            return int(config.get(key, default))
+        except (TypeError, ValueError):
+            return None
+
+    hour, minute = _int("hour", 9), _int("minute", 0)
+    if hour is None or not 0 <= hour <= 23:
+        return f"it runs {schedule_type} at hour {config.get('hour')!r}, which isn't an hour of the day (0–23)"
+    if minute is None or not 0 <= minute <= 59:
+        return f"it runs at minute {config.get('minute')!r}, which isn't 0–59"
+    if schedule_type == "monthly":
+        day = _int("day_of_month", 1)
+        if day is None or not 1 <= day <= 31:
+            return f"it runs on day {config.get('day_of_month')!r} of the month, which isn't 1–31"
+    if schedule_type == "weekly":
+        day = str(config.get("day_of_week", "monday"))[:3].lower()
+        if day not in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
+            return f"it runs on {config.get('day_of_week')!r}, which isn't a day of the week"
+    return None
+
+
 def apply_schedule(task) -> None:
     """Refresh ``task.next_run_at`` from its current status + schedule.
 

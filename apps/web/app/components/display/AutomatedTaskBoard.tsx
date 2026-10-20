@@ -92,10 +92,19 @@ export default function AutomatedTaskBoard({ data, props, onAction }: DisplayBlo
 
   useEffect(() => { setTasks(initialTasks); }, [data]);
 
-  const agentSlug = tasks.length > 0 ? tasks[0].agent_slug : '';
+  // The member this list is for: the one the page loaded it for. The first
+  // task's own member was used, and a task made in chat is filed under
+  // "norm" — so after Activate the reload asked for "norm" and the list
+  // emptied (20 Oct 2026).
+  const agentSlug =
+    ((data as Record<string, unknown>)?.agent_slug as string | undefined)
+    || (props?.agent_slug as string | undefined)
+    || (tasks.length > 0 ? tasks[0].agent_slug : '');
+  // Why the last button didn't work, in the server's words.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    const res = await apiFetch(`/api/automated-tasks?agent_slug=${agentSlug}`);
+    const res = await apiFetch(`/api/automated-tasks?agent_slug=${encodeURIComponent(agentSlug)}`);
     if (res.ok) {
       const result = await res.json();
       setTasks(result.tasks || []);
@@ -114,7 +123,12 @@ export default function AutomatedTaskBoard({ data, props, onAction }: DisplayBlo
   const handlePauseResume = useCallback(async (e: React.MouseEvent, task: AutomatedTask) => {
     e.stopPropagation();
     const endpoint = task.status === 'active' ? 'pause' : 'resume';
-    await apiFetch(`/api/automated-tasks/${task.id}/${endpoint}`, { method: 'POST' });
+    setActionError(null);
+    const res = await apiFetch(`/api/automated-tasks/${task.id}/${endpoint}`, { method: 'POST' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      setActionError(typeof body?.detail === 'string' ? body.detail : `That didn't work (error ${res.status}).`);
+    }
     await reload();
   }, [reload]);
 
@@ -281,6 +295,14 @@ export default function AutomatedTaskBoard({ data, props, onAction }: DisplayBlo
   return (
     <div data-testid="auto-task-board" style={isPage ? undefined : { padding: 8 }}>
       {isPage ? <PageHeader title="Automated Tasks" meta={countLabel} /> : compactTitle(countLabel)}
+      {actionError && (
+        <div role="alert" style={{
+          margin: '0 0 12px', padding: '8px 12px', borderRadius: 'var(--radius)',
+          fontSize: 'var(--fs-sm)', color: 'var(--error)', backgroundColor: 'var(--error-bg)',
+        }}>
+          {actionError}
+        </div>
+      )}
       <div ref={measure}>
         {!wide ? cards : isPage ? table : (
           // In a conversation the table sits on its own white card; a wide

@@ -190,6 +190,23 @@ def _message_to_dict(m: Message) -> dict:
 from app.services.task_scheduler import task_member  # noqa: E402
 
 
+def _check_schedule(task) -> None:
+    """A schedule that can't run is a 400 that says why, not a server error
+    (20 Oct 2026: Activate failed twice on "daily at hour -1"). Only an
+    active task needs a runnable schedule."""
+    from app.services.task_scheduler import schedule_problem
+
+    if task.status != "active":
+        return
+    problem = schedule_problem(task.schedule_type, task.schedule_config)
+    if problem:
+        raise HTTPException(
+            400,
+            f"This task can't be switched on: {problem}. Change its schedule "
+            "first (open the task and ask Norm to fix it).",
+        )
+
+
 @router.get("/automated-tasks")
 async def list_tasks(
     agent_slug: str | None = None,
@@ -274,6 +291,7 @@ async def update_task(
 
     from app.services.task_scheduler import apply_schedule
 
+    _check_schedule(task)
     apply_schedule(task)
     db.commit()
 
@@ -308,6 +326,7 @@ async def pause_task(
 
     from app.services.task_scheduler import apply_schedule
 
+    _check_schedule(task)
     apply_schedule(task)
     db.commit()
     return _automated_task_to_dict(task)
@@ -322,6 +341,7 @@ async def resume_task(
 
     from app.services.task_scheduler import apply_schedule
 
+    _check_schedule(task)
     apply_schedule(task)
     db.commit()
     return _automated_task_to_dict(task)
