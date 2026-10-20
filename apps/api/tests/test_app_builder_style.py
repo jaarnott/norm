@@ -49,3 +49,36 @@ def test_the_repo_prompt_already_carries_the_new_rules():
     assert "one emoji" not in agent.SYSTEM_PROMPT
     save_app = next(t for t in agent.BUILDER_TOOLS if t["action"] == "save_app")
     assert save_app["field_descriptions"]["icon"] == style.SAVE_APP_ICON_NEW
+
+
+def test_the_storage_section_is_in_the_repo_prompt_too():
+    """Apps can keep records; the live skill and the repo prompt both say so,
+    in the same words (thread 029ca35b, 20 Oct 2026: Norm said they couldn't)."""
+    storage = _load("sync_app_builder_storage")
+    assert storage.STORAGE_SECTION in agent.SYSTEM_PROMPT
+    assert agent.SYSTEM_PROMPT.index(
+        storage.STORAGE_SECTION
+    ) < agent.SYSTEM_PROMPT.index(storage.ANCHOR)
+    # applying it twice changes nothing
+    once, changed = storage.patch(
+        agent.SYSTEM_PROMPT.replace(storage.STORAGE_SECTION, "")
+    )
+    assert changed and storage.patch(once) == (once, False)
+
+
+def test_the_role_migration_gives_what_the_code_defines():
+    """Role permissions are written to the database once; a scope added to the
+    code later needs a migration. The app scopes' one matches the code."""
+    import importlib.util as _u
+
+    from app.auth.permissions import STANDARD_ROLES
+
+    path = (
+        REPO / "apps/api/alembic/versions/vc8e0g2i4k6m_app_scopes_for_system_roles.py"
+    )
+    spec = _u.spec_from_file_location("mig", path)
+    mig = _u.module_from_spec(spec)
+    spec.loader.exec_module(mig)
+    for role, defn in STANDARD_ROLES.items():
+        want = {p for p in defn["permissions"] if p.startswith("apps:")}
+        assert set(mig.GRANTS.get(role, ())) == want, role

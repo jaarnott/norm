@@ -3705,7 +3705,22 @@ def _list_app_capabilities(params: dict, db: Session, thread_id: str | None) -> 
         }
         for s in MCP_SCOPES.values()
     ]
-    return {"success": True, "data": {"actions": actions, "scopes": scopes}}
+    # Storage isn't an action, so it never appeared here — and Norm told an
+    # owner an app "can't store records" (thread 029ca35b, 20 Oct 2026).
+    storage = {
+        "available": True,
+        "declare": 'spec.storage = {"namespace": "<unique snake_case>", '
+        '"collections": ["<name>", ...]}',
+        "ui": "window.norm.storage.list/get/create/update/remove(collection, ...)",
+        "logic": "store.list/get/put/delete/count(collection, ...)",
+        "notes": "Rows belong to the organisation and are seen by everyone the "
+        "app is shared with. Apps built here can't send email. See the "
+        "build_an_app skill, 'Keeping records'.",
+    }
+    return {
+        "success": True,
+        "data": {"actions": actions, "scopes": scopes, "storage": storage},
+    }
 
 
 @register("norm", "save_app")

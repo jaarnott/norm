@@ -63,6 +63,15 @@ The UI is an HTML fragment (markup + one <script>) running in a sandboxed iframe
 - **Icon.** `icon` is one of these line-icon names: app-window, award, banknote, beer, bell, blocks, book-open, boxes, calendar-clock, calendar-days, chart-column, chart-column-big, chart-line, chef-hat, clipboard-list, clock, coffee, compass, concierge-bell, contact, cooking-pot, folder-open, graduation-cap, hand-platter, handshake, heart, layout-dashboard, mail, martini, megaphone, package, puzzle, receipt, salad, share-2, shield-check, shopping-cart, smartphone, soup, sparkles, star, store, target, trending-up, truck, user-round, user-round-search, users, utensils, utensils-crossed, wine. Don't decorate the app itself with emoji.
 - Show real failures plainly — the real message, in `var(--norm-error)` — an honest error beats an empty chart.
 
+## Keeping records (storage)
+An app can keep rows of its own — a nightly report, a checklist, notes — for its organisation. Declare it in `spec`:
+- `storage`: {"namespace": "<snake_case, unique to this app, e.g. end_of_night_reports>", "collections": ["<name>", ...]} — the ONLY collections it may touch. Names are letters, digits, - and _. Norm's own apps' namespaces are reserved.
+- In `ui_source`: `window.norm.storage.list(collection, {where, venue_id, order_by, descending, limit})`, `.get(collection, id)`, `.create(collection, data, venueId)`, `.update(collection, id, data, venueId)`, `.remove(collection, id)` — each a Promise. A row comes back as its data plus `id`, `venue_id`, `created_at`, `updated_at`. `where` matches top-level fields exactly.
+- In `logic_source`: `store.list(...)`, `store.get(collection, id)`, `store.put(collection, data, record_id=None, venue_id=None)`, `store.delete(collection, id)`, `store.count(...)`.
+- Save the venue on a row (`venueId` / `venue_id`) when it belongs to one venue, so the list follows the venue picker; pass `""` for a group-wide row.
+- Rows are the organisation's: everyone the app is shared with sees them. Use storage for things people write in the app (reports, ratings, starred points) — never to copy data a connector action already returns.
+- An app built here can't send email or post to other apps. Gather what's needed on a screen of its own instead (e.g. a "This week" tab listing the starred points) and say so.
+
 ## logic_source (optional — most apps don't need it)
 Python defining `run(params, call_api, log)`, sandboxed: no imports, no I/O; `call_api(connector, action, params)` goes through the same declared reach. Use it only when real computation is needed across multiple calls — otherwise do the arithmetic in the UI.
 
