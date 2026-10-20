@@ -2401,6 +2401,45 @@ def _create_purchase_order(params: dict, db: Session, thread_id: str | None) -> 
     return {"success": True, "data": data}
 
 
+def _with_default_venue(params: dict, db: Session, thread_id: str | None) -> dict:
+    """A tool call that names no venue, from someone with ONE venue in the
+    conversation's organisation, runs for that venue.
+
+    The model is offered a "venue" field only when the person has more than
+    one venue (prompt_builder), so with one it never sends one. Tools whose
+    data calls fall back to the organisation's only login coped; tools that
+    pass the venue on did not — "receive all outstanding invoices" at The Lott
+    Cafe failed three times with "venue not found" (thread 9df5c19a, 20 Oct
+    2026). The dashboard and claude.ai path (tool_executor) already filled the
+    venue in. Never overrides a venue the call names or a group-wide
+    ``venues`` call, and does nothing for someone with several venues: there
+    the model was offered the field and chose.
+    """
+    if not thread_id or any(
+        params.get(k) for k in ("venue", "venue_id", "venue_name", "venues")
+    ):
+        return params
+    from app.db.models import Thread, UserVenueAccess, Venue
+    from app.services.caller_scope import current
+
+    thread = db.query(Thread).filter(Thread.id == thread_id).first()
+    if thread is None or not thread.user_id:
+        return params
+    scope = current()
+    org = scope.org_id if scope is not None and scope.org_id else thread.organization_id
+    q = (
+        db.query(Venue)
+        .join(UserVenueAccess, UserVenueAccess.venue_id == Venue.id)
+        .filter(UserVenueAccess.user_id == thread.user_id)
+    )
+    if org:
+        q = q.filter(Venue.organization_id == org)
+    venues = q.limit(2).all()
+    if len(venues) != 1:
+        return params
+    return {**params, "venue_id": venues[0].id, "venue": venues[0].name}
+
+
 def execute_consolidator(
     config: dict, input_params: dict, db: Session, thread_id: str | None
 ) -> dict:
@@ -2463,6 +2502,8 @@ def execute_consolidator(
         )
         resolved = approvals.at_most(resolved, passed_mode)
         input_params = {**input_params, "mode": resolved}
+
+    input_params = _with_default_venue(input_params, db, thread_id)
 
     from app.connectors.function_executor import execute_function
 

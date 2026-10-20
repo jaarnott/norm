@@ -323,3 +323,48 @@ class TestNoFirstMembershipLookups:
             if pat.search(f.read_text()):
                 bad.append(str(f.relative_to(root)))
         assert not bad, f"use active_org.membership_for instead: {bad}"
+
+
+class TestAToolCallWithNoVenue:
+    """The model is offered a "venue" field only when the person has more than
+    one venue. With one it sends none, and the receive tool failed with
+    "venue not found" at The Lott Cafe (thread 9df5c19a, 20 Oct 2026)."""
+
+    ECHO = (
+        "def run(params, call_api, log):\n"
+        "    return {'venue': params.get('venue'), 'venue_id': params.get('venue_id'),\n"
+        "            'venues': params.get('venues')}\n"
+    )
+
+    def _run(self, db_session, user, org, **params):
+        from app.agents.internal_tools import execute_consolidator
+        from app.db.models import Thread
+
+        t = Thread(user_id=user.id, domain="norm", intent="x", organization_id=org.id)
+        db_session.add(t)
+        db_session.flush()
+        with caller_scope.use(caller_scope.Scope(org.id, user_id=user.id)):
+            out = execute_consolidator(
+                {"function_code": self.ECHO}, params, db_session, t.id
+            )
+        return out["data"]
+
+    def test_one_venue_in_the_organisation_is_used(self, db_session, two_orgs):
+        # one venue in A (and another in B, which doesn't count)
+        out = self._run(db_session, two_orgs.user, two_orgs.a)
+        assert (out["venue"], out["venue_id"]) == ("Venue A", two_orgs.va.id)
+
+    def test_a_named_venue_or_a_group_call_is_left_alone(self, db_session, two_orgs):
+        out = self._run(db_session, two_orgs.user, two_orgs.a, venue="Somewhere")
+        assert out["venue"] == "Somewhere" and out["venue_id"] is None
+        out = self._run(db_session, two_orgs.user, two_orgs.a, venues="all")
+        assert out["venue"] is None and out["venues"] == "all"
+
+    def test_with_several_venues_the_model_chose_and_nothing_is_filled(
+        self, db_session, two_orgs
+    ):
+        grant_venue(
+            db_session, two_orgs.user, make_venue(db_session, "Venue A2", two_orgs.a)
+        )
+        out = self._run(db_session, two_orgs.user, two_orgs.a)
+        assert out["venue"] is None and out["venue_id"] is None
