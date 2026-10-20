@@ -1954,23 +1954,41 @@ def _list_automated_tasks(params: dict, db: Session, thread_id: str | None) -> d
     query = db.query(AutomatedTask)
     scope = current()
     if scope is not None and not scope.unrestricted:
+        # A task belongs to the organisation it was made in (Oct 2026); one
+        # from before then, with none recorded, by its venue or its creator.
         members = db.query(OrganizationMembership.user_id).filter(
             OrganizationMembership.organization_id == scope.org_id
         )
         query = query.filter(
             or_(
-                AutomatedTask.venue_id.in_(venue_query(db).with_entities(Venue.id)),
-                AutomatedTask.created_by.in_(members),
+                AutomatedTask.organization_id == scope.org_id,
+                AutomatedTask.organization_id.is_(None)
+                & or_(
+                    AutomatedTask.venue_id.in_(venue_query(db).with_entities(Venue.id)),
+                    AutomatedTask.created_by.in_(members),
+                ),
             )
         )
     agent_slug = params.get("agent_slug")
     status = params.get("status")
     if agent_slug:
-        query = query.filter(AutomatedTask.agent_slug == agent_slug)
+        # The Tasks pages load through here. A task made in chat is filed
+        # under "norm" and matched no member, so it showed on no page — an
+        # owner couldn't find the hourly task he'd just made (20 Oct 2026).
+        query = query.filter(AutomatedTask.agent_slug.in_([agent_slug, "norm"]))
     if status:
         query = query.filter(AutomatedTask.status == status)
 
     tasks = query.order_by(AutomatedTask.created_at.desc()).all()
+    if agent_slug:
+        from app.db.engine import _ConfigSessionLocal
+        from app.services.task_scheduler import task_member
+
+        cdb = _ConfigSessionLocal()
+        try:
+            tasks = [t for t in tasks if task_member(t, cdb) == agent_slug]
+        finally:
+            cdb.close()
     return {
         "success": True,
         "data": {"tasks": [_automated_task_to_dict(t) for t in tasks]},

@@ -755,3 +755,38 @@ def _execute_task_now(
         config_db.close()
         if owns_session:
             db.close()
+
+
+def task_member(task, config_db) -> str:
+    """The team member a task belongs to. Its own, unless it was filed under
+    no member ("norm" — every task made in chat since the router went in Sep
+    2026): then the member whose Apps own most of the tools it uses. Without
+    this those tasks showed on no member's Tasks board, so an owner couldn't
+    find, or switch on, the hourly invoice task he had just made (20 Oct 2026).
+    """
+    from app.agents.registry import MEMBERS
+
+    if task.agent_slug in MEMBERS:
+        return task.agent_slug
+    from collections import Counter
+
+    from app.services.entitlements import (
+        ALL_MEMBERS,
+        _catalog,
+        app_member,
+        tool_owners,
+    )
+
+    catalog = {a.slug: a for a in _catalog(config_db)}
+    by_action: dict[str, str] = {}
+    for key, app_slug in tool_owners(config_db).items():
+        app = catalog.get(app_slug)
+        member = app_member(app) if app is not None else None
+        if member and member != ALL_MEMBERS:
+            by_action.setdefault(key.split(".", 1)[-1], member)
+    votes = Counter(
+        by_action[t.split("__", 1)[-1].split(".", 1)[-1]]
+        for t in (task.tool_filter or [])
+        if isinstance(t, str) and t.split("__", 1)[-1].split(".", 1)[-1] in by_action
+    )
+    return votes.most_common(1)[0][0] if votes else task.agent_slug

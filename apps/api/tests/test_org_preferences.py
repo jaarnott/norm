@@ -241,3 +241,47 @@ class TestTheTasksBoard:
             )
         finally:
             E._catalog, E.app_member = orig
+
+
+class TestTheTasksPage:
+    def test_the_pages_task_list_shows_a_chat_made_task_in_its_own_organisation(
+        self, db_session, person, monkeypatch
+    ):
+        """The Tasks pages load through norm.list_automated_tasks, which kept
+        matching the member name exactly — the hourly invoice task (filed under
+        "norm") stayed off the Procurement page after the API was fixed."""
+        from app.agents.internal_tools import get_handler
+        from app.services import task_scheduler
+
+        monkeypatch.setattr(
+            task_scheduler,
+            "task_member",
+            lambda t, cdb: (
+                "procurement"
+                if "review_and_receive_invoices" in (t.tool_filter or [])
+                else t.agent_slug
+            ),
+        )
+        with active_org.use(person.b.id):
+            t = AutomatedTask(
+                id=str(uuid.uuid4()),
+                title="Hourly receive",
+                agent_slug="norm",
+                prompt="p",
+                schedule_type="hourly",
+                status="draft",
+                created_by=person.user.id,
+                tool_filter=["review_and_receive_invoices", "send_report_email"],
+            )
+            db_session.add(t)
+            db_session.flush()
+        handler = get_handler("norm", "list_automated_tasks")
+
+        def listed(org, slug):
+            with caller_scope.use(caller_scope.Scope(org.id, user_id=person.user.id)):
+                out = handler({"agent_slug": slug}, db_session, None)
+            return [x["id"] for x in out["data"]["tasks"]]
+
+        assert listed(person.b, "procurement") == [t.id]
+        assert listed(person.b, "hr") == []
+        assert listed(person.a, "procurement") == []
