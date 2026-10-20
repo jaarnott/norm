@@ -18,10 +18,11 @@ from app.services.invoice_po_reference import (
     claim_row_by_item,
     enrich_loaded_snapshot,
     order_rows_for,
-    seed_working_from_loaded,
     fetch_po_reference,
     project_po_reference,
+    start_from_screen,
 )
+from app.services.received_invoice import loaded_snapshot
 
 
 @pytest.fixture()
@@ -743,18 +744,30 @@ class TestLoadedMirror:
         assert "loaded_snapshot" not in data
 
 
-class TestSeedWorkingFromLoaded:
+class TestStartFromScreen:
     """The draft must OPEN where Loaded's screen opens.
 
     Loaded's API line is unresolved (`linkedItemId` null, unit the supplier's
     raw text); its screen resolves both from the supplier code, and that is
-    what a human sees and receives there. Seeding the working line from the
-    raw payload instead made every code-matched line raise a "link this item"
+    what a human sees and receives there. Opening the working line on the raw
+    payload instead made every code-matched line raise a "link this item"
     suggestion for a link Loaded already agrees with.
+
+    The resolution is done ONCE, on the snapshot (the Loaded tab), and the
+    working lines open on it — so the two tabs can't disagree, and no brand
+    the screen doesn't show is put on a line (owner, 19 Oct 2026).
     """
 
     SUP = TestLoadedMirror.SUP
-    CATALOGUE = TestLoadedMirror.CATALOGUE
+    CATALOGUE = [
+        {
+            **TestLoadedMirror.CATALOGUE[0],
+            "suppliers": [
+                {**TestLoadedMirror.CATALOGUE[0]["suppliers"][0], "brandId": "b-angus"}
+            ],
+        },
+        *TestLoadedMirror.CATALOGUE[1:],
+    ]
     UNITS = [{"id": "u-kilo", "name": "Kilo", "ratio": 1}]
 
     def _doc(self, **line_over):
@@ -765,50 +778,67 @@ class TestSeedWorkingFromLoaded:
             "unit": "KG",
             "linked_unit_id": None,
             "linked_item_id": None,
+            "linked_brand_id": None,
             "quantity_received": 6.43,
         }
         ln.update(line_over)
-        return {"linked_supplier_id": self.SUP, "lines": [ln]}
+        data = {"linked_supplier_id": self.SUP, "lines": [ln]}
+        data["loaded_snapshot"] = loaded_snapshot(data)
+        return data
 
-    def _seed(self, data):
-        seed_working_from_loaded(data, catalogue=self.CATALOGUE, units=self.UNITS)
+    def _open(self, data, catalogue=None):
+        enrich_loaded_snapshot(
+            data,
+            catalogue=self.CATALOGUE if catalogue is None else catalogue,
+            units=self.UNITS,
+        )
+        start_from_screen(data)
         return data["lines"][0]
 
     def test_unlinked_line_takes_loadeds_own_resolution(self):
-        ln = self._seed(self._doc())
+        data = self._doc()
+        ln = self._open(data)
         assert ln["linked_item_id"] == "item-bones"
         assert ln["item_name"] == "BONES (STOCK)"
         assert ln["item_name_for"] == "item-bones"  # no refetch needed
         assert ln["linked_unit_id"] == "u-kilo"
         assert ln["unit"] == "Kilo"
         assert ln["unit_ratio"] == 1
+        # The Loaded tab shows the same records the line opened on.
+        snap = data["loaded_snapshot"]["lines"][0]
+        assert (snap["screen_item_id"], snap["screen_unit_id"]) == (
+            "item-bones",
+            "u-kilo",
+        )
+        # What Norm filled is never mistaken for typing.
+        assert data["server_filled"]["ld-1"]["linked_item_id"] == "item-bones"
+
+    def test_no_brand_the_screen_doesnt_show(self):
+        # The supplier record carries a brand; the line opens without it.
+        assert self._open(self._doc())["linked_brand_id"] is None
 
     def test_the_printed_description_is_never_touched(self):
         # The replica's pairing, item matching and create-item prefill all key
         # off the supplier's printed text.
-        assert self._seed(self._doc())["description"] == "Beef Bones"
+        assert self._open(self._doc())["description"] == "Beef Bones"
 
     def test_an_existing_link_is_never_overwritten(self):
-        # Loaded's own link, or the user's — either way it wins. A dismissed
-        # suggestion must not come back as a seed.
-        ln = self._seed(self._doc(linked_item_id="item-marrow-canoe"))
+        ln = self._open(self._doc(linked_item_id="item-marrow-canoe"))
         assert ln["linked_item_id"] == "item-marrow-canoe"
         assert ln["item_name"] == "BONE MARROW - CANOE CUT"  # named, not relinked
         assert ln["linked_unit_id"] == "u-kilo"  # its variant's unit still fills in
 
     def test_an_existing_unit_link_is_never_overwritten(self):
-        ln = self._seed(self._doc(linked_unit_id="u-5l", unit="5L"))
+        ln = self._open(self._doc(linked_unit_id="u-5l", unit="5L"))
         assert (ln["linked_unit_id"], ln["unit"]) == ("u-5l", "5L")
         assert ln["linked_item_id"] == "item-bones"  # the item still resolves
 
-    def test_no_catalogue_seeds_nothing(self):
-        data = self._doc()
-        seed_working_from_loaded(data, catalogue=[], units=self.UNITS)
-        assert data["lines"][0]["linked_item_id"] is None
-        assert data["lines"][0]["unit"] == "KG"
+    def test_no_catalogue_opens_nothing(self):
+        ln = self._open(self._doc(), catalogue=[])
+        assert ln["linked_item_id"] is None and ln["unit"] == "KG"
 
     def test_unresolvable_code_is_left_alone(self):
-        ln = self._seed(self._doc(code="NOT-IN-CATALOGUE"))
+        ln = self._open(self._doc(code="NOT-IN-CATALOGUE"))
         assert ln["linked_item_id"] is None and ln["unit"] == "KG"
 
     def test_no_supplier_means_no_matching(self):
@@ -816,13 +846,13 @@ class TestSeedWorkingFromLoaded:
         # supplier there is nothing to match on, and guessing would be wrong.
         data = self._doc()
         data["linked_supplier_id"] = None
-        seed_working_from_loaded(data, catalogue=self.CATALOGUE, units=self.UNITS)
-        assert data["lines"][0]["linked_item_id"] is None
+        data["loaded_snapshot"] = loaded_snapshot(data)
+        assert self._open(data)["linked_item_id"] is None
 
     def test_idempotent(self):
         data = self._doc()
-        first = dict(self._seed(data))
-        assert self._seed(data) == first
+        first = dict(self._open(data))
+        assert self._open(data) == first
 
 
 class TestOrderRowPairing:

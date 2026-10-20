@@ -16,15 +16,134 @@ class TestSuggestItemMatches:
         # No NEW lines → {} without touching the catalogue or any client.
         assert IM.suggest_item_matches("v-1", [], None, None) == {}
 
-    def test_any_failure_degrades_to_empty(self, monkeypatch):
-        # Catalogue unreachable → {} (never raises) so callers fall back to
-        # plain create.
+    LINES = [
+        {"id": "L1", "description": "FRIES 13MM", "code": "", "brand": "", "unit": ""},
+        {
+            "id": "L2",
+            "description": "PROMO CODE X",
+            "code": "",
+            "brand": "",
+            "unit": "",
+        },
+    ]
+    GROUPS = [{"id": "g-food", "name": "Frozen", "category": "Food"}]
+
+    def _world(self, monkeypatch, replies, stock=None):
+        """A venue whose catalogue and groups fetch fine, and a model that
+        answers from ``replies`` in turn (each a {line_id: entry} dict)."""
+        monkeypatch.setattr(IM, "_fetch_raw_stock_items", lambda *a: list(stock or []))
+        monkeypatch.setattr(IM, "_fetch_stock_groups", lambda lh: self.GROUPS)
+        monkeypatch.setattr(IM, "_classify_item_lines", lambda lines, db: {})
+        asked = []
+
+        def match(lns, grps, cands, db, supplier_name=None, note=None):
+            asked.append(([ln["id"] for ln in lns], note))
+            reply = replies[len(asked) - 1] if len(asked) <= len(replies) else {}
+            return {k: v for k, v in reply.items() if k in {ln["id"] for ln in lns}}
+
+        monkeypatch.setattr(IM, "_match_subset", match)
+        return asked
+
+    def test_a_failed_fetch_is_tried_again_then_every_line_is_marked(self, monkeypatch):
+        # Catalogue unreachable twice: no guess, and every line says why
+        # (owner, 19 Oct 2026: Norm's answer didn't come through, the next
+        # review asks again). It never raises.
+        calls = []
+
         def boom(venue_id, db, config_db):
+            calls.append(1)
             raise RuntimeError("catalogue down")
 
         monkeypatch.setattr(IM, "_fetch_raw_stock_items", boom)
-        lines = [{"id": "L1", "description": "X", "code": "", "brand": "", "unit": ""}]
-        assert IM.suggest_item_matches("v-1", lines, None, None, lh=object()) == {}
+        out = IM.suggest_item_matches("v-1", self.LINES, None, None, lh=object())
+        assert len(calls) == 2
+        assert set(out) == {"L1", "L2"}
+        assert all(v["failed"] for v in out.values())
+
+    def test_an_error_reply_is_a_failed_fetch_not_an_empty_catalogue(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.component_api.execute_component_action",
+            lambda *a, **k: {"data": "Unauthorized", "status_code": 401, "error": True},
+        )
+        with __import__("pytest").raises(RuntimeError):
+            IM._fetch_raw_stock_items("v-1", None, None)
+
+    def test_lines_without_an_answer_are_asked_once_more(self, monkeypatch):
+        new = {"matched_item": None, "suggested_name": "Fries 13mm"}
+        asked = self._world(
+            monkeypatch,
+            [
+                # First try: L1 has no group, L2 is skipped.
+                {"L1": {**new, "suggested_group_id": None}},
+                {
+                    "L1": {**new, "suggested_group_id": "g-food"},
+                    "L2": {
+                        "matched_item": None,
+                        "suggested_name": "Promo",
+                        "suggested_group_id": "g-food",
+                    },
+                },
+            ],
+        )
+        out = IM.suggest_item_matches("v-1", self.LINES, None, None, lh=object())
+        assert [ids for ids, _ in asked] == [["L1", "L2"], ["L1", "L2"]]
+        assert asked[1][1] == IM._ASK_AGAIN
+        assert out["L1"]["suggested_group_id"] == "g-food"
+        assert out["L2"]["suggested_name"] == "Promo"
+
+    def test_still_no_group_after_the_retry_is_marked_never_guessed(self, monkeypatch):
+        no_group = {
+            "matched_item": None,
+            "suggested_name": "Promo",
+            "suggested_group_id": None,
+        }
+        self._world(monkeypatch, [{"L2": no_group}, {"L2": no_group}])
+        out = IM.suggest_item_matches("v-1", self.LINES[1:], None, None, lh=object())
+        assert out == {"L2": {"failed": "no stock group was picked for the new item"}}
+
+    def test_a_group_with_no_name_takes_the_invoices_words(self, monkeypatch):
+        no_name = {
+            "matched_item": None,
+            "suggested_name": None,
+            "suggested_group_id": "g-food",
+        }
+        self._world(monkeypatch, [{"L1": no_name}, {"L1": no_name}])
+        out = IM.suggest_item_matches("v-1", self.LINES[:1], None, None, lh=object())
+        assert out["L1"]["suggested_name"] == "FRIES 13MM"
+
+    def test_a_venue_with_no_stock_items_is_still_asked(self, monkeypatch):
+        # An empty catalogue used to skip the model, so a new venue's lines
+        # got no name and no group at all.
+        made = {
+            "matched_item": None,
+            "suggested_name": "Fries",
+            "suggested_group_id": "g-food",
+        }
+        asked = self._world(monkeypatch, [{"L1": made}], stock=[])
+        out = IM.suggest_item_matches("v-1", self.LINES[:1], None, None, lh=object())
+        assert asked and out["L1"]["suggested_name"] == "Fries"
+
+    def test_the_callers_catalogue_is_not_fetched_again(self, monkeypatch):
+        made = {
+            "matched_item": None,
+            "suggested_name": "Fries",
+            "suggested_group_id": "g-food",
+        }
+        self._world(monkeypatch, [{"L1": made}])
+        monkeypatch.setattr(
+            IM,
+            "_fetch_raw_stock_items",
+            lambda *a: __import__("pytest").fail("fetched"),
+        )
+        out = IM.suggest_item_matches(
+            "v-1",
+            self.LINES[:1],
+            None,
+            None,
+            lh=object(),
+            candidates=[{"id": "i-1", "name": "Chips"}],
+        )
+        assert out["L1"]["suggested_group_id"] == "g-food"
 
 
 class TestConsumableMerge:
@@ -76,7 +195,7 @@ class TestConsumableMerge:
         )
         seen: dict = {}
 
-        def capture(lns, grps, cands, db, supplier_name=None):
+        def capture(lns, grps, cands, db, supplier_name=None, note=None):
             for ln in lns:
                 seen[ln["id"]] = {c["id"] for c in cands}
             return {}

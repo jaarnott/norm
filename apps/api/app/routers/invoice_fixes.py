@@ -48,11 +48,11 @@ from app.db.models import User
 # test_invoice_fixes_handler.py) are untouched by the move.
 from app.services import card_actions
 from app.services import invoice_catalog as catalog
-from app.services.autopilot_metrics import record_receive_outcome
 from app.services.invoice_po_reference import (
     enrich_loaded_snapshot as _enrich_snapshot,
     loaded_reference as _loaded_reference,
-    seed_working_from_loaded as _seed_working,
+    rows_cached_for_linked_order,
+    start_from_screen as _start_from_screen,
 )
 from app.services.received_invoice import (
     LoadedInvoiceClient as _Loaded,
@@ -137,18 +137,14 @@ def accept_invoice_fix(
     # "deleted" instead of hanging on a 404 forever.
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.db.models import WorkingDocument
-    from app.services.received_invoice import invalidate_conflicting_drafts
+    from app.services.received_invoice import (
+        cards_for_invoice,
+        invalidate_conflicting_drafts,
+    )
 
     ref_number = supplier = None
-    for doc in (
-        db.query(WorkingDocument)
-        .filter(
-            WorkingDocument.doc_type == "received_invoice",
-            WorkingDocument.venue_id == body.venue_id,
-        )
-        .all()
-    ):
+    kept = None  # the card's data, for the record below
+    for doc in cards_for_invoice(db, body.venue_id, body.invoice_id).all():
         if (doc.external_ref or {}).get("invoice_id") == body.invoice_id:
             data = doc.data or {}
             ref_number = ref_number or data.get("reference_number")
@@ -158,7 +154,32 @@ def accept_invoice_fix(
             data["deleted_reason"] = fix.get("summary") or message
             doc.data = data
             flag_modified(doc, "data")
+            if kept is None or data.get("reviewed_at"):
+                kept = (doc, data)
     db.commit()
+    # A person's delete is an outcome like Norm's: the activity page stops
+    # listing the invoice as stopped, and shows who dealt with it.
+    from app.services.autopilot_metrics import record_receive_outcome
+
+    record_receive_outcome(
+        db,
+        venue_id=body.venue_id,
+        invoice_id=body.invoice_id,
+        data=(kept[1] if kept else {})
+        or {"reference_number": ref_number, "supplier_name": supplier},
+        mode="interactive",  # the web card, as its receive records
+        actor="user",
+        user_id=getattr(user, "id", None),
+        working_document_id=kept[0].id if kept else None,
+        received=False,
+        outcome_override="deleted",
+        extra_detail={
+            "deleted": {
+                "kind": fix.get("reason") or "other",
+                "reason": fix.get("summary") or message,
+            }
+        },
+    )
     invalidate_conflicting_drafts(
         db,
         body.venue_id,
@@ -176,7 +197,7 @@ def accept_invoice_fix(
 # that from becoming a component-api call per open (the catalogue is ~750 items
 # and changes rarely).
 def enrich_loaded_snapshot(
-    data: dict, lh, venue_id: str, db: Session, *, seed_working: bool = False
+    data: dict, lh, venue_id: str, db: Session, *, start_working: bool = False
 ) -> None:
     """Resolve the Loaded mirror's lines, best-effort.
 
@@ -184,15 +205,17 @@ def enrich_loaded_snapshot(
     raw text rather than showing a wrong item (which is exactly what resolving
     via the purchase order used to do).
 
-    ``seed_working`` additionally starts the WORKING lines on Loaded's own
-    resolution (see ``seed_working_from_loaded``). Pass it only where ``data``
-    was just rebuilt from Loaded — never on a draft carrying user edits, or a
-    dismissed link would quietly come back on the next open.
+    ``start_working`` additionally opens the WORKING lines on what that
+    resolution found (``start_from_screen``). Pass it only where ``data`` was
+    just built from Loaded — never on a draft carrying decisions or edits.
     """
     catalogue, units = _loaded_reference(venue_id, db, lh)
-    if seed_working:
-        _seed_working(data, catalogue=catalogue, units=units)
     _enrich_snapshot(data, catalogue=catalogue, units=units)
+    if start_working:
+        from app.services.invoice_po_reference import project_po_reference
+
+        _start_from_screen(data)
+        project_po_reference(data)  # the order rows follow the opened links
 
 
 class CreateItemRequest(BaseModel):
@@ -603,18 +626,27 @@ _META_LINE_FIELDS = ("brand", "tax_amount", "sale_tax_rate")
 
 
 def _refresh_metadata(doc, detail: dict) -> None:
+    """Loaded's current values onto a reopened draft — except a field that
+    holds a decision or a person's edit: those were made on top of Loaded and
+    stand (it used to put Loaded's brand back over an accepted "no brand" and
+    a picked one, so the receive then failed Loaded's brand guard)."""
     from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.invoice_edits import decided_fields
 
     fresh = build_received_invoice_data(detail)
     data = dict(doc.data or {})
+    decided = decided_fields(data)
     for f in _META_HEADER_FIELDS:
-        data[f] = fresh.get(f)
+        if (None, f) not in decided:
+            data[f] = fresh.get(f)
     fresh_lines = {ln.get("id"): ln for ln in fresh.get("lines") or []}
     for ln in data.get("lines") or []:
         src = fresh_lines.get(ln.get("id"))
         if src:
             for f in _META_LINE_FIELDS:
-                ln[f] = src.get(f)
+                if (str(ln.get("id")), f) not in decided:
+                    ln[f] = src.get(f)
     # The admin "Loaded view" mirror always shows Loaded's CURRENT truth,
     # regardless of local edits — refreshed on every open.
     data["loaded_snapshot"] = fresh.get("loaded_snapshot")
@@ -673,6 +705,8 @@ def create_receive_draft(
         try:
             from sqlalchemy.orm.attributes import flag_modified
 
+            from app.services.invoice_review import review_is_current
+
             lh = _Loaded(db, config_db, body.venue_id)
             detail = lh.invoice(body.invoice_id)
             _refresh_metadata(doc, detail)
@@ -690,9 +724,16 @@ def create_receive_draft(
             if d.get("reviewed_at") and d.get("reviewed_invoice_fingerprint") != d.get(
                 "loaded_invoice_fingerprint"
             ):
-                d["suggestions"] = []
-                d["reviewed_at"] = None  # the cached-review marker
-                d["issues"] = []
+                # The cached-review marker. The suggestions stay until the new
+                # review replaces them: it carries the decisions made on them
+                # and needs the questions they answered.
+                d["reviewed_at"] = None
+            elif d.get("reviewed_at") and not review_is_current(d):
+                # The last review stopped on an answer that didn't come
+                # through, or a service that was down: the card's /review call
+                # asks again (at most every RETRY_AFTER_MINUTES). Its
+                # suggestions stay on screen meanwhile.
+                d["reviewed_at"] = None
             flag_modified(doc, "data")
             db.commit()
             db.refresh(doc)
@@ -708,7 +749,7 @@ def create_receive_draft(
         # consolidator's job, run in /invoice-fixes/review.
         _attach_po_reference(data, lh)
         attach_item_names(data, lh)
-        enrich_loaded_snapshot(data, lh, body.venue_id, db, seed_working=True)
+        enrich_loaded_snapshot(data, lh, body.venue_id, db, start_working=True)
     except Exception as exc:  # noqa: BLE001 — reference data is enhancement
         logger.info("draft PO reference unavailable: %s", exc)
     doc = WorkingDocument(
@@ -791,7 +832,7 @@ def reset_validation(
                 fresh[k] = doc.data[k]
         _attach_po_reference(fresh, lh)
         attach_item_names(fresh, lh)
-        enrich_loaded_snapshot(fresh, lh, body.venue_id, db, seed_working=True)
+        enrich_loaded_snapshot(fresh, lh, body.venue_id, db, start_working=True)
         doc.data = fresh
         doc.version += 1
         flag_modified(doc, "data")
@@ -849,7 +890,8 @@ def _squash_review_into_drafts(
     """
     from sqlalchemy.orm.attributes import flag_modified
 
-    from app.services.invoice_review import carry_forward_decisions, review_invoice
+    from app.services.invoice_edits import rebuild_from_decisions
+    from app.services.invoice_review import review_invoice
 
     # PO policy derives from the receive_without_po switch of the person
     # looking (review_invoice default): the card must tell the story autopilot
@@ -865,6 +907,7 @@ def _squash_review_into_drafts(
     fresh = review_invoice(
         db, config_db, venue_id, invoice_id, reference=reference, settings=settings
     )
+    lh = None
     try:
         lh = _Loaded(db, config_db, venue_id)
         _attach_po_reference(fresh, lh)
@@ -891,14 +934,23 @@ def _squash_review_into_drafts(
         for k in ("working_document_id", "thread_id", "venue_id"):
             if k in (target.data or {}):
                 payload[k] = target.data[k]
-        # The review clears suggestions/issues/actions and reseeds the working
-        # values from Loaded. Without this, re-reviewing threw away what the
-        # user had already accepted and then reported it as ignored.
-        carried = carry_forward_decisions(target.data or {}, payload)
-        if carried:
+        # The review rebuilds the card from Loaded. What was decided on it
+        # comes back by replay — the accepted suggestions, then the person's
+        # own edits — never by copying the old lines (owner, 19 Oct 2026:
+        # Loaded plus decisions, no ghost data).
+        carried, replayed = rebuild_from_decisions(
+            target.data or {}, payload, previous_ops=target.pending_ops
+        )
+        if lh is not None and not rows_cached_for_linked_order(payload):
+            try:
+                _attach_po_reference(payload, lh)  # a replayed order choice
+            except Exception as exc:  # noqa: BLE001 — reference data
+                logger.info("order rows for the replayed link failed: %s", exc)
+        if carried or replayed:
             logger.info(
-                "review: carried %d prior decision(s) onto %s",
+                "review: carried %d decision(s) and %d edit(s) onto %s",
                 carried,
+                replayed,
                 target.id,
             )
         target.data = payload
@@ -971,7 +1023,7 @@ def review_receive_draft(
     """
     card_actions.venue_for(db, user, body.venue_id)
     from app.routers.working_documents import _doc_to_dict
-    from app.services.invoice_review import DOC_SCHEMA
+    from app.services.invoice_review import review_is_current
 
     docs = _open_docs_for(db, body.venue_id, body.invoice_id)
     if not docs:
@@ -979,11 +1031,7 @@ def review_receive_draft(
 
     doc = docs[0]  # canonical: carries a review if any twin does
     data = doc.data or {}
-    if (
-        data.get("doc_schema") == DOC_SCHEMA
-        and data.get("reviewed_at")
-        and not body.force
-    ):
+    if review_is_current(data) and not body.force:
         return _doc_to_dict(doc)
 
     # Prefetch the venue's reference data ONCE. Best-effort by construction
@@ -1008,126 +1056,6 @@ def review_receive_draft(
     return _doc_to_dict(doc)
 
 
-def _stage_and_analyse(
-    db: Session, venue_id: str, invoice_id: str, *, draft: bool
-) -> dict:
-    """File an invoice's PDF as a dojo sample and kick the sensei.
-
-    Cannot-receive is the ONE intake into the dojo — admin and non-admin
-    alike (the separate admin-only add-to-dojo button was removed Aug 2026;
-    two intakes for the same act was pure surface area).
-
-    This files a REAL sample, not a draft. ``draft`` is the Dojo page's
-    "somebody expanded this row" state, which is invisible in the UI by
-    design: drafts are excluded from "awaiting review"
-    (``dojo/overview``) and never show the "in dojo" chip. Filing a human's
-    explicit "Norm can't do this one" that way made the button look broken —
-    it left the invoice sitting in the outstanding list exactly as before.
-    A sample with no baseline is already harmless to regression: it scores
-    "new", never "fail", so the draft flag was protecting nothing here.
-
-    Raises RuntimeError when the invoice has no copy attached.
-    """
-    from app.services import sensei_runner, spec_dojo
-
-    staged = spec_dojo.stage_invoice_sample(db, venue_id, invoice_id, draft=draft)
-    sample_id = staged["sample_id"]
-
-    # Queued, never executed here: the sensei worker (inline thread locally,
-    # Cloud Run job in deployed envs) picks it up within seconds, and a run
-    # whose executor dies is requeued automatically — this used to be a bare
-    # daemon thread that died with its container and left the sample reading
-    # "sensei analysing…" until a staleness rule noticed.
-    where = sensei_runner.start_analysis(sample_id)
-    logger.info("dojo analysis for %s: %s", sample_id, where)
-    return staged
-
-
-class CannotReceiveRequest(BaseModel):
-    venue_id: str
-    invoice_id: str
-    reason: str | None = None
-
-
-@router.post("/invoice-fixes/cannot-receive")
-def cannot_receive(
-    body: CannotReceiveRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """ "Norm can't do this one" — file it for training and record the verdict.
-
-    Deliberately NOT admin-only — the ONE dojo intake: the person who hits the
-    problem is the one who should flag it, which is also what gives the
-    autopilot report its coverage. The sample joins the dojo proper so it is
-    visible in "awaiting review" — a human verdict that must not be silently
-    filed where nobody looks. The invoice is left untouched in Loaded and its
-    working document stays open, because "couldn't receive today, received
-    fine tomorrow" is a real and useful sequence.
-
-    Pressing it on an invoice that is ALREADY filed re-runs the sensei rather
-    than doing nothing: the second press means the previous training did not
-    solve it, which is exactly when another look is worth paying for.
-    """
-    card_actions.venue_for(db, user, body.venue_id)
-    docs = _open_docs_for(db, body.venue_id, body.invoice_id)
-    data = (docs[0].data or {}) if docs else {}
-
-    staged: dict = {}
-    stage_error: str | None = None
-    try:
-        # ALWAYS hand it to the sensei, including when the sample already
-        # exists. "Norm can't do this one" said a second time is not a
-        # duplicate — it is the report that the last attempt did not work, and
-        # the most useful moment to re-analyse. Staging alone would return a
-        # cheerful 200 and change nothing, which is indistinguishable from a
-        # broken button. The analysis runs in the sensei job, so this costs a
-        # container rather than a request.
-        staged = _stage_and_analyse(db, body.venue_id, body.invoice_id, draft=False)
-    except RuntimeError as exc:
-        # No PDF attached — it cannot be staged, but the human's verdict is
-        # the measurement and losing it would defeat the feature.
-        stage_error = str(exc)
-
-    record_receive_outcome(
-        db,
-        venue_id=body.venue_id,
-        invoice_id=body.invoice_id,
-        data=data,
-        mode="interactive",
-        actor="user",
-        user_id=user.id,
-        working_document_id=docs[0].id if docs else None,
-        thread_id=docs[0].thread_id if docs else None,
-        received=False,
-        outcome_override="dojo",
-        # With no open draft there is no document to read the supplier off, and
-        # the row lands under "(no supplier)" in the per-supplier table — the
-        # one place a supplier's training history matters most. Staging already
-        # resolved it: the spec it was filed under IS the canonical name.
-        supplier_name=staged.get("spec_name"),
-        dojo={
-            "sample_id": staged.get("sample_id"),
-            "spec_id": staged.get("spec_id"),
-            "spec_name": staged.get("spec_name"),
-            "reason": body.reason,
-            "staged": bool(staged),
-            "error": stage_error,
-        },
-    )
-    return {
-        "staged": bool(staged),
-        "sample_id": staged.get("sample_id"),
-        "spec_name": staged.get("spec_name"),
-        # Was it ALREADY a dojo sample before this press? Staging is idempotent,
-        # so a second press is a silent no-op — the card needs to say "already
-        # filed" rather than claim it just did something.
-        "already_in_dojo": bool(staged.get("already_in_dojo")),
-        "reason": stage_error,
-    }
-
-
-# The admin-only /invoice-fixes/add-to-dojo endpoint was removed Aug 2026:
-# cannot-receive (above) is the one intake into the dojo for every user, and
-# it files AND analyses on each press. Two buttons doing the same filing with
-# different auth was surface area with no behavior of its own.
+# The "Can't receive" button and its /invoice-fixes/cannot-receive endpoint were
+# removed on 19 Oct 2026 (owner): training starts on its own when an invoice's
+# supplier has no layout, and the invoice activity page shows what Norm did.

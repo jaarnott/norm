@@ -476,12 +476,27 @@ class TestLearnFromResolver:
             assert row.evidence["guess"]["unit"] == "700 mL"
             assert row.evidence["guess"]["confidence"] == conf
 
-    def test_a_line_asked_about_with_no_answer_is_a_guess_too(self, db_session):
-        # The estimator failed and the chooser picked something: whatever the
-        # receive saves for this product is not a verdict.
+    def test_a_line_asked_about_with_no_answer_is_not_recorded(self, db_session):
+        # The estimate didn't come through. Recording that as a guess made the
+        # next 30 days' reviews skip asking (owner, 19 Oct 2026: Norm always
+        # answers), so nothing is recorded and the next review asks again.
         ln = {"code": "x9", "description": "MYSTERY", "unit_asked": True}
-        assert sc.learn_from_resolver(db_session, "Hancocks", [ln]) == 1
-        assert sc.unsettled_guess(sc.lookup(db_session, "Hancocks", "x9"))
+        assert sc.learn_from_resolver(db_session, "Hancocks", [ln]) == 0
+        assert sc.earlier_estimate(sc.lookup(db_session, "Hancocks", "x9")) is None
+
+    def test_an_earlier_estimate_is_reused_only_when_it_named_a_unit(
+        self, db_session
+    ):
+        low = self._line(
+            unit_resolved={"unit_name": "1L", "confidence": "low", "why": "unsure"}
+        )
+        sc.learn_from_resolver(db_session, "Hancocks", [low])
+        row = sc.lookup(db_session, "Hancocks", "99054")
+        guess = sc.earlier_estimate(row)
+        assert guess["unit"] == "1L" and guess["fresh"]
+        # A unit-less guess written before 19 Oct 2026 is no answer.
+        row.evidence = {**row.evidence, "guess": {**row.evidence["guess"], "unit": None}}
+        assert sc.earlier_estimate(row) is None
 
     def test_a_verdict_settles_the_guess(self, db_session):
         low = self._line(

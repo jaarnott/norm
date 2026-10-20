@@ -1,6 +1,7 @@
 # How Norm decides a product's unit (self-healing units)
 
-*Last reworked 19 Oct 2026 — never Loaded's unit, Norm's answer at any confidence, the daily unit check; 14 Oct
+*Last reworked 19 Oct 2026 — never Loaded's unit, Norm's answer at any confidence, the daily unit check, no
+venue-unit chooser, one unit matcher, a failed estimate asked again and then marked; 14 Oct
 2026 — no person-confirmed tier; 28 Aug 2026 — "analyser on top". If you are about to change how a product's
 delivered unit is chosen, read this first.*
 
@@ -14,9 +15,19 @@ them, because every line was wrong the same way.
 
 So the unit comes from **the invoice and Norm's own knowledge, only**. Nothing in the receive path reads the
 supplier record's unit, the unit on Loaded's draft line, Loaded's stocktake unit or Loaded's price history to
-decide or confirm a unit. Do not add it back as a fallback, a tie-breaker or a "last resort". When Norm has no
-answer, the line has no unit, and the venue's unit chooser (`unit_guess`) picks from the venue's units by the
-invoice's own words.
+decide or confirm a unit. Do not add it back as a fallback, a tie-breaker or a "last resort".
+
+**Norm always gives an answer, and nothing guesses in its place.** The owner, 19 Oct 2026: the Replica must always
+answer; the Autopilot switches only decide whether Norm's answer is applied without a person. When the estimator's
+call fails, or its answer can't be used, it is asked once more (with the reason). If it still has nothing, the line
+has no unit and says so — "Norm's answer for the unit didn't come through" (`unit_answer_missing`) — and the next
+review asks again. That failure is never cached and never recorded as a guess, so it can't stick.
+
+There used to be a venue-unit chooser (`unit_guess`) that picked the closest of the venue's existing units from the
+invoice's wording when Norm had no answer. It was removed on 19 Oct 2026: like Loaded's stored unit it could only land
+on a unit Loaded already has, so it could never propose a right unit the venue doesn't have yet (Service Foods' fries
+come as "3x5kg", and the nearest existing unit was 15 KG). The "receive without a unit" switch that applied its pick
+went with it.
 
 ## The problem this solves
 
@@ -86,17 +97,26 @@ receiving a provisional (possibly poisoned) unit.
    manager — identify the product, find the formats it is actually sold in
    (this supplier's own listing first), read the supplier's price level off the
    rest of the invoice, price each real format against it. **Code, not the
-   model, turns the size into a venue unit** (`match_unit`: same type, same
-   amount — '1 kg' → Kilo, never '1 L' → Each); a size the venue lacks becomes a
-   unit to create (`unit_name_for`, gated by `auto_create_units`). Answers are
-   cached per invoice line, so re-opening a card costs nothing. Measured on 45
+   model, turns the size into a venue unit**, with the one matcher every step
+   uses (`invoice_units.match_unit_record`): the same name; a pack only to the
+   same pack ('3x5kg' is never '15 KG' — the total weight is the same but it
+   isn't the same unit); a single size to a unit of the same type and amount
+   (within 0.1%: '1 kg' → Kilo, never '1 L' → Each); a packaging-word unit
+   ('Carton') only by its exact name. Work the unit out first, then look for it:
+   a size the venue lacks becomes a unit to create (`unit_name_for`, gated by
+   `auto_create_units`) rather than the nearest unit Loaded happens to have. A
+   failed call or an unusable answer (not a size, or a kind the product's
+   category forbids — a beverage is never a weight) is asked once more with the
+   reason. Only usable answers are cached per invoice line, so re-opening a card
+   costs nothing and a failure is never replayed. Measured on 45
    products whose size the invoice didn't print: **93% exact**, against ~85% for
    the six Cook Brothers venues' own Loaded set-ups of the same products. It
    replaced one batched choose-a-unit-id call (65% on the same test).
 4. **Only HIGH is a verdict.** `supplier_catalog.learn_from_resolver` records a
-   HIGH answer as `enriched` (high was right 65 of 66 times). Medium (17 of 22),
-   low, or no answer is recorded as a **guess** (`evidence['guess']`, stamped with
-   the estimator's version so a guess made under older rules is never reused).
+   HIGH answer as `enriched` (high was right 65 of 66 times). Medium (17 of 22)
+   or low is recorded as a **guess** (`evidence['guess']`, stamped with the
+   estimator's version so a guess made under older rules is never reused). An
+   answer that didn't come through is not recorded at all.
 5. **Norm's answer decides, however sure it is** (`ESTIMATE_DECIDES` in
    `invoice_replica.py`). An unsure guess is reused for 30 days
    (`supplier_catalog.earlier_estimate`), so every invoice books the product the
@@ -162,13 +182,16 @@ heals) settles it.
   (the per-line unit block in `build_replica`) — walks the page's size → Norm's
   catalogue verdict → Norm's earlier unsure estimate → the printed charge word
   (a measurement; never a sizeless pack count like "6 PK", never an Ordermentum
-  line's unit, which is Loaded's) → the estimator. Then
-  `replica_finish.settle_units`: the venue's unit chooser for a line still
-  without a unit.
+  line's unit, which is Loaded's) → the estimator. A line the estimator still
+  has no answer for is marked `unit_answer_missing` (the next review asks again).
+  `replica_finish.settle_units` carries Norm's answer onto the card's lines.
 - **The daily unit check:** `app/services/unit_check.py`, the Dojo endpoints in
   `app/routers/supplier_spec_dojo.py`, `apps/web/app/components/settings/UnitCheckPanel.tsx`.
-- **The estimator:** `app/services/unit_resolver.py` (prompt, `match_unit`,
+- **The estimator:** `app/services/unit_resolver.py` (prompt, the retry,
   `unit_name_for`); web search runs through `call_llm(tools=…, effort=…)`.
+- **The one unit matcher:** `app/services/invoice_units.py`
+  (`match_unit_record`) — the copy's size, the catalogue, earlier estimates, the
+  estimator and the Loaded catalogue's `resolve_unit` all use it.
 - **Tests:** `tests/test_supplier_catalog.py`, `tests/test_invoice_replica.py`
   (`TestCatalogueTierAndResolver`, `TestAGuessIsCheckedAgain`,
   `TestNormSizesALineWithNoSize`), `tests/test_unit_resolver.py`,

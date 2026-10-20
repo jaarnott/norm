@@ -51,10 +51,8 @@ from app.services.supplier_identity import (
     resolve_supplier,
 )
 from app.services.invoice_units import (
-    _unit_norm,
     is_multipack,
     is_packaging_word,
-    multipack_equal,
     parse_unit,
 )
 
@@ -305,6 +303,38 @@ def fetch_brands(lh) -> list[dict]:
         return []
 
 
+def match_brand(name: object, brands: list[dict] | None) -> dict | None:
+    """The venue's brand record with the same name as ``name``, ignoring case,
+    spaces and punctuation: the rule ``invoice_catalog.get_or_create_brand``
+    creates by, so a link and a create always agree. Never a near match — a
+    venue can hold two records of one name, so callers compare names too."""
+    key = _norm(name)
+    if not key:
+        return None
+    return next((b for b in brands or [] if _norm(b.get("name")) == key), None)
+
+
+def brand_fields(el: dict, brands: list[dict] | None) -> dict:
+    """The Replica's brand for one line: what the invoice prints, linked to
+    the venue's record of that name, else a brand to create. Never the brand
+    Loaded stores for the item or its supplier product (owner, 19 Oct 2026).
+
+    ``brand_read`` says the reading looked: a read with no ``brand`` key (an
+    older read, a line the totals work-out added) or a feed line, whose brand
+    is Loaded's own copy, is not "no brand" — nothing is suggested from it."""
+    read = "brand" in el and not el.get("brand_from_loaded")
+    printed = str(el.get("brand") or "").strip() or None
+    rec = match_brand(printed, brands) if printed else None
+    out = {
+        "brand": (rec or {}).get("name") or printed,
+        "linked_brand_id": (rec or {}).get("id"),
+        "brand_read": read,
+    }
+    if read and printed and rec is None:
+        out["brand_create_name"] = printed
+    return out
+
+
 #: How sure Norm's unit estimate must be to decide a line whose invoice shows
 #: no size on its own (owner, 18 Oct 2026: the unit comes from the invoice and
 #: from Norm, never from the unit Loaded stores). Any answer Norm has: when
@@ -316,36 +346,11 @@ ESTIMATE_DECIDES = ("high", "medium", "low")
 
 
 def _resolve_unit_record(name: object, units: list[dict]) -> dict | None:
-    """Unit NAME → the venue's unit record, mirroring invoice_fixes._resolve_unit
-    tiers over a pre-fetched list: exact normalized name → multipack
-    component-equivalence → (type, magnitude) for simple units."""
-    if not name:
-        return None
-    live = [u for u in units if isinstance(u, dict) and not u.get("datestampDeleted")]
-    key = _unit_norm(name)
-    for u in live:
-        if _unit_norm(u.get("name")) == key:
-            return u
-    if is_multipack(name):
-        for u in live:
-            if multipack_equal(u.get("name"), name):
-                return u
-        return None
-    parsed = parse_unit(name)
-    if parsed:
-        for u in live:
-            # Magnitude equivalence must not launder identity: 'EA' parses as
-            # a count of 1 and so does a unit literally named 'PACK', but
-            # receiving each-lines in PACK is meaningless (Trents 5973784,
-            # 18 Aug 2026 — Dunedin's PACK unit swallowed every EA line). A
-            # packaging-word-NAMED unit can only be chosen by printing its
-            # name exactly (the name tier above).
-            if is_packaging_word(u.get("name")):
-                continue
-            pu = parse_unit(u.get("name"))
-            if pu and pu[0] == parsed[0] and abs(pu[1] - parsed[1]) < 0.001:
-                return u
-    return None
+    """Unit NAME → the venue's unit record: the one shared check,
+    ``invoice_units.match_unit_record``."""
+    from app.services.invoice_units import match_unit_record
+
+    return match_unit_record(name, units)
 
 
 def _sibling_doubled_up(
@@ -421,6 +426,7 @@ def build_replica(
     aliases_by_id: dict[str, list[str]] | None = None,
     item_matcher=None,
     unit_resolver_ask=None,
+    brands: list[dict] | None = None,
     own_invoice_id: str | None = None,
     received_feed: list | None = None,
     loaded_total: object = None,
@@ -526,6 +532,16 @@ def build_replica(
             log.append(
                 "sales-tax table unavailable — falling back to copy-derived rate"
             )
+    if brands is None:
+        # Only an invoice that prints a brand needs the list.
+        brands = (
+            fetch_brands(lh)
+            if any(
+                isinstance(cl, dict) and cl.get("brand")
+                for cl in extraction.get("lines") or []
+            )
+            else []
+        )
 
     # ---- Supplier ----
     # The copy decides which business this is. Loaded's supplier says whose
@@ -696,7 +712,8 @@ def build_replica(
                 "id": f"rep-{i}",
                 "description": str(el.get("description") or ""),
                 "code": str(el.get("code") or ""),
-                "brand": "",
+                # The printed brand: for drinks the brand decides the product.
+                "brand": str(el.get("brand") or "") if "brand" in el else "",
                 "unit": str(el.get("unit") or el.get("unit_of_measure") or ""),
             }
             for i, el in unresolved
@@ -708,15 +725,29 @@ def build_replica(
                 db,
                 config_db,
                 supplier_name=str(supplier_printed) if supplier_printed else None,
+                # The catalogue fetched above, so the matcher doesn't fetch it
+                # again (it fetches its own when this one came back empty).
+                candidates=catalogue or None,
             )
         except Exception as exc:  # noqa: BLE001
             log.append(f"LLM item match failed: {exc}")
-            suggestions = {}
+            suggestions = {
+                ln["id"]: {"failed": "the stock-item match didn't come through"}
+                for ln in llm_lines
+            }
         by_id = {i.get("id"): i for i in catalogue or []}
         for i, el in unresolved:
             s = suggestions.get(f"rep-{i}") or {}
             m = s.get("matched_item")
-            if isinstance(m, dict) and m.get("id"):
+            if s.get("failed"):
+                # Norm's answer didn't come through, after one more try (the
+                # matcher retries): the line is marked, never given a guess.
+                resolved[i] = {"item": None, "by": None, "answer_missing": s["failed"]}
+                log.append(
+                    f"line {i + 1} '{el.get('description')}' → no answer "
+                    f"({s['failed']})"
+                )
+            elif isinstance(m, dict) and m.get("id"):
                 resolved[i] = {
                     "item": by_id.get(m["id"]) or m,
                     "by": "llm",
@@ -765,25 +796,20 @@ def build_replica(
     # ---- Assemble lines ----
     out_lines: list[dict] = []
     unit_residual: list[int] = []  # line indexes for the batched unit resolver
-    # Norm's own answer for a line when the estimator gives none: its earlier
-    # unsure estimate, or the invoice's pack count.
+    # Norm's earlier unsure estimate for a line, reused within the month
+    # instead of asking again (supplier_catalog.earlier_estimate).
     low_guess: dict[int, dict] = {}
     for i, el in enumerate(ext_lines):
         r = resolved[i]
         item = r.get("item")
-        variant = (
-            line_match.supplier_variant(item, supplier_id, el.get("code"))
-            if item
-            else None
-        )
         unit_rec = None
         # Which tier supplied unit_rec ("copy" | "catalogue" | "estimate" |
         # "printed") — the card finishes unit blockers with the unit in use.
         # Never the unit Loaded stores for the supplier product (owner, 18 Oct
         # 2026: "i've been working hard to tell agents not to rely on loaded at
         # all" — basil bunches had been booked as Kilo and whole salami as 1
-        # Kilo from it). A line Norm can't size has no unit here; the review's
-        # unit chooser then picks from the venue's units.
+        # Kilo from it). A line Norm can't size has no unit here, and the
+        # unit estimator decides it below.
         unit_source = None
         # The copy's confidently-read delivered unit that isn't in Loaded yet —
         # carried onto the replica line so the review layer can offer a
@@ -860,14 +886,20 @@ def build_replica(
                     # old the estimator works the product out again.
                     elif unit_create_name is None:
                         guess = supplier_catalog.earlier_estimate(prow)
-                        if guess and guess["fresh"]:
+                        if guess and guess["fresh"] and guess["unit"]:
                             skip_estimate = True
-                            rec = (
-                                _resolve_unit_record(guess["unit"], units)
-                                if guess["unit"]
-                                else None
-                            )
-                            if rec is not None:
+                            rec = _resolve_unit_record(guess["unit"], units)
+                            if rec is None:
+                                # Norm's earlier answer is a unit the venue
+                                # doesn't have yet: offer to create it, as the
+                                # first review did (it was lost on re-review).
+                                unit_create_name = str(guess["unit"])
+                                log.append(
+                                    f"line {i + 1} unit: Norm's earlier estimate "
+                                    f"'{guess['unit']}' isn't a unit here yet "
+                                    "(unit would need creating)"
+                                )
+                            else:
                                 conf = guess["confidence"]
                                 low_guess[i] = {
                                     "unit_id": rec.get("id"),
@@ -897,20 +929,9 @@ def build_replica(
                     # A pack count with no size ('6 PK') says how many, not
                     # what: six cans are a 6 Pack, six bottles of wine are
                     # 6x750ml (poured drinks are volumes). The estimator
-                    # decides; the count is only its low-confidence fallback
-                    # (Hancocks wine, 18 Oct 2026).
-                    low_guess.setdefault(
-                        i,
-                        {
-                            "unit_id": unit_rec.get("id"),
-                            "unit_name": unit_rec.get("name"),
-                            "unit_ratio": unit_rec.get("ratio"),
-                            "confidence": "low",
-                            "why": f"the invoice charges per '{printed}' and "
-                            "shows no size",
-                            "by": "printed",
-                        },
-                    )
+                    # decides (Hancocks wine, 18 Oct 2026). The count is never
+                    # a stand-in when the estimate doesn't come through: that
+                    # would be a guess (owner, 19 Oct 2026).
                     unit_rec = None
                 elif unit_rec is not None:
                     unit_source = "printed"
@@ -1000,11 +1021,10 @@ def build_replica(
                 "id": f"rep-{i}",
                 "code": el.get("code"),
                 "description": el.get("description"),
-                "brand": None,
                 "unit": (unit_rec or {}).get("name")
                 or el.get("unit_of_measure")
                 # An Ordermentum line's unit column is Loaded's: never shown
-                # as the invoice's, nor handed to the unit chooser.
+                # as the invoice's, nor given to the unit estimator.
                 or (None if el.get("unit_from_loaded") else el.get("unit")),
                 "linked_unit_id": (unit_rec or {}).get("id"),
                 "original_unit_id": (unit_rec or {}).get("id"),
@@ -1026,8 +1046,7 @@ def build_replica(
                 ),
                 "linked_item_id": item.get("id") if item else None,
                 "item_name": item.get("name") if item else None,
-                "linked_brand_id": (variant or {}).get("brandId")
-                or (item or {}).get("defaultBrandId"),
+                **brand_fields(el, brands),
                 "item_type": "Default",
                 "matched_by": r.get("by"),
                 "unit_unrecognisable": el.get("unit_unrecognisable"),
@@ -1037,9 +1056,24 @@ def build_replica(
                 # The copy's delivered unit that isn't in Loaded — drives a
                 # `create_unit` suggestion in review; None on normal lines.
                 "unit_create_name": unit_create_name,
+                **(
+                    {"answer_missing": {"item": r["answer_missing"]}}
+                    if r.get("answer_missing")
+                    else {}
+                ),
             }
         )
-        if item is None:
+        if item is None and r.get("answer_missing"):
+            # No switch and nothing Loaded holds can settle it: the invoice
+            # waits for the next review, which asks again (owner, 19 Oct 2026).
+            _issue(
+                "item_answer_missing",
+                f"line {i + 1} '{el.get('description')}': Norm's answer for the "
+                "stock item didn't come through — the next review asks again",
+                line_id=f"rep-{i}",
+                data={"retry": True, "reason": r["answer_missing"]},
+            )
+        elif item is None:
             _issue(
                 "item_unmatched",
                 f"line {i + 1} '{el.get('description')}': no Loaded stock item "
@@ -1091,9 +1125,9 @@ def build_replica(
     # ---- The unit estimator: every line nothing above could size ----
     # One web-searching call per line (unit_resolver), the whole invoice as
     # context — its prices are the scale the estimate is read against. Output
-    # is metadata + suggestions, never a silent link: the unit_missing blocker
-    # above stands until a person accepts or autopilot's receive_without_unit
-    # gate applies the pick.
+    # is Norm's answer for the line (the decide block below). An estimate that
+    # doesn't come through, after one retry, marks the line so the next review
+    # asks again (owner, 19 Oct 2026).
     if unit_residual and (unit_resolver_ask is not None or db is not None):
         from app.services import unit_resolver as _ur
 
@@ -1199,10 +1233,10 @@ def build_replica(
     # A line whose invoice shows no size, and that Norm's catalogue, its earlier
     # estimate and the printed charge word couldn't size, takes Norm's own
     # answer (ESTIMATE_DECIDES): that is Norm's decision, not a guess waiting on
-    # the "receive without a unit" switch. An answer Norm wasn't sure of is
-    # listed by the next morning's unit check. With no answer at all the line
-    # keeps its unit_missing blocker, and the review's unit chooser picks from
-    # the venue's units (replica_finish.settle_units) — never Loaded's unit.
+    # a switch. An answer Norm wasn't sure of is listed by the next morning's
+    # unit check. With no answer at all the line is marked (below): Norm's
+    # answer didn't come through and the next review asks again. Never a pick
+    # from the venue's units, never Loaded's unit (owner, 19 Oct 2026).
     for j, ol in enumerate(out_lines):
         missing_id = f"unit_missing:rep-{j}"
         if ol.get("linked_unit_id") or not any(
@@ -1210,7 +1244,7 @@ def build_replica(
         ):
             continue
         if low_guess.get(j) is not None:
-            # Norm's own answer for the line, when the estimator gave none.
+            # Norm's earlier estimate, reused instead of asking again.
             ol.setdefault("unit_resolved", low_guess[j])
         ur = (
             ol.get("unit_resolved")
@@ -1247,6 +1281,35 @@ def build_replica(
                 else " — not sure, so the morning unit check lists it"
             )
         )
+
+    # ---- Norm's answer didn't come through (owner, 19 Oct 2026) ----
+    # A line the estimator was asked about that still has no unit and nothing
+    # to create: the estimate failed twice (unit_resolver retries once), or its
+    # answer wasn't a usable size. It stops Autopilot with that reason, never a
+    # switch that can't help, and the next review asks again.
+    for j in unit_residual:
+        ol = out_lines[j]
+        missing_id = f"unit_missing:rep-{j}"
+        if not ol.get("unit_asked") or ol.get("linked_unit_id"):
+            continue
+        if ol.get("unit_create_name") or not any(
+            iss.get("id") == missing_id for iss in issues
+        ):
+            continue
+        desc = ext_lines[j].get("description") or ext_lines[j].get("code") or "line"
+        issues[:] = [iss for iss in issues if iss.get("id") != missing_id]
+        _issue(
+            "unit_answer_missing",
+            f"line {j + 1} '{desc}': Norm's answer for the unit didn't come "
+            "through — the next review asks again",
+            line_id=f"rep-{j}",
+            data={"retry": True},
+        )
+        ol["answer_missing"] = {
+            **(ol.get("answer_missing") or {}),
+            "unit": "the unit estimate didn't come through",
+        }
+        log.append(f"line {j + 1} unit: Norm's answer didn't come through")
 
     # ---- Totals reconciliation (the engine's `totals` gate, copy-side) ----
     # Loaded's own entry validation absorbs up to 10c of rounding on

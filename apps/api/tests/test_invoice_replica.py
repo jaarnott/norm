@@ -92,6 +92,39 @@ def _build(extraction=EXTRACTION, matcher=None, **over):
     return build_replica(None, None, "v-1", extraction, **kwargs)
 
 
+class TestTheBrandIsTheInvoices:
+    """Brands come from the invoice, never from Loaded (owner, 19 Oct 2026):
+    the printed brand, linked to the venue's record of that name, else one to
+    create. A reading that didn't look is not "no brand"."""
+
+    BRANDS = [
+        {"id": "b-mccain", "name": "McCain"},
+        {"id": "b-akaroa", "name": "AKAROA"},
+    ]
+
+    def _line(self, **el):
+        line = dict(EXTRACTION["lines"][0], **el)
+        return _build(dict(EXTRACTION, lines=[line]), brands=self.BRANDS)["lines"][0]
+
+    def test_the_printed_brand_links_the_record_of_that_name(self):
+        ln = self._line(brand="MCCAIN")
+        assert (ln["brand"], ln["linked_brand_id"]) == ("McCain", "b-mccain")
+        assert ln["brand_read"] and "brand_create_name" not in ln
+
+    def test_a_brand_the_venue_lacks_is_one_to_create(self):
+        ln = self._line(brand="SEAFROST")
+        assert ln["linked_brand_id"] is None and ln["brand_create_name"] == "SEAFROST"
+
+    def test_no_brand_printed_is_no_brand_not_the_items(self):
+        ln = self._line(brand=None)
+        assert ln["brand_read"] and ln["brand"] is None
+        assert ln["linked_brand_id"] is None  # not the variant's brand-akaroa
+
+    def test_a_feed_lines_brand_is_loadeds_and_never_read(self):
+        ln = self._line(brand="AKAROA", brand_from_loaded=True)
+        assert ln["linked_brand_id"] == "b-akaroa" and ln["brand_read"] is False
+
+
 class TestDeterministicResolution:
     def test_full_happy_path(self):
         doc = _build()
@@ -102,7 +135,9 @@ class TestDeterministicResolution:
         assert ln["matched_by"] == "supplier_code"
         assert ln["linked_unit_id"] == "u-kilo"  # from the variant
         assert ln["unit_ratio"] == 1
-        assert ln["linked_brand_id"] == "brand-akaroa"
+        # The invoice wasn't read for a brand (no key): no brand, and never the
+        # one Loaded stores for the item's supplier product (brand-akaroa).
+        assert ln["linked_brand_id"] is None and ln["brand_read"] is False
         assert ln["sale_tax_rate"] == 0.15  # sortOrder 1 via the tax table
         assert ln["item_name"] == "SALMON FILLET"
         assert doc["reference_number"] == "F55755100"
@@ -149,7 +184,7 @@ class TestDeterministicResolution:
         assert abs(doc2["lines"][0]["sale_tax_rate"] - 0.15) < 0.001
 
     def test_llm_fallback_and_create_tail(self):
-        def matcher(venue_id, lines, db, config_db, supplier_name=None):
+        def matcher(venue_id, lines, db, config_db, supplier_name=None, **_):
             out = {}
             for ln in lines:
                 if "MYSTERY" in ln["description"].upper():
@@ -195,6 +230,35 @@ class TestDeterministicResolution:
         assert mys["linked_item_id"] is None
         assert mys["suggested_name"] == "Mystery Product"
         assert mys["suggested_group_id"] == "g-1"
+
+    def test_a_match_that_didnt_come_through_is_marked_not_guessed(self):
+        # The matcher retried and still has nothing for the line (owner,
+        # 19 Oct 2026): the line says so, with no switch and no create, and
+        # the next review asks again. A matcher that raises is the same.
+        line = {
+            "code": None,
+            "description": "Mystery Product Nobody Stocks",
+            "quantity": 1,
+            "unit_price_ex_tax": 5.0,
+            "line_total_ex_tax": 5.0,
+        }
+        ext = dict(EXTRACTION, lines=[line])
+
+        def boom(*a, **k):
+            raise RuntimeError("down")
+
+        for matcher in (
+            lambda v, lines, *a, **k: {
+                ln["id"]: {"failed": "the stock-item match didn't come through"}
+                for ln in lines
+            },
+            boom,
+        ):
+            doc = _build(ext, matcher=matcher)
+            (ln,) = doc["lines"]
+            assert ln["linked_item_id"] is None and ln["answer_missing"]["item"]
+            codes = {i["code"] for i in doc["issues"]}
+            assert "item_answer_missing" in codes and "item_unmatched" not in codes
 
     def test_a_line_printed_with_only_its_total_gets_a_price(self):
         # Alsco printed its two charges as line totals with no unit price, so
@@ -778,8 +842,8 @@ class TestAGuessIsCheckedAgain:
     been booked as Kilo and whole salami as 1 Kilo from it). Norm's verdict
     decides; else Norm's own earlier estimate, reused so every invoice books
     the product the same way and worked out again once it is a month old;
-    else a fresh estimate. Loaded's unit only stands in when Norm can't
-    decide, and then the line is flagged."""
+    else a fresh estimate. Loaded's unit never stands in: when Norm's answer
+    doesn't come through, the line says so and the next review asks again."""
 
     FREIGHT = {
         # Loaded's supplier product for this code says Each. (A product, not
@@ -877,14 +941,34 @@ class TestAGuessIsCheckedAgain:
         assert not [i for i in doc["issues"] if i["code"].startswith("unit_")]
 
     def test_loadeds_unit_is_never_taken(self, db_session):
-        # No verdict, no earlier estimate, and the estimator has no answer:
-        # the line has no unit — Loaded's Each never stands in. The review's
-        # chooser picks from the venue's units (test_every_blocker_has_a_fix).
+        # No verdict, no earlier estimate, and the estimator has no answer,
+        # twice: the line has no unit — Loaded's Each never stands in, and
+        # nothing is picked from the venue's units (owner, 19 Oct 2026). The
+        # line says Norm's answer didn't come through; no switch can apply it.
         self._spec(db_session)
-        doc = self._build(db_session, lambda p: {})
+        asked = []
+        doc = self._build(db_session, lambda p: asked.append(p) or {})
         ln = doc["lines"][0]
+        assert len(asked) == 2, "a failed estimate is asked once more"
         assert ln["linked_unit_id"] is None and ln["unit_source"] is None
-        assert any(i["code"] == "unit_missing" for i in doc["issues"])
+        assert ln["answer_missing"]["unit"]
+        (issue,) = [i for i in doc["issues"] if i["code"].startswith("unit_")]
+        assert issue["code"] == "unit_answer_missing" and issue["blocking"]
+        assert issue["id"] == "unit_answer_missing:rep-0"
+
+    def test_an_unusable_answer_is_asked_again_with_the_reason(self, db_session):
+        self._spec(db_session)
+        asked = []
+
+        def ask(prompt):
+            asked.append(prompt)
+            if len(asked) == 1:
+                return {"size": "carton", "confidence": "high", "why": "x"}
+            return {"size": "6x750mL", "confidence": "high", "why": "listed"}
+
+        ln = self._build(db_session, ask)["lines"][0]
+        assert "Your last answer, 'carton', can't be used" in asked[1]
+        assert ln["linked_unit_id"] == "u-6x750" and "answer_missing" not in ln
 
     def test_norms_estimate_outranks_loadeds_unit(self, db_session):
         self._spec(db_session)
@@ -1659,7 +1743,7 @@ class TestNormSizesALineWithNoSize:
     def test_a_printed_pack_count_is_not_the_unit(self):
         # Hancocks wine charged per '6 PK' with no size became '6 Pack'; six
         # bottles of poured wine are 6x750mL. The estimator decides, and the
-        # count is only its fallback.
+        # count is never a stand-in for it (owner, 19 Oct 2026: never guess).
         units = UNITS + [
             {"id": "u-6pk", "name": "6 Pack", "ratio": 6, "stockUnitType": "Count"}
         ]
@@ -1675,13 +1759,14 @@ class TestNormSizesALineWithNoSize:
         )
         assert doc["lines"][0]["linked_unit_id"] == "u-6x750"
         assert doc["lines"][0]["unit_source"] == "estimate"
-        # No estimate at all: the invoice's own count beats Loaded's unit.
+        # No estimate at all: no unit, and the line says Norm's answer didn't
+        # come through so the next review asks again.
         doc = _build(
             dict(EXTRACTION, lines=[line]), units=units, unit_resolver_ask=lambda p: {}
         )
         ln = doc["lines"][0]
-        assert ln["linked_unit_id"] == "u-6pk" and ln["unit_source"] == "printed"
-        assert ln["unit_resolved"]["confidence"] == "low"
+        assert ln["linked_unit_id"] is None and ln["answer_missing"]["unit"]
+        assert "unit_resolved" not in ln
 
     def test_the_estimator_is_told_the_venues_country(self):
         # The Sydney venues were being estimated against NZ wholesalers.

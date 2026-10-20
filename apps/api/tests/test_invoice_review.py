@@ -640,8 +640,9 @@ class TestBlockingIssues:
         self, monkeypatch
     ):
         # Loaded's 'Kilo' on an Ordermentum line is not the supplier's word:
-        # with no answer from Norm the line has no unit, and nothing offers to
-        # keep Loaded's (owner, 18 Oct 2026: never rely on Loaded).
+        # with no answer from Norm the line has no unit, nothing offers to
+        # keep Loaded's (owner, 18 Oct 2026: never rely on Loaded), and the
+        # line says Norm's answer didn't come through (19 Oct 2026).
         monkeypatch.setattr(
             IR, "extract_invoice_copy", lambda *a, **k: pytest.fail("no copy")
         )
@@ -655,7 +656,7 @@ class TestBlockingIssues:
             extraction=None,
             reference=REFERENCE(unit_resolver_ask=lambda p: {}),
         )
-        assert "unit_missing" in _issue_codes(data)
+        assert "unit_answer_missing" in _issue_codes(data)
         assert not any(
             "Loaded" in str(s.get("explanation")) and s.get("field") == "unit"
             for s in data["suggestions"]
@@ -1080,6 +1081,29 @@ class _VenueDb:
         return None
 
 
+@pytest.fixture(autouse=True)
+def stops(monkeypatch):
+    """The invoice activity notes a batch writes for invoices that stopped,
+    wait or failed. The recorder opens its own session, so it is caught here
+    rather than left to write into the test database."""
+    seen: list = []
+    monkeypatch.setattr(
+        "app.services.invoice_activity.record_stop", lambda **kw: seen.append(kw)
+    )
+    return seen
+
+
+@pytest.fixture(autouse=True)
+def kept(monkeypatch):
+    """The reviews a batch keeps for what it received or deleted (its own
+    session too)."""
+    seen: list = []
+    monkeypatch.setattr(
+        "app.services.invoice_activity.keep_review", lambda **kw: seen.append(kw)
+    )
+    return seen
+
+
 @pytest.fixture()
 def batch(monkeypatch):
     """``review_invoices`` over a scripted Loaded: the wiring every batch test
@@ -1126,7 +1150,9 @@ def batch(monkeypatch):
 
 
 class TestBatchModes:
-    def test_an_invoice_loaded_fails_to_return_is_reported_not_dropped(self, batch):
+    def test_an_invoice_loaded_fails_to_return_is_reported_not_dropped(
+        self, batch, stops
+    ):
         """It vanished from received AND skipped — the count came up short and
         a bad invoice_id was an empty success (consolidator review, 1 Oct)."""
 
@@ -1145,6 +1171,9 @@ class TestBatchModes:
         bad = [v for v in out["skipped"] if v["invoice_id"] == "inv-bad"]
         assert bad and bad[0]["outcome"] == "could not fetch from Loaded"
         assert "Loaded 502" in bad[0]["reasons"][0]
+        # The activity page lists it as failed, with the reason.
+        failed = [n for n in stops if n["invoice_id"] == "inv-bad"]
+        assert failed[0]["kind"] == "failed" and "Loaded 502" in failed[0]["reasons"][0]
 
     def test_the_applied_mode_is_returned(self, batch):
         """The venue's rung, lowered by the caller's ceiling — chat reported
@@ -1154,7 +1183,7 @@ class TestBatchModes:
         out = batch({}, mode="approve_all", venue_mode="autopilot")
         assert out["mode"] == "approve_all"
 
-    def test_autopilot_accepts_and_receives_despite_diffs(self, batch):
+    def test_autopilot_accepts_and_receives_despite_diffs(self, batch, kept):
         # "Trust the replica now": a qty diff never blocks autopilot — it is
         # auto-accepted (recorded) and the REPLICA's value is received.
         det = DETAIL()
@@ -1168,6 +1197,9 @@ class TestBatchModes:
         assert card_less == []  # received cleanly → no card
         # the record shows what Norm changed unattended
         assert out["verdicts"][0]["suggestions"] == 1
+        # ...and the review is kept, as received, for its card.
+        (k,) = kept
+        assert k["invoice_id"] == "inv-1" and k["data"]["is_received"] is True
 
     def test_a_bill_in_xero_follows_the_persons_switch(self, batch, monkeypatch):
         """Autopilot hands the person's "create a bill in Xero" switch to the
@@ -1188,15 +1220,22 @@ class TestBatchModes:
         )
         assert seen == [("v-1", "inv-1", False), ("v-1", "inv-1", True)]
 
-    def test_autopilot_skips_blocking_issue(self, batch):
+    def test_autopilot_skips_blocking_issue(self, batch, stops):
         det = DETAIL(fileId=None)
         received = []
         out = batch({"inv-1": det}, [], "autopilot", received)
         assert received == []
         assert out["skipped"][0]["outcome"] == "needs review"
         assert out["cards"]  # surfaced for the human
+        # The activity page's note: stopped, why, and the level in force.
+        (note,) = stops
+        assert note["kind"] == "stopped" and note["invoice_id"] == "inv-1"
+        assert note["reasons"] and note["level"]["mode"] == "autopilot"
+        assert note["data"]["invoice_id"] == "inv-1"
 
-    def test_a_deleted_draft_is_recorded_with_its_reason(self, batch, monkeypatch):
+    def test_a_deleted_draft_is_recorded_with_its_reason(
+        self, batch, monkeypatch, kept
+    ):
         """A delete left no trace but the run's count, so checking 84 of them
         meant re-reading every document (Little West, 16 Oct 2026)."""
         from app.routers import invoice_fixes as IF
@@ -1217,8 +1256,13 @@ class TestBatchModes:
         (row,) = rows
         assert row["outcome_override"] == "deleted" and row["received"] is False
         assert row["actor"] == "norm"
+        assert row["level"] == {
+            "mode": "autopilot",
+            "switches_on": [VA.AUTO_DELETE_UNREADABLE],
+        }
         assert row["extra_detail"]["deleted"]["kind"] == "no_copy"
         assert "no invoice attached" in row["extra_detail"]["deleted"]["reason"]
+        assert [k["data"]["is_deleted"] for k in kept] == [True]
 
     def test_approve_fixes_receives_only_untouched_ready(self, batch):
         # agreement → receive; any suggestion → card
@@ -1232,7 +1276,7 @@ class TestBatchModes:
         out2 = batch({"inv-1": det}, [EXTRACTION()], "approve_fixes", received2)
         assert received2 == [] and out2["cards"]
 
-    def test_a_venue_on_approve_all_is_not_talked_into_receiving(self, batch):
+    def test_a_venue_on_approve_all_is_not_talked_into_receiving(self, batch, stops):
         """The venue decides; the caller can only ask for less.
 
         Before this the rung came from the USER who happened to trigger the
@@ -1252,6 +1296,9 @@ class TestBatchModes:
         )
         assert received == []
         assert out["skipped"][0]["outcome"] == "ready to receive — awaiting approval"
+        assert [(n["kind"], n["level"]["mode"]) for n in stops] == [
+            ("waiting", "approve_all")
+        ]
 
 
 class TestPairLines:
@@ -2100,17 +2147,16 @@ class TestAUnitDecisionSaysWhichUnitWillBeUsed:
         data = {"lines": [{"id": "ld-1", "unit": None, "linked_unit_id": None}]}
         issue = self._issue()
         assert self._confirm(data, issue) is None
-        assert issue["gate"] == VA.RECEIVE_WITHOUT_UNIT
+        assert issue["gate"] is None  # no switch can supply an answer
 
-    def test_the_venue_choosers_pick_is_named_as_norms(self):
+    def test_norms_estimate_is_named_as_norms(self):
         data = {"lines": [{"id": "ld-1", "unit": "750 mL", "linked_unit_id": "u-750"}]}
         issue = self._issue()
-        c = self._confirm(data, issue, linked_unit_id="u-750", unit_by="chooser")
+        c = self._confirm(data, issue, linked_unit_id="u-750", unit_by="resolver")
         assert c["kind"] == "confirm"
-        assert c["explanation"].endswith(
-            "Norm picks '750 mL' from the venue's units; keep it"
-        )
-        assert c["gate"] == issue["gate"] == VA.RECEIVE_WITHOUT_UNIT
+        assert c["explanation"].endswith("Norm works it out as '750 mL'; keep it")
+        # Norm's own answer: no switch (owner, 19 Oct 2026).
+        assert c["gate"] is None and issue["gate"] is None
 
     def test_a_printed_unit_is_named_too(self):
         data = {"lines": [{"id": "ld-1", "unit": "Kilo", "linked_unit_id": "u-kilo"}]}
@@ -2267,14 +2313,21 @@ class TestAutopilotCountsWhatItCreated:
             "get_or_create_unit",
             lambda lh, name, db: ({"id": f"u-{name}", "name": name}, name == "Box 6"),
         )
-        monkeypatch.setattr(
-            catalog,
-            "create_item",
-            lambda *a, **k: {
+        item_brands = {}
+
+        def create_item(*a, **k):
+            item_brands[k["line_id"]] = k["brand_id"]
+            return {
                 "item_id": f"i-{k['line_id']}",
                 "item_name": k["name"],
                 "created": k["line_id"] == "l1",
-            },
+            }
+
+        monkeypatch.setattr(catalog, "create_item", create_item)
+        monkeypatch.setattr(
+            catalog,
+            "get_or_create_brand",
+            lambda lh, name: ({"id": f"b-{name}", "name": name}, True),
         )
 
         def _s(sid, kind, gate, line=None, **payload):
@@ -2300,6 +2353,13 @@ class TestAutopilotCountsWhatItCreated:
                 _s("cu2", "create_unit", VA.AUTO_CREATE_UNITS, "l2", unit_name="Each"),
                 _s("ci1", "create_item", VA.AUTO_CREATE_ITEMS, "l1", name="Oat Milk"),
                 _s("ci2", "create_item", VA.AUTO_CREATE_ITEMS, "l2", name="Soy Milk"),
+                _s(
+                    "cb1",
+                    "create_brand",
+                    VA.AUTO_CREATE_BRANDS,
+                    "l1",
+                    brand_name="OATLY",
+                ),
             ],
             "suggestion_actions": [],
             "issues": [],
@@ -2311,7 +2371,13 @@ class TestAutopilotCountsWhatItCreated:
             "stock_items": ["Oat Milk"],
             "suppliers": ["Acme"],
             "units": ["Box 6"],
+            "brands": ["OATLY"],
         }
+        # The brand is made before the item, so the new item carries it; and
+        # the line takes its name with brand_set, as the card's create does.
+        assert item_brands["l1"] == "b-OATLY"
+        l1 = data["lines"][0]
+        assert (l1["brand"], l1["brand_set"]) == ("OATLY", True)
         assert "used existing unit 'Each'" in done
         assert "linked existing stock item 'Soy Milk'" in done
 
@@ -2500,9 +2566,87 @@ class TestBrandSuggestion:
     """Loaded refuses to receive a line naming a brand it has no record for —
     its own client blocks on it and do_receive guards the same way — so before
     this the invoice just failed at submit with nothing to click (Bidfood
-    109945346: BIOZYME on CLEANER INDUSTRIAL ENZYME). The name comes from
-    LOADED's line; brands are deliberately NOT extracted from the copy.
+    109945346: BIOZYME on CLEANER INDUSTRIAL ENZYME).
+
+    The brand comes from the invoice (owner, 19 Oct 2026): none printed and
+    Loaded has one → remove it, always applied; one Loaded has a record of →
+    link it; one it hasn't → create it, behind the switch. A reading that
+    didn't look for a brand (no ``brand`` key) is never "no brand".
     """
+
+    BRANDS = [
+        {"id": "brand-akaroa", "name": "Akaroa"},
+        {"id": "brand-twin", "name": "AKAROA"},
+    ]
+
+    def _printed(self, brand, loaded=None, loaded_id=None):
+        det = DETAIL()
+        det["lines"][0].update({"brand": loaded, "linkedBrandId": loaded_id})
+        ext = EXTRACTION()
+        ext["lines"][0]["brand"] = brand
+        return _review(
+            detail=det, extraction=ext, reference=REFERENCE(brands=self.BRANDS)
+        )
+
+    @staticmethod
+    def _brand(data):
+        return [
+            s
+            for s in data["suggestions"]
+            if s.get("field") == "linked_brand_id" and s.get("line_id") == "ld-1"
+        ]
+
+    def test_a_brand_loaded_has_and_the_invoice_doesnt_is_removed(self):
+        data = self._printed(None, loaded="Akaroa", loaded_id="brand-akaroa")
+        (s,) = self._brand(data)
+        assert s["kind"] == "line_value" and "gate" not in s
+        assert s["apply"] == {"brand": None, "linked_brand_id": None, "brand_set": True}
+        # No switch: Autopilot applies it even with every switch off.
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, {"mode": "autopilot"})
+        ln = data["lines"][0]
+        assert (ln["brand"], ln["linked_brand_id"], ln["brand_set"]) == (
+            None,
+            None,
+            True,
+        )
+
+    def test_a_printed_brand_loaded_has_is_linked(self):
+        (s,) = self._brand(self._printed("AKAROA"))
+        assert s["kind"] == "line_value" and "gate" not in s
+        assert s["apply"]["linked_brand_id"] == "brand-akaroa"
+        assert s["apply"]["brand_set"] is True
+
+    def test_a_printed_brand_loaded_lacks_is_created_behind_the_switch(self):
+        (s,) = self._brand(self._printed("SEAFROST", loaded="Akaroa", loaded_id="x"))
+        assert s["kind"] == "create_brand" and s["gate"] == "auto_create_brands"
+        assert s["payload"] == {"brand_name": "SEAFROST"}
+
+    def test_the_same_brand_under_the_venues_other_record_is_left_alone(self):
+        assert not self._brand(
+            self._printed("Akaroa", loaded="AKAROA", loaded_id="brand-twin")
+        )
+
+    def test_a_new_brand_on_loadeds_line_takes_the_invoices_answer(self):
+        data = self._printed(None, loaded="BIOZYME")
+        b = _blocker(data, "brand_unknown", "ld-1")
+        (s,) = self._brand(data)
+        assert b["fix"] == [s["id"]] and s["apply"]["brand"] is None
+        assert b["gate"] is None  # nothing is created, so no switch
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, {"mode": "autopilot"})
+        assert IR.compute_confidence(data) == "ready"
+
+    def test_a_brand_record_linked_by_hand_settles_the_unknown_brand(self):
+        # The person makes the brand from the picker: linking any record
+        # settles the blocker, so the card's own Receive isn't left greyed out.
+        data = self._printed(None, loaded="BIOZYME")
+        b = _blocker(data, "brand_unknown", "ld-1")
+        data["lines"][0]["linked_brand_id"] = "b-new"
+        assert IR.is_settled(data, b)
+
+    def test_a_reading_that_didnt_look_is_not_no_brand(self):
+        # No brand key at all (an older read): Loaded's brand stands.
+        data = _review(reference=REFERENCE(brands=self.BRANDS))
+        assert not self._brand(data)
 
     def _with_brand(self, **over):
         det = DETAIL()
@@ -2556,47 +2700,80 @@ class TestBrandSuggestion:
         sent = next(x for x in req.lines if x["id"] == "ld-1")
         assert sent["linked_brand_id"] == "brand-new-1"
 
-    def test_a_reshape_does_not_throw_the_created_brand_away(self):
-        """create-item reshapes the draft from Loaded, which knows nothing of
-        the brand link. Losing it would cost a real Loaded write the user
-        already made — and silently put the invoice back in the refused state.
-        """
-        from app.services.received_invoice import carry_local_state
-
-        fresh = {"lines": [{"id": "ld-1", "brand": "BIOZYME"}]}
-        carry_local_state(
-            fresh,
-            {"lines": [{"id": "ld-1", "brand": "BIOZYME", "linked_brand_id": "b-1"}]},
-        )
-        assert fresh["lines"][0]["linked_brand_id"] == "b-1"
-
-    def test_a_reshape_does_not_throw_a_created_unit_away_either(self):
-        """The same leak one link over. The unit carry used to be nested
-        inside the ITEM branch, so a unit created on an already-linked line
-        vanished on the next reshape — putting the invoice back into the
-        refusal the user had just cleared, at the cost of a Loaded write."""
-        from app.services.received_invoice import carry_local_state
-
-        fresh = {"lines": [{"id": "ld-1", "linked_item_id": "item-1"}]}
-        carry_local_state(
-            fresh,
-            {
-                "lines": [
-                    {
-                        "id": "ld-1",
-                        "linked_item_id": "item-1",  # unchanged — the old gate
-                        "linked_unit_id": "u-new",
+    def test_a_created_record_survives_the_next_review(self):
+        """create-brand and create-unit write to Loaded, and the next review
+        then proposes LINKING the record rather than creating it. That is the
+        same answer to the same question, so the accept carries and the line
+        keeps its record — losing it would cost a Loaded write the person
+        already made, and put the invoice back in the refused state."""
+        old = {
+            "suggestions": [
+                {
+                    "id": "create_brand:linked_brand_id:ld-1",
+                    "kind": "create_brand",
+                    "field": "linked_brand_id",
+                    "line_id": "ld-1",
+                    "payload": {"brand_name": "BIOZYME"},
+                },
+                {
+                    "id": "create_unit:unit:ld-1",
+                    "kind": "create_unit",
+                    "field": "unit",
+                    "line_id": "ld-1",
+                    "payload": {"unit_name": "6x1000mL"},
+                },
+            ],
+            "suggestion_actions": [
+                {
+                    "suggestion_id": "create_brand:linked_brand_id:ld-1",
+                    "action": "accepted",
+                    "after": {"linked_brand_id": "b-1", "brand": "BIOZYME"},
+                },
+                {
+                    "suggestion_id": "create_unit:unit:ld-1",
+                    "action": "accepted",
+                    "after": {"linked_unit_id": "u-new", "unit": "6x1000mL"},
+                },
+            ],
+        }
+        fresh = {
+            "lines": [{"id": "ld-1", "brand": "BIOZYME", "linked_brand_id": None}],
+            "suggestions": [
+                {
+                    "id": "line_value:linked_brand_id:ld-1",
+                    "kind": "line_value",
+                    "field": "linked_brand_id",
+                    "line_id": "ld-1",
+                    "apply": {
+                        "brand": "BIOZYME",
+                        "linked_brand_id": "b-1",
+                        "brand_set": True,
+                    },
+                },
+                {
+                    "id": "line_value:unit:ld-1",
+                    "kind": "line_value",
+                    "field": "unit",
+                    "line_id": "ld-1",
+                    "apply": {
                         "unit": "6x1000mL",
-                    }
-                ]
-            },
-        )
-        assert fresh["lines"][0]["linked_unit_id"] == "u-new"
-        assert fresh["lines"][0]["unit"] == "6x1000mL"
+                        "linked_unit_id": "u-new",
+                        "unit_ratio": 6,
+                    },
+                },
+            ],
+        }
+        assert IR.carry_forward_decisions(old, fresh) == 2
+        ln = fresh["lines"][0]
+        assert (ln["linked_brand_id"], ln["linked_unit_id"]) == ("b-1", "u-new")
+        assert {a["suggestion_id"] for a in fresh["suggestion_actions"]} == {
+            "line_value:linked_brand_id:ld-1",
+            "line_value:unit:ld-1",
+        }
 
-    def test_it_reads_loadeds_line_not_the_copy(self):
-        # Every line is covered, paired with a copy line or not — an
-        # unresolved brand blocks the receive either way.
+    def test_a_line_the_invoice_doesnt_bill_loses_its_unrecorded_brand(self):
+        # The invoice prints no brand for a line it doesn't bill, and Loaded
+        # must still be able to take the draft if the line isn't struck.
         det = DETAIL()
         det["lines"].append(
             {
@@ -2615,6 +2792,8 @@ class TestBrandSuggestion:
         data = _review(detail=det)
         brands = [i for i in data["issues"] if i["code"] == "brand_unknown"]
         assert [i["line_id"] for i in brands] == ["ld-2"]
+        (s,) = [s for s in data["suggestions"] if s["id"] == brands[0]["fix"][0]]
+        assert s["kind"] == "line_value" and s["apply"]["brand"] is None
 
 
 class TestDefectRecommendations:
@@ -3545,14 +3724,11 @@ class TestTheCopyDecidesWhichLayoutReadsIt:
         assert seen["spec_name"] == "NEAT MEAT"
 
 
-class TestTheUnitGatePicksAUnit:
-    """receive_without_unit means: when no unit can be found on the invoice,
-    Norm picks one so the invoice can be received — the batched resolver's
-    answer when there is one, else Loaded's own unit, else the unit chooser
-    (unit_guess) picking from the venue's own units. That fallback is what the
-    setting is for (the user, 12 Oct 2026, after it was briefly removed as a
-    "second picker"). The pick is made in the Replica at review time and
-    applied by autopilot only with the switch on."""
+class TestNormsUnitAnswerNeedsNoSwitch:
+    """Norm's answer for a line with no unit is Norm's decision: Autopilot
+    applies it with every switch off. The "receive without a unit" switch and
+    the venue-unit chooser behind it were retired on 19 Oct 2026 (owner): the
+    chooser could only land on a unit Loaded already has."""
 
     def _data(self):
         return {
@@ -3570,8 +3746,8 @@ class TestTheUnitGatePicksAUnit:
                         "unit": "700 mL",
                         "unit_ratio": 0.7,
                     },
-                    "sure": False,
-                    "gate": VA.RECEIVE_WITHOUT_UNIT,
+                    "sure": True,
+                    "gate": None,
                 }
             ],
             "suggestion_actions": [],
@@ -3581,42 +3757,34 @@ class TestTheUnitGatePicksAUnit:
                     "code": "unit_missing",
                     "blocking": True,
                     "line_id": "ld-1",
-                    "gate": VA.RECEIVE_WITHOUT_UNIT,
+                    "gate": None,
                     "fix": ["line_value:unit:ld-1"],
                     "message": "no unit",
                 }
             ],
         }
 
-    def _settings(self, on=True):
-        return {
-            "mode": "autopilot",
-            **{g: False for g in VA.GATES},
-            VA.RECEIVE_WITHOUT_UNIT: on,
-        }
-
-    def test_the_pick_is_applied_with_the_switch_on(self, monkeypatch):
+    def test_the_answer_is_applied_with_every_switch_off(self, monkeypatch):
         monkeypatch.setattr(
             IR,
             "LoadedInvoiceClient",
-            lambda *a, **k: pytest.fail("applying a pick needs no Loaded call"),
+            lambda *a, **k: pytest.fail("applying an answer needs no Loaded call"),
         )
         data = self._data()
-        done = IR.autopilot_accept(None, None, "v-1", "inv-1", data, self._settings())
+        settings = {"mode": "autopilot", **{g: False for g in VA.GATES}}
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
         line = data["lines"][0]
         assert line["linked_unit_id"] == "u-700" and line["unit"] == "700 mL"
-        assert any("set unit '700 mL'" in d for d in done)
         assert IR.compute_confidence(data) == "ready"
 
-    def test_never_with_the_switch_off(self):
-        data = self._data()
-        IR.autopilot_accept(None, None, "v-1", "inv-1", data, self._settings(False))
-        assert "linked_unit_id" not in data["lines"][0]
-        assert IR.compute_confidence(data) == "needs_review"
+    def test_the_switch_is_gone(self):
+        assert "receive_without_unit" not in VA.GATES
+        # A stored setting from before is simply ignored.
+        assert "receive_without_unit" not in VA.settings_from(
+            {"mode": "autopilot", "receive_without_unit": True}
+        )
 
-    def test_without_a_confident_pick_norm_still_picks_one(self):
-        """Fails if the fallback is removed again: no resolver answer and no
-        unit on Loaded's line — the venue's chooser picks one."""
+    def test_no_answer_means_no_pick(self):
         from app.services import replica_finish as RF
 
         replica = {
@@ -3626,34 +3794,11 @@ class TestTheUnitGatePicksAUnit:
             ],
         }
         data = {"lines": [{"id": "ld-1", "description": "MALFY GIN ROSA"}]}
+        log: list = []
         each = {"id": "u-each", "name": "Each", "ratio": 1}
-        RF.settle_units(data, replica, {"rep-0": "ld-1"}, [each], lambda ln: each, [])
-        rl = replica["lines"][0]
-        assert rl["linked_unit_id"] == "u-each"
-        assert rl["unit_guess"] is True and rl["unit_by"] == "chooser"
-
-    def test_a_last_resort_pick_says_so_on_the_card(self):
-        from app.services import replica_finish as RF
-
-        replica = {
-            "lines": [{"id": "rep-0", "description": "Pistachio Jam-Can"}],
-            "issues": [
-                {"id": "unit_missing:rep-0", "code": "unit_missing", "line_id": "rep-0"}
-            ],
-        }
-        forced = {
-            "id": "u-each",
-            "name": "Each",
-            "ratio": 1,
-            "why": "'Each' is Norm's best guess from the venue's units; check it",
-        }
-        RF.settle_units({"lines": []}, replica, {}, [], lambda ln: forced, [])
-        rl = replica["lines"][0]
-        assert rl["linked_unit_id"] == "u-each" and rl["unit_guess"] is True
-        assert rl["unit_why"] == (
-            "no unit could be read from the invoice for 'Pistachio Jam-Can' — "
-            "'Each' is Norm's best guess from the venue's units; check it"
-        )
+        RF.settle_units(data, replica, {"rep-0": "ld-1"}, [each], log)
+        assert "linked_unit_id" not in replica["lines"][0]
+        assert any("no answer yet" in line for line in log)
 
 
 class TestABatchSavesAsItGoes:
@@ -3801,3 +3946,545 @@ class TestTheWholeBacklogIsListed:
                 return [{"id": f"p{page}-{n}"} for n in range(200)] if page == 0 else []
 
         assert len(IR.list_window_invoices(_Lh())) == 200
+
+
+class TestAReviewWaitingOnAnAnswer:
+    """A review that stopped on an answer that didn't come through (or a
+    service that was down) is asked again when the card is next opened, at
+    most every RETRY_AFTER_MINUTES (owner, 19 Oct 2026)."""
+
+    def test_it_is_current_for_ten_minutes_then_asked_again(self):
+        import datetime
+
+        at = datetime.datetime(2026, 10, 19, 9, 0, tzinfo=datetime.timezone.utc)
+        doc = {
+            "doc_schema": IR.DOC_SCHEMA,
+            "reviewed_at": at.isoformat(),
+            "issues": [{"code": "item_answer_missing", "blocking": True}],
+        }
+        soon = at + datetime.timedelta(minutes=IR.RETRY_AFTER_MINUTES - 1)
+        later = at + datetime.timedelta(minutes=IR.RETRY_AFTER_MINUTES)
+        assert IR.review_is_current(doc, now=soon)
+        assert not IR.review_is_current(doc, now=later)
+        # Nothing waiting: a cached review stays current however old it is.
+        settled = dict(doc, issues=[{"code": "item_unmatched", "blocking": True}])
+        assert IR.review_is_current(settled, now=later)
+        assert not IR.review_is_current(dict(doc, reviewed_at=None), now=soon)
+        # A person picked the item by hand: nothing left to ask again.
+        picked = dict(
+            doc,
+            issues=[
+                {"code": "item_answer_missing", "blocking": True, "line_id": "ld-1"}
+            ],
+            lines=[{"id": "ld-1", "linked_item_id": "i-9"}],
+            edits=[
+                {"seq": 1, "line_id": "ld-1", "field": "linked_item_id", "after": "i-9"}
+            ],
+        )
+        assert IR.review_is_current(picked, now=later)
+
+
+class TestTheFriesLineShowsLoaded:
+    """IN11692458 (Service Foods Auckland, 18 Oct 2026): the copy prints the
+    fries as "3x5kg", charged per "CTN"; Loaded's line says "CTN" with no unit
+    record behind it, and the venue has a 15 KG unit. The Norm tab must show
+    Loaded's "CTN — new" with "3x5kg (new)" to decide, never a unit neither
+    Loaded nor a decision put there — and the line can't go to Loaded until
+    the unit is settled (owner, 19 Oct 2026)."""
+
+    UNITS = UNITS + [
+        {"id": "u-15kg", "name": "15 KG", "ratio": 15, "stockUnitType": "Weight"}
+    ]
+    CATALOGUE = CATALOGUE + [
+        {
+            "id": "item-fries",
+            "name": "13MM STRAIGHT CUT FRIES",
+            "suppliers": [
+                # Loaded's record for the product under ANOTHER code holds 15 KG.
+                {"supplierId": "sup-akaroa", "stockCode": "POT99", "unitId": "u-15kg"}
+            ],
+        }
+    ]
+
+    def test_loadeds_new_unit_with_norms_answer_beneath_it(self):
+        det = DETAIL()
+        det["lines"][0].update(
+            {
+                "code": "POT14",
+                "description": "FRIES STRAIGHT CUT 13MM 5KG 3s (MCCAIN 203136) [FZN]",
+                "unit": "CTN",
+                "linkedUnitId": None,
+                "linkedUnitRatio": None,
+                "linkedItemId": None,
+                "linkedBrandId": None,
+                "quantityReceived": 1,
+                "unitCostExclTax": 219.78,
+                "totalCostExclTax": 219.78,
+            }
+        )
+        ext = EXTRACTION()
+        ext["lines"][0].update(
+            {
+                "code": "POT14",
+                "description": "FRIES STRAIGHT CUT 13MM 5KG 3s (MCCAIN 203136) [FZN]",
+                "quantity": 1,
+                "unit": "CTN",
+                "unit_of_measure": "3x5kg",
+                "unit_price_ex_tax": 219.78,
+                "line_total_ex_tax": 219.78,
+            }
+        )
+        data = _review(
+            detail=det,
+            extraction=ext,
+            reference=REFERENCE(units=self.UNITS, catalogue=self.CATALOGUE),
+        )
+        ln = data["lines"][0]
+        # Loaded's value, untouched: "CTN", no unit record — not 15 KG.
+        assert (ln["unit"], ln["linked_unit_id"]) == ("CTN", None)
+        (s,) = [
+            s
+            for s in data["suggestions"]
+            if s["line_id"] == "ld-1" and s["field"] == "unit"
+        ]
+        assert s["kind"] == "create_unit" and s["proposed"] == "3x5kg"
+        assert s["current"] == "CTN"
+        # Until it is settled the invoice isn't ready, and a pack never
+        # matches a single size of the same total weight.
+        assert data["confidence"] == "needs_review"
+        assert data["replica"]["lines"][0]["unit_create_name"] == "3x5kg"
+
+
+class TestDecisionsCarryAcrossRebuilds:
+    """Found by the second review of this build (19 Oct 2026)."""
+
+    ADD = {
+        "id": "add_line:rep-1",
+        "kind": "add_line",
+        "line_id": "rep-1",
+        "payload": {
+            "id": "rep-1",
+            "description": "FREIGHT",
+            "quantity_received": 1,
+            "unit_cost": 25.0,
+            "total_cost": 25.0,
+            "linked_unit_id": None,
+            "unit_create_name": "3x5kg",
+            "linked_item_id": "item-freight",
+        },
+    }
+
+    def test_an_added_line_survives_its_unit_being_created(self):
+        old = {
+            "suggestions": [
+                self.ADD,
+                {
+                    "id": "create_unit:unit:rep-1",
+                    "kind": "create_unit",
+                    "line_id": "rep-1",
+                    "field": "unit",
+                },
+            ],
+            "suggestion_actions": [
+                {"suggestion_id": "add_line:rep-1", "action": "accepted"},
+                {
+                    "suggestion_id": "create_unit:unit:rep-1",
+                    "action": "accepted",
+                    "after": {"linked_unit_id": "u-35", "unit": "3x5kg"},
+                },
+            ],
+        }
+        now = dict(
+            self.ADD,
+            payload={
+                **self.ADD["payload"],
+                "linked_unit_id": "u-35",
+                "unit_create_name": None,
+                "original_unit_id": "u-35",
+                "unit_source": "copy",
+            },
+        )
+        fresh = {"lines": [], "suggestions": [now]}
+        IR.carry_forward_decisions(old, fresh)
+        assert [ln["id"] for ln in fresh["lines"]] == ["rep-1"]
+
+    def test_a_changed_item_match_on_an_added_line_is_a_new_question(self):
+        old = {
+            "suggestions": [self.ADD],
+            "suggestion_actions": [
+                {"suggestion_id": "add_line:rep-1", "action": "accepted"}
+            ],
+        }
+        now = dict(
+            self.ADD, payload={**self.ADD["payload"], "linked_item_id": "item-delivery"}
+        )
+        fresh = {"lines": [], "suggestions": [now]}
+        assert IR.carry_forward_decisions(old, fresh) == 0
+        assert fresh["lines"] == []
+
+    def test_an_accept_survives_a_cleared_review(self):
+        # A sibling's receive (or Loaded's change) cleared the card's
+        # suggestions before this deploy; the accept still carries when the
+        # fresh suggestion writes what it recorded.
+        old = {
+            "suggestions": [],
+            "suggestion_actions": [
+                {
+                    "suggestion_id": "line_value:quantity_received:ld-1",
+                    "action": "accepted",
+                    "after": {"quantity_received": 4.95},
+                },
+            ],
+        }
+        fresh = {
+            "lines": [{"id": "ld-1", "quantity_received": 4.0}],
+            "suggestions": [
+                {
+                    "id": "line_value:quantity_received:ld-1",
+                    "kind": "line_value",
+                    "line_id": "ld-1",
+                    "apply": {"quantity_received": 4.95},
+                },
+            ],
+        }
+        assert IR.carry_forward_decisions(old, fresh) == 1
+        assert fresh["lines"][0]["quantity_received"] == 4.95
+
+    def test_a_blocker_does_not_bring_back_a_fix_the_person_undid(self):
+        fix = {
+            "id": "line_value:unit:ld-1",
+            "kind": "line_value",
+            "line_id": "ld-1",
+            "field": "unit",
+            "apply": {"unit": "3x5kg", "linked_unit_id": "u-35"},
+        }
+        old = {
+            "suggestions": [fix],
+            "suggestion_actions": [
+                {
+                    "suggestion_id": "unit_missing:ld-1",
+                    "action": "accepted",
+                    "after": {"unit": "3x5kg", "linked_unit_id": "u-35"},
+                },
+                {"suggestion_id": fix["id"], "action": "undone"},
+            ],
+        }
+        fresh = {
+            "lines": [{"id": "ld-1", "unit": "CTN", "linked_unit_id": None}],
+            "suggestions": [dict(fix)],
+            "issues": [
+                {
+                    "id": "unit_missing:ld-1",
+                    "code": "unit_missing",
+                    "line_id": "ld-1",
+                    "fix": [fix["id"]],
+                }
+            ],
+        }
+        IR.carry_forward_decisions(old, fresh)
+        assert fresh["lines"][0]["linked_unit_id"] is None
+
+    def test_a_created_supplier_is_kept_by_the_next_review(self):
+        old = {
+            "suggestions": [
+                {
+                    "id": "create_supplier:linked_supplier_id",
+                    "kind": "create_supplier",
+                    "field": "linked_supplier_id",
+                }
+            ],
+            "suggestion_actions": [
+                {
+                    "suggestion_id": "create_supplier:linked_supplier_id",
+                    "action": "accepted",
+                    "after": {
+                        "linked_supplier_id": "s-new",
+                        "supplier_name": "Seafood Co",
+                    },
+                },
+            ],
+        }
+        fresh = {
+            "linked_supplier_id": None,
+            "lines": [],
+            "suggestions": [
+                {
+                    "id": "supplier:linked_supplier_id",
+                    "kind": "supplier",
+                    "field": "linked_supplier_id",
+                    "apply": {
+                        "linked_supplier_id": "s-new",
+                        "supplier_name": "Seafood Co",
+                    },
+                },
+            ],
+        }
+        IR.carry_forward_decisions(old, fresh)
+        assert fresh["linked_supplier_id"] == "s-new"
+
+
+class TestAutopilotLeavesAPersonsEditsAlone:
+    def test_a_field_set_by_hand_is_not_changed(self):
+        data = {
+            "invoice_id": "inv-1",
+            "lines": [{"id": "ld-1", "brand": "Akaroa", "linked_brand_id": "b-1"}],
+            "suggestions": [
+                {
+                    "id": "line_value:linked_brand_id:ld-1",
+                    "kind": "line_value",
+                    "line_id": "ld-1",
+                    "field": "linked_brand_id",
+                    "apply": {
+                        "brand": None,
+                        "linked_brand_id": None,
+                        "brand_set": True,
+                    },
+                },
+            ],
+            "suggestion_actions": [],
+            "issues": [],
+            "edits": [
+                {
+                    "seq": n,
+                    "at": "2026-10-19T09:00:00+00:00",
+                    "line_id": "ld-1",
+                    "field": f,
+                    "after": v,
+                }
+                for n, (f, v) in enumerate(
+                    (("brand", "Akaroa"), ("linked_brand_id", "b-1")), start=1
+                )
+            ],
+        }
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, {"mode": "autopilot"})
+        assert data["lines"][0]["linked_brand_id"] == "b-1"
+        for e in data["edits"]:
+            e["undone_at"] = "2026-10-19T10:00:00+00:00"  # undone: Norm's again
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, {"mode": "autopilot"})
+        assert data["lines"][0]["linked_brand_id"] is None
+        # Half a choice (a record with no brand name, as a chat might send)
+        # is not the person's brand: Norm's answer applies.
+        data["lines"][0].update(brand="Akaroa", linked_brand_id="b-1")
+        data["suggestion_actions"] = []
+        data["edits"] = [dict(data["edits"][1], undone_at=None)]
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, {"mode": "autopilot"})
+        assert data["lines"][0]["linked_brand_id"] is None
+
+    def test_a_line_norm_adds_again_gets_what_the_person_did_on_it(self):
+        # The person struck Norm's FREIGHT line (rep-2). Tonight the same
+        # invoice line is a new question, so the rebuild doesn't add it and
+        # Autopilot does: the strike goes on it — not on another line that
+        # took the same place.
+        def run(description):
+            data = {
+                "invoice_id": "inv-1",
+                "lines": [{"id": "ld-1", "description": "FRIES"}],
+                "suggestions": [
+                    {
+                        "id": "add_line:rep-2",
+                        "kind": "add_line",
+                        "line_id": "rep-2",
+                        "payload": {"id": "rep-2", "description": description},
+                    }
+                ],
+                "issues": [],
+                "suggestion_actions": [],
+                "edits": [
+                    {
+                        "seq": 1,
+                        "at": "2026-10-19T09:00:00+00:00",
+                        "line_id": "rep-2",
+                        "field": "struck",
+                        "after": True,
+                        "line_key": {"code": None, "description": "FREIGHT"},
+                    }
+                ],
+            }
+            IR.autopilot_accept(None, None, "v-1", "inv-1", data, {"mode": "autopilot"})
+            return next(ln for ln in data["lines"] if ln["id"] == "rep-2").get("struck")
+
+        assert run("FREIGHT") is True
+        assert not run("DELIVERY")
+
+    def test_adding_a_line_keeps_every_decision_autopilot_makes_after(self):
+        # A person's edit on the card plus a line to add: the add step replays
+        # the edit and drops stale blocker decisions — and Autopilot's later
+        # decisions must still land in the record.
+        data = {
+            "invoice_id": "inv-1",
+            "lines": [{"id": "ld-1", "description": "FRIES", "quantity_received": 2}],
+            "suggestions": [
+                {
+                    "id": "add_line:rep-1",
+                    "kind": "add_line",
+                    "line_id": "rep-1",
+                    "payload": {"id": "rep-1", "description": "DELIVERY"},
+                },
+                {
+                    "id": "line_value:unit:ld-1",
+                    "kind": "line_value",
+                    "field": "unit",
+                    "line_id": "ld-1",
+                    "apply": {"linked_unit_id": "u-ctn", "unit": "CTN"},
+                },
+            ],
+            "issues": [
+                {
+                    "id": "unit_missing:ld-1",
+                    "code": "unit_missing",
+                    "line_id": "ld-1",
+                    "blocking": True,
+                    "fix": ["line_value:unit:ld-1"],
+                }
+            ],
+            "suggestion_actions": [],
+            "edits": [
+                {
+                    "seq": 1,
+                    "at": "2026-10-19T09:00:00+00:00",
+                    "line_id": "ld-1",
+                    "field": "quantity_received",
+                    "after": 2,
+                }
+            ],
+        }
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, {"mode": "autopilot"})
+        recorded = {a["suggestion_id"] for a in data["suggestion_actions"]}
+        assert recorded == {"add_line:rep-1", "line_value:unit:ld-1"}
+        assert IR.compute_confidence(data) == "ready"
+
+    def test_a_decision_on_a_line_not_yet_added_settles_nothing_until_it_lands(self):
+        # Carried while Norm's line wasn't on the card, the unit accept set
+        # nothing; it settles the blocker only once Autopilot adds the line
+        # and puts the unit on it.
+        unit = {"linked_unit_id": "u-20l", "unit": "20 L"}
+        data = {
+            "invoice_id": "inv-1",
+            "lines": [],
+            "suggestions": [
+                {
+                    "id": "add_line:rep-1",
+                    "kind": "add_line",
+                    "line_id": "rep-1",
+                    "payload": {"id": "rep-1", "description": "CANOLA OIL 20L"},
+                },
+                {
+                    "id": "line_value:unit:rep-1",
+                    "kind": "line_value",
+                    "field": "unit",
+                    "line_id": "rep-1",
+                    "apply": unit,
+                    "sure": False,
+                },
+            ],
+            "issues": [
+                {
+                    "id": "unit_unconfirmed:rep-1",
+                    "code": "unit_unconfirmed",
+                    "line_id": "rep-1",
+                    "blocking": True,
+                    "fix": ["line_value:unit:rep-1"],
+                }
+            ],
+            "suggestion_actions": [
+                {
+                    "suggestion_id": "line_value:unit:rep-1",
+                    "action": "accepted",
+                    "by": "user",
+                }
+            ],
+        }
+        assert IR.compute_confidence(data) == "needs_review"
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, {"mode": "autopilot"})
+        assert data["lines"][0]["linked_unit_id"] == "u-20l"
+        assert IR.compute_confidence(data) == "ready"
+
+    def test_a_blocker_answered_by_hand_never_parks_the_invoice(self):
+        # Norm's answer didn't come through, so the person picked Kilo; the
+        # next batch's answer is a unit Loaded doesn't have. The person's pick
+        # stands and answers the line, so Autopilot doesn't park on it.
+        kilo = {"linked_unit_id": "u-kilo", "unit": "Kilo", "unit_ratio": 1}
+        data = {
+            "invoice_id": "inv-1",
+            "lines": [{"id": "ld-1", **kilo}],
+            "suggestions": [
+                {
+                    "id": "create_unit:unit:ld-1",
+                    "kind": "create_unit",
+                    "field": "unit",
+                    "line_id": "ld-1",
+                    "proposed": "2.5 KG",
+                    "gate": "auto_create_units",
+                }
+            ],
+            "issues": [
+                {
+                    "id": "unit_missing:ld-1",
+                    "code": "unit_missing",
+                    "line_id": "ld-1",
+                    "blocking": True,
+                    "gate": "auto_create_units",
+                    "fix": ["create_unit:unit:ld-1"],
+                }
+            ],
+            "suggestion_actions": [],
+            "edits": [
+                {
+                    "seq": n,
+                    "at": "2026-10-19T09:00:00+00:00",
+                    "line_id": "ld-1",
+                    "field": f,
+                    "after": v,
+                }
+                for n, (f, v) in enumerate(kilo.items(), start=1)
+            ],
+        }
+        settings = {"mode": "autopilot", "auto_create_units": True}
+        assert IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings) == []
+        assert data["lines"][0]["linked_unit_id"] == "u-kilo"
+        assert IR.compute_confidence(data) == "ready"
+
+    def test_the_batch_receives_what_the_person_did_on_the_open_card(
+        self, batch, monkeypatch
+    ):
+        # Loaded holds the brand Akaroa; the invoice prints none, so Norm
+        # would remove it. The person kept it by hand on the open card: the
+        # batch receives it with the brand.
+        det = DETAIL()
+        det["lines"][0].update({"brand": "Akaroa", "linkedBrandId": "brand-akaroa"})
+        ext = EXTRACTION()
+        ext["lines"][0]["brand"] = None
+        kept = [
+            {
+                "seq": n,
+                "at": "2026-10-19T09:00:00+00:00",
+                "line_id": "ld-1",
+                "field": f,
+                "after": v,
+            }
+            for n, (f, v) in enumerate(
+                (
+                    ("brand", "Akaroa"),
+                    ("linked_brand_id", "brand-akaroa"),
+                    ("brand_set", True),
+                ),
+                start=1,
+            )
+        ]
+
+        class _Card:
+            data = {"edits": kept, "lines": []}
+            pending_ops: list = []
+
+        received: list = []
+        monkeypatch.setattr(IR, "open_drafts", lambda db, v, i: [_Card()])
+        batch({"inv-1": det}, [ext], "autopilot", received)
+        (req,) = received
+        line = next(x for x in req.lines if x["id"] == "ld-1")
+        assert line["linked_brand_id"] == "brand-akaroa"
+        # Without the card, Norm's removal goes in.
+        received.clear()
+        monkeypatch.setattr(IR, "open_drafts", lambda db, v, i: [])
+        batch({"inv-1": det}, [ext], "autopilot", received)
+        (req,) = received
+        assert next(x for x in req.lines if x["id"] == "ld-1").get("brand") is None

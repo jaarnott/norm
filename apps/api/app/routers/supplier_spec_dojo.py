@@ -17,7 +17,7 @@ harmless. Only ``upload_sample`` stays async — it awaits the file body.
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
@@ -198,8 +198,8 @@ def _run_and_store(
         )
         status = "new" if sample.expected is None else ("pass" if not diffs else "fail")
         # Replica: OUR extraction resolved into a full working document
-        # against the venue's Loaded CATALOGUE (only for cannot-receive
-        # samples, which carry the source venue). Not scored against Loaded's
+        # against the venue's Loaded CATALOGUE (only for samples staged from
+        # a venue's invoice, which carry it). Not scored against Loaded's
         # own read of the invoice — that comparison was removed 16 Aug 2026.
         replica, replica_diffs, replica_compare = spec_dojo.replica_stage(
             db, config_db, sample, extraction, reference
@@ -500,9 +500,9 @@ def dojo_summary(
 
 
 # ---------------------------------------------------------------------------
-# The Dojo page: triage ALL venues' outstanding invoices before they join
-# the per-supplier regression suite. Staged invoices are DRAFT samples —
-# the full toolkit works on them, regression ignores them until promoted.
+# Samples awaiting a person. The Dojo page that listed every venue's
+# outstanding invoices beside them (and staged drafts from it) was retired on
+# 19 Oct 2026 for the invoice activity page (routers/invoice_activity.py).
 # ---------------------------------------------------------------------------
 
 # Analysis states that still need a human: pending proposal, or queued/running/failed.
@@ -528,127 +528,8 @@ def dojo_pending(
     config_db: Session = Depends(get_config_db_rw),
     user: User = Depends(require_permission("admin:system")),
 ):
-    """Just the awaiting-review list — the part of the Dojo page people came
-    for. Split from /dojo/overview (16 Aug 2026) because the overview's
-    outstanding sweep calls LoadedHub per venue and takes seconds; the dojo
-    list is a config-DB read and should render immediately."""
+    """The samples awaiting review — a config-DB read, so it is immediate."""
     return {"pending_review": _pending_review_rows(config_db)}
-
-
-@router.get("/dojo/overview")
-def dojo_overview(
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db_rw),
-    user: User = Depends(require_permission("admin:system")),
-):
-    """One fetch for the Dojo page: every venue's outstanding invoices with
-    their dojo membership, plus the in-dojo samples still awaiting review
-    (no baseline yet, or a pending/failed analysis proposal)."""
-    from app.db.models import Connection, Venue
-    from app.services.received_invoice import LoadedInvoiceClient
-
-    connected = {
-        v_id
-        for (v_id,) in db.query(Connection.venue_id)
-        .filter(
-            Connection.connector_name == "loadedhub",
-            Connection.enabled == "true",
-            Connection.venue_id.isnot(None),
-        )
-        .all()
-    }
-    venues = [
-        v for v in db.query(Venue).order_by(Venue.name).all() if v.id in connected
-    ]
-
-    # Dojo membership for badge-ing, keyed by source invoice id.
-    by_invoice: dict[str, SupplierSpecSample] = {
-        s.source_invoice_id: s
-        for s in config_db.query(SupplierSpecSample)
-        .filter(SupplierSpecSample.source_invoice_id.isnot(None))
-        .all()
-    }
-
-    outstanding: list[dict] = []
-    errors: list[dict] = []
-    for v in venues:
-        try:
-            lh = LoadedInvoiceClient(db, config_db, v.id)
-            rows = lh.get(
-                "/1.0/stock/internal/invoices"
-                "?from=1901-01-01&to=9999-12-31&status=NotReceived"
-                "&page=0&pageSize=200"
-            )
-            rows = rows if isinstance(rows, list) else (rows or {}).get("data") or []
-            for inv in rows:
-                if not isinstance(inv, dict):
-                    continue
-                if inv.get("isReceived") or inv.get("deletedAt"):
-                    continue
-                s = by_invoice.get(inv.get("id"))
-                outstanding.append(
-                    {
-                        "venue_id": v.id,
-                        "venue_name": v.name,
-                        "invoice_id": inv.get("id"),
-                        "reference": inv.get("referenceNumber"),
-                        "supplier_name": inv.get("supplierName"),
-                        "issued_at": inv.get("issuedAt"),
-                        "total": inv.get("total"),
-                        "has_file": bool(inv.get("fileId")),
-                        "sample_id": s.id if s else None,
-                        "draft": bool(s.draft) if s else False,
-                        "in_dojo": bool(s) and not bool(s.draft),
-                    }
-                )
-        except Exception as exc:  # noqa: BLE001 — one venue must not sink the page
-            logger.info("dojo overview: venue %s failed: %s", v.name, exc)
-            errors.append({"venue_name": v.name, "error": str(exc)})
-
-    return {
-        "outstanding": outstanding,
-        "pending_review": _pending_review_rows(config_db),
-        "errors": errors,
-    }
-
-
-class StageRequest(BaseModel):
-    venue_id: str
-    invoice_id: str
-
-
-@router.post("/dojo/stage")
-def stage_draft(
-    body: StageRequest,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db_rw),
-    user: User = Depends(require_permission("admin:system")),
-):
-    """Stage an outstanding invoice as a DRAFT sample for triage — no
-    background analysis (the toolkit's Analyse button is on-demand)."""
-    try:
-        staged = spec_dojo.stage_invoice_sample(
-            db, body.venue_id, body.invoice_id, draft=True
-        )
-    except RuntimeError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    sample = _sample_or_404(config_db, staged["sample_id"])
-    return {**staged, "sample": _sample_meta(sample)}
-
-
-@router.post("/samples/{sample_id}/promote")
-def promote_sample(
-    sample_id: str,
-    config_db: Session = Depends(get_config_db_rw),
-    user: User = Depends(require_permission("admin:system")),
-):
-    """Add a triage draft to the dojo proper — it joins the per-spec sample
-    list, Run Dojo and the summary from here on."""
-    sample = _sample_or_404(config_db, sample_id)
-    sample.draft = False
-    config_db.commit()
-    config_db.refresh(sample)
-    return {"sample": _sample_meta(sample)}
 
 
 class CandidateRunRequest(BaseModel):
@@ -999,14 +880,23 @@ def autopilot_confidence(
 def unit_check_overview(
     run_id: str | None = None,
     status: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    venue_ids: str | None = None,
+    tz: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("admin:system")),
 ):
-    """Recent runs, and the proposals of one run (or every open one)."""
-    from sqlalchemy import func
+    """Recent runs, and the proposals of one run (or every open one).
+
+    ``start``/``end`` (dates) and ``venue_ids`` (comma-separated) are the
+    invoice activity page's filters: every line, open or decided, for invoices
+    received in that period at those venues, open lines first."""
+    from sqlalchemy import case, func
 
     from app.db.models import UnitCheckProposal as P
     from app.db.models import UnitCheckRun as R
+    from app.services import invoice_activity as IA
     from app.services import unit_check as UC
 
     runs = db.query(R).order_by(R.started_at.desc()).limit(30).all()
@@ -1018,6 +908,26 @@ def unit_check_overview(
             .group_by(P.run_id, P.status)
         ):
             counts.setdefault(rid, {})[st] = n
+    venues = [v for v in (venue_ids or "").split(",") if v.strip()]
+    if start or end or venues:
+        if (start is None) != (end is None):
+            raise HTTPException(400, "give both start and end")
+        if start and end and end < start:
+            raise HTTPException(400, "end is before start")
+        q = IA.unit_check_query(db, start, end, venues or None, IA.zone(tz))
+        if status:
+            q = q.filter(P.status == status)
+        open_first = case((P.status.in_(("open", "failed")), 0), else_=1)
+        proposals = (
+            q.order_by(open_first, P.venue_name, P.invoice_date.desc(), P.created_at)
+            .limit(1000)
+            .all()
+        )
+        return {
+            "runs": [UC.run_view(r, counts.get(r.id)) for r in runs[:10]],
+            "proposals": [UC.proposal_view(p) for p in proposals],
+        }
+
     q = db.query(P)
     if run_id:
         q = q.filter(P.run_id == run_id)

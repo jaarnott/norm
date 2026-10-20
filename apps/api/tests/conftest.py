@@ -56,6 +56,7 @@ from app.routers import (
     supplier_spec_dojo,
     catalog_hygiene,
     invoice_fixes,
+    invoice_activity,
     recipe_editor,
     uploads,
     apps as apps_router,
@@ -64,6 +65,10 @@ from app.routers import (
 # The insight run's rewording is a real model call; a test that wants it
 # switches it on and fakes the call (test_insight_wording.py).
 settings.INSIGHT_WORDING_ENABLED = False
+# The scheduler tick (/internal/run-due-tasks) also starts the insight runs
+# on a thread of its own with real sessions, outside a test's rollback (the
+# same leak as the unit check, which main switches off just below).
+settings.INSIGHTS_ENABLED = False
 
 # The daily unit check rides /internal/run-due-tasks in a background thread on
 # the REAL clock and its own committing session. From its hour (19:00 UTC) a
@@ -116,6 +121,7 @@ _test_app.include_router(supplier_tenders.router, prefix="/api")
 _test_app.include_router(supplier_spec_dojo.router, prefix="/api")
 _test_app.include_router(catalog_hygiene.router, prefix="/api")
 _test_app.include_router(invoice_fixes.router, prefix="/api")
+_test_app.include_router(invoice_activity.router, prefix="/api")
 _test_app.include_router(recipe_editor.router, prefix="/api")
 _test_app.include_router(uploads.router, prefix="/api")
 _test_app.include_router(apps_router.router, prefix="/api")

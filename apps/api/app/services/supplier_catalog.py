@@ -439,10 +439,10 @@ def learn_from_resolver(config_db: Session, supplier_key: str | None, lines) -> 
       invoice for this product resolves from the catalogue with no model call.
       High was right 65 of 66 times in the 14 Oct 2026 unit-size test.
     - anything less — medium (17 of 22 right, below the ~85% a person
-      manages), low, or no answer at all — is recorded as a GUESS
-      (``evidence['guess']``). The invoice still uses it, but the next
-      invoice for the product asks again (``unsettled_guess``) instead of
-      trusting the unit the receive saved on Loaded's supplier product.
+      manages) or low — is recorded as a GUESS (``evidence['guess']``). The
+      invoice still uses it, and the next invoices within 30 days reuse it.
+    - no answer at all is NOT recorded: a failed estimate must never stop the
+      next review asking (owner, 19 Oct 2026: retry, then mark the line).
 
     A verdict settles an earlier guess. Count words never become an answer,
     and a product that already has a verdict is left alone. Caller owns the
@@ -470,6 +470,8 @@ def learn_from_resolver(config_db: Session, supplier_key: str | None, lines) -> 
         if not key:
             continue
         unit_name = str(ur.get("unit_name") or ur.get("create_name") or "").strip()
+        if not unit_name:
+            continue  # asked, but no answer came through: ask again next time
         classified = _classify_uom(unit_name) if unit_name else None
         if classified is None and (parse_unit(unit_name) or ("",))[0] == "count":
             # A printed 'EA' is how a line is charged, never a size — which is
@@ -597,6 +599,8 @@ def earlier_estimate(row: SupplierProduct | None) -> dict | None:
         return None
     if guess.get("v") != _VERSION:
         return None  # made under older rules: worked out again
+    if not str(guess.get("unit") or "").strip():
+        return None  # an estimate that didn't come through is no answer
     conf = str(guess.get("confidence") or "none").strip().lower()
     fresh = False
     try:

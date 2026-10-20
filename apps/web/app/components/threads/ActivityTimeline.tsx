@@ -65,17 +65,22 @@ function formatTime(dateStr?: string | null): string {
 }
 
 export function CopyableThreadId({ threadId }: { threadId: string }) {
+  return <CopyableId label="Thread" value={threadId} title="Click to copy the thread ID" />;
+}
+
+/** An id to hand to someone investigating: shown in monospace, one click copies it. */
+export function CopyableId({ label, value, title }: { label: string; value: string; title?: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
       onClick={() => {
-        navigator.clipboard?.writeText(threadId).then(() => {
+        navigator.clipboard?.writeText(value).then(() => {
           setCopied(true);
           setTimeout(() => setCopied(false), 1500);
         });
       }}
-      title="Click to copy the thread ID"
+      title={title || `Click to copy the ${label.toLowerCase()} id`}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%',
         padding: '3px 8px', border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)',
@@ -85,7 +90,7 @@ export function CopyableThreadId({ threadId }: { threadId: string }) {
         cursor: 'pointer', whiteSpace: 'nowrap',
       }}
     >
-      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>Thread {threadId}</span>
+      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{label} {value}</span>
       <Icon icon={copied ? Check : Copy} size="meta" />
       {copied && <span>Copied</span>}
     </button>

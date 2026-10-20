@@ -64,6 +64,25 @@ class PatchRequest(BaseModel):
     version: int
 
 
+def record_person_edits(doc, data, ops: list[dict], user_id) -> None:
+    """Keep a person's changes to an invoice card, so a rebuild from Loaded
+    replays them (``services/invoice_edits``). Before the ops are applied: it
+    reads the values they replace. Never fails a patch."""
+    try:
+        if getattr(doc, "doc_type", None) == "received_invoice" and isinstance(
+            data, dict
+        ):
+            from app.services.invoice_edits import record_edits
+
+            # The card's earlier PATCH ops prove a person's choices on a card
+            # from before the edit record (read once, before this edit).
+            record_edits(
+                data, ops, by=user_id, history=getattr(doc, "pending_ops", None)
+            )
+    except Exception:  # noqa: BLE001 — a record must never sink an edit
+        logger.warning("recording person edits failed", exc_info=True)
+
+
 def post_apply(doc, data) -> None:
     """Recompute SERVER-OWNED derived state after a patch.
 
@@ -107,6 +126,7 @@ async def patch_document(
 
     # Apply ops to the data
     data = doc.data
+    record_person_edits(doc, data, body.ops, getattr(user, "id", None))
     for op in body.ops:
         data = _apply_op(data, op)
     post_apply(doc, data)
@@ -432,6 +452,7 @@ async def patch_standalone_document(
         )
 
     data = doc.data
+    record_person_edits(doc, data, body.ops, getattr(user, "id", None))
     for op in body.ops:
         data = _apply_op(data, op)
     post_apply(doc, data)

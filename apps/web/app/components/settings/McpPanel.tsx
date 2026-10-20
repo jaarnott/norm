@@ -150,7 +150,7 @@ export default function McpPanel() {
   const nonExposable = connectors.filter((c) => !c.exposable);
 
   return (
-    <div style={{ maxWidth: 900, lineHeight: 1.45 }}>
+    <div style={{ lineHeight: 1.45 }}>
       <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>MCP — external AI access</h3>
       <p style={{ margin: '4px 0 8px', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
         Choose which Norm capabilities Claude (and other MCP clients) can use on

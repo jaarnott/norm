@@ -2911,8 +2911,10 @@ def _review_invoices(params: dict, db: Session, thread_id: str | None) -> dict: 
             def _save(iid: str, record: dict, data: dict | None) -> None:
                 # Saved as each invoice finishes, so a chat that is cut off
                 # keeps every draft it reviewed (the end-of-turn fan-out then
-                # updates the same documents).
-                if data is not None and record.get("outcome") not in IRJ._RECEIVED:
+                # updates the same documents). A received or deleted invoice's
+                # review is already kept, as its one document (keep_review).
+                done = IRJ._RECEIVED | IRJ._DELETED
+                if data is not None and record.get("outcome") not in done:
                     IRJ.save_draft(db, thread_id, str(venue_id), data)
 
             out = review_invoices(

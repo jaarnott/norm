@@ -172,7 +172,7 @@ export default function TemplatesPanel() {
   // Create form
   if (view === 'create') {
     return (
-      <div style={{ maxWidth: 800 }}>
+      <div>
         <div style={{ marginBottom: 8 }}>
           <BackLink label="Back to templates" onClick={() => setView('list')} />
         </div>

@@ -9,7 +9,8 @@ exist. Measured: 93% exact on 45 products whose size the invoice didn't print,
 against ~85% for the venues' own Loaded set-ups (test in the commit message).
 """
 
-from app.services.unit_resolver import match_unit, resolve_units, unit_name_for
+from app.services.invoice_units import match_unit_record as match_unit
+from app.services.unit_resolver import resolve_units, unit_name_for
 
 UNITS = [
     {"id": "u-700", "name": "700 mL", "ratio": 0.7},
@@ -147,16 +148,53 @@ class TestTheEstimate:
             assert out["rep-1"]["unit"]["id"] == "u-700"
         assert len(asked) == 1
 
+    def test_a_cached_answer_the_checks_now_refuse_is_replaced(self, db_session):
+        # Cached under older rules ('pack' was once kept): asked again once,
+        # and the usable answer takes its place, so it isn't paid for again.
+        from app.connectors.function_executor import _extraction_cache_put
+        from app.services.unit_resolver import _cache_key, line_prompt
+
+        prompt = line_prompt(
+            next(ln for ln in LINES if ln["id"] == "rep-1"), LINES, None, None
+        )
+        _extraction_cache_put(
+            db_session, _cache_key(prompt), "norm", "unit_estimate", {"size": "pack"}
+        )
+        asked = []
+
+        def ask(p):
+            asked.append(p)
+            return {"size": "700 mL", "confidence": "high", "why": "x"}
+
+        for _ in range(2):
+            out = resolve_units(LINES, ["rep-1"], UNITS, ask_llm=ask, db=db_session)
+            assert out["rep-1"]["unit"]["id"] == "u-700"
+        assert len(asked) == 1
+
 
 class TestCodeFindsTheUnit:
-    """The model's size → the venue's unit, by type and amount only."""
+    """The model's size → the venue's unit, through the one check every step
+    uses (invoice_units.match_unit_record, owner 19 Oct 2026)."""
 
     def test_same_amount_same_type(self):
         assert match_unit("0.7 L", UNITS)["id"] == "u-700"
         assert match_unit("454 g", UNITS)["id"] == "u-454"
+        assert match_unit("453.6 g", UNITS)["id"] == "u-454"  # rounding only
         assert match_unit("1 kg", UNITS)["id"] == "u-kilo"
-        assert match_unit("4.5 L", UNITS)["id"] == "u-6x750"  # a multipack's total
         assert match_unit("6x750mL", UNITS)["id"] == "u-6x750"
+        assert match_unit("6 × 750ml", UNITS)["id"] == "u-6x750"
+
+    def test_a_pack_is_never_a_single_size_of_its_total(self):
+        # The owner: 3x5kg is the right unit for 13mm fries, not 15 KG. The
+        # estimator used to compare totals and would have picked 15 KG.
+        units = UNITS + [
+            {"id": "u-15kg", "name": "15 KG", "ratio": 15.0},
+            {"id": "u-6l", "name": "6 L", "ratio": 6.0},
+        ]
+        assert match_unit("3x5kg", units) is None
+        assert match_unit("6x1L", units) is None
+        assert match_unit("4.5 L", units) is None  # not the 6x750mL pack
+        assert match_unit("15kg", units)["id"] == "u-15kg"
 
     def test_the_size_as_written_then_a_base_unit(self):
         # One litre is never Each: the loose 'equivalent' rule reads a single
@@ -169,6 +207,8 @@ class TestCodeFindsTheUnit:
     def test_nothing_that_merely_resembles(self):
         assert match_unit("750 mL", UNITS) is None
         assert match_unit("a bag", UNITS) is None
+        # Close is not the same.
+        assert match_unit("2.8kg", [{"id": "u", "name": "2.84 KG"}]) is None
 
     def test_new_unit_names_follow_the_venues_style(self):
         assert unit_name_for("454 g") == "454 Grams"

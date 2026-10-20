@@ -41,8 +41,8 @@ import PageState from '../ui/PageState';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { autoFocusField, PickerDialog, PickerList, type PickerOption } from './CatalogPicker';
 import {
-  buildReviewList, fixAccepted, LOADED_WRITE_ORDER, needWords,
-  type ReviewRow,
+  buildReviewList, fixAccepted, fixHolds, LOADED_WRITE_ORDER, needWords,
+  RETRY_CODES, sameLine, settledByHand, UNIT_ISSUE_CODES, type HandEdit, type ReviewRow,
 } from './invoiceReview';
 
 interface Line {
@@ -162,7 +162,6 @@ const gateLabels: Record<string, string> = {
   auto_create_items: 'auto-create stock items',
   auto_create_brands: 'auto-create brands',
   auto_create_suppliers: 'auto-create suppliers',
-  receive_without_unit: 'receive when no unit can be found',
   receive_with_unconfirmed_unit: 'receive when the invoice\'s unit can\'t be read and Norm\'s answer is used',
   receive_without_po: 'receive without a valid purchase order',
   receive_unit_kind_mismatch: 'receive in a unit of a different kind from the stocktake unit',
@@ -247,6 +246,9 @@ interface DocData {
   suggestions?: Suggestion[];
   issues?: Issue[];
   suggestion_actions?: SuggestionAction[];
+  // A person's own changes, kept by the server so a rebuild from Loaded
+  // replays them (services/invoice_edits). Read back in record mode.
+  edits?: HandEdit[];
   // Sidecars (read-only, admin X-ray): the replica shadow (doc-shaped, our
   // full resolution of the copy), Loaded's pristine mirror, and the verbatim
   // extraction.
@@ -269,6 +271,7 @@ interface DocData {
     lines?: {
       code?: string | null;
       description?: string | null;
+      brand?: string | null;
       quantity?: number | null;
       unit?: string | null;
       unit_of_measure?: string | null;
@@ -516,6 +519,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // The invoice copy beside the card (web only). Opening it folds the thread
   // panel away for the width, and closing — or leaving the card — hands it back.
   const [copyOpen, setCopyOpen] = useState(false);
+  // `record`: show what is kept, as it is — never start a review on opening
+  // (the invoice activity page reads back what Norm did).
+  const record = !!props?.record;
   useEffect(() => {
     if (!copyOpen) return;
     requestSidePanel(true);
@@ -586,7 +592,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           id: `ext-${i}`,
           code: el.code ?? null,
           description: el.description ?? null,
-          brand: null,
+          brand: el.brand ?? null,
           // Two unit FACTS, two columns (the dojo's labels): the unit as
           // printed on the copy, and the derived delivered unit of one item.
           unit: el.unit ?? null,
@@ -676,7 +682,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // Per-mount uid so line anchors never collide across sibling cards.
   const uid = useRef(Math.random().toString(36).slice(2, 8)).current;
   const isPlatformAdmin = getStoredUser()?.role === 'admin';
-  const [cannotState, setCannotState] = useState<'sending' | 'filed' | null>(null);
 
   // Embedded uses a distinct URL so the sandbox routes it to the invoice-scoped
   // tools; the web uses the session-auth working-documents REST.
@@ -785,8 +790,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
 
   // The server review (POST /invoice-fixes/review) — builds/rebuilds the
   // REVIEW_SCHEMA payload. Web-only (embedded cards are pre-reviewed at block
-  // build). force=true recomputes AND SQUASHES local edits + the
-  // accept/dismiss record (Re-analyse confirms before calling it).
+  // build). force=true recomputes it; either way the card is rebuilt from
+  // Loaded and what was decided on it — accepted suggestions, then a person's
+  // own edits — is replayed (services/invoice_edits). Only Re-analyse (reset
+  // validation) starts the card from scratch.
   const runReview = async (explicit = false, force = false) => {
     if (embedded || !venueId || !doc.invoice_id || doc.is_deleted) return;
     // One review at a time — but NEVER a dead-end: if the review state gets
@@ -844,7 +851,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // timestamp and the resolved units, and say "studying" instead. Web only.
   const studying = !embedded && !!docLive.sensei_studying;
   useEffect(() => {
-    if (embedded || !venueId || !doc.invoice_id) return;
+    if (embedded || record || !venueId || !doc.invoice_id) return;
     if (doc.is_deleted) return; // tombstone — nothing left to review
     // (Re)build whenever the doc is not a reviewed REVIEW_SCHEMA payload — an
     // older shape (re-reviewed once, its decisions carried over), or one
@@ -855,7 +862,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     // cleared (server invalidation) — the guard above stops a re-run once
     // the review returns.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embedded, venueId, doc.invoice_id, reviewed]);
+  }, [embedded, record, venueId, doc.invoice_id, reviewed]);
 
 
   // Serialized patches: one at a time, each using the LATEST version.
@@ -929,13 +936,30 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       && String(x.line_id) === String(lineId) && x.field === field && stateOf(x.id) === 'pending');
     if (!sg) return null;
     const key = field === 'unit' ? 'linked_unit_id' : field;
-    const same = sg.apply?.[key] != null && String(sg.apply[key]) === String(chosen[key] ?? '');
+    const want = sg.apply?.[key];
+    const got = chosen[key] ?? null;
+    // A brand removal (the invoice prints none) is answered by choosing none.
+    const same = !!sg.apply && key in sg.apply
+      && (want == null ? got == null : String(want) === String(got ?? ''));
     return same
       ? { suggestion_id: sg.id, action: 'accepted', by: 'user', at: nowIso(), before, after: { ...chosen } }
       : { suggestion_id: sg.id, action: 'dismissed', by: 'user', at: nowIso() };
   };
+  // A value picked by hand that is exactly Norm's answer is still the
+  // person's own pick: it stays theirs if Norm's answer later changes. The op
+  // names the suggestion it also answers (answer_of), so the server keeps it
+  // as the person's edit; Undo cancels it there with the accept.
+  const tagIfAccepted = (op: Record<string, unknown>, answer: SuggestionAction | null) => {
+    if (answer?.action === 'accepted') op.answer_of = answer.suggestion_id;
+  };
+  // A pick that accepts the blocker's own fix settles the blocker through that
+  // fix; recording the blocker too would outlive an Undo of the fix.
+  const settlesThroughFix = (issue: Issue, answer: SuggestionAction | null) =>
+    answer?.action === 'accepted' && (issue.fix || []).includes(answer.suggestion_id);
+  // Any unit blocker on the line — a unit picked by hand settles it, including
+  // a line Norm's answer didn't come through for (unit_answer_missing).
   const openUnitIssue = (lineId: string | number): Issue | undefined =>
-    issues.find((i) => (i.code === 'unit_missing' || i.code === 'unit_unconfirmed')
+    issues.find((i) => UNIT_ISSUE_CODES.includes(i.code)
       && String(i.line_id) === String(lineId) && issueStateOf(i) === 'open');
   const onUnit = (idx: number, unitId: string) => {
     const l = docRef.current.lines[idx];
@@ -946,14 +970,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const open = openUnitIssue(l.id);
     const before = { linked_unit_id: l.linked_unit_id ?? null, unit: l.unit ?? null, unit_ratio: l.unit_ratio ?? null };
     const entries: SuggestionAction[] = [];
-    if (open) {
+    const answer = answerFieldSuggestion(l.id, 'unit', fields, before);
+    if (open && !settlesThroughFix(open, answer)) {
       entries.push({
         suggestion_id: open.id, action: 'accepted', by: 'user', at: nowIso(),
         before, after: { ...fields },
       });
     }
-    const answer = answerFieldSuggestion(l.id, 'unit', fields, before);
     if (answer) entries.push(answer);
+    tagIfAccepted(ops[0], answer);
     let log: SuggestionAction[] | null = null;
     if (entries.length) {
       log = [...(docRef.current.suggestion_actions || []), ...entries];
@@ -1086,7 +1111,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       const payload = { ...(s.payload || {}) } as Record<string, unknown>;
       if (!Object.keys(payload).length) return null;
       return {
-        ops: [{ op: 'add_line', fields: payload }],
+        ops: [{ op: 'add_line', fields: payload, suggestion_id: s.id }],
         entry: {
           suggestion_id: s.id, action: 'accepted', by: 'user', at,
           before: { added_line_id: payload.id ?? null }, after: { added: true },
@@ -1111,7 +1136,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       const before: Record<string, unknown> = {};
       for (const k of Object.keys(fields)) before[k] = (ln as unknown as Record<string, unknown>)[k] ?? null;
       return {
-        ops: [{ op: 'update_line', line_id: ln.id, index: idx, fields }],
+        ops: [{ op: 'update_line', line_id: ln.id, index: idx, fields, suggestion_id: s.id }],
         entry: { suggestion_id: s.id, action: 'accepted', by: 'user', at, before, after: apply },
         next: { ...state, lines: state.lines.map((l, i) => (i === idx ? { ...l, ...(fields as Partial<Line>) } : l)) },
       };
@@ -1119,52 +1144,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const before: Record<string, unknown> = {};
     for (const k of Object.keys(apply)) before[k] = (state as unknown as Record<string, unknown>)[k] ?? null;
     return {
-      ops: [{ op: 'update_header', fields: apply }],
+      ops: [{ op: 'update_header', fields: apply, suggestion_id: s.id }],
       entry: { suggestion_id: s.id, action: 'accepted', by: 'user', at, before, after: apply },
       next: { ...state, ...(apply as Partial<DocData>) },
     };
-  };
-
-  // "Norm can't do this one": file the invoice into the training dojo and
-  // record the verdict. Never receives, never edits the draft — the invoice
-  // stays exactly as it is, and receiving it later is still fine.
-  const cannotReceive = async () => {
-    if (cannotState || !venueId || !doc.invoice_id) return;
-    setCannotState('sending');
-    try {
-      const res = await apiFetch('/api/invoice-fixes/cannot-receive', {
-        method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id }),
-      });
-      if (!res.ok) throw new Error(`Error ${res.status}`);
-      // Report what HAPPENED, not what we asked for. The endpoint answers 200
-      // in three different situations and they are not the same news: filed,
-      // already filed (staging is idempotent, so a second press changes
-      // nothing), and couldn't file at all because Loaded holds no copy of
-      // the invoice. Claiming "filed" for all three is how this button spent
-      // a day looking like it worked while nothing reached the Dojo.
-      const out = await res.json().catch(() => ({}));
-      setCannotState('filed');
-      setStatus('idle');
-      if (!out.staged) {
-        setMessage(
-          out.reason
-            ? `Recorded, but it can't be filed for training: ${out.reason}`
-            : "Recorded, but there's no invoice copy in Loaded to train on",
-        );
-      } else if (out.already_in_dojo) {
-        // Saying "already there, nothing to do" was wrong: a second press
-        // means the last training didn't solve it, so it goes back to the
-        // sensei rather than being treated as a duplicate.
-        setMessage('Already in the Dojo — sent back to the sensei for another look');
-      } else {
-        setMessage('Filed for training — the sensei is analysing it now');
-      }
-    } catch (e) {
-      setCannotState(null);
-      setMessage(e instanceof Error ? e.message : 'Could not file this invoice');
-      setStatus('error');
-    }
   };
 
   // Deleting the draft is the one Loaded write still web-only (the card in
@@ -1266,7 +1249,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         suggestion_actions: log,
         lines: idx >= 0 ? prev.lines.filter((_, i) => i !== idx) : prev.lines,
       }));
-      if (workingDocId) patchDoc([...(idx >= 0 ? [{ op: 'remove_line', index: idx }] : []), logOp]);
+      if (workingDocId) patchDoc([...(idx >= 0 ? [{ op: 'remove_line', index: idx, undo_of: id }] : []), logOp]);
       return;
     }
     if (s?.line_id) {
@@ -1278,7 +1261,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
           suggestion_actions: log,
           lines: prev.lines.map((l, i) => (i === idx ? { ...l, ...(a.before as Partial<Line>) } : l)),
         }));
-        if (workingDocId) patchDoc([{ op: 'update_line', line_id: ln.id, index: idx, fields: a.before }, logOp]);
+        if (workingDocId) patchDoc([{ op: 'update_line', line_id: ln.id, index: idx, fields: a.before, undo_of: id }, logOp]);
         return;
       }
       // The line is gone — record the undo anyway.
@@ -1287,7 +1270,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       return;
     }
     setDoc((prev) => ({ ...prev, ...(a.before as Partial<DocData>), suggestion_actions: log }));
-    if (workingDocId) patchDoc([{ op: 'update_header', fields: a.before }, logOp]);
+    if (workingDocId) patchDoc([{ op: 'update_header', fields: a.before, undo_of: id }, logOp]);
   };
 
   // ---- Derived review state (rendering only — the server decided) -------
@@ -1314,13 +1297,19 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   type IssueState = 'open' | 'resolved' | 'checked';
   const issueStateOf = (i: Issue): IssueState => {
     if (evalClears(docLive, i)) return 'resolved';
+    // The person's own value on the line answers it, however that was
+    // recorded — the same rule as the server's invoice_edits.hand_settles.
+    if (settledByHand(i, docLive as unknown as Record<string, unknown>, docLive.edits)) return 'checked';
+    // Only asking again stands these down (invoice_review.is_settled).
+    if (RETRY_CODES.includes(i.code)) return 'open';
     if (stateOf(i.id) !== 'pending') return 'checked';
     // The totals stand down only when they match — accepted fixes are not
     // enough on their own (the same rule as invoice_review.is_settled).
     if (i.clears_when?.op === 'balances') return 'open';
     // Every suggestion that is its fix accepted — the same rule as the
     // server's invoice_review.is_settled.
-    if (fixAccepted(i, (id) => stateOf(id) === 'accepted')) return 'resolved';
+    if (fixAccepted(i, (id) => stateOf(id) === 'accepted'
+      && fixHolds(suggestions.find((x) => x.id === id), docLive))) return 'resolved';
     return 'open';
   };
   const blockingIssues = issues.filter((i) => i.blocking);
@@ -1332,18 +1321,36 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // wrong suggestion (a misread '4x5L' on a '5 L' line) should never trap it.
   // Genuine receive-invalidity — no item/unit/supplier — is still caught by
   // `unresolved` / `supplierBlocking` below, so nothing unsafe slips through.
-  const manualBlockingOpen = blockingOpen.filter((i) => !i.gate);
+  // Norm's answer not coming through (ANSWER_MISSING_CODES) stops Autopilot in
+  // the same way: the person at the card picks the item or unit themselves, and
+  // `unresolved` still refuses a line with neither.
+  const manualBlockingOpen = blockingOpen.filter(
+    (i) => !i.gate && !RETRY_CODES.includes(i.code),
+  );
   const liveConfidence: 'ready' | 'needs_review' | null =
     reviewed ? (blockingOpen.length ? 'needs_review' : 'ready') : null;
   const pendingSuggestions = suggestions.filter((s) => stateOf(s.id) === 'pending');
+  // What each field's chip shows: the suggestions still to decide, or in
+  // `record` mode every suggestion, with what happened to it.
+  const fieldSuggestions = record ? suggestions : pendingSuggestions;
 
   // ---- The review list: one row per decision (invoiceReview.ts) ----------
+  // The line's field still names something Loaded has no record of (New).
+  const fieldStillNew = (lineId: string, field: string) => {
+    const l = doc.lines.find((x) => String(x.id) === lineId);
+    if (!l || l.struck) return false;
+    if (field === 'unit') return !l.linked_unit_id;
+    if (field === 'linked_item_id') return !l.linked_item_id;
+    if (field === 'linked_brand_id') return !!l.brand && !l.linked_brand_id;
+    return false;
+  };
   const review = buildReviewList({
     issues,
     suggestions,
     lineOrder: doc.lines.map((l) => String(l.id)),
     issueOpen: (i) => issueStateOf(i as Issue) === 'open',
     suggestionPending: (sg) => stateOf(sg.id) === 'pending',
+    stillNew: fieldStillNew,
     hideSuggestions: studying,
   });
   // While Norm says "delete this draft" (a statement, a duplicate, no copy),
@@ -1383,7 +1390,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     setAcceptingRows(true);
     setMessage('');
     try {
-      const fixes = open.flatMap((r) => r.fixes).filter((sg) => stateOf(sg.id) === 'pending') as Suggestion[];
+      // A dismissed answer whose field is still New keeps its row open, and
+      // its Accept takes Norm's answer after all.
+      const fixes = open.flatMap((r) => r.fixes).filter((sg) => stateOf(sg.id) === 'pending'
+        || (stateOf(sg.id) === 'dismissed' && !!sg.line_id && !!sg.field
+          && fieldStillNew(String(sg.line_id), String(sg.field)))) as Suggestion[];
       const del = fixes.find((sg) => sg.kind === 'delete_invoice');
       if (del) {
         acceptSuggestion(del);
@@ -1394,7 +1405,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       const local = fixes
         .filter((sg) => !LOADED_WRITE_ORDER.includes(sg.kind))
         .sort((x, y) => Number(y.kind === 'add_line') - Number(x.kind === 'add_line'));
-      const checked = open.filter((r) => r.issue && !r.fixes.length).map((r) => r.issue as Issue);
+      // Accept all checks the rows with nothing to apply — not one only
+      // asking Norm again can answer.
+      const checked = open.filter((r) => r.issue && !r.fixes.length && !RETRY_CODES.includes(r.issue.code))
+        .map((r) => r.issue as Issue);
 
       let state = docRef.current;
       const ops: Record<string, unknown>[] = [];
@@ -1426,29 +1440,39 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // Inline chip lookups — the same suggestion objects the summary list
   // renders, so accepting from either surface is the same action.
   const suggFor = (lineId: string, field: string) =>
-    pendingSuggestions.find((s) => s.kind === 'line_value' && String(s.line_id) === String(lineId) && s.field === field);
+    fieldSuggestions.find((s) => s.kind === 'line_value' && String(s.line_id) === String(lineId) && s.field === field);
   const strikeSuggFor = (lineId: string) =>
-    pendingSuggestions.find((s) => s.kind === 'strike' && String(s.line_id) === String(lineId));
+    fieldSuggestions.find((s) => s.kind === 'strike' && String(s.line_id) === String(lineId));
   // Like the unit column: a swap to an item Loaded already has (line_value),
   // or "it isn't in the catalogue — create it" (create_item, a Loaded write).
   const itemSuggFor = (lineId: string) =>
-    pendingSuggestions.find((s) => (s.kind === 'line_value' || s.kind === 'create_item')
+    fieldSuggestions.find((s) => (s.kind === 'line_value' || s.kind === 'create_item')
       && String(s.line_id) === String(lineId) && s.field === 'linked_item_id');
   // The unit column carries TWO kinds: a plain swap to a unit Loaded already
   // has (line_value), and "the copy's delivered unit doesn't exist in Loaded —
   // create it" (create_unit, which is a Loaded write). Both are line-level
   // proposals and belong on the line, not only in the summary list; ✓ routes
   // to the same handler either way.
+  // The brand the invoice prints (owner, 19 Oct 2026): link the one Loaded has
+  // or remove Loaded's when it prints none (line_value), or create it.
   const brandSuggFor = (lineId: string) =>
-    pendingSuggestions.find((s) => s.kind === 'create_brand' && String(s.line_id) === String(lineId));
+    fieldSuggestions.find((s) => (s.kind === 'create_brand'
+      || (s.kind === 'line_value' && s.field === 'linked_brand_id'))
+      && String(s.line_id) === String(lineId));
+  const brandLabel = (s: Suggestion | undefined) => {
+    if (!s) return undefined;
+    if (s.kind === 'create_brand') return `Create '${fmtVal(s.proposed)}'`;
+    if (s.proposed == null) return s.current ? `Remove '${fmtVal(s.current)}'` : 'No brand';
+    return s.current ? `${fmtVal(s.current)} → ${fmtVal(s.proposed)}` : `Link to '${fmtVal(s.proposed)}'`;
+  };
   const unitSuggFor = (lineId: string) =>
-    pendingSuggestions.find((s) => (s.kind === 'line_value' || s.kind === 'create_unit')
+    fieldSuggestions.find((s) => (s.kind === 'line_value' || s.kind === 'create_unit')
       && String(s.line_id) === String(lineId) && s.field === 'unit');
   const headerValueSugg = (field: string) =>
-    pendingSuggestions.find((s) => s.kind === 'header_value' && s.field === field);
-  const supplierSugg = pendingSuggestions.find((s) => s.kind === 'supplier');
-  const createSupplierSugg = pendingSuggestions.find((s) => s.kind === 'create_supplier');
-  const poSuggs = pendingSuggestions.filter((s) => ['link_po', 'unlink_po', 'split_reference'].includes(s.kind));
+    fieldSuggestions.find((s) => s.kind === 'header_value' && s.field === field);
+  const supplierSugg = fieldSuggestions.find((s) => s.kind === 'supplier');
+  const createSupplierSugg = fieldSuggestions.find((s) => s.kind === 'create_supplier');
+  const poSuggs = fieldSuggestions.filter((s) => ['link_po', 'unlink_po', 'split_reference'].includes(s.kind));
   const moneySuggs = ['subtotal', 'tax_amount', 'discount_amount', 'total']
     .map((f) => headerValueSugg(f))
     .filter((s): s is Suggestion => !!s);
@@ -1669,12 +1693,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     itemId: string,
     itemName: string | null,
     sugg: Suggestion | null = null,
+    extraAfter: Record<string, unknown> = {},
   ) => {
     const idx = docRef.current.lines.findIndex((l) => l.id === lineId);
     if (idx < 0) return;
     const fields: Partial<Line> = { linked_item_id: itemId, item_name: itemName };
+    // Tagged when Norm's suggestion drove it: a decision, not a person's edit
+    // (the server keeps a person's edits to replay on a rebuild).
     const ops: Record<string, unknown>[] = [
-      { op: 'update_line', line_id: lineId, index: idx, fields },
+      { op: 'update_line', line_id: lineId, index: idx, fields, ...(sugg ? { suggestion_id: sugg.id } : {}) },
     ];
     // Driven by an accepted suggestion: record it in the SAME patch, or the
     // suggestion stays pending forever and the click looks like it did
@@ -1692,17 +1719,28 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         by: 'user',
         at: nowIso(),
         before,
-        after: { ...fields },
+        after: { ...fields, ...extraAfter },
       });
       log = nextLog;
       ops.push(logOp);
     } else {
-      // Picked by hand: that answers Norm's suggestion for the item.
+      // Picked by hand: that answers Norm's suggestion for the item, and
+      // settles a line Norm's answer didn't come through for.
+      const entries: SuggestionAction[] = [];
       const answer = answerFieldSuggestion(lineId, 'linked_item_id', fields, before);
-      if (answer) {
-        const [nextLog, logOp] = recordOp(answer);
-        log = nextLog;
-        ops.push(logOp);
+      if (answer) entries.push(answer);
+      tagIfAccepted(ops[0], answer);
+      const missing = issues.find((i) => i.code === 'item_answer_missing'
+        && String(i.line_id) === String(lineId) && issueStateOf(i) === 'open');
+      if (missing) {
+        entries.push({
+          suggestion_id: missing.id, action: 'accepted', by: 'user', at: nowIso(),
+          before, after: { ...fields },
+        });
+      }
+      if (entries.length) {
+        log = [...(docRef.current.suggestion_actions || []), ...entries];
+        ops.push({ op: 'update_header', fields: { suggestion_actions: log } });
       }
     }
     setDoc((prev) => {
@@ -1748,7 +1786,10 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   ): Promise<boolean> => {
     const l = doc.lines[idx];
     if (!l || !name || !venueId || creatingUnitLine) return false;
-    // From the form, the line's own unit blocker is what this answers.
+    // From the form, the line's own unit blocker is what this answers. Only a
+    // suggestion the caller passed in makes the line's change a decision; a
+    // unit the person made in the form is their own edit (kept on a rebuild).
+    const passed = sugg;
     const openIssue = openUnitIssue(l.id);
     if (!sugg && openIssue) sugg = { id: openIssue.id } as Suggestion;
     setCreatingUnitLine(l.id);
@@ -1772,7 +1813,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       setUnits((prev) => (prev.some((u) => u.id === rec.id) ? prev : [...prev, rec]));
       const fields = { linked_unit_id: rec.id, unit: rec.name, unit_ratio: rec.ratio ?? null };
       const ops: Record<string, unknown>[] = [
-        { op: 'update_line', line_id: l.id, index: idx, fields },
+        { op: 'update_line', line_id: l.id, index: idx, fields, ...(passed ? { suggestion_id: passed.id } : {}) },
       ];
       // Record the accept in the SAME patch as the line. Without this the
       // suggestion stayed pending forever: the unit landed, the chip never
@@ -1793,7 +1834,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             unit: prev?.unit ?? null,
             unit_ratio: prev?.unit_ratio ?? null,
           },
-          after: { ...fields },
+          after: { ...fields, created: out.created !== false },
         });
         log = nextLog;
         ops.push(logOp);
@@ -1892,10 +1933,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       const fields = { linked_supplier_id: rec.id, supplier_name: rec.name };
       const [log, logOp] = recordOp({
         suggestion_id: sugg.id, action: 'accepted', by: 'user', at: nowIso(),
-        before: { linked_supplier_id: docRef.current.linked_supplier_id ?? null }, after: fields,
+        before: { linked_supplier_id: docRef.current.linked_supplier_id ?? null },
+        after: { ...fields, created: out.created !== false },
       });
       setDoc((prev) => ({ ...prev, ...fields, suggestion_actions: log }));
-      if (workingDocId) patchDoc([{ op: 'update_header', fields }, logOp]);
+      if (workingDocId) patchDoc([{ op: 'update_header', fields, suggestion_id: sugg.id }, logOp]);
     } catch (e) {
       setStatus('error');
       setMessage(e instanceof Error ? e.message : 'Could not create the supplier in Loaded');
@@ -1953,7 +1995,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       // links locally and lands in Loaded on receive.
       const out = await res.json();
       if (out?.item_id) {
-        applyLocalLink(lineId, out.item_id, out.item_name ?? name, sugg);
+        applyLocalLink(lineId, out.item_id, out.item_name ?? name, sugg, { created: out.created !== false });
         const rec: StockItem = { id: out.item_id, name: out.item_name ?? name, code: line.code, unit_id: line.linked_unit_id };
         setStockItems((prev) => (prev.some((x) => x.id === rec.id) ? prev : [...prev, rec]));
         if (out.created === false) setMessage(`Loaded already has ‘${rec.name}’ — linked that instead.`);
@@ -2005,24 +2047,41 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       const rec: Brand = { id: out.brand_id, name: out.brand_name ?? name };
       setBrands((prev) => (prev.some((x) => x.id === rec.id) ? prev : [...prev, rec]));
       const ops: Record<string, unknown>[] = [
-        { op: 'update_line', line_id: lineId, index: idx, fields },
+        { op: 'update_line', line_id: lineId, index: idx, fields, ...(sugg ? { suggestion_id: sugg.id } : {}) },
       ];
       let log: SuggestionAction[] | null = null;
+      const prev = docRef.current.lines[idx];
+      // brand_set too: an Undo writes back everything the choice changed.
+      const before = {
+        linked_brand_id: prev?.linked_brand_id ?? null, brand: prev?.brand ?? null, brand_set: prev?.brand_set ?? false,
+      };
       if (sugg) {
-        const prev = docRef.current.lines[idx];
         const [nextLog, logOp] = recordOp({
           suggestion_id: sugg.id,
           action: 'accepted',
           by: 'user',
           at: nowIso(),
-          before: {
-            linked_brand_id: prev?.linked_brand_id ?? null,
-            brand: prev?.brand ?? null,
-          },
-          after: { ...fields },
+          before,
+          after: { ...fields, created: out.created !== false },
         });
         log = nextLog;
         ops.push(logOp);
+      } else {
+        // Made from the picker: it settles the line's unknown-brand blocker
+        // and answers Norm's suggestion for the brand, as picking one does.
+        const entries: SuggestionAction[] = [];
+        const open = issues.find((i) => i.code === 'brand_unknown' && String(i.line_id) === String(lineId)
+          && issueStateOf(i) === 'open');
+        const answer = answerFieldSuggestion(lineId, 'linked_brand_id', fields, before);
+        if (open && !settlesThroughFix(open, answer)) {
+          entries.push({ suggestion_id: open.id, action: 'accepted', by: 'user', at: nowIso(), before, after: { ...fields } });
+        }
+        if (answer) entries.push(answer);
+        tagIfAccepted(ops[0], answer);
+        if (entries.length) {
+          log = [...(docRef.current.suggestion_actions || []), ...entries];
+          ops.push({ op: 'update_header', fields: { suggestion_actions: log } });
+        }
       }
       setDoc((prev) => {
         const lines = prev.lines.map((l, i) => (i === idx ? { ...l, ...fields } : l));
@@ -2057,16 +2116,18 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     // like any accept, with the before/after the readiness report reads.
     const open = issues.find((i) => i.code === 'brand_unknown' && String(i.line_id) === String(l.id)
       && issueStateOf(i) === 'open');
-    const before = { brand: l.brand ?? null, linked_brand_id: l.linked_brand_id ?? null };
+    // brand_set too: an Undo writes back everything the choice changed.
+    const before = { brand: l.brand ?? null, linked_brand_id: l.linked_brand_id ?? null, brand_set: l.brand_set ?? false };
     const entries: SuggestionAction[] = [];
-    if (open) {
+    const answer = answerFieldSuggestion(l.id, 'linked_brand_id', fields, before);
+    if (open && !settlesThroughFix(open, answer)) {
       entries.push({
         suggestion_id: open.id, action: 'accepted', by: 'user', at: nowIso(),
         before, after: { ...fields },
       });
     }
-    const answer = answerFieldSuggestion(l.id, 'linked_brand_id', fields, before);
     if (answer) entries.push(answer);
+    tagIfAccepted(ops[0], answer);
     let log: SuggestionAction[] | null = null;
     if (entries.length) {
       log = [...(docRef.current.suggestion_actions || []), ...entries];
@@ -2244,12 +2305,52 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     </div>
   );
   const suggChip = (s: Suggestion | undefined, label?: string) => {
-    if (!s || doneState || viewLoaded) return null;
+    if (!s || viewLoaded) return null;
+    const state = stateOf(s.id);
+    if (record && (state !== 'pending' || doneState)) {
+      // Read back, not acted on here: the suggestion and what happened to it.
+      const by = lastAction.get(s.id)?.by === 'norm' ? ' by Norm' : '';
+      const said = state === 'accepted' ? `Accepted${by}` : state === 'dismissed' ? `Dismissed${by}` : 'Not acted on';
+      return (
+        <div>
+          <span style={{ ...chipStyle, ...(state === 'accepted' ? {} : { opacity: 0.75 }) }} title={s.explanation}>
+            <span style={{ ...chipLabel, textDecoration: state === 'dismissed' ? 'line-through' : undefined }}>
+              {label ?? `${fmtVal(s.current)} → ${fmtVal(s.proposed)}`}
+            </span>
+            <span style={{ fontSize: 'var(--fs-xs, 11px)', fontWeight: 600, whiteSpace: 'nowrap', padding: '0 4px', color: state === 'accepted' ? 'var(--ok)' : 'var(--muted)' }}>
+              {said}
+            </span>
+          </span>
+        </div>
+      );
+    }
+    if (doneState) return null;
     return chipBox(
       label ?? `${fmtVal(s.current)} → ${fmtVal(s.proposed)}`,
       s.explanation,
       { onClick: () => acceptSuggestion(s), label: 'Accept suggestion', title: `Accept — ${s.explanation}` },
       { onClick: () => dismissAction(s.id), label: 'Dismiss suggestion', title: 'Dismiss this suggestion' },
+    );
+  };
+  // Record mode: what a person changed by hand on a field, the last change
+  // standing — not one an Undo cancelled or an accepted suggestion replaced.
+  // Norm's suggestions show their own outcomes beside it.
+  const handChip = (lineId: string, field: string) => {
+    if (!record) return null;
+    // Only on the invoice line it was made on (a line Norm adds can take
+    // another line's place in a later review).
+    const line = docLive.lines.find((l) => String(l.id) === String(lineId)) as Record<string, unknown> | undefined;
+    const e = [...(docLive.edits || [])].reverse()
+      .find((x) => String(x.line_id ?? '') === String(lineId) && x.field === field
+        && !x.undone_at && !x.superseded_by && !!line && sameLine(x, line));
+    if (!e) return null;
+    const said = `By hand: ${fmtVal(e.before)} → ${fmtVal(e.after)}`;
+    return (
+      <div>
+        <span style={chipStyle} title={e.at ? `Changed ${String(e.at).replace('T', ' ').slice(0, 16)}` : undefined}>
+          <span style={chipLabel}>{said}</span>
+        </span>
+      </div>
     );
   };
   const deleteLinks = (s: Suggestion) => {
@@ -2266,7 +2367,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // so every "must be created in Loaded" row has a way forward.
   const FIX_FORMS: Record<string, 'item' | 'unit' | 'brand'> = {
     item_unmatched: 'item',
+    item_answer_missing: 'item',
     unit_missing: 'unit',
+    unit_answer_missing: 'unit',
     brand_unknown: 'brand',
   };
   const openFix = (i: Issue) => {
@@ -2739,10 +2842,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 onClick={() => setCopyOpen((v) => !v)}
               />
             )}
-            {/* Dojo intake is the "Can't receive" button below — one intake
-                for admin and non-admin alike; it files the PDF AND kicks the
-                sensei on every press (the admin-only Add-to-dojo button was
-                removed Aug 2026). */}
           </div>
         </div>
         {collapsed && (
@@ -2988,7 +3087,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   </>)}
                   {/* The server's strike suggestion (the copy doesn't bill
                       this line) — same object as its summary row. */}
-                  {!struck && suggChip(strikeSugg, 'Not billed on the invoice — strike')}
+                  {(!struck || record) && suggChip(strikeSugg, 'Not billed on the invoice — strike')}
+                  {handChip(l.id, 'item_name')}
+                  {handChip(l.id, 'struck')}
                   {!doneState && struck && viewMode === 'norm' && (
                     <Button size="sm" onClick={() => onStrike(idx, false)}
                       title="restore this line (it will be received again)"
@@ -3037,8 +3138,9 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     )}
                   </>)}
                   {!struck && viewMode === 'norm' && suggChip(
-                    brandSuggFor(l.id), `Create '${fmtVal(l.brand)}'`,
+                    brandSuggFor(l.id), brandLabel(brandSuggFor(l.id)),
                   )}
+                  {handChip(l.id, 'brand')}
                 </td>
                 {viewMode === 'extracted' && (
                   <td style={{ color: 'var(--text-soft)' }}>
@@ -3086,6 +3188,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     const us = unitSuggFor(l.id);
                     return suggChip(us, us?.kind === 'create_unit' ? `→ ${fmtVal(us.proposed)} (new)` : undefined);
                   })()}
+                  {handChip(l.id, 'unit')}
                 </td>
                 <td className="num" style={{ color: 'var(--muted)' }}>
                   {/* Loaded prints a literal 0 where nothing on the order is
@@ -3102,6 +3205,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     onChange={(e) => onQty(idx, parseFloat(e.target.value) || 0)}
                     style={{ ...numInput, width: 70, ...(!doneState && !struck && suggFor(l.id, 'quantity_received') ? fieldSuggested : {}) }} />
                   {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'quantity_received'))}
+                  {handChip(l.id, 'quantity_received')}
                 </td>
                 <td className="num" style={{ whiteSpace: 'nowrap' }}>
                   {/* Red ↑ when the invoice cost is above the linked PO's cost. */}
@@ -3116,6 +3220,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     style={{ ...numInput, width: 80, ...(!doneState && !struck && suggFor(l.id, 'unit_cost') ? fieldSuggested : {}) }} />
                   {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'unit_cost'))}
                   {!struck && viewMode === 'norm' && suggChip(suggFor(l.id, 'sale_tax_rate'), 'Set the tax rate from the catalogue')}
+                  {handChip(l.id, 'unit_cost')}
                 </td>
                 <td className="num" style={{ color: 'var(--muted)' }}>
                   {cur(lineTax((l.quantity_received ?? 0) * (l.unit_cost ?? 0), l.sale_tax_rate, includesTax))}
@@ -3404,22 +3509,13 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                   ? (reviewing ? 'Reviewing against the attached invoice…' : reviewed ? 'Nothing to review — Norm checked it against the invoice' : 'Not yet reviewed.')
                   : openRows.length ? `To review (${openRows.length})` : 'Reviewed'}
               </div>
-              {!doneState && !embedded && (
+              {/* "Can't receive" was removed 19 Oct 2026 (owner): training
+                  starts on its own when the supplier has no layout. */}
+              {!doneState && !embedded && openRows.length > 1 && (
                 <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {openRows.length > 1 && (
-                    <Button size="xs" onClick={() => { void acceptRows(openRows); }} disabled={acceptingRows}
-                      title="apply every fix Norm suggests, including creating what Loaded is missing">
-                      {acceptingRows ? 'Applying…' : `Accept all (${openRows.length})`}
-                    </Button>
-                  )}
-                  {/* The measurement half of the loop: this invoice defeated
-                      Norm, so file it for training rather than fixing it by
-                      hand and leaving no trace. */}
-                  <Button size="xs" variant="quiet" onClick={cannotReceive} disabled={cannotState === 'sending' || cannotState === 'filed'}
-                    icon={cannotState === 'filed' ? Check : undefined}
-                    title="Norm can't get this invoice right — file it for training. Nothing is received."
-                    style={cannotState === 'filed' ? { color: 'var(--ok)', opacity: 1 } : undefined}>
-                    {cannotState === 'sending' ? 'Filing…' : cannotState === 'filed' ? 'Filed for training' : "Can't receive"}
+                  <Button size="xs" onClick={() => { void acceptRows(openRows); }} disabled={acceptingRows}
+                    title="apply every fix Norm suggests, including creating what Loaded is missing">
+                    {acceptingRows ? 'Applying…' : `Accept all (${openRows.length})`}
                   </Button>
                 </div>
               )}

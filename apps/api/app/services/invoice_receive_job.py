@@ -270,6 +270,7 @@ _CREATED_WORDS = (
     ("stock_items", "stock item", "stock items"),
     ("suppliers", "supplier", "suppliers"),
     ("units", "unit", "units"),
+    ("brands", "brand", "brands"),
 )
 _CREATED = tuple(k for k, _, _ in _CREATED_WORDS)
 

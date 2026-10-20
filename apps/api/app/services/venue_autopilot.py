@@ -37,7 +37,6 @@ AUTO_CREATE_UNITS = "auto_create_units"
 AUTO_CREATE_ITEMS = "auto_create_items"
 AUTO_CREATE_BRANDS = "auto_create_brands"
 AUTO_CREATE_SUPPLIERS = "auto_create_suppliers"
-RECEIVE_WITHOUT_UNIT = "receive_without_unit"
 RECEIVE_WITH_UNCONFIRMED_UNIT = "receive_with_unconfirmed_unit"
 RECEIVE_WITHOUT_PO = "receive_without_po"
 RECEIVE_UNIT_KIND_MISMATCH = "receive_unit_kind_mismatch"
@@ -58,7 +57,6 @@ GATES: dict[str, str] = {
     AUTO_CREATE_ITEMS: "create a stock item in Loaded",
     AUTO_CREATE_BRANDS: "create a brand in Loaded",
     AUTO_CREATE_SUPPLIERS: "create a supplier in Loaded",
-    RECEIVE_WITHOUT_UNIT: "receive when no unit can be found",
     # Distinct from the one above: the invoice prints a unit Norm can't read,
     # so Norm's own answer (its catalogue, its estimate) is used. Never Loaded's
     # unit (docs/unit-resolution.md, "The rule").

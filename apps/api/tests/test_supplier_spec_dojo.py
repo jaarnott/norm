@@ -1246,30 +1246,18 @@ class TestApplyAnalysis:
         assert res.status_code == 400
 
 
-class TestCannotReceiveIntake:
-    """Cannot-receive is the ONE intake into the dojo (the admin-only
-    add-to-dojo button and endpoint were removed Aug 2026). These pin the
-    REAL staging path behind it — spec creation, source refs, dedupe,
-    draft promotion — which test_autopilot_report (which mocks staging)
-    deliberately does not cover.
-    """
+class TestStagingAnInvoice:
+    """The real staging path behind the sensei's training (spec creation,
+    source refs, dedupe). The "Can't receive" button that also used it was
+    removed on 19 Oct 2026 (owner): training now starts on its own when an
+    invoice's supplier has no layout."""
 
-    def _fake_loaded(self, monkeypatch):
-        install_fake_loaded(monkeypatch, pdf=b"%PDF-tamar")
-        # The verdict recorder is test_autopilot_report's subject, not ours —
-        # and it opens its own session, which can't see this test's rows.
-        monkeypatch.setattr(
-            "app.routers.invoice_fixes.record_receive_outcome", lambda *a, **k: None
-        )
-
-    def test_creates_spec_and_sample_with_source_refs(
-        self, client, manager_user, manager_headers, db_session, monkeypatch
-    ):
+    def test_creates_spec_and_sample_with_source_refs(self, db_session, monkeypatch):
         from app.db.models import Venue
-        from tests.conftest import _make_organization, _make_venue_access
+        from app.services import spec_dojo
+        from tests.conftest import _make_organization
 
-        self._fake_loaded(monkeypatch)
-        # Open to whoever hits the problem — at a venue they can open.
+        install_fake_loaded(monkeypatch, pdf=b"%PDF-tamar")
         venue = Venue(
             id="v1",
             name="Tamar test",
@@ -1277,34 +1265,14 @@ class TestCannotReceiveIntake:
         )
         db_session.add(venue)
         db_session.flush()
-        _make_venue_access(db_session, manager_user, venue)
-        # the request handler opens its own RW config session
         bind_sessions(monkeypatch, db_session, "_ConfigSessionLocal")
 
-        # The press must hand the sample to the sensei QUEUE (the worker
-        # executes it; nothing runs in this request).
-        started = []
-        monkeypatch.setattr(
-            "app.services.sensei_runner.start_analysis",
-            lambda sid, fb=None: started.append(sid) or "queued",
-        )
-
-        # A MANAGER, not an admin — filing is deliberately open to whoever
-        # hits the problem.
-        res = client.post(
-            "/api/invoice-fixes/cannot-receive",
-            headers=manager_headers,
-            json={"venue_id": "v1", "invoice_id": "inv-42"},
-        )
-        assert res.status_code == 200, res.text
-        body = res.json()
-        assert body["staged"] is True
-        assert body["spec_name"] == "Tamar Farming Company"
-        assert body["already_in_dojo"] is False
-        assert started  # sensei kicked
+        staged = spec_dojo.stage_invoice_sample(db_session, "v1", "inv-42", draft=False)
+        assert staged["spec_name"] == "Tamar Farming Company"
+        assert staged["already_in_dojo"] is False
         sample = (
             db_session.query(SupplierSpecSample)
-            .filter(SupplierSpecSample.id == body["sample_id"])
+            .filter(SupplierSpecSample.id == staged["sample_id"])
             .first()
         )
         assert sample.source_invoice_id == "inv-42"
@@ -1318,172 +1286,40 @@ class TestCannotReceiveIntake:
         )
         assert spec is not None and spec.name == "Tamar Farming Company"
 
-        # same invoice again → reused (no duplicate), and reported as a
-        # repeat so the card can say "sent back to the sensei".
-        res2 = client.post(
-            "/api/invoice-fixes/cannot-receive",
-            headers=manager_headers,
-            json={"venue_id": "v1", "invoice_id": "inv-42"},
-        )
-        assert res2.json()["already_in_dojo"] is True
-        assert res2.json()["sample_id"] == body["sample_id"]
+        # The same invoice again → reused, never a duplicate.
+        again = spec_dojo.stage_invoice_sample(db_session, "v1", "inv-42", draft=False)
+        assert again["already_in_dojo"] is True
+        assert again["sample_id"] == staged["sample_id"]
 
 
-class TestDojoTriage:
-    """The Dojo page: stage outstanding invoices as DRAFT samples (full
-    toolkit, invisible to regression), promote into the dojo proper, and the
-    one-fetch overview (outstanding + awaiting-review)."""
+class TestPendingReview:
+    """The samples still awaiting a person, read from the config DB alone."""
 
-    def _fake(self, monkeypatch, db_session, rows=None):
-        install_fake_loaded(monkeypatch, outstanding=rows or [])
+    def test_pending_review(self, client, admin_headers, db_session, monkeypatch):
         bind_sessions(monkeypatch, db_session, "_ConfigSessionLocal")
-
-    def test_stage_draft_hidden_from_regression(
-        self, client, admin_headers, db_session, monkeypatch
-    ):
-        self._fake(monkeypatch, db_session)
-        res = client.post(
-            "/api/supplier-invoice-specs/dojo/stage",
-            headers=admin_headers,
-            json={"venue_id": "v1", "invoice_id": "inv-d1"},
-        )
-        assert res.status_code == 200, res.text
-        body = res.json()
-        assert body["sample"]["draft"] is True
-        assert body["was_draft"] is False and body["already_in_dojo"] is False
-        spec_id = body["spec_id"]
-
-        # Hidden from the per-spec list and the summary.
-        listed = client.get(
-            f"/api/supplier-invoice-specs/{spec_id}/samples", headers=admin_headers
-        )
-        assert listed.json()["samples"] == []
-        summary = client.get(
-            "/api/supplier-invoice-specs/dojo/summary", headers=admin_headers
-        )
-        assert spec_id not in [g["spec_id"] for g in summary.json()["specs"]]
-
-        # Staging again reuses the draft.
-        res2 = client.post(
-            "/api/supplier-invoice-specs/dojo/stage",
-            headers=admin_headers,
-            json={"venue_id": "v1", "invoice_id": "inv-d1"},
-        )
-        assert res2.json()["sample"]["id"] == body["sample_id"]
-        assert res2.json()["was_draft"] is True
-
-        # Promote → appears in the per-spec list.
-        prom = client.post(
-            f"/api/supplier-invoice-specs/samples/{body['sample_id']}/promote",
-            headers=admin_headers,
-        )
-        assert prom.json()["sample"]["draft"] is False
-        listed2 = client.get(
-            f"/api/supplier-invoice-specs/{spec_id}/samples", headers=admin_headers
-        )
-        assert [s["id"] for s in listed2.json()["samples"]] == [body["sample_id"]]
-
-    def test_cannot_receive_promotes_existing_draft(
-        self, client, admin_headers, db_session, monkeypatch
-    ):
-        import threading as _threading
-
-        self._fake(monkeypatch, db_session)
-        monkeypatch.setattr(
-            "app.routers.invoice_fixes.record_receive_outcome", lambda *a, **k: None
-        )
-
-        class FakeThread:
-            def __init__(self, *a, **k):
-                pass
-
-            def start(self):
-                pass
-
-        monkeypatch.setattr(_threading, "Thread", FakeThread)
-        staged = client.post(
-            "/api/supplier-invoice-specs/dojo/stage",
-            headers=admin_headers,
-            json={"venue_id": "v1", "invoice_id": "inv-d2"},
-        ).json()
-        # A "Norm can't do this one" press on an invoice somebody had merely
-        # EXPANDED on the Dojo page must upgrade the invisible draft into a
-        # real awaiting-review sample, not file a duplicate.
-        res = client.post(
-            "/api/invoice-fixes/cannot-receive",
-            headers=admin_headers,
-            json={"venue_id": "v1", "invoice_id": "inv-d2"},
-        )
-        assert res.json()["sample_id"] == staged["sample_id"]
-        db_session.expire_all()
-        s = db_session.get(SupplierSpecSample, staged["sample_id"])
-        assert bool(s.draft) is False
-
-    def test_overview_membership_and_pending_review(
-        self, client, admin_headers, db_session, monkeypatch
-    ):
-        from app.db.models import Connection
-        from tests.conftest import _make_venue
-
-        venue = _make_venue(db_session, name="Overview Venue")
-        db_session.add(
-            Connection(connector_name="loadedhub", venue_id=venue.id, enabled="true")
-        )
-        db_session.flush()
-
-        rows = [
-            {
-                "id": "inv-a",
-                "referenceNumber": "A-1",
-                "supplierName": "Tamar Farming Company",
-                "issuedAt": "2026-08-08",
-                "total": 10.0,
-                "fileId": "f",
-            },
-            {
-                "id": "inv-b",
-                "referenceNumber": "B-1",
-                "supplierName": "Tamar Farming Company",
-                "issuedAt": "2026-08-08",
-                "total": 20.0,
-                "fileId": "f",
-            },
-            {
-                "id": "inv-c",
-                "referenceNumber": "C-1",
-                "supplierName": "Tamar Farming Company",
-                "issuedAt": "2026-08-08",
-                "total": 30.0,
-                "fileId": "f",
-            },
-        ]
-        self._fake(monkeypatch, db_session, rows=rows)
-
         spec = _make_spec(db_session, "Overview Foods")
-        # inv-a: permanent sample, baselined + applied → in dojo, NOT pending.
+        # Baselined + applied → NOT pending.
         db_session.add(
             SupplierSpecSample(
                 spec_id=spec.id,
                 label="a.pdf",
                 pdf_bytes=b"%P",
-                source_venue_id=venue.id,
                 source_invoice_id="inv-a",
                 expected=_extraction(),
                 analysis={"status": "applied"},
             )
         )
-        # inv-b: draft → badge draft, NOT in pending_review.
+        # A draft → never pending.
         db_session.add(
             SupplierSpecSample(
                 spec_id=spec.id,
                 label="b.pdf",
                 pdf_bytes=b"%P",
-                source_venue_id=venue.id,
                 source_invoice_id="inv-b",
                 draft=True,
             )
         )
-        # unrelated permanent sample with a READY proposal → pending_review.
+        # A READY proposal → pending.
         db_session.add(
             SupplierSpecSample(
                 spec_id=spec.id,
@@ -1496,19 +1332,13 @@ class TestDojoTriage:
         db_session.flush()
 
         res = client.get(
-            "/api/supplier-invoice-specs/dojo/overview", headers=admin_headers
+            "/api/supplier-invoice-specs/dojo/pending", headers=admin_headers
         )
         assert res.status_code == 200, res.text
-        body = res.json()
-        by_inv = {r["invoice_id"]: r for r in body["outstanding"]}
-        assert by_inv["inv-a"]["in_dojo"] is True and by_inv["inv-a"]["draft"] is False
-        assert by_inv["inv-b"]["draft"] is True and by_inv["inv-b"]["in_dojo"] is False
-        assert by_inv["inv-c"]["sample_id"] is None
-        pending = {p["label"] for p in body["pending_review"]}
-        assert "p.pdf" in pending  # ready proposal awaits review
-        assert "a.pdf" not in pending  # baselined + applied
-        assert "b.pdf" not in pending  # drafts never appear here
-        assert body["errors"] == []
+        pending = {p["label"] for p in res.json()["pending_review"]}
+        assert "p.pdf" in pending
+        assert "a.pdf" not in pending
+        assert "b.pdf" not in pending
 
 
 def _totals(subtotal, tax, total, discount=None, lines=None):

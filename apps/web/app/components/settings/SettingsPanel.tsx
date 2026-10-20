@@ -2,6 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback, useId, useRef } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { SIDE_PANEL_EVENT, type SidePanelRequest } from '../../lib/sidePanel';
 import { ChevronDown, ChevronRight, Info, Plus } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { VenueDetail, Organization, OrgMember } from '../../types';
@@ -17,6 +18,9 @@ import SecretsPanel from './SecretsPanel';
 import ComponentsPanel from './ComponentsPanel';
 import PlaybooksPanel from './PlaybooksPanel';
 import SupplierSpecsPanel from './SupplierSpecsPanel';
+import InvoiceActivityPanel from './InvoiceActivityPanel';
+import UnitCheckPanel from './UnitCheckPanel';
+import AutopilotReportPanel from './AutopilotReportPanel';
 import TemplatesPanel from './TemplatesPanel';
 import AgentsPanel from './AgentsPanel';
 import McpPanel from './McpPanel';
@@ -1429,7 +1433,7 @@ function UsersTab({ canManage }: { canManage: boolean }) {
   );
 }
 
-export type SettingsTab = 'organisations' | 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences' | 'suggestion-rules' | 'team';
+export type SettingsTab = 'organisations' | 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'invoice-activity' | 'unit-check' | 'autopilot-readiness' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences' | 'suggestion-rules' | 'team';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   return perms.some(p => can(user, p));
@@ -1438,6 +1442,19 @@ function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
 export default function SettingsPanel({ initialTab, initialView }: { initialTab?: SettingsTab; initialView?: string } = {}) {
   // Opens on a given tab when asked (the quota dialog's "Top up" → Billing).
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'preferences');
+  // The section list folds away while a view needs the width (an invoice copy
+  // beside its card) and comes back when the last such view closes.
+  const foldRequests = useRef(0);
+  const [navFolded, setNavFolded] = useState(false);
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      const { collapse } = (e as CustomEvent<SidePanelRequest>).detail || { collapse: false };
+      foldRequests.current = Math.max(0, foldRequests.current + (collapse ? 1 : -1));
+      setNavFolded(foldRequests.current > 0);
+    };
+    window.addEventListener(SIDE_PANEL_EVENT, onRequest);
+    return () => window.removeEventListener(SIDE_PANEL_EVENT, onRequest);
+  }, []);
   const [orgId, setOrgId] = useState<string | null>(null);
   const storedUser = getStoredUser() as User | null;
   const isAdmin = storedUser?.role === 'admin';
@@ -1691,10 +1708,17 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
     [showPlaybooks, 'templates', 'Templates'],
     [showComponents, 'components', 'Components'],
     [showConnectors, 'connectors', 'Connector specs'],
-    [showSupplierSpecs, 'supplier-specs', 'Supplier specs'],
     [isAdmin, 'app-map', 'App map'],
     // How Home's suggestions are made — tuned site-wide (platform admins).
     [isAdmin, 'suggestion-rules', 'Suggestions'],
+  ]);
+  // Everything about how Norm reads and receives invoices, in one place
+  // (owner, 19 Oct 2026). Ids kept: links and saved E2E tests use them.
+  addGroup('Invoice Dojo', [
+    [showSupplierSpecs, 'invoice-activity', 'Activity'],
+    [showSupplierSpecs, 'unit-check', 'Daily unit check'],
+    [showSupplierSpecs, 'supplier-specs', 'Supplier specs'],
+    [showSupplierSpecs, 'autopilot-readiness', 'Autopilot readiness'],
   ]);
   addGroup('Platform', [
     // Every organisation, its venues and people — platform admins only.
@@ -1753,7 +1777,7 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
       </div>
 
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-        {!isMobile && (
+        {!isMobile && !navFolded && (
           // Item text lines up with the page title: 14px here + the row's 10px.
           <div className="scroll-quiet" style={{ flex: '0 0 auto', width: 220, boxSizing: 'border-box', padding: '4px 6px 40px 14px' }}>
             <SubNav label="Settings sections" groups={groups} value={tab} onChange={id => setActiveTab(id as SettingsTab)} />
@@ -1777,7 +1801,7 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
               {/* Knowledge and suggestion notes, one list. */}
               <MemoryTab />
               {isAdmin && (
-                <div style={{ maxWidth: 720, marginTop: 32 }}>
+                <div style={{ marginTop: 32 }}>
                   <SectionHeader title="Admin" />
                   <ToolDetailsToggle />
                 </div>
@@ -2063,7 +2087,10 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
           {/* ============ SECRETS TAB ============ */}
           {tab === 'components' && <ComponentsPanel />}
           {tab === 'playbooks' && <PlaybooksPanel />}
-          {tab === 'supplier-specs' && <SupplierSpecsPanel initialView={initialView} />}
+          {tab === 'supplier-specs' && <SupplierSpecsPanel />}
+          {tab === 'invoice-activity' && <InvoiceActivityPanel initialView={initialView} />}
+          {tab === 'unit-check' && <UnitCheckPanel />}
+          {tab === 'autopilot-readiness' && <AutopilotReportPanel />}
           {tab === 'templates' && <TemplatesPanel />}
           {tab === 'secrets' && <SecretsPanel />}
         </div>

@@ -55,8 +55,8 @@ export default function SuggestionsAdminPanel() {
       </p>
     </>
   );
-  if (error) return <div style={{ maxWidth: 860 }}>{header}<PageState kind="error" title={error} /></div>;
-  if (!data) return <div style={{ maxWidth: 860 }}>{header}<PageState kind="loading" title="Loading…" /></div>;
+  if (error) return <div>{header}<PageState kind="error" title={error} /></div>;
+  if (!data) return <div>{header}<PageState kind="loading" title="Loading…" /></div>;
 
   const sections = AGENTS.map(a => ({
     ...a,
@@ -65,7 +65,7 @@ export default function SuggestionsAdminPanel() {
   }));
 
   return (
-    <div data-testid="suggestions-admin" style={{ maxWidth: 860, lineHeight: 1.45 }}>
+    <div data-testid="suggestions-admin" style={{ lineHeight: 1.45 }}>
       {header}
       <section className="n-card" style={{ padding: '14px 18px', marginBottom: 16 }} aria-label="How suggestions are picked">
         <h3 style={{ margin: 0, fontSize: 'var(--fs-base)', fontWeight: 600 }}>How Norm picks suggestions</h3>

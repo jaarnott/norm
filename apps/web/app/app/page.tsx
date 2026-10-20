@@ -106,7 +106,7 @@ export default function Home() {
   const [quotaExceeded, setQuotaExceeded] = useState(false);
   // Which Settings tab to open on — set by "Open billing" in the paused dialog.
   const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
-  // A view inside a settings tab, from a link (?open=unit-check → Supplier specs' daily unit check).
+  // A view inside a settings tab, from a link (?open=invoice-activity → its dates and venues).
   const [settingsView, setSettingsView] = useState<string | undefined>(undefined);
   // …only for that visit: leaving Settings forgets it.
   useEffect(() => { if (activeAgent !== 'settings') { setSettingsTab(undefined); setSettingsView(undefined); } }, [activeAgent]);
@@ -218,13 +218,25 @@ export default function Home() {
       // staff emails link to ?page=functions-events&event=<id>); the page reads
       // its own extra params. Chat threads keep ?thread=, so pages use other
       // names (Functions' mail threads are ?mail_thread=).
-      // ?open=unit-check: the daily unit check's email links straight to its
-      // page in the Dojo (Settings → Supplier specs).
-      if (params.get('open') === 'unit-check' && !threadId) {
+      // ?open=invoice-activity: the daily unit check's email opens Settings →
+      // Invoice Dojo → Activity on that run's dates and venues, units open.
+      // Older emails' ?open=unit-check open the Daily unit check page.
+      const openParam = params.get('open');
+      if (openParam === 'unit-check' && !threadId) {
         setActivePage(null);
         setActiveAgent('settings');
-        setSettingsTab('supplier-specs');
-        setSettingsView('unit-check');
+        setSettingsTab('unit-check');
+        setMobileView('settings');
+      } else if (openParam === 'invoice-activity' && !threadId) {
+        const view = new URLSearchParams({ focus: 'units' });
+        for (const k of ['from', 'to', 'venues']) {
+          const v = params.get(k);
+          if (v) view.set(k, v);
+        }
+        setActivePage(null);
+        setActiveAgent('settings');
+        setSettingsTab('invoice-activity');
+        setSettingsView(view.toString());
         setMobileView('settings');
       }
       // ?open=connections: Settings → Connections (the Loaded Legacy email).

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ChartColumn, ChevronRight, Plus, Ruler, Target, Trash2, TriangleAlert } from 'lucide-react';
+import { ChevronRight, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import Button from '../ui/Button';
 import IconButton from '../ui/IconButton';
@@ -15,9 +15,6 @@ import ReceiveInvoiceEditor from '../display/ReceiveInvoiceEditor';
 import ReplicaCompareView, { type ReplicaCompare } from './ReplicaCompareView';
 import InvoicePdfPane from './InvoicePdfPane';
 import SenseiProposalCard, { type DojoAnalysis } from './SenseiProposalCard';
-import AutopilotReportPanel from './AutopilotReportPanel';
-import DojoTriagePanel from './DojoTriagePanel';
-import UnitCheckPanel from './UnitCheckPanel';
 
 // Per-supplier invoice-extraction instructions + name aliases, matched by the
 // review engine against the invoice's supplierName (normalized substring).
@@ -104,7 +101,7 @@ function StatusBadge({ status, count }: { status: string; count?: number }) {
 // A sensei chip that opens the sample: a badge you can press.
 const badgeButton: React.CSSProperties = { border: 'none', cursor: 'pointer', fontFamily: 'inherit' };
 
-export default function SupplierSpecsPanel({ initialView }: { initialView?: string } = {}) {
+export default function SupplierSpecsPanel() {
   const [specs, setSpecs] = useState<SupplierSpec[]>([]);
   const [editing, setEditing] = useState<SupplierSpec | null>(null);
   const [aliasesText, setAliasesText] = useState('');
@@ -115,10 +112,6 @@ export default function SupplierSpecsPanel({ initialView }: { initialView?: stri
   const [samples, setSamples] = useState<DojoSample[]>([]);
   const [runningSample, setRunningSample] = useState<string | null>(null);
   const [dojoView, setDojoView] = useState<DojoView | null>(null);
-  const [showDojo, setShowDojo] = useState(false);
-  const [showReport, setShowReport] = useState(false);
-  // The daily unit check's review page; also opened from its email (?open=unit-check).
-  const [showUnitCheck, setShowUnitCheck] = useState(initialView === 'unit-check');
   // Sample view tab: the extraction compare vs the resolved replica.
   const [dojoRunning, setDojoRunning] = useState(false);
   const [dojoSummary, setDojoSummary] = useState<Record<string, DojoSummaryRow>>({});
@@ -425,8 +418,7 @@ export default function SupplierSpecsPanel({ initialView }: { initialView?: stri
     const main = isMainPrompt(editing);
     return (
       <div>
-        {/* The form stays narrow; the sample viewer below goes full width. */}
-        <div style={{ maxWidth: 720 }}>
+        <div>
         <div style={{ marginBottom: 8 }}>
           <BackLink label="Back to supplier specs" onClick={() => setEditing(null)} />
         </div>
@@ -535,7 +527,7 @@ export default function SupplierSpecsPanel({ initialView }: { initialView?: stri
         {/* ---- Dojo: sample invoices + regression runs ------------------- */}
         {!isNew && !main && (
           <div style={{ marginTop: 24, borderTop: '1px solid var(--line)', paddingTop: 16 }}>
-            <div style={{ maxWidth: 720 }}>
+            <div>
             <h4 style={{ margin: '0 0 4px', fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Test invoices (Dojo)</h4>
             <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 8 }}>
               Each run reads the PDF with the CURRENT prompts (main + this spec) and compares against the stored expected values. Open a sample with View; ask the sensei there to review and baseline it.
@@ -740,72 +732,10 @@ export default function SupplierSpecsPanel({ initialView }: { initialView?: stri
     );
   }
 
-  if (showDojo) {
-    return <DojoTriagePanel onBack={() => { setShowDojo(false); loadSummary(); }} />;
-  }
-
-  if (showReport) {
-    return <AutopilotReportPanel onBack={() => setShowReport(false)} />;
-  }
-
-  if (showUnitCheck) {
-    return <UnitCheckPanel onBack={() => setShowUnitCheck(false)} />;
-  }
-
   return (
-    <div style={{ maxWidth: 860 }}>
-      {/* The Dojo: triage every venue's outstanding invoices before they
-          join the per-supplier regression suite below. */}
-      <div className="n-card" onClick={() => setShowDojo(true)}
-        style={{ padding: '12px 16px', marginBottom: 12, cursor: 'pointer' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Icon icon={Target} size="inline" tone="muted" />
-          <strong style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Dojo</strong>
-          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>
-            Enter
-            <Icon icon={ChevronRight} size="dense" tone="muted" />
-          </span>
-        </div>
-        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 4 }}>
-          Review outstanding invoices from every venue side-by-side with what Norm
-          extracts, let the sensei tune supplier specs, then promote keepers into
-          regression testing.
-        </div>
-      </div>
-      {/* The measurement half: every human receive is evidence for (or
-          against) letting autopilot run unattended. */}
-      <div className="n-card" onClick={() => setShowReport(true)}
-        style={{ padding: '12px 16px', marginBottom: 16, cursor: 'pointer' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Icon icon={ChartColumn} size="inline" tone="muted" />
-          <strong style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Autopilot readiness</strong>
-          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>
-            Open
-            <Icon icon={ChevronRight} size="dense" tone="muted" />
-          </span>
-        </div>
-        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 4 }}>
-          How often accepting Norm&rsquo;s suggestions was enough to receive an invoice
-          with no hand edits — per supplier, plus what Norm keeps missing.
-        </div>
-      </div>
-      {/* The daily check of yesterday's receipts against their invoices:
-          proposed unit corrections for a person to apply or dismiss. */}
-      <div className="n-card" onClick={() => setShowUnitCheck(true)}
-        style={{ padding: '12px 16px', marginBottom: 16, cursor: 'pointer' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Icon icon={Ruler} size="inline" tone="muted" />
-          <strong style={{ fontSize: 'var(--fs-base)', fontWeight: 600, color: 'var(--text)' }}>Daily unit check</strong>
-          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>
-            Open
-            <Icon icon={ChevronRight} size="dense" tone="muted" />
-          </span>
-        </div>
-        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginTop: 4 }}>
-          Lines Norm received that look booked in the wrong unit, checked each morning against the
-          invoice and Norm&rsquo;s catalogue — apply or dismiss each correction.
-        </div>
-      </div>
+    <div>
+      {/* The Dojo page, Autopilot readiness and the daily unit check moved to
+          Settings → Invoice activity (19 Oct 2026). */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginBottom: 12, gap: 10 }}>
         <div style={{ flex: '1 1 260px', minWidth: 0, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
           Per-supplier notes for reading invoice copies — matched by supplier name or alias during the invoice review.

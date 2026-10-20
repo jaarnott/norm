@@ -130,7 +130,7 @@ const chip = (on: boolean): React.CSSProperties => ({
   cursor: 'pointer',
 });
 
-export default function AutopilotReportPanel({ onBack }: { onBack: () => void }) {
+export default function AutopilotReportPanel({ onBack }: { onBack?: () => void } = {}) {
   const [report, setReport] = useState<Report | null>(null);
   const [days, setDays] = useState(30);
   // Whose receives to score. The panel never sent this, so it always showed
@@ -162,9 +162,11 @@ export default function AutopilotReportPanel({ onBack }: { onBack: () => void })
 
   return (
     <div style={{ lineHeight: 1.45, color: 'var(--text)' }}>
-      <div style={{ marginBottom: 8 }}>
-        <BackLink label="Back to supplier specs" onClick={onBack} />
-      </div>
+      {onBack && (
+        <div style={{ marginBottom: 8 }}>
+          <BackLink label="Back" onClick={onBack} />
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
         <h3 style={{ flex: 1, minWidth: 0, margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>Autopilot readiness</h3>
         <Button size="sm" icon={RefreshCw} onClick={load} disabled={loading}>

@@ -39,6 +39,7 @@ from app.routers import (  # noqa: E402
     component_apis,
     apps as apps_router,
     invoice_fixes,
+    invoice_activity,
     background_jobs as background_jobs_router,
     approval_preferences,
     suggestions,
@@ -107,6 +108,7 @@ app.include_router(roles.router, prefix="/api")
 app.include_router(email.router, prefix="/api")
 app.include_router(component_apis.router, prefix="/api")
 app.include_router(invoice_fixes.router, prefix="/api")
+app.include_router(invoice_activity.router, prefix="/api")
 app.include_router(background_jobs_router.router, prefix="/api")
 app.include_router(apps_router.router, prefix="/api")
 app.include_router(marketplace.router, prefix="/api")

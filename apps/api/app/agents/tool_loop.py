@@ -2687,9 +2687,15 @@ def _upsert_working_document(
     # thread twins were how a card could show a review its own doc never had).
     # Docs without a ref keep the per-thread scope (rosters etc.).
     if external_ref:
-        candidates = (
-            db.query(WorkingDocument).filter(WorkingDocument.doc_type == doc_type).all()
-        )
+        query = db.query(WorkingDocument).filter(WorkingDocument.doc_type == doc_type)
+        if external_ref.get("invoice_id") is not None:
+            # In the database: a venue's received and deleted invoice cards
+            # are kept, so loading every card of the type grows without end.
+            query = query.filter(
+                WorkingDocument.external_ref["invoice_id"].as_string()
+                == str(external_ref["invoice_id"])
+            )
+        candidates = query.all()
         if venue_id:
             candidates = [c for c in candidates if c.venue_id in (venue_id, None)]
     else:
@@ -2720,13 +2726,16 @@ def _upsert_working_document(
     doc = same_thread_match or doc
 
     if doc:
-        # Preserve LOCAL editor state (action log, struck flags, local item
-        # links, locally-added lines) across the wholesale data replace — a
-        # batch re-run must never wipe the user's accepted edits.
+        # A batch re-run must never wipe what was decided on the card: the
+        # accepted suggestions and the person's own edits are replayed onto
+        # the fresh payload — never the old lines copied across, whoever set
+        # them (owner, 19 Oct 2026: Loaded plus decisions, no ghost data).
         if doc_type == "received_invoice":
-            from app.services.received_invoice import carry_local_state
+            from app.services.invoice_edits import rebuild_from_decisions
 
-            carry_local_state(result_payload, doc.data or {})
+            rebuild_from_decisions(
+                doc.data or {}, result_payload, previous_ops=doc.pending_ops
+            )
         doc.data = result_payload
         doc.external_ref = external_ref or doc.external_ref
         if venue_id and not doc.venue_id:

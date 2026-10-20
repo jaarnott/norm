@@ -649,6 +649,7 @@ async def delete_venue(
         AutomatedTask,
         BackgroundJob,
         EmailLog,
+        InvoiceActivityEvent,
         InvoiceAutopilotOutcome,
         HiringCriteria,
         HrSetup,
@@ -725,10 +726,12 @@ async def delete_venue(
             synchronize_session=False
         )
     # The daily unit check's proposed corrections are about this venue's
-    # invoices only and can't be applied once it's gone.
-    db.query(UnitCheckProposal).filter(UnitCheckProposal.venue_id == venue_id).delete(
-        synchronize_session=False
-    )
+    # invoices only and can't be applied once it's gone; so are the activity
+    # page's notes of invoices that stopped there.
+    for model in (UnitCheckProposal, InvoiceActivityEvent):
+        db.query(model).filter(model.venue_id == venue_id).delete(
+            synchronize_session=False
+        )
 
     # A background job still working for this venue stops (a running one
     # between invoices); its record of what it did is history, below.

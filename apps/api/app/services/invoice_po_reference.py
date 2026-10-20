@@ -398,6 +398,12 @@ def enrich_loaded_snapshot(
     or accepts a suggestion. ``item_is_new`` / ``unit_is_new`` mark what
     stayed unresolved, so the view can label it NEW as Loaded does.
 
+    It is the ONE resolver of Loaded's screen: ``screen_item_id``,
+    ``screen_unit_id`` and ``screen_unit_ratio`` are what the screen shows,
+    and a fresh card's lines open on them (``start_from_screen``) rather than
+    working them out a second time (owner, 19 Oct 2026). The screen shows the
+    line's own brand, so no brand is resolved here.
+
     Without a catalogue nothing is guessed: the raw supplier text stands.
     Idempotent.
     """
@@ -416,10 +422,8 @@ def enrich_loaded_snapshot(
         for i in catalogue or []
         if isinstance(i, dict) and i.get("id")
     }
-    unit_names = {
-        str(u.get("id")): u.get("name")
-        for u in units or []
-        if isinstance(u, dict) and u.get("id")
+    unit_by_id = {
+        str(u.get("id")): u for u in units or [] if isinstance(u, dict) and u.get("id")
     }
 
     # The ordered quantity comes from the linked order, and each order row is
@@ -456,113 +460,92 @@ def enrich_loaded_snapshot(
 
         name = (item or {}).get("name")
         ln["item_name"] = name
-        ln["item_is_new"] = bool(catalogue) and not name
+        # A line Loaded links shows its item, even one the catalogue lacks.
+        ln["item_is_new"] = (
+            bool(catalogue) and not name and not ln.get("linked_item_id")
+        )
+        ln["screen_item_id"] = ln.get("linked_item_id") or (item or {}).get("id")
 
-        unit_name = unit_names.get(str((variant or {}).get("unitId") or ""))
+        unit = unit_by_id.get(str((variant or {}).get("unitId") or ""))
         if ln.get("linked_unit_id"):
             # Loaded's own `unit` string IS the linked unit's label here.
             ln["unit_name"] = None
             ln["unit_is_new"] = False
+            ln["screen_unit_id"] = ln["linked_unit_id"]
+            ln["screen_unit_ratio"] = ln.get("unit_ratio")
         else:
-            ln["unit_name"] = unit_name
+            ln["unit_name"] = (unit or {}).get("name")
             # A printed unit with nothing behind it is what Loaded flags NEW;
             # a line with no unit at all has nothing to mark.
-            ln["unit_is_new"] = bool(ln.get("unit")) and not unit_name
+            ln["unit_is_new"] = bool(ln.get("unit")) and not ln["unit_name"]
+            ln["screen_unit_id"] = (unit or {}).get("id")
+            ln["screen_unit_ratio"] = (unit or {}).get("ratio")
 
         pl = claim_po_row(ln)
         ln["quantity_ordered"] = pl.get("quantityOrdered") if pl else None
 
 
-def seed_working_from_loaded(
-    data: dict,
-    catalogue: list[dict] | None = None,
-    units: list[dict] | None = None,
-) -> None:
-    """Start the working lines where LOADED'S SCREEN starts.
+def start_from_screen(data: dict) -> None:
+    """Open a fresh card's working lines where LOADED'S SCREEN opens.
 
     Loaded's API hands back an unresolved line — ``linkedItemId`` null, the
     unit as the supplier's raw text ("KG"). Its Receive screen resolves both
-    in the browser from the supplier code (``resolve_loaded_line``), and the
-    resolved line is what a human sees there and what Loaded receives. Norm's
-    draft must therefore OPEN on those same values: seeded from the raw
-    payload instead, every code-matched line produced a "link this item"
-    suggestion for a link Loaded already agrees with, and the card read as
-    disagreement where there was none (Angus Meats 1010951: two BONES lines
-    proposing 'BONES (STOCK)' — which is exactly what Loaded shows).
+    in the browser from the supplier code, and the resolved line is what a
+    human sees there and what Loaded receives. A card opened on the raw
+    payload instead produced a "link this item" suggestion for a link Loaded
+    already agrees with (Angus Meats 1010951: two BONES lines proposing
+    'BONES (STOCK)' — exactly what Loaded shows).
 
-    Suggestions then mean what they say: a difference between the copy and
-    **what Loaded holds**.
+    The values come from the snapshot (``enrich_loaded_snapshot``, the one
+    resolver), so the Loaded tab and the Norm tab can't disagree. Rules:
 
-    Two hard rules:
+    - Only what Loaded left EMPTY is filled; an existing link stands.
+    - Never a brand: the screen shows the line's own. (The second resolver
+      this replaced copied the supplier record's brand id in — a brand on the
+      line that neither Loaded nor a decision put there.)
+    - ``description`` is never touched: pairing, item matching and the
+      create-item prefill key off the printed text.
 
-    - Only what Loaded left EMPTY is filled. An existing link — Loaded's own,
-      or the user's — is never overwritten.
-    - ``description`` is never touched. The replica's line pairing, item
-      matching and create-item prefill all key off the printed text (the same
-      reason ``attach_item_names`` leaves it alone); the resolved name rides
-      on ``item_name``, which is what the editor renders.
-
-    Fresh payloads only — a re-open must not silently re-apply a link the user
-    dismissed. Idempotent.
+    What it fills is recorded in ``server_filled``, so it is never mistaken
+    for typing (autopilot_metrics.manual_edits). Fresh payloads only — a card
+    is rebuilt from Loaded and its decisions replayed (invoice_edits), never
+    re-started on top of what a person did. Idempotent.
     """
-    lines = [ln for ln in data.get("lines") or [] if isinstance(ln, dict)]
-    if not lines or not catalogue:
-        return
-    supplier_id = data.get("linked_supplier_id")
-    if not supplier_id:
-        return
-    unit_by_id = {
-        str(u.get("id")): u for u in units or [] if isinstance(u, dict) and u.get("id")
+    snap = data.get("loaded_snapshot")
+    snap_lines = {
+        str(ln.get("id")): ln
+        for ln in (snap or {}).get("lines") or []
+        if isinstance(ln, dict) and ln.get("id")
     }
-
-    by_id = {
-        str(i.get("id")): i for i in catalogue if isinstance(i, dict) and i.get("id")
-    }
-
-    # What NORM derived, per line, so it is never mistaken for typing. The
-    # baseline for "did a human change this?" is `loaded_snapshot`, captured
-    # from Loaded's raw draft before this function runs — so every field filled
-    # in below read as a hand edit. One Service Foods invoice nobody touched
-    # was recorded with four (unit, linked_unit_id, unit_ratio,
-    # linked_item_id), because Loaded's line named "KG" and linked nothing,
-    # while this resolved the variant and filled the rest in.
-    #
-    # Same contract as an accepted suggestion: the value is explained only
-    # while it still matches what was filled, so changing it afterwards reads
-    # as manual again.
+    if not snap_lines:
+        return
     filled: dict[str, dict] = data.setdefault("server_filled", {})
 
     def _fill(ln: dict, field: str, value: object) -> None:
         ln[field] = value
         filled.setdefault(str(ln.get("id")), {})[field] = value
 
-    for ln in lines:
-        if ln.get("linked_item_id"):
-            # Already linked — Loaded shows THAT item, so only fill in its
-            # name (free here; attach_item_names would spend a fetch on it).
-            item = by_id.get(str(ln["linked_item_id"]))
-            variant = _variant_for(item, supplier_id, ln.get("code"))
-            if item and not ln.get("item_name"):
-                ln["item_name"] = item.get("name")
-                ln["item_name_for"] = item.get("id")
-        else:
-            item, variant = resolve_loaded_line(catalogue, supplier_id, ln.get("code"))
-            if item is not None:
-                _fill(ln, "linked_item_id", item.get("id"))
-                ln["item_name"] = item.get("name")
-                # attach_item_names' cache marker: the name is resolved, so it
-                # does not spend a fetch re-resolving it.
-                ln["item_name_for"] = item.get("id")
-                if not ln.get("linked_brand_id") and (variant or {}).get("brandId"):
-                    ln["linked_brand_id"] = variant["brandId"]
-                    ln["brand"] = variant.get("brandName") or ln.get("brand")
-
-        unit = unit_by_id.get(str((variant or {}).get("unitId") or ""))
-        if unit and not ln.get("linked_unit_id"):
-            _fill(ln, "linked_unit_id", unit.get("id"))
-            _fill(ln, "unit", unit.get("name") or ln.get("unit"))
-            if unit.get("ratio") is not None:
-                _fill(ln, "unit_ratio", unit.get("ratio"))
+    for ln in data.get("lines") or []:
+        if not isinstance(ln, dict):
+            continue
+        sl = snap_lines.get(str(ln.get("id")))
+        if sl is None:
+            continue
+        if not ln.get("linked_item_id") and sl.get("screen_item_id"):
+            _fill(ln, "linked_item_id", sl["screen_item_id"])
+            ln["item_name"] = sl.get("item_name")
+            # attach_item_names' cache marker: the name is resolved already.
+            ln["item_name_for"] = sl["screen_item_id"]
+        elif (
+            ln.get("linked_item_id") and sl.get("item_name") and not ln.get("item_name")
+        ):
+            ln["item_name"] = sl["item_name"]
+            ln["item_name_for"] = ln["linked_item_id"]
+        if not ln.get("linked_unit_id") and sl.get("screen_unit_id"):
+            _fill(ln, "linked_unit_id", sl["screen_unit_id"])
+            _fill(ln, "unit", sl.get("unit_name") or ln.get("unit"))
+            if sl.get("screen_unit_ratio") is not None:
+                _fill(ln, "unit_ratio", sl["screen_unit_ratio"])
 
 
 _REFERENCE_TTL = 300.0
@@ -615,3 +598,13 @@ def attach_po_reference(data: dict, lh) -> None:
     path. Idempotent; safe to run on every open."""
     fetch_po_reference(data, lh)
     project_po_reference(data)
+
+
+def rows_cached_for_linked_order(data: dict) -> bool:
+    """Do the cached order rows belong to the order the card links now? A
+    rebuild can replay a person's own order choice after the rows were
+    fetched for Loaded's — then the rows must be fetched again, or the
+    receive goes without its ordered quantities."""
+    po = po_id_for(data)
+    ref = data.get("po_reference")
+    return not po or (isinstance(ref, dict) and ref.get("po_id") == po)

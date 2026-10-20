@@ -347,7 +347,12 @@ class TestTheReceiveJob:
         db_session.refresh(job)
         p = job.progress
         assert p["deleted_reasons"] == {"statement": 2, "duplicate": 1}
-        assert p["created"] == {"stock_items": 2, "suppliers": 1, "units": 1}
+        assert p["created"] == {
+            "stock_items": 2,
+            "suppliers": 1,
+            "units": 1,
+            "brands": 0,
+        }
         text = irj.summary_text(job)
         assert (
             "Deleted: 1 duplicate of an invoice already received and 2 statements."

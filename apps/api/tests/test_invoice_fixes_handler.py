@@ -1187,11 +1187,10 @@ class TestStruckLines:
 
 
 class TestReshapeCarryOver:
-    """A rebuild of the draft from Loaded must keep local line state:
-    ``carry_local_state`` carries struck flags (accepted remove/strike
-    suggestions), locally-added 'new-' lines and the action log across.
-    (It used to be pinned through the accept route's reshape, which only the
-    retired link_po/unit appliers reached.)"""
+    """A rebuild of the draft from Loaded keeps what a person did on it: a
+    struck line and a line added by hand come back by replay of the edit
+    record (invoice_edits) — for a card from before that record, read once
+    from its lines."""
 
     def test_struck_and_added_lines_survive_reshape(self):
         old = {
@@ -1213,14 +1212,22 @@ class TestReshapeCarryOver:
                 "lines": [{"id": "ln-1", "description": "FRESH", "linkedItemId": None}],
             }
         )
-        RI.carry_local_state(fresh, old)
+        from app.services.invoice_edits import rebuild_from_decisions
+
+        rebuild_from_decisions(old, fresh)
         by_id = {ln.get("id"): ln for ln in fresh["lines"]}
         assert by_id["ln-1"].get("struck") is True
+        assert by_id["ln-1"]["description"] == "FRESH"  # Loaded's, not copied
         assert "new-1754424000000" in by_id
         assert by_id["new-1754424000000"]["description"] == "LOCAL ADD"
         assert fresh["actioned_suggestions"] == [
             {"key": "remove:ln-1", "summary": "removed"}
         ]
+        # The edits are on the card now, so the next rebuild replays them.
+        assert {e.get("field") or "added" for e in fresh["edits"]} == {
+            "struck",
+            "added",
+        }
 
 
 class TestReceiveTimeLinking:

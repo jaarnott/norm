@@ -43,8 +43,6 @@ const SWITCH_NOTE: Record<string, string> = {
     'After an invoice is received into Loaded — from the card or on Autopilot — Norm creates the matching bill in Xero, with the supplier\'s PDF attached. It lands as a draft unless you set otherwise. The venue needs Xero connected and its accounts set under Finance → Bills → Xero settings. Yours alone, whatever level you receive at.',
   auto_create_suppliers:
     'The riskiest one. Supplier identity is what picks the extraction prompt, so a duplicate supplier sends every future invoice from that business to the wrong rules. Norm refuses to create one if anything existing plausibly matches.',
-  receive_without_unit:
-    'Neither the invoice nor Norm\'s own knowledge gives a unit, so Norm picks the closest of the venue\'s units from the invoice\'s wording. It never invents one — that is the switch above.',
   receive_with_unconfirmed_unit:
     'The invoice prints a unit Norm can\'t read, so Norm uses its own answer (its catalogue or its estimate). Off means someone confirms it first; the blocker names which unit it would use.',
   receive_unit_kind_mismatch:
@@ -155,7 +153,7 @@ export default function ApprovalPreferences() {
     </>
   );
 
-  if (!loaded) return <div style={{ maxWidth: 720, lineHeight: 1.45 }}>{header}<PageState kind="loading" title="Loading…" /></div>;
+  if (!loaded) return <div style={{ lineHeight: 1.45 }}>{header}<PageState kind="loading" title="Loading…" /></div>;
 
   const levelled = tools.filter(t => t.kind === 'levels');
   const others = tools.filter(t => t.kind !== 'levels');
@@ -182,7 +180,7 @@ export default function ApprovalPreferences() {
   };
 
   return (
-    <div style={{ maxWidth: 720, lineHeight: 1.45 }}>
+    <div style={{ lineHeight: 1.45 }}>
       {header}
       {error && <div style={{ marginBottom: 12 }}><PageState kind="error" title={error} /></div>}
 

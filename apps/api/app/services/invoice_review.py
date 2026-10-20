@@ -7,13 +7,16 @@ Four views of one invoice, and the card's tabs are exactly these:
 - **Replica** — what we think the invoice says: the extraction resolved
   against the catalogue (``invoice_replica.build_replica``), then finished by
   every rule Norm has (``replica_finish``). Final; nothing overrides it later.
-- **Norm** — the working values: they start as Loaded, and every place the
-  Replica differs is ONE suggestion to accept. Nothing else makes one.
+- **Norm** — the working values: Loaded, plus the decisions made on top of
+  it (accepted suggestions, a person's own edits — ``invoice_edits``). Every
+  place the Replica differs from Loaded is ONE suggestion. Nothing else makes
+  one, and nothing else writes a line (owner, 19 Oct 2026: no ghost data).
 
 The pipeline, one for every surface (web editor, embedded card, chat batch):
 
 1. Shape the WORKING VALUES from Loaded's draft, opening where Loaded's
-   screen opens (``seed_working_from_loaded``).
+   screen opens (``enrich_loaded_snapshot`` resolves it once, on the
+   snapshot; ``start_from_screen`` opens the lines on it).
 2. Extract the invoice (cached, ``invoice_extraction``) and build the replica.
 3. Pair replica lines to Loaded lines ONCE (``pair_lines``), finish the
    replica, and turn every difference into a suggestion
@@ -65,7 +68,8 @@ from app.services.invoice_po_reference import (
     fetch_po_reference,
     loaded_reference,
     po_id_for,
-    seed_working_from_loaded,
+    project_po_reference,
+    start_from_screen,
 )
 from app.services.invoice_replica import build_replica, received_copy, received_feed_for
 from app.services.replica_finish import (
@@ -80,6 +84,7 @@ from app.services.received_invoice import (
     build_received_invoice_data,
     do_receive,
     invalidate_conflicting_drafts,
+    open_drafts,
     receive_request_from_doc,
 )
 
@@ -455,7 +460,7 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
     if rl.get("linked_item_id") and rl["linked_item_id"] != ln.get("linked_item_id"):
         # Both halves matter. Unlinked → the plain "link this item". LINKED to
         # something else → a real disagreement: the draft opens on Loaded's own
-        # code match (seed_working_from_loaded), so this is the only place a
+        # code match (start_from_screen), so this is the only place a
         # wrong code match can be challenged.
         linked_to = ln.get("item_name") if ln.get("linked_item_id") else None
         _sugg(
@@ -473,16 +478,14 @@ def _line_suggestions(suggestions: list[dict], rl: dict, ln: dict, lid: str) -> 
                 )
             )
             + (f" — Loaded has '{linked_to}'" if linked_to else ""),
+            # The item only: its brand is the invoice's, a decision of its own
+            # (_brand_suggestion) — the item's stored brand never rides in.
             apply={
                 "linked_item_id": rl.get("linked_item_id"),
                 "item_name": rl.get("item_name"),
-                **(
-                    {"linked_brand_id": rl.get("linked_brand_id")}
-                    if rl.get("linked_brand_id") and not ln.get("linked_brand_id")
-                    else {}
-                ),
             },
         )
+    _brand_suggestion(suggestions, rl, ln, lid, desc)
     if rl.get("sale_tax_rate_set") and _differ(
         ln.get("sale_tax_rate"), rl.get("sale_tax_rate"), 0.0001
     ):
@@ -674,8 +677,8 @@ def brand_issues(data: dict, issues: list[dict]) -> None:
     `confidence` read "ready", autopilot called do_receive and collected a 400,
     and the card showed the brand in three places while its "Blocked from auto
     receive" list stayed empty. Bidfood 109944512 sat unreceivable on exactly
-    this. The create still happens from here — `fold_remedies_into_blockers`
-    hangs the action off this row.
+    this. Its fix is the invoice's answer for the brand (``link_fixes``): a
+    brand to create, the record Loaded has, or no brand at all.
     """
     for ln in data.get("lines") or []:
         if not isinstance(ln, dict) or ln.get("struck"):
@@ -696,6 +699,15 @@ def brand_issues(data: dict, issues: list[dict]) -> None:
                     "receive a line naming a brand it doesn't have"
                 ),
                 "data": {"brand_name": brand},
+                # Linking any brand record settles it — a brand a person made
+                # or picked included (the static map only reaches the
+                # Replica's own blockers, and this one is raised here).
+                "clears_when": {
+                    "scope": "line",
+                    "line_id": lid,
+                    "field": "linked_brand_id",
+                    "op": "not_null",
+                },
             }
         )
 
@@ -793,7 +805,9 @@ _REPLICA_ONLY_KEYS = frozenset(
         "quantity_received_why",
         "total_cost_why",
         "brand_create_name",
+        "brand_read",
         "fixes_confidence",
+        "answer_missing",
     }
 )
 
@@ -866,35 +880,141 @@ def build_suggestions(
                 }
             )
 
-    _brand_suggestions(data, suggestions)
+    paired = {str(w) for w in pairs.values()}
+    for ln in doc_lines:
+        if isinstance(ln, dict) and str(ln.get("id")) not in paired:
+            _unpaired_brand_suggestion(suggestions, ln)
     _header_suggestions(data, replica, suggestions)
     return suggestions, issues, pairs
 
 
-def _brand_suggestions(data: dict, suggestions: list[dict]) -> None:
-    """A brand Loaded names on a line but has no record for: create it.
-    Over every line, paired or not — an unresolved brand stops the receive
-    whatever the invoice says (``replica_finish.settle_brands``)."""
-    for ln in data.get("lines") or []:
-        if not isinstance(ln, dict) or ln.get("struck"):
-            continue
-        brand = str(ln.get("brand") or "").strip()
-        if not brand or ln.get("linked_brand_id"):
-            continue
+def _create_brand_suggestion(
+    suggestions: list[dict], lid: str, name: str, *, current, explanation: str
+) -> None:
+    _sugg(
+        suggestions,
+        "create_brand",
+        field="linked_brand_id",
+        line_id=lid,
+        current=current,
+        proposed=name,
+        explanation=explanation,
+        payload={"brand_name": name},
+        gate=_VA.AUTO_CREATE_BRANDS,
+    )
+
+
+def _brand_suggestion(
+    suggestions: list[dict], rl: dict, ln: dict, lid: str, desc: str
+) -> None:
+    """The line's brand, when the invoice's differs from Loaded's (owner,
+    19 Oct 2026: brands come from the invoice, never from Loaded).
+
+    - The invoice prints no brand and Loaded has one: remove it. Nothing is
+      created, so no switch: Autopilot applies it.
+    - The invoice prints a brand the venue has a record of: link it (no switch).
+    - The invoice prints a brand the venue has no record of: create it, behind
+      the "create brands" switch.
+
+    Names are compared, not ids: a venue can hold two records of one name. A
+    line the reading didn't look at (``brand_read`` False: a feed line, an
+    older read) compares nothing — a brand Loaded names with no record is
+    still created under its name, or Loaded won't receive the line."""
+    if ln.get("struck"):
+        return
+    loaded = str(ln.get("brand") or "").strip()
+    loaded_id = ln.get("linked_brand_id")
+    if not rl.get("brand_read"):
+        if loaded and not loaded_id:
+            _create_brand_suggestion(
+                suggestions,
+                lid,
+                loaded,
+                current=None,
+                explanation=(
+                    f"'{loaded}' isn't a brand in Loaded — create it (Loaded "
+                    "won't receive a line naming a brand it doesn't have)"
+                ),
+            )
+        return
+    printed = str(rl.get("brand_create_name") or rl.get("brand") or "").strip()
+    if not printed:
+        if loaded or loaded_id:
+            _sugg(
+                suggestions,
+                "line_value",
+                field="linked_brand_id",
+                line_id=lid,
+                current=loaded or None,
+                proposed=None,
+                explanation=f"the invoice prints no brand for '{desc}' — "
+                + (
+                    f"remove Loaded's '{loaded}'"
+                    if loaded
+                    else "remove the brand Loaded links"
+                ),
+                apply={"brand": None, "linked_brand_id": None, "brand_set": True},
+            )
+        return
+    if loaded_id and _norm(loaded) == _norm(printed):
+        return  # the same brand, perhaps the venue's other record of that name
+    rec_id = rl.get("linked_brand_id")
+    if rec_id:
+        if rec_id == loaded_id:
+            return
         _sugg(
             suggestions,
-            "create_brand",
+            "line_value",
             field="linked_brand_id",
-            line_id=str(ln.get("id")),
-            current=None,
-            proposed=brand,
-            explanation=(
-                f"'{brand}' isn't a brand in Loaded — create it "
-                "(Loaded won't receive a line naming a brand it doesn't have)"
-            ),
-            payload={"brand_name": brand},
-            gate=_VA.AUTO_CREATE_BRANDS,
+            line_id=lid,
+            current=loaded or None,
+            proposed=rl.get("brand"),
+            explanation=f"the invoice prints the brand '{printed}' for '{desc}'"
+            + (f" — Loaded has '{loaded}'" if loaded else ""),
+            apply={
+                "brand": rl.get("brand"),
+                "linked_brand_id": rec_id,
+                "brand_set": True,
+            },
         )
+        return
+    _create_brand_suggestion(
+        suggestions,
+        lid,
+        printed,
+        current=loaded or None,
+        explanation=(
+            f"the invoice prints the brand '{printed}' for '{desc}' and Loaded "
+            "has no brand of that name — create it"
+            + (f" (Loaded has '{loaded}')" if loaded else "")
+        ),
+    )
+
+
+def _unpaired_brand_suggestion(suggestions: list[dict], ln: dict) -> None:
+    """A Loaded line the invoice doesn't bill, naming a brand Loaded has no
+    record for. The invoice prints no brand for it, so: remove it. Whether or
+    not the line is struck, Loaded must be able to take the draft (do_receive
+    refuses a brand it has no record of: Bidfood 109944512)."""
+    if ln.get("struck"):
+        return
+    loaded = str(ln.get("brand") or "").strip()
+    if not loaded or ln.get("linked_brand_id"):
+        return
+    desc = ln.get("item_name") or ln.get("description") or ln.get("code") or "line"
+    _sugg(
+        suggestions,
+        "line_value",
+        field="linked_brand_id",
+        line_id=str(ln.get("id")),
+        current=loaded,
+        proposed=None,
+        explanation=(
+            f"'{loaded}' on '{desc}' isn't a brand in Loaded, and the invoice "
+            "doesn't bill this line — remove the brand"
+        ),
+        apply={"brand": None, "linked_brand_id": None, "brand_set": True},
+    )
 
 
 def _supplier_details_text(details: dict) -> str:
@@ -928,6 +1048,12 @@ def _add_line_suggestions(
     rid = str(rl.get("id"))
     desc = rl.get("description") or rl.get("code") or "line"
     payload = {k: v for k, v in rl.items() if k not in _REPLICA_ONLY_KEYS}
+    # The brand rides in only as a record Loaded has (it won't take a line
+    # naming one it doesn't); a brand to create is the line's own decision.
+    if rl.get("linked_brand_id"):
+        payload["brand_set"] = True
+    else:
+        payload["brand"], payload["linked_brand_id"] = None, None
     explanation = why or (
         f"the invoice bills '{rl.get('description')}' "
         f"(qty {rl.get('quantity_received')} at {rl.get('unit_cost')}) "
@@ -956,6 +1082,17 @@ def _add_line_suggestions(
     )
     _unit_suggestion(suggestions, rl, None, rid, desc)
     _create_item_suggestion(suggestions, rl, rid, desc)
+    if rl.get("brand_create_name"):
+        _create_brand_suggestion(
+            suggestions,
+            rid,
+            str(rl["brand_create_name"]),
+            current=None,
+            explanation=(
+                f"the invoice prints the brand '{rl['brand_create_name']}' for "
+                f"'{desc}' and Loaded has no brand of that name — create it"
+            ),
+        )
 
 
 def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> None:
@@ -1225,7 +1362,6 @@ _ISSUE_GATES = {
     "unit_would_be_created": _VA.AUTO_CREATE_UNITS,
     "brand_unknown": _VA.AUTO_CREATE_BRANDS,
     "supplier_unresolved": _VA.AUTO_CREATE_SUPPLIERS,
-    "unit_unknown": _VA.RECEIVE_WITHOUT_UNIT,
     # A unit Loaded supplied but the copy never confirmed. name_the_unit_in_use
     # re-points unit_missing here too when the working line already has one.
     "unit_unconfirmed": _VA.RECEIVE_WITH_UNCONFIRMED_UNIT,
@@ -1535,7 +1671,8 @@ def _match_added_lines(
     found: ``resolve_lines`` builds the Replica for just those lines, and
     each comes back with its stock item, unit and GST — or a create — in
     place of the bare figures the check ran on. Without a match the line
-    stands blocked rather than going to Loaded unlinked."""
+    stands blocked rather than going to Loaded unlinked: when the match
+    itself didn't come through, it says so and the next review asks again."""
     added = answer.get("add") or []
     resolved: dict = {}
     if resolve_lines is not None:
@@ -1577,8 +1714,32 @@ def _match_added_lines(
             for ri in resolved.get("issues") or []
             if ri.get("line_id") == f"rep-{i}"
         ]
-        if rl is None or not rl.get("linked_item_id"):
-            if not any(ri.get("code") == "item_unmatched" for ri in line_issues):
+        if rl is None:
+            # Nothing came back for the line: Norm's answer didn't come
+            # through (owner, 19 Oct 2026), not "no item matches".
+            line_issues = [
+                ri
+                for ri in line_issues
+                if ri.get("code") not in ("item_unmatched", "item_answer_missing")
+            ]
+            line_issues.append(
+                {
+                    "id": f"item_answer_missing:{rid}",
+                    "code": "item_answer_missing",
+                    "blocking": True,
+                    "line_id": rid,
+                    "message": (
+                        f"'{_new['description']}': Norm's answer for the stock "
+                        "item didn't come through — the next review asks again"
+                    ),
+                    "data": {"retry": True},
+                }
+            )
+        elif not rl.get("linked_item_id"):
+            if not any(
+                ri.get("code") in ("item_unmatched", "item_answer_missing")
+                for ri in line_issues
+            ):
                 line_issues.append(
                     {
                         "id": f"item_unmatched:{rid}",
@@ -1763,9 +1924,9 @@ _UNIT_ISSUES = (
 )
 
 #: Kinds that write to Loaded, in the order they must run: the supplier
-#: before anything that hangs off it, a unit before the item that needs it,
-#: the brand last.
-LOADED_WRITE_ORDER = ("create_supplier", "create_unit", "create_item", "create_brand")
+#: before anything that hangs off it, then the unit and the brand a new item
+#: is created with, then the item.
+LOADED_WRITE_ORDER = ("create_supplier", "create_unit", "create_brand", "create_item")
 
 #: Blockers a venue switch waves through on its own: the switch IS the answer
 #: ("receive without an order"), so nothing has to be applied for it to stand
@@ -1804,7 +1965,12 @@ def _answers(s: dict, issue: dict) -> bool:
             and kind in ("line_value", "create_item")
         )
     if code == "brand_unknown":
-        return same_line and kind == "create_brand"
+        # The invoice's answer: create the brand, link the one Loaded has, or
+        # remove it when the invoice prints none.
+        return same_line and (
+            kind == "create_brand"
+            or (kind == "line_value" and field == "linked_brand_id")
+        )
     if code == "loaded_line_not_on_copy":
         return same_line and kind == "strike"
     if code == "credit_zero_quantity":
@@ -1847,7 +2013,7 @@ def _confirm_for(data: dict, replica: dict | None, issue: dict) -> dict | None:
         # Only a unit Norm chose itself is kept: the Replica's line must hold
         # the unit the working line shows. A unit only Loaded holds is never
         # confirmed (owner, 18 Oct 2026: "i've been working hard to tell agents
-        # not to rely on loaded at all") — the chooser's pick replaces it.
+        # not to rely on loaded at all").
         rid = issue.get("replica_line_id") or issue.get("line_id")
         rl = next(
             (
@@ -1863,7 +2029,7 @@ def _confirm_for(data: dict, replica: dict | None, issue: dict) -> dict | None:
         field, proposed = "unit", ln.get("unit")
         unit = ln.get("unit")
         source = (issue.get("data") or {}).get("unit_chosen_by")
-        if rl.get("unit_by") in ("resolver", "chooser"):
+        if rl.get("unit_by") == "resolver":
             source = rl.get("unit_by")
         source = source or rl.get("unit_source")
         said = {
@@ -1872,7 +2038,6 @@ def _confirm_for(data: dict, replica: dict | None, issue: dict) -> dict | None:
             "estimate": f"Norm works it out as '{unit}'; keep it",
             "resolver": f"Norm works it out as '{unit}'; keep it",
             "printed": f"the printed column says '{unit}'; keep it",
-            "chooser": f"Norm picks '{unit}' from the venue's units; keep it",
         }.get(source, f"Norm's answer is '{unit}'; keep it")
         explanation = f"the invoice doesn't confirm the unit for '{desc}' — {said}"
     elif code == "unit_kind_mismatch":
@@ -1918,10 +2083,11 @@ def link_fixes(
     """Give every blocker ``fix`` — the ids of the suggestions that clear it —
     adding a ``confirm`` where Norm agrees with what is there. In place.
 
-    A unit decision takes the blocker's switch: picking a unit when nothing
-    gave one, or using Norm's answer where the invoice's unit can't be read, is
-    exactly what "receive without a unit" / "receive with an unconfirmed unit"
-    authorise Norm to do alone."""
+    A unit decision takes the blocker's switch: creating the unit the invoice
+    shows needs "auto-create units", and using Norm's answer where the
+    invoice's unit can't be read needs "receive with an unconfirmed unit".
+    Norm's own answer for a line with no unit needs no switch: it is Norm's
+    decision (owner, 19 Oct 2026, retiring "receive without a unit")."""
     for issue in issues:
         fix = [s for s in suggestions if _answers(s, issue)]
         if not fix:
@@ -1933,10 +2099,9 @@ def link_fixes(
             if any(s.get("kind") == "create_unit" for s in fix):
                 issue["gate"] = _VA.AUTO_CREATE_UNITS
             elif issue.get("code") in ("unit_missing", "unit_unknown"):
-                # Neither the invoice nor Norm's knowledge gave a unit: the
-                # chooser's pick is "receive without a unit", whatever unit
-                # Loaded's draft line happens to hold (never a reason).
-                issue["gate"] = _VA.RECEIVE_WITHOUT_UNIT
+                # Norm's answer is the decision: no switch, so its fix applies
+                # on Autopilot like any other sure answer.
+                issue["gate"] = None
             for s in fix:
                 if s.get("kind") in ("line_value", "confirm") and not s.get("gate"):
                     s["gate"] = issue.get("gate")
@@ -1944,6 +2109,12 @@ def link_fixes(
             for s in fix:
                 if s.get("kind") == "confirm":
                     s["gate"] = issue.get("gate")
+        elif issue.get("code") == "brand_unknown" and not any(
+            s.get("kind") == "create_brand" for s in fix
+        ):
+            # The invoice's answer is a brand Loaded has, or none: nothing is
+            # created, so no switch (owner, 19 Oct 2026).
+            issue["gate"] = None
         elif issue.get("code") == "supplier_unresolved" and not any(
             s.get("kind") == "create_supplier" for s in fix
         ):
@@ -1954,10 +2125,54 @@ def link_fixes(
         issue["fix"] = [s["id"] for s in fix]
 
 
+#: Blockers the next review clears by trying again: a service was down, or
+#: Norm's answer didn't come through after a retry (owner, 19 Oct 2026: never
+#: a guess in its place). There is nothing for Accept to do on them.
+RETRY_NEXT_REVIEW = frozenset(
+    {"copy_not_checked", "unit_answer_missing", "item_answer_missing"}
+)
+
+
+#: How soon a card whose review stopped on one of those reviews again when it
+#: is opened: soon enough that the answer is asked for again, but not on every
+#: open while a service is down (the 14 Oct 2026 credit outage lasted hours).
+RETRY_AFTER_MINUTES = 10
+
+
+def review_is_current(data: dict | None, *, now=None) -> bool:
+    """The draft's cached review can be shown as it is: it is a current
+    (DOC_SCHEMA) review, and it isn't waiting to try again. A blocker the next
+    review retries (RETRY_NEXT_REVIEW) only stands down by reviewing again, so
+    a review carrying one counts as current for RETRY_AFTER_MINUTES only. The
+    web card, the Claude card and the draft open all ask this."""
+    data = data if isinstance(data, dict) else {}
+    if data.get("doc_schema") != DOC_SCHEMA or not data.get("reviewed_at"):
+        return False
+    # One a person has answered (a unit or item picked by hand) has nothing
+    # left to ask, so it doesn't send every open back through the review.
+    if not any(
+        isinstance(i, dict)
+        and i.get("blocking")
+        and i.get("code") in RETRY_NEXT_REVIEW
+        and not is_settled(data, i)
+        for i in data.get("issues") or []
+    ):
+        return True
+    try:
+        at = datetime.datetime.fromisoformat(str(data["reviewed_at"]))
+    except (TypeError, ValueError):
+        return False
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=datetime.timezone.utc)
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return now - at < datetime.timedelta(minutes=RETRY_AFTER_MINUTES)
+
+
 def blockers_without_a_fix(data: dict) -> list[dict]:
     """Blocking issues with nothing for Accept to do. While a "delete this
     draft" stands the rest are moot — the delete is the answer. Logged on
-    every review; empty is the contract."""
+    every review; empty is the contract (blockers the next review retries
+    are expected to have none)."""
     if any(
         isinstance(s, dict) and s.get("kind") == "delete_invoice"
         for s in data.get("suggestions") or []
@@ -1966,7 +2181,10 @@ def blockers_without_a_fix(data: dict) -> list[dict]:
     return [
         i
         for i in data.get("issues") or []
-        if isinstance(i, dict) and i.get("blocking") and not i.get("fix")
+        if isinstance(i, dict)
+        and i.get("blocking")
+        and not i.get("fix")
+        and i.get("code") not in RETRY_NEXT_REVIEW
     ]
 
 
@@ -2002,11 +2220,20 @@ def _last_actions(data: dict) -> dict[str, dict]:
 
 def is_settled(data: dict, issue: dict, last: dict[str, dict] | None = None) -> bool:
     """A blocker stands down when its predicate holds against the working
-    values, when a person decided it ("I've checked this"), or when every
-    suggestion that is its fix was accepted. The card's ``issueSettled`` is
-    the same rule."""
+    values, when a person decided it ("I've checked this", or their own value
+    on the line — invoice_edits.hand_settles), or when every suggestion that
+    is its fix was accepted. The card's ``issueStateOf`` is the same rule."""
     if _clears(data, issue):
         return True
+    from app.services.invoice_edits import hand_settles
+
+    if hand_settles(data, issue):
+        return True
+    if issue.get("code") in RETRY_NEXT_REVIEW:
+        # Norm's answer (or the copy check) didn't come through: only asking
+        # again, or a person's own record for the line, stands it down —
+        # never "checked" (the card's Accept all writes that for every row).
+        return False
     last = _last_actions(data) if last is None else last
     if (last.get(str(issue.get("id"))) or {}).get("action") in (
         "accepted",
@@ -2016,9 +2243,32 @@ def is_settled(data: dict, issue: dict, last: dict[str, dict] | None = None) -> 
     if (issue.get("clears_when") or {}).get("op") == "balances":
         return False  # accepted fixes count only if the totals now match
     fix = issue.get("fix") or []
+    by_id = {
+        str(s.get("id")): s
+        for s in data.get("suggestions") or []
+        if isinstance(s, dict) and s.get("id")
+    }
     return bool(fix) and all(
-        (last.get(str(f)) or {}).get("action") == "accepted" for f in fix
+        (last.get(str(f)) or {}).get("action") == "accepted"
+        and _fix_holds(data, by_id.get(str(f)))
+        for f in fix
     )
+
+
+def _fix_holds(data: dict, s: dict | None) -> bool:
+    """An accepted fix still in force on the card: a line's value it set is
+    still on the line. A decision carried while its line wasn't on the card
+    (a line Norm adds, not added yet) set nothing, so it settles nothing."""
+    if not s or not s.get("line_id") or s.get("kind") not in ("line_value", "strike"):
+        return True
+    ln = _line(data, s.get("line_id"))
+    if ln is None:
+        return False
+    for k, v in (s.get("apply") or {}).items():
+        have = ln.get(k)
+        if (bool(have) != bool(v)) if k == "struck" else (have != v):
+            return False
+    return True
 
 
 def compute_confidence(data: dict) -> str:
@@ -2048,7 +2298,15 @@ def apply_suggestion(data: dict, s: dict) -> dict | None:
         payload = dict(s.get("payload") or {})
         if not payload:
             return None
-        data.setdefault("lines", []).append(payload)
+        lines = data.setdefault("lines", [])
+        # Once only: a card saved again after Autopilot added the line, or a
+        # decision carried onto a payload that already applied it, must not
+        # add it a second time (do_receive would send it twice).
+        if not any(
+            isinstance(ln, dict) and payload.get("id") and ln.get("id") == payload["id"]
+            for ln in lines
+        ):
+            lines.append(payload)
         return {"added_line_id": payload.get("id")}
     apply = s.get("apply") or {}
     if not apply:
@@ -2072,6 +2330,47 @@ def apply_suggestion(data: dict, s: dict) -> dict | None:
     return before
 
 
+#: The link a create writes, by kind: what makes a later "link this record"
+#: the same answer.
+_CREATE_LINKS = {
+    "create_unit": "linked_unit_id",
+    "create_item": "linked_item_id",
+    "create_brand": "linked_brand_id",
+    "create_supplier": "linked_supplier_id",
+}
+#: What an added line IS: the invoice's line. Its links are Norm's answers.
+_ADD_IDENTITY = (
+    "id",
+    "code",
+    "description",
+    "quantity_received",
+    "unit_cost",
+    "total_cost",
+)
+_ADD_LINKS = ("linked_item_id", "linked_unit_id", "linked_brand_id")
+#: Fields that are one value to a person: setting any is setting the group.
+_HAND_GROUPS = (
+    ("unit", "linked_unit_id", "unit_ratio"),
+    ("linked_item_id", "item_name"),
+    ("brand", "linked_brand_id", "brand_set"),
+    ("linked_supplier_id", "supplier_name"),
+    ("linked_purchase_order_id", "purchase_order_number"),
+)
+#: Line fields a create's recorded values may set when it is carried.
+_LINE_KEYS = frozenset(
+    {
+        "linked_unit_id",
+        "unit",
+        "unit_ratio",
+        "linked_item_id",
+        "item_name",
+        "linked_brand_id",
+        "brand",
+        "brand_set",
+    }
+)
+
+
 def carry_forward_decisions(previous: dict, fresh: dict) -> int:
     """Re-apply the decisions a person already made, where the question is
     unchanged. Returns how many were carried.
@@ -2087,12 +2386,21 @@ def carry_forward_decisions(previous: dict, fresh: dict) -> int:
     review recorded against a BLOCKER (whose Accept applied the blocker's own
     value) carries onto the suggestion that is now that blocker's fix, when it
     proposes the same value.
+
+    A record created on Norm's suggestion (a unit, a stock item, a brand) is in
+    Loaded afterwards, so the next review proposes LINKING it instead of
+    creating it. That is the same question with the same answer: the accept
+    carries onto the link, and the line keeps the record (19 Oct 2026 — the
+    link used to be lost on every re-review).
     """
     if not isinstance(previous, dict) or not isinstance(fresh, dict):
         return 0
     prior_actions = _last_actions(previous)
     if not prior_actions:
         return 0
+    # What the fresh payload already decided (Autopilot, on this run) is newer
+    # than anything on the old card: never re-applied, never overridden.
+    fresh_decided = set(_last_actions(fresh))
 
     prior_suggestions = {
         str(s.get("id")): s
@@ -2102,15 +2410,59 @@ def carry_forward_decisions(previous: dict, fresh: dict) -> int:
     actions = fresh.setdefault("suggestion_actions", [])
     carried_ids: set[str] = set()
 
+    # The records an accepted create made, per line (the line from the
+    # suggestion, or from the id when the suggestion has been cleared).
+    created_after: dict[str, dict] = {}
+    for sid, action in prior_actions.items():
+        before = prior_suggestions.get(sid) or {}
+        kind = before.get("kind") or sid.split(":", 1)[0]
+        if action.get("action") == "accepted" and kind in _CREATE_LINKS:
+            line = before.get("line_id") or sid.split(":", 2)[-1]
+            created_after.setdefault(str(line), {}).update(action.get("after") or {})
+
     def _same_question(before: dict, now: dict) -> bool:
+        if before.get("kind") == now.get("kind") == "add_line":
+            # Adding the line is the decision about the invoice's line: the
+            # same line at the same money is the same question. Its links are
+            # Norm's answers; one may differ only by being the record a create
+            # on that line made (a unit, item or brand made for it, now linked)
+            # — any other link change is a new question.
+            b = before.get("payload") if isinstance(before.get("payload"), dict) else {}
+            n = now.get("payload") if isinstance(now.get("payload"), dict) else {}
+            if any(b.get(k) != n.get(k) for k in _ADD_IDENTITY):
+                return False
+            made = created_after.get(str(now.get("line_id")), {})
+            return all(
+                b.get(k) == n.get(k) or (n.get(k) and n.get(k) == made.get(k))
+                for k in _ADD_LINKS
+            )
         return (before.get("apply") or {}) == (now.get("apply") or {}) and (
             before.get("payload") or {}
         ) == (now.get("payload") or {})
 
     def _carry(s: dict, action: dict) -> None:
         if action.get("action") == "accepted":
-            apply_suggestion(fresh, s)
-        actions.append({**action, "suggestion_id": s.get("id")})
+            if apply_suggestion(fresh, s) is None:
+                # A create: its record's id is what the accept recorded.
+                after = action.get("after") or {}
+                if not isinstance(after, dict):
+                    after = {}
+                if s.get("line_id"):
+                    ln = _line(fresh, s.get("line_id"))
+                    if ln is not None:
+                        ln.update({k: v for k, v in after.items() if k in _LINE_KEYS})
+                elif after.get("linked_supplier_id"):
+                    fresh["linked_supplier_id"] = after["linked_supplier_id"]
+                    if after.get("supplier_name"):
+                        fresh["supplier_name"] = after["supplier_name"]
+        carried = {**action, "suggestion_id": s.get("id")}
+        if str(action.get("suggestion_id")) != str(s.get("id")):
+            # Carried under another id (a create, now the link to what it
+            # made): an Undo still finds the edits it replaced by the first.
+            carried["carried_from"] = action.get("carried_from") or action.get(
+                "suggestion_id"
+            )
+        actions.append(carried)
         carried_ids.add(str(s.get("id")))
 
     fresh_suggestions = [
@@ -2120,24 +2472,64 @@ def carry_forward_decisions(previous: dict, fresh: dict) -> int:
         sid = str(s.get("id") or "")
         action = prior_actions.get(sid)
         before = prior_suggestions.get(sid)
-        if not action or action.get("action") == "undone":
+        if not action or action.get("action") == "undone" or sid in fresh_decided:
             continue
-        if before is None or not _same_question(before, s):
+        if before is None:
+            # The old card's suggestions were cleared (a cached review the
+            # invoice's change or a sibling's receive invalidated): an accept
+            # still carries when the fresh suggestion writes exactly what the
+            # accept recorded.
+            after = action.get("after")
+            apply = s.get("apply") or {}
+            if (
+                action.get("action") == "accepted"
+                and isinstance(after, dict)
+                and apply
+                and all(k in after and after[k] == v for k, v in apply.items())
+            ):
+                _carry(s, action)
+            continue
+        if not _same_question(before, s):
             continue
         _carry(s, action)
+
+    created: dict[tuple, tuple[dict, str]] = {}
+    for sid, action in prior_actions.items():
+        before = prior_suggestions.get(sid) or {}
+        key = _CREATE_LINKS.get(before.get("kind"))
+        if action.get("action") == "accepted" and key:
+            created[(str(before.get("line_id")), before.get("field"))] = (action, key)
+    for s in fresh_suggestions:
+        if (
+            # A line's link, or the header's supplier link (a created supplier
+            # is proposed as kind "supplier" next time).
+            s.get("kind") not in ("line_value", "supplier")
+            or str(s.get("id")) in carried_ids
+            or str(s.get("id")) in fresh_decided
+        ):
+            continue
+        hit = created.get((str(s.get("line_id")), s.get("field")))
+        if hit is None:
+            continue
+        action, key = hit
+        made = (action.get("after") or {}).get(key)
+        if made and (s.get("apply") or {}).get(key) == made:
+            _carry(s, action)
 
     by_id = {str(s.get("id")): s for s in fresh_suggestions}
     for issue in fresh.get("issues") or []:
         iid = str(issue.get("id") or "")
         action = prior_actions.get(iid)
-        if not action or action.get("action") == "undone":
+        if not action or action.get("action") == "undone" or iid in fresh_decided:
             continue
         after = action.get("after") or {}
         if action.get("action") == "accepted":
             for fid in issue.get("fix") or []:
                 s = by_id.get(str(fid))
-                if s is None or str(fid) in carried_ids:
+                if s is None or str(fid) in carried_ids or str(fid) in fresh_decided:
                     continue
+                if (prior_actions.get(str(fid)) or {}).get("action") == "undone":
+                    continue  # the person undid this answer: it stays undone
                 apply = s.get("apply") or {}
                 shared = [k for k in after if k in apply]
                 if s.get("kind") == "confirm" and not after:
@@ -2212,6 +2604,28 @@ def autopilot_accept(
             return _VA.gate_open(settings, s.get("gate"))
         return s.get("sure", True) is not False
 
+    # A field a person set by hand on the card is theirs: Autopilot applies
+    # nothing over it (owner, 19 Oct 2026: anything a person typed is
+    # received). The card's edits come with the payload (invoice_edits).
+    from app.services.invoice_edits import hand_fields
+
+    hand = hand_fields(data)
+
+    def _by_hand(s: dict) -> bool:
+        if not hand:
+            return False
+        line = s.get("line_id")
+        key = str(line) if line else None
+        fields = set((s.get("apply") or {}).keys())
+        if s.get("field"):
+            fields.add(s["field"])
+        if _CREATE_LINKS.get(s.get("kind")):
+            fields.add(_CREATE_LINKS[s["kind"]])
+        for group in _HAND_GROUPS:
+            if fields & set(group):
+                fields |= set(group)
+        return any((key, f) in hand for f in fields)
+
     pending = [
         s
         for s in data.get("suggestions") or []
@@ -2219,6 +2633,7 @@ def autopilot_accept(
         and (last.get(str(s.get("id"))) or {}).get("action")
         not in ("accepted", "dismissed")
         and _allowed(s)
+        and not _by_hand(s)
     ]
 
     for s in pending:
@@ -2250,7 +2665,37 @@ def autopilot_accept(
         ),
         key=lambda s: s.get("kind") != "add_line",
     )
+    adds = [s for s in edits if s.get("kind") == "add_line"]
+    for s in adds:
+        if apply_suggestion(data, s) is not None:
+            _record(s.get("id"), {"added_line_id": s.get("line_id")}, {"added": True})
+    added = {str(s.get("line_id")) for s in adds}
+    for s in data.get("suggestions") or []:
+        # A decision already made on a line Norm adds (carried while the line
+        # wasn't on the card, so it set nothing) goes on it now, before the
+        # person's own edits — which win where they came later.
+        if (
+            isinstance(s, dict)
+            and str(s.get("line_id")) in added
+            and s.get("kind") in ("line_value", "strike")
+            and (last.get(str(s.get("id"))) or {}).get("action") == "accepted"
+        ):
+            apply_suggestion(data, s)
+    if adds and data.get("edits"):
+        # What a person did on a line Norm adds again — struck it, typed its
+        # quantity, picked its unit — goes on it now, as the card's own
+        # rebuild puts it there; then nothing below writes over it, and a
+        # blocker decision on that line holds only if its value came back.
+        from app.services.invoice_edits import drop_stale_blocker_accepts, replay_edits
+
+        replay_edits(data, data.get("edits"))
+        hand = hand_fields(data)
+        drop_stale_blocker_accepts(data)
+        pending = [s for s in pending if not _by_hand(s)]
+        edits = [s for s in edits if not _by_hand(s)]
     for s in edits:
+        if s.get("kind") == "add_line":
+            continue
         before = apply_suggestion(data, s)
         if before is None:
             continue
@@ -2273,7 +2718,12 @@ def autopilot_accept(
 
     # What this Accept made NEW in Loaded (a get-or-create that found an
     # existing record made nothing) — the run's summary counts these.
-    created: dict[str, list[str]] = {"stock_items": [], "suppliers": [], "units": []}
+    created: dict[str, list[str]] = {
+        "stock_items": [],
+        "suppliers": [],
+        "units": [],
+        "brands": [],
+    }
     data["autopilot_created"] = created
     for kind in LOADED_WRITE_ORDER:
         for s in pending:
@@ -2281,6 +2731,8 @@ def autopilot_accept(
                 continue
             payload = s.get("payload") or {}
             ln = _line(data, s.get("line_id")) if s.get("line_id") else None
+            if ln is not None and ln.get("struck"):
+                continue  # not received: nothing to make in Loaded for it
             try:
                 if kind == "create_supplier":
                     # The riskiest create by a distance: supplier identity
@@ -2317,7 +2769,11 @@ def autopilot_accept(
                     )
                     data["linked_supplier_id"] = supplier["id"]
                     data["supplier_name"] = supplier.get("name") or name
-                    _record(s.get("id"), {}, {"linked_supplier_id": supplier["id"]})
+                    _record(
+                        s.get("id"),
+                        {},
+                        {"linked_supplier_id": supplier["id"], "created": new},
+                    )
                     if new:
                         created["suppliers"].append(supplier.get("name") or name)
                     verb = "created" if new else "linked existing"
@@ -2330,7 +2786,11 @@ def autopilot_accept(
                     ln["unit"] = unit.get("name")
                     if unit.get("ratio") is not None:
                         ln["unit_ratio"] = unit.get("ratio")
-                    _record(s.get("id"), {}, {"linked_unit_id": unit.get("id")})
+                    _record(
+                        s.get("id"),
+                        {},
+                        {"linked_unit_id": unit.get("id"), "created": new},
+                    )
                     if new:
                         created["units"].append(unit.get("name"))
                     verb = "created" if new else "used existing"
@@ -2352,18 +2812,40 @@ def autopilot_accept(
                     )
                     ln["linked_item_id"] = out["item_id"]
                     ln["item_name"] = out["item_name"]
-                    _record(s.get("id"), {}, {"linked_item_id": out["item_id"]})
+                    _record(
+                        s.get("id"),
+                        {},
+                        {
+                            "linked_item_id": out["item_id"],
+                            "created": bool(out["created"]),
+                        },
+                    )
                     if out["created"]:
                         created["stock_items"].append(out["item_name"])
                     verb = "created" if out["created"] else "linked existing"
                     done.append(f"{verb} stock item '{out['item_name']}'")
                 elif kind == "create_brand" and ln is not None:
-                    brand, _ = catalog.get_or_create_brand(
+                    brand, new = catalog.get_or_create_brand(
                         _client(), payload.get("brand_name") or ""
                     )
+                    # The name with the record, and brand_set, as the card's
+                    # create does: do_receive replaces Loaded's text only then.
                     ln["linked_brand_id"] = brand["id"]
-                    _record(s.get("id"), {}, {"linked_brand_id": brand["id"]})
-                    done.append(f"created brand '{brand['name']}'")
+                    ln["brand"] = brand.get("name")
+                    ln["brand_set"] = True
+                    _record(
+                        s.get("id"),
+                        {},
+                        {
+                            "linked_brand_id": brand["id"],
+                            "brand": brand.get("name"),
+                            "created": new,
+                        },
+                    )
+                    if new:
+                        created["brands"].append(brand.get("name"))
+                    verb = "created" if new else "used existing"
+                    done.append(f"{verb} brand '{brand['name']}'")
             except Exception as exc:  # noqa: BLE001 — the blocker simply stands
                 logger.info(
                     "autopilot %s could not run on %s: %s", kind, invoice_id, exc
@@ -2430,18 +2912,16 @@ def review_invoice(
     data = build_received_invoice_data(detail)
     # Open where Loaded's SCREEN opens, not where its API does: Loaded resolves
     # an unlinked line's stock item and unit in the browser from the supplier
-    # code, so those resolved values ARE Loaded's position. Seeding them here —
-    # before a single suggestion is computed — is what makes a suggestion mean
-    # "the copy disagrees with Loaded" instead of "Loaded's payload is raw".
-    # Safe on this path: the review replaces the payload wholesale anyway.
-    # Three independent best-effort steps, each guarded on its own: a failed
-    # order fetch must not cost us the mirror, and vice versa.
+    # code, so those resolved values ARE Loaded's position — resolved once, on
+    # the snapshot (the Loaded tab), and the working lines opened on them
+    # before a single suggestion is computed, so a suggestion means "the copy
+    # disagrees with Loaded". Independent best-effort steps, each guarded on
+    # its own: a failed order fetch must not cost us the mirror, and vice versa.
     catalogue = (reference or {}).get("catalogue")
     units = (reference or {}).get("units")
     try:
         if not catalogue:
             catalogue, units = loaded_reference(venue_id, db, lh, config_db=config_db)
-        seed_working_from_loaded(data, catalogue=catalogue, units=units)
     except Exception as exc:  # noqa: BLE001
         logger.info("loaded resolution unavailable for %s: %s", invoice_id, exc)
     try:
@@ -2454,6 +2934,8 @@ def review_invoice(
         logger.info("order reference unavailable for %s: %s", invoice_id, exc)
     try:
         enrich_loaded_snapshot(data, catalogue=catalogue, units=units)
+        start_from_screen(data)
+        project_po_reference(data)  # the order rows follow the opened links
     except Exception as exc:  # noqa: BLE001
         logger.info("loaded mirror unavailable for %s: %s", invoice_id, exc)
     data["doc_schema"] = DOC_SCHEMA
@@ -2581,8 +3063,9 @@ def review_invoice(
         # supplier list vets those aliases and is reused by the replica below.
         suppliers = account_suppliers(lh)
         aliases = supplier_aliases(lh, detail, suppliers)
+        studied = False
         if allow_sensei and file_id and detail.get("supplierName"):
-            _maybe_sensei(
+            studied = _maybe_sensei(
                 db, config_db, venue_id, invoice_id, detail["supplierName"], *aliases
             )
         if extraction is None:
@@ -2647,6 +3130,7 @@ def review_invoice(
             # PASS 2 — the copy decides which layout reads it. A feed invoice
             # has no copy to read again.
             spec_used = None
+            first_read = extraction
             if file_id:
                 extraction, spec_used = reread_under_printed_spec(
                     db, config_db, lh, venue_id, file_id, detail, aliases, extraction
@@ -2667,6 +3151,14 @@ def review_invoice(
                     aliases,
                     extraction,
                 )
+                studied = studied or spec_used is not None
+            # Which layout read the copy, for the invoice activity page: a
+            # re-read hands back a new extraction, no re-read the same one.
+            data["process"] = {
+                "layout": getattr(spec_used, "name", None),
+                "reread": extraction is not first_read,
+                "studied": bool(studied),
+            }
             data["extracted_snapshot"] = _extracted_snapshot(extraction)
             # Feed the Norm supplier-product catalogue: every successful
             # extraction's printed sizes are supplier-stated physical facts
@@ -2737,19 +3229,6 @@ def review_invoice(
                 replica.get("is_credit_note")
                 or (isinstance(data.get("total"), (int, float)) and data["total"] < 0)
             )
-            # The venue's unit chooser — the last answer for a line nothing
-            # gives a unit (replica_finish.settle_units). Its final pass may
-            # not decline: a line with no unit stops autopilot outright.
-            choose = None
-            if db is not None:
-                from app.services.unit_guess import guess_unit, llm_chooser
-
-                ask = llm_chooser(db)
-                insist = llm_chooser(db, insist=True)
-
-                def choose(ln: dict) -> dict | None:
-                    unit, why = guess_unit(ln, units or [], ask_llm=ask, insist=insist)
-                    return {**unit, "why": why} if unit else None
 
             def invoice_copy() -> dict | None:
                 # Read only when the totals need it (balance_after_suggestions).
@@ -2826,7 +3305,6 @@ def review_invoice(
                     units=units,
                     suppliers=suppliers,
                     lh=lh,
-                    choose_unit=choose,
                     totals_ask=totals_ask,
                     db=db,
                     extraction=extraction,
@@ -3196,6 +3674,25 @@ def _maybe_sensei(
 # ---------------------------------------------------------------------------
 
 
+def read_open_card(db, venue_id: str, invoice_id: str) -> tuple[dict | None, list]:
+    """The invoice's open card, as copies of its data and PATCH history —
+    (None, []) when it has none. The batch's session lets go of the cards:
+    keep_review rewrites them through a session of its own, and this one must
+    not write its stale copies back over that later
+    (invalidate_conflicting_drafts commits through it)."""
+    cards = open_drafts(db, venue_id, invoice_id)
+    if not cards:
+        return None, []
+    previous = copy.deepcopy(cards[0].data or {})
+    history = copy.deepcopy(cards[0].pending_ops or [])
+    for c in cards:
+        try:
+            db.expunge(c)
+        except Exception:  # noqa: BLE001 — not held by this session
+            pass
+    return previous, history
+
+
 def review_invoices(
     db: Session,
     config_db: Session,
@@ -3233,6 +3730,7 @@ def review_invoices(
     cards are full replica_v2 doc payloads (they ride into ``fix_invoices``
     verbatim for the working-document fan-out).
     """
+    from app.services import invoice_activity
     from app.services import venue_autopilot as VA
     from app.services.spec_dojo import prefetch_replica_reference
 
@@ -3259,6 +3757,23 @@ def review_invoices(
         ]
 
     import time as _time
+
+    level = invoice_activity.level_of(settings)
+
+    def _note(iid: str, kind: str, record: dict, data: dict | None) -> None:
+        # The invoice activity page's record of an invoice that neither went
+        # in nor was deleted: stopped (and why), waiting, or failed.
+        invoice_activity.record_stop(
+            venue_id=venue_id,
+            invoice_id=iid,
+            kind=kind,
+            data=data,
+            mode=mode,
+            reasons=record.get("reasons"),
+            gates_needed=record.get("gates_needed"),
+            level=level,
+            record=record,
+        )
 
     def _report(iid: str, record: dict, data: dict | None) -> None:
         if on_invoice is None:
@@ -3298,6 +3813,7 @@ def review_invoices(
                 "reasons": [f"could not fetch this invoice from Loaded: {exc}"],
             }
             skipped.append(gone)
+            _note(iid, "failed", gone, None)
             _report(iid, gone, None)
             continue
         try:
@@ -3322,8 +3838,23 @@ def review_invoices(
                 "reasons": [str(exc)],
             }
             skipped.append(failed)
+            _note(iid, "failed", failed, None)
             _report(iid, failed, None)
             continue
+
+        # What a person decided or typed on the invoice's open card is part
+        # of what gets received (owner, 19 Oct 2026: Loaded + accepted
+        # suggestions + anything a person typed). The fresh review carries it
+        # exactly as the card's own rebuild does, and Autopilot then leaves
+        # those fields alone.
+        try:
+            from app.services.invoice_edits import rebuild_from_decisions
+
+            previous, history = read_open_card(db, venue_id, iid)
+            if previous is not None:
+                rebuild_from_decisions(previous, data, previous_ops=history)
+        except Exception as exc:  # noqa: BLE001 — the review stands on its own
+            logger.warning("the open card for %s couldn't be read: %s", iid, exc)
 
         gated: list[str] = []
         if mode == "autopilot":
@@ -3350,6 +3881,9 @@ def review_invoices(
                 # leave no trace but the count, so "were these right to go?"
                 # (Little West, 84 of 222, 16 Oct 2026) meant re-reading every
                 # document. The report leaves these rows out of its rates.
+                invoice_activity.keep_review(
+                    venue_id=venue_id, invoice_id=iid, data=data
+                )
                 record_receive_outcome(
                     db,
                     venue_id=venue_id,
@@ -3359,6 +3893,7 @@ def review_invoices(
                     actor="norm",
                     received=False,
                     outcome_override="deleted",
+                    level=level,
                     extra_detail={
                         "deleted": {
                             "kind": data.get("deleted_kind"),
@@ -3410,6 +3945,10 @@ def review_invoices(
                 from app.services import supplier_catalog
 
                 supplier_catalog.observe_practice_from_doc(config_db, data)
+                # The review as received, so its card can be opened later.
+                invoice_activity.keep_review(
+                    venue_id=venue_id, invoice_id=iid, data=data
+                )
                 # Norm's own receives are self-fulfilling (auto_accept_all ran
                 # a moment ago), so they measure VOLUME, not correctness — the
                 # report keeps actor="norm" out of its readiness rates.
@@ -3420,6 +3959,7 @@ def review_invoices(
                     data=data,
                     mode=mode,
                     actor="norm",
+                    level=level,
                 )
                 # A bill in Xero when the person's receiving settings say so
                 # (Settings → Preferences). Best effort; the receive stands.
@@ -3449,6 +3989,7 @@ def review_invoices(
                 verdict["reasons"] = [f"receive failed: {exc}"]
                 skipped.append({**verdict, "outcome": "receive failed"})
                 cards.append(data)
+                _note(iid, "failed", verdict, data)
                 _report(iid, {**verdict, "outcome": "receive failed"}, data)
         else:
             outcome = (
@@ -3458,6 +3999,12 @@ def review_invoices(
             )
             skipped.append({**verdict, "outcome": outcome})
             cards.append(data)
+            _note(
+                iid,
+                "waiting" if data.get("confidence") == "ready" else "stopped",
+                verdict,
+                data,
+            )
             _report(iid, {**verdict, "outcome": outcome}, data)
         verdicts.append(verdict)
 

@@ -356,6 +356,61 @@ def multipack_equal(a: object, b: object) -> bool:
     return _unit_norm(ia) == _unit_norm(ib)
 
 
+def _same_amount(a: float, b: float) -> bool:
+    """The same amount, allowing rounding only: within 0.1% (453.6 g is 454 g,
+    2.8 kg is not 2.84 kg)."""
+    return abs(a - b) <= max(0.001, 0.001 * max(abs(a), abs(b)))
+
+
+def match_unit_record(name: object, units: list[dict] | None) -> dict | None:
+    """The venue's unit record that IS this unit: the one check every step
+    uses before Norm suggests creating a unit (owner, 19 Oct 2026: work the
+    unit out first, then see if that unit "or a very similar one (very high
+    confidence)" is already in Loaded, "since we dont want to just create
+    extra units").
+
+    - The same name, ignoring case and spacing: '15kg' is '15 KG'.
+    - A pack matches only the same pack: '6 x 750ML' is '6x750ml', and a pack
+      written size first ('700ml x 6') reads the same. A pack never matches a
+      single size of the same total: '3x5kg' is not '15 KG' (the owner: 3x5kg
+      is the right unit for those fries) and '6x1L' is not '6 L'.
+    - A single size matches the record of the same kind and amount, allowing
+      rounding only: '4500ml' is '4.5 L' and '453.6 g' is '454 Grams', but
+      '2.8kg' is not '2.84 KG'. A packaging-word record ('PACK') is matched
+      only by its exact name.
+
+    Records come in the list's order; the first match wins."""
+    text = str(name or "").replace("×", "x").strip()
+    if not text:
+        return None
+    live = [
+        u for u in units or [] if isinstance(u, dict) and not u.get("datestampDeleted")
+    ]
+    key = _unit_norm(text)
+    for u in live:
+        if _unit_norm(str(u.get("name") or "").replace("×", "x")) == key:
+            return u
+    if is_multipack(text):
+        for u in live:
+            if multipack_equal(str(u.get("name") or "").replace("×", "x"), text):
+                return u
+        return None
+    parsed = parse_unit(text)
+    if parsed:
+        for u in live:
+            # Magnitude equivalence must not launder identity: 'EA' parses as
+            # a count of 1 and so does a unit literally named 'PACK', but
+            # receiving each-lines in PACK is meaningless (Trents 5973784,
+            # 18 Aug 2026). A packaging-word-NAMED unit is matched only by its
+            # name (the first tier).
+            if is_packaging_word(u.get("name")):
+                continue
+            pu = parse_unit(u.get("name"))
+            if pu and pu[0] == parsed[0] and _same_amount(pu[1], parsed[1]):
+                return u
+    return None
+
+
 def _outer_count(u: object) -> float | None:
     """The leading count of an 'NxM' multipack name ('6x750mL' → 6.0), else None."""
     if not is_multipack(u):

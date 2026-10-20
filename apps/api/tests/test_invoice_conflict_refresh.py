@@ -70,7 +70,9 @@ class TestInvalidateConflictingDrafts:
         invalidate_conflicting_drafts(db_session, venue.id, "inv-1")
         db_session.refresh(dup)
         assert dup.data["reviewed_at"] is None
-        assert dup.data["suggestions"] == []
+        # Its suggestions stay until the next review: that review carries the
+        # decisions made on them, and needs the questions they answered.
+        assert dup.data["suggestions"] == [{"type": "link_po"}]
         assert not dup.data.get("is_received")
 
     def test_po_overlap_sibling_cleared(self, db_session, venue):
@@ -115,7 +117,7 @@ class TestInvalidateConflictingDrafts:
         for d in (legacy, current):
             db_session.refresh(d)
             assert d.data["reviewed_at"] is None, d.data["invoice_id"]
-            assert d.data["suggestions"] == []
+            assert d.data["suggestions"]  # kept for the next review's carry
 
     def test_the_acted_invoices_own_link_suggestion_counts_too(self, db_session, venue):
         """The received invoice's own (current-shape) link suggestion names
@@ -417,6 +419,11 @@ class TestDeleteTombstones:
         monkeypatch.setitem(
             IF._APPLIERS, "delete_invoice", lambda lh, fix, db: "Draft deleted"
         )
+        outcomes = []
+        monkeypatch.setattr(
+            "app.services.autopilot_metrics.record_receive_outcome",
+            lambda db, **kw: outcomes.append(kw),
+        )
         doc = _doc(
             db_session, venue, "inv-1", reference_number="R-1", supplier_name="S"
         )
@@ -452,6 +459,15 @@ class TestDeleteTombstones:
         db_session.refresh(sibling)
         assert sibling.data["reviewed_at"] is None
         assert not sibling.data.get("is_deleted")
+        # A person's delete is an outcome, so the activity page stops listing
+        # the invoice as stopped (review of the Activity page, 19 Oct 2026).
+        (o,) = outcomes
+        assert (o["outcome_override"], o["actor"], o["received"]) == (
+            "deleted",
+            "user",
+            False,
+        )
+        assert "duplicate" in o["extra_detail"]["deleted"]["reason"]
 
     def test_tombstones_are_skipped_by_reset_and_invalidation(
         self, client, db_session, admin_user, admin_headers, monkeypatch, venue
@@ -550,9 +566,12 @@ class TestReviewTwinHealing:
             assert d.data["doc_schema"] == "replica_v2"
             assert d.data["suggestions"] == [{"id": "line_value:quantity_received:l-1"}]
             assert d.data["lines"][0]["quantity_received"] == 4
-        # Squash semantics: the twin's local struck state is deliberately
-        # replaced by the fresh payload (re-review resets edits).
-        assert b.data["lines"][0].get("struck") is None
+        # Each twin is the fresh payload plus what was done on THAT card: the
+        # line struck on b stays struck there (owner, 19 Oct 2026: what a
+        # person did is replayed onto the rebuild, never reset), and a is not
+        # given b's strike.
+        assert b.data["lines"][0].get("struck") is True
+        assert a.data["lines"][0].get("struck") is None
         assert a.version == va + 1 and b.version == vb + 1
 
     def test_reviewed_doc_is_cached_unless_forced(
@@ -593,6 +612,86 @@ class TestReviewTwinHealing:
         )
         assert resp.status_code == 200
         assert calls == [1]  # force = re-run (the squash path)
+
+    def test_a_replayed_order_choice_gets_its_rows(
+        self, client, db_session, admin_user, admin_headers, monkeypatch, venue
+    ):
+        # The person linked PO-B by hand; the review rebuilds the card from
+        # Loaded (no order) and replays the choice — and the rows of PO-B are
+        # fetched for it, or the receive goes without ordered quantities.
+        inv = f"inv-{uuid.uuid4().hex[:10]}"
+        self._twin(
+            db_session,
+            venue,
+            inv,
+            lines=[{"id": "l-1", "description": "X"}],
+            edits=[
+                {
+                    "seq": 1,
+                    "at": "2026-10-19T09:00:00+00:00",
+                    "field": "linked_purchase_order_id",
+                    "after": "po-B",
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            "app.services.invoice_review.review_invoice",
+            lambda *args, **kwargs: dict(self._payload()),
+        )
+        import app.routers.invoice_fixes as IF
+
+        fetched = []
+        monkeypatch.setattr(
+            IF,
+            "_attach_po_reference",
+            lambda data, lh: fetched.append(data.get("linked_purchase_order_id")),
+        )
+        monkeypatch.setattr(IF, "attach_item_names", lambda *a, **k: None)
+        monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: object())
+        resp = client.post(
+            "/api/invoice-fixes/review",
+            json={"venue_id": venue.id, "invoice_id": inv},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        assert "po-B" in fetched
+
+    def test_a_review_waiting_on_an_answer_is_asked_again(
+        self, client, db_session, admin_user, admin_headers, monkeypatch, venue
+    ):
+        # Norm's answer didn't come through last time: the cached review is
+        # not current once it is 10 minutes old, so opening the card asks
+        # again (owner, 19 Oct 2026).
+        inv = f"inv-{uuid.uuid4().hex[:10]}"
+        self._twin(
+            db_session,
+            venue,
+            inv,
+            doc_schema="replica_v2",
+            reviewed_at="2026-08-10T00:00:00+00:00",
+            issues=[
+                {
+                    "id": "unit_answer_missing:l-1",
+                    "code": "unit_answer_missing",
+                    "blocking": True,
+                    "line_id": "l-1",
+                }
+            ],
+        )
+        calls = []
+
+        def fake_review(*args, **kwargs):
+            calls.append(1)
+            return dict(self._payload())
+
+        monkeypatch.setattr("app.services.invoice_review.review_invoice", fake_review)
+        resp = client.post(
+            "/api/invoice-fixes/review",
+            json={"venue_id": venue.id, "invoice_id": inv},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        assert calls == [1]
 
 
 class TestLineIdAddressedOps:

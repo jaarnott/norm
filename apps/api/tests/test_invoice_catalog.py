@@ -314,21 +314,42 @@ class TestBrandChoiceTravels:
         )
         assert req.lines[0]["brand_set"] is True
 
-    def test_a_reshape_keeps_the_choice(self):
-        fresh = {"lines": [{"id": "ln-1", "brand": "BIDFOOD", "linked_brand_id": None}]}
-        old = {
-            "lines": [
+    def test_a_rebuild_keeps_the_choice(self):
+        # A person cleared the brand Loaded's scan read; Loaded still has it.
+        # The rebuild replays the person's edit (invoice_edits), and a card
+        # from before the edit record keeps it too, on its first rebuild.
+        from app.services.invoice_edits import rebuild_from_decisions
+
+        chose = [
+            {"id": "ln-1", "brand": None, "linked_brand_id": None, "brand_set": True}
+        ]
+        at = "2026-10-19T09:00:00+00:00"
+        logged = {
+            "lines": chose,
+            "edits": [
                 {
-                    "id": "ln-1",
-                    "brand": None,
-                    "linked_brand_id": None,
-                    "brand_set": True,
-                }
-            ]
+                    "seq": 1,
+                    "at": at,
+                    "line_id": "ln-1",
+                    "field": "brand",
+                    "after": None,
+                },
+                {
+                    "seq": 2,
+                    "at": at,
+                    "line_id": "ln-1",
+                    "field": "brand_set",
+                    "after": True,
+                },
+            ],
         }
-        RI.carry_local_state(fresh, old)
-        assert fresh["lines"][0]["brand"] is None
-        assert fresh["lines"][0]["brand_set"] is True
+        for old in (logged, {"lines": chose}):
+            fresh = {
+                "lines": [{"id": "ln-1", "brand": "BIDFOOD", "linked_brand_id": None}]
+            }
+            rebuild_from_decisions(old, fresh)
+            assert fresh["lines"][0]["brand"] is None
+            assert fresh["lines"][0]["brand_set"] is True
 
 
 class TestEndpoints:

@@ -691,7 +691,12 @@ def _update_doc(
     # The patch mechanics live in the working-documents router; imported so an
     # MCP edit and a web edit are the same code path (ops semantics, pending
     # ops, memory signal, background sync).
-    from app.routers.working_documents import _apply_op, _trigger_sync, post_apply
+    from app.routers.working_documents import (
+        _apply_op,
+        _trigger_sync,
+        post_apply,
+        record_person_edits,
+    )
 
     doc = _load_owned_doc(
         principal, str(params.get("working_document_id") or ""), db, allowed
@@ -718,6 +723,7 @@ def _update_doc(
     from sqlalchemy.orm.attributes import flag_modified
 
     data = doc.data
+    record_person_edits(doc, data, ops, principal.user_id)
     for op in ops:
         data = _apply_op(data, op)
     post_apply(doc, data)  # server-owned derived state (see working_documents)

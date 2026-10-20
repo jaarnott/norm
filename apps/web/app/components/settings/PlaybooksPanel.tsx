@@ -159,7 +159,7 @@ export default function PlaybooksPanel() {
   if (editing) {
     const close = () => { setEditing(null); setIsNew(false); setError(null); };
     return (
-      <div style={{ maxWidth: 860 }}>
+      <div>
         <div style={{ marginBottom: 8 }}>
           <BackLink label="Back to playbooks" onClick={close} />
         </div>

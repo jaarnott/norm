@@ -73,7 +73,7 @@ def receive_editor_block(
     data["thread_id"] = doc.thread_id
 
     _attach_reference_data(data, venue_id, db, config_db)
-    _attach_suggestions(data, venue_id, db, config_db)
+    _attach_suggestions(data, venue_id, db, config_db, previous_ops=doc.pending_ops)
 
     # Persist the merged review/suggestions so the SAME WorkingDocument caches
     # them for every surface (a later web open reads this instead of re-running).
@@ -186,7 +186,11 @@ def _attach_reference_data(
 
 
 def _attach_suggestions(
-    data: dict, venue_id: str | None, db: Session, config_db: Session
+    data: dict,
+    venue_id: str | None,
+    db: Session,
+    config_db: Session,
+    previous_ops: list | None = None,
 ) -> None:
     """Run the replica review and REPLACE the draft payload (best-effort).
 
@@ -196,11 +200,11 @@ def _attach_suggestions(
     the draft's own cache (``reviewed_at``), so re-opens are free; a failure
     degrades to the plain mirror rather than failing the block.
     """
-    from app.services.invoice_review import DOC_SCHEMA, review_invoice
+    from app.services.invoice_review import review_invoice, review_is_current
 
     if not venue_id:
         return
-    if data.get("doc_schema") == DOC_SCHEMA and data.get("reviewed_at"):
+    if review_is_current(data):
         return
     try:
         from app.services.approvals import receiving_settings_for_thread
@@ -220,6 +224,25 @@ def _attach_suggestions(
             for k in ("working_document_id", "thread_id", "venue_id")
             if k in data
         }
+        # What was decided on this card comes back by replay, as on the web
+        # card (invoice_edits.rebuild_from_decisions).
+        from app.services.invoice_edits import rebuild_from_decisions
+
+        rebuild_from_decisions(data, fresh, previous_ops=previous_ops)
+        from app.services.invoice_po_reference import (
+            attach_po_reference,
+            rows_cached_for_linked_order,
+        )
+
+        if not rows_cached_for_linked_order(fresh):
+            try:
+                from app.services.received_invoice import LoadedInvoiceClient
+
+                attach_po_reference(
+                    fresh, LoadedInvoiceClient(db, config_db, venue_id)
+                )  # a replayed order choice
+            except Exception as exc:  # noqa: BLE001 — reference data
+                logger.info("receive_display: replayed order rows failed: %s", exc)
         data.clear()
         data.update(fresh)
         data.update(keep)

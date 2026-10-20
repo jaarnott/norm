@@ -33,10 +33,10 @@ def _unit_issue(code="unit_missing", line_id="ld-1", **over):
     return issue
 
 
-def _decide_unit(data, replica, pairs, *, issue, units=(), choose=None):
+def _decide_unit(data, replica, pairs, *, issue, units=()):
     """The unit rule, the comparison and the blocker link — the three steps
     a review runs — on one line."""
-    RF.settle_units(data, replica, pairs, list(units), choose, [])
+    RF.settle_units(data, replica, pairs, list(units), [])
     for rid, wid in pairs.items():  # as review._finalise_issues does
         if wid == issue.get("line_id"):
             issue.setdefault("replica_line_id", rid)
@@ -53,6 +53,10 @@ def _decide_unit(data, replica, pairs, *, issue, units=(), choose=None):
 
 
 class TestUnitBlockersCarryAUnit:
+    """Norm's own answer for a line with no unit is Norm's decision: it needs
+    no switch (owner, 19 Oct 2026, retiring "receive without a unit" and the
+    venue-unit chooser that picked from the venue's units by wording)."""
+
     def _data(self, unit=None, unit_id=None):
         return {
             "lines": [
@@ -71,12 +75,10 @@ class TestUnitBlockersCarryAUnit:
             "issues": [{"id": f"{code}:{line_id}", "code": code, "line_id": line_id}],
         }
 
-    def test_the_resolvers_answer_is_proposed_at_any_confidence(self):
-        # Norm always proposes a fix (user, 11 Oct 2026): a low or medium
-        # answer is a guess for a person, never applied without the switch.
-        # (The high case is the Oravida test below; the review's wiring of it
-        # is test_invoice_review's test_resolver_pick_is_the_blockers_fix...)
-        for confidence in ("low", "medium"):
+    def test_the_resolvers_answer_is_norms_decision_at_any_confidence(self):
+        # "Norm's answer at any confidence" (owner, 18 Oct 2026); an unsure
+        # one is listed by the morning unit check, not held for a switch.
+        for confidence in ("low", "medium", "high"):
             replica = self._replica(
                 unit_resolved={
                     "unit_id": "u-each",
@@ -93,18 +95,16 @@ class TestUnitBlockersCarryAUnit:
                 "unit_ratio": 1,
             }
             assert issue["fix"] == [fix["id"]]  # the blocker points at it
-            # A guess is for a person, or for the switch that says Norm may pick.
-            assert fix["sure"] is False and fix["gate"] == VA.RECEIVE_WITHOUT_UNIT
+            assert fix["sure"] is True and fix["gate"] is None
+            assert issue["gate"] is None
             assert fix["confidence"] == confidence
             # ...and the Replica says so: the Replica tab shows what the card does.
             assert replica["lines"][0]["linked_unit_id"] == "u-each"
 
     def test_a_unit_only_loaded_holds_is_never_the_fix(self):
-        # The Aitkens freight shape: Loaded's line had Each. Keeping it was the
-        # fix until the owner's rule (18 Oct 2026: never rely on Loaded); now
-        # Norm's chooser decides, and keeping Each is Norm's choice when it
-        # agrees.
-        each = {"id": "u-each", "name": "Each", "ratio": 1}
+        # The Aitkens freight shape: Loaded's line had Each and Norm has no
+        # answer. Loaded's unit is never kept (owner, 18 Oct 2026), and no unit
+        # is picked from the venue's list in its place.
         issue = _unit_issue()
         assert (
             _decide_unit(
@@ -112,22 +112,11 @@ class TestUnitBlockersCarryAUnit:
                 self._replica(),
                 {"rep-0": "ld-1"},
                 issue=issue,
+                units=[{"id": "u-each", "name": "Each", "ratio": 1}],
             )
             is None
         )
-        issue = _unit_issue()
-        fix = _decide_unit(
-            self._data("Each", "u-each"),
-            self._replica(),
-            {"rep-0": "ld-1"},
-            issue=issue,
-            units=[each],
-            choose=lambda ln: each,
-        )
-        assert fix["kind"] == "confirm" and fix["proposed"] == "Each"
-        assert "Norm picks 'Each'" in fix["explanation"]
-        # Loaded's draft holding a unit doesn't change the question either.
-        assert issue["gate"] == fix["gate"] == VA.RECEIVE_WITHOUT_UNIT
+        assert issue["fix"] == [] and issue["gate"] is None
 
     def test_an_unconfirmed_unit_takes_the_replicas_answer(self):
         # The invoice's unit can't be read; the resolver names a 6 pack while
@@ -144,35 +133,19 @@ class TestUnitBlockersCarryAUnit:
         assert fix["apply"]["linked_unit_id"] == "u-6pk"
         assert fix["gate"] == VA.RECEIVE_WITH_UNCONFIRMED_UNIT
 
-    def test_with_nothing_anywhere_the_venue_chooser_picks(self):
+    def test_with_nothing_anywhere_nothing_is_picked(self):
+        # The venue-unit chooser is gone: it could only land on a unit Loaded
+        # already has. No answer means no fix; build_replica marks a line whose
+        # estimate didn't come through, and the next review asks again.
         issue = _unit_issue()
         each = {"id": "u-each", "name": "Each", "ratio": 1}
+        replica = self._replica()
         fix = _decide_unit(
-            self._data(),
-            self._replica(),
-            {"rep-0": "ld-1"},
-            issue=issue,
-            units=[each],
-            choose=lambda ln: each,
+            self._data(), replica, {"rep-0": "ld-1"}, issue=issue, units=[each]
         )
-        assert fix["proposed"] == "Each"
-        assert issue["gate"] == VA.RECEIVE_WITHOUT_UNIT
-
-    def test_a_high_pick_on_a_blocked_line_still_waits_for_the_switch(self):
-        # Oravida 'Chep pallets': the resolver was sure. Sure enough to name,
-        # not to receive on without the switch — the blocker stands for that.
-        replica = self._replica(
-            unit_resolved={
-                "unit_id": "u-each",
-                "unit_name": "Each",
-                "confidence": "high",
-            }
-        )
-        fix = _decide_unit(
-            self._data(), replica, {"rep-0": "ld-1"}, issue=_unit_issue()
-        )
-        assert fix["proposed"] == "Each" and fix["confidence"] == "high"
-        assert fix["gate"] == VA.RECEIVE_WITHOUT_UNIT
+        assert fix is None
+        assert "linked_unit_id" not in replica["lines"][0]
+        assert issue["gate"] is None
 
     def test_a_create_is_its_own_fix(self):
         issue = _unit_issue()
@@ -181,7 +154,6 @@ class TestUnitBlockersCarryAUnit:
             self._replica(unit_create_name="6x6pc"),
             {"rep-0": "ld-1"},
             issue=issue,
-            choose=lambda ln: None,
         )
         assert fix["kind"] == "create_unit"
         assert fix["payload"] == {"unit_name": "6x6pc"}
@@ -191,15 +163,19 @@ class TestUnitBlockersCarryAUnit:
         # Akaroa Salmon F59751718 (dev company, 12 Oct 2026): 'Freight' was on
         # the invoice but not in Loaded's draft, so its blocker sat on the
         # replica line and nothing proposed a unit for it.
+        # Norm's answer is a decision, so it rides in with the added line
+        # (accepting the line is accepting the unit), never a guess on its own.
         replica = self._replica(
             line_id="rep-2",
             unit_resolved={"unit_id": "u-each", "unit_name": "Each"},
         )
-        fix = _decide_unit(
-            {"lines": []}, replica, {}, issue=_unit_issue(line_id="rep-2")
-        )
-        assert fix["line_id"] == "rep-2"
-        assert fix["apply"]["linked_unit_id"] == "u-each"
+        _decide_unit({"lines": []}, replica, {}, issue=_unit_issue(line_id="rep-2"))
+        rl = replica["lines"][0]
+        assert rl["linked_unit_id"] == "u-each" and rl["unit_guess"] is False
+        suggestions: list = []
+        IR._add_line_suggestions(suggestions, rl)
+        add = next(s for s in suggestions if s["kind"] == "add_line")
+        assert add["payload"]["linked_unit_id"] == "u-each"
 
 
 class TestSupplierBlockers:
@@ -1018,7 +994,9 @@ class TestTheTotalsCheckIsWhatTheSuggestionsLeave:
             ask=lambda p: {"add": [self.FREIGHT], "why": "freight is printed"},
         )
         assert IR.totals_balance(IR._all_applied(data, suggestions))
-        assert "item_unmatched:totals-0" in {i["id"] for i in issues}
+        # Nothing matched it at all (no answer came back): it says so, and the
+        # next review asks again (owner, 19 Oct 2026).
+        assert "item_answer_missing:totals-0" in {i["id"] for i in issues}
 
     def test_a_line_loadeds_draft_bills_twice_is_struck(self):
         # The copy bills only the 2 x 10.00: 23.00.
@@ -1676,6 +1654,14 @@ class TestEveryBlockerHasAnAutopilotDecision:
             "Loaded is the owner's call"
         ),
         "copy_not_checked": "a service was down: this run stops, the next retries",
+        "unit_answer_missing": (
+            "Norm's unit estimate failed twice: this run stops, the next review "
+            "asks again (owner, 19 Oct 2026: never a guess in its place)"
+        ),
+        "item_answer_missing": (
+            "Norm's stock-item match failed twice: this run stops, the next "
+            "review asks again (owner, 19 Oct 2026: never a guessed group)"
+        ),
     }
     NOT_BLOCKING = {"credit_note", "po_supplier_mismatch", "pairing_arbitrated"}
 

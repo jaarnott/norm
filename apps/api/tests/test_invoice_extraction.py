@@ -455,12 +455,14 @@ class TestFeedInvoices:
     def test_loadeds_data_fills_the_same_slots_as_a_read(self):
         out = ie.extraction_from_loaded(self.DETAIL)
         assert set(out) == set(ie.PDF_SCHEMA)
-        # The same slots a read fills, plus the mark that the unit is Loaded's
-        # own — never taken as the invoice's charge word (owner, 18 Oct 2026).
-        assert set(out["lines"][0]) - {"unit_from_loaded"} == set(
+        # The same slots a read fills, plus the marks that the unit and the
+        # brand are Loaded's own — never taken as the invoice's charge word
+        # (owner, 18 Oct 2026), never a reason to change a brand (19 Oct).
+        assert set(out["lines"][0]) - {"unit_from_loaded", "brand_from_loaded"} == set(
             ie.PDF_SCHEMA["lines"][0]
         )
         assert out["lines"][0]["unit_from_loaded"] is True
+        assert out["lines"][0]["brand_from_loaded"] is True
         assert out["supplier_name"] == "Sonoma Baking Company"
         assert out["invoice_number"] == "OMI1107031"
         assert (out["subtotal_ex_tax"], out["tax_amount"], out["total_incl_tax"]) == (

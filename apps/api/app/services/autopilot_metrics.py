@@ -479,7 +479,7 @@ def manual_edits(data: dict) -> list[str]:
     explained: dict[tuple, Any] = {}
     # ...and what NORM filled in before anyone looked. `loaded_snapshot` is
     # Loaded's raw draft, but the server then resolves the supplier variant and
-    # completes the line (invoice_po_reference.seed_working_from_loaded), so
+    # completes the line (invoice_po_reference.start_from_screen), so
     # those fields differ from the baseline without a person having touched
     # them: a Service Foods invoice received untouched was recorded as
     # hand-edited on unit, linked_unit_id, unit_ratio and linked_item_id.
@@ -703,6 +703,40 @@ def classify_outcome(data: dict, *, received: bool) -> dict:
     }
 
 
+#: How soon the same act recorded again is a retry, not a second time.
+RETRY_WITHIN_SECONDS = 3600
+
+
+def _is_retry(session, row, *, actor: str, mode: str) -> bool:
+    """The same act recorded again (a double press, a job picked up again):
+    the same person or Norm, the same way, within the hour, and nothing
+    recorded for the invoice since. Otherwise the invoice came back — Loaded
+    restored it — and went the same way again: a second time, its own row."""
+    import datetime as dt
+
+    from app.db.models import InvoiceActivityEvent
+
+    if row.actor != actor or row.mode != mode or row.created_at is None:
+        return False
+    at = row.created_at
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=dt.timezone.utc)
+    if dt.datetime.now(dt.timezone.utc) - at > dt.timedelta(
+        seconds=RETRY_WITHIN_SECONDS
+    ):
+        return False
+    stopped_since = (
+        session.query(InvoiceActivityEvent.id)
+        .filter(
+            InvoiceActivityEvent.venue_id == row.venue_id,
+            InvoiceActivityEvent.invoice_id == row.invoice_id,
+            InvoiceActivityEvent.updated_at > at,
+        )
+        .first()
+    )
+    return stopped_since is None
+
+
 def record_receive_outcome(
     db,  # noqa: ARG001 — kept for call-site symmetry; we use our OWN session
     *,
@@ -719,6 +753,7 @@ def record_receive_outcome(
     dojo: dict | None = None,
     supplier_name: str | None = None,
     extra_detail: dict | None = None,
+    level: dict | None = None,
 ) -> None:
     """Write one outcome row. Never raises, never touches the caller's session.
 
@@ -726,6 +761,10 @@ def record_receive_outcome(
     until it is rolled back, and on this path Loaded has ALREADY accepted the
     receive — a metric bug must not turn that into an error the user sees.
     ``extra_detail`` is merged into the row's ``detail`` (a delete's reason).
+
+    For the invoice activity page the row also keeps ``detail.activity`` (what
+    Norm did with the invoice) and ``detail.level`` (the receiving level in
+    force: ``level`` when given, else the person's own Preferences).
     """
     try:
         from sqlalchemy.exc import IntegrityError
@@ -754,26 +793,63 @@ def record_receive_outcome(
             # THIS receive? Powers the per-flag report ("with X on, N of your
             # invoices would have auto-received identically").
             counts["detail"]["auto"] = auto_verdict(data, received=received)
+        from app.services import invoice_activity
+
+        if data:
+            counts["detail"]["activity"] = invoice_activity.activity_from_doc(data)
 
         session = SessionLocal()
         try:
-            exists = (
+            counts["detail"]["level"] = level or invoice_activity.level_for_user(
+                session, user_id
+            )
+            latest = (
                 session.query(InvoiceAutopilotOutcome)
                 .filter(
                     InvoiceAutopilotOutcome.venue_id == venue_id,
                     InvoiceAutopilotOutcome.invoice_id == invoice_id,
                     InvoiceAutopilotOutcome.outcome == outcome,
                 )
+                .order_by(InvoiceAutopilotOutcome.occurrence.desc())
                 .first()
             )
+            exists = (
+                latest
+                if latest is not None
+                and _is_retry(session, latest, actor=actor, mode=mode)
+                else None
+            )
+            if outcome in invoice_activity.SETTLING_OUTCOMES:
+                # Its stops are over, and what the runs that stopped created
+                # goes with this outcome: stored on its row, so a later stop
+                # can't take it back.
+                try:
+                    made = invoice_activity.settle_events(session, venue_id, invoice_id)
+                    if made:
+                        target = (
+                            dict(exists.detail or {}) if exists else counts["detail"]
+                        )
+                        act = dict(target.get("activity") or {})
+                        act["created"] = invoice_activity.merge_created(
+                            act.get("created"), made
+                        )
+                        target["activity"] = act
+                        if exists:
+                            exists.detail = target
+                    if exists:
+                        session.commit()
+                except Exception:  # noqa: BLE001 — a note, never an error
+                    session.rollback()
+                    logger.info("stops not settled for %s", str(invoice_id)[:12])
             if exists:
-                return  # a retry, not a second event
+                return  # a retry of that act, not a second time
             venue = session.query(Venue).filter(Venue.id == venue_id).first()
             session.add(
                 InvoiceAutopilotOutcome(
                     organization_id=getattr(venue, "organization_id", None),
                     venue_id=venue_id,
                     invoice_id=invoice_id,
+                    occurrence=(latest.occurrence or 0) + 1 if latest else 0,
                     reference_number=data.get("reference_number"),
                     # The document is the best source, but "Can't receive" can be
                     # pressed on an invoice that was never opened as a draft — there is

@@ -228,18 +228,22 @@ def settle_items(
         rl["linked_item_id"] = pick.get("id")
         rl["item_name"] = pick.get("name")
         rl["matched_by"] = by
-        variant = line_match.supplier_variant(pick, supplier_id, rl.get("code"))
-        rl["linked_brand_id"] = (variant or {}).get("brandId") or pick.get(
-            "defaultBrandId"
-        )
+        missing = rl.get("answer_missing")
+        if isinstance(missing, dict) and "item" in missing:
+            rest = {k: v for k, v in missing.items() if k != "item"}
+            if rest:
+                rl["answer_missing"] = rest
+            else:
+                rl.pop("answer_missing", None)
         matched.add(str(rl.get("id")))
     if matched:
-        # A line this settled is no longer unmatched.
+        # A line this settled is no longer unmatched, and has its answer.
         replica["issues"] = [
             i
             for i in replica.get("issues") or []
             if not (
-                i.get("code") == "item_unmatched" and str(i.get("line_id")) in matched
+                i.get("code") in ("item_unmatched", "item_answer_missing")
+                and str(i.get("line_id")) in matched
             )
         ]
 
@@ -285,7 +289,6 @@ def settle_units(
     replica: dict,
     pairs: dict[str, str],
     units: list[dict] | None,
-    choose,
     log: list,
 ) -> None:
     """The delivered unit of every line the invoice left open.
@@ -298,12 +301,13 @@ def settle_units(
       a line Loaded has no unit for — high or medium confidence; a line still
       to be added takes only a high one.
     - A line with no unit at all (``unit_missing``) takes the resolver's answer
-      at any confidence, else the venue's chooser (``choose``, unit_guess),
-      which picks from the venue's units by the invoice's own words. Never the
-      unit Loaded's line holds (owner, 18 Oct 2026: "i've been working hard to
-      tell agents not to rely on loaded at all"). That is a guess: a person
-      accepts it, or the receive-without-a-unit switch lets Norm (the user,
-      12 Oct 2026: "with this setting on we want norm to pick the unit").
+      at any confidence: Norm's decision, not a guess. Never the unit Loaded's
+      line holds (owner, 18 Oct 2026: "i've been working hard to tell agents
+      not to rely on loaded at all"), and never a pick from the venue's units
+      by wording: that chooser was removed on 19 Oct 2026 (owner), because it
+      can only land on a unit Loaded already has. With no answer the line keeps
+      its blocker; build_replica marks one whose estimate didn't come through,
+      and the next review asks again.
     - A unit the invoice couldn't confirm (``unit_unconfirmed``) keeps the
       replica's stand-in, marked a guess for the same reason.
     """
@@ -358,9 +362,9 @@ def settle_units(
                 _unit(ur["unit_id"], ur.get("unit_name"), ur.get("unit_ratio")),
                 by="resolver",
                 why=why,
-                # Decisive enough to apply on its own only when nothing stops
-                # the receive on this line; a unit blocker keeps it a guess.
-                guess=code == "unit_missing",
+                # Norm's answer is the decision (the "receive without a unit"
+                # switch it used to wait on was retired, 19 Oct 2026).
+                guess=False,
             )
             log.append(f"line {k + 1} unit: '{rl.get('unit')}' ({why})")
             continue
@@ -378,38 +382,20 @@ def settle_units(
         if rl.get("unit_create_name"):
             continue  # the answer is a unit Loaded doesn't have yet
 
-        pick, by, why = None, None, None
         if ur and ur.get("unit_id"):
-            pick, by = (
+            _set_unit(
+                rl,
                 _unit(ur["unit_id"], ur.get("unit_name"), ur.get("unit_ratio")),
-                ("resolver"),
+                by="resolver",
+                why=(
+                    f"no unit could be read from the invoice for '{desc}' — "
+                    f"{ur.get('why') or 'the unit resolver'}"
+                ),
+                guess=False,
             )
-            why = (
-                f"no unit could be read from the invoice for '{desc}' — "
-                f"{ur.get('why') or 'the unit resolver'}"
-            )
-        elif choose is not None:
-            try:
-                # The invoice's line, never Loaded's: its unit column would
-                # hand the chooser Loaded's stored unit to match.
-                chosen = choose(rl)
-            except Exception as exc:  # noqa: BLE001 — a proposal, never an error
-                logger.info("unit chooser failed on %s: %s", rid, exc)
-                chosen = None
-            if isinstance(chosen, dict) and chosen.get("id"):
-                pick, by = (
-                    _unit(chosen["id"], chosen.get("name"), chosen.get("ratio")),
-                    ("chooser"),
-                )
-                why = f"no unit could be read from the invoice for '{desc}' — " + (
-                    chosen.get("why")
-                    or f"'{chosen.get('name')}' is the closest of the venue's units"
-                )
-        if pick is None:
-            log.append(f"line {k + 1} unit: nothing to go on — a person must choose")
+            log.append(f"line {k + 1} unit: '{rl.get('unit')}' (resolver)")
             continue
-        _set_unit(rl, pick, by=by, why=why, guess=True)
-        log.append(f"line {k + 1} unit: '{pick.get('name')}' ({by}, a guess)")
+        log.append(f"line {k + 1} unit: no answer yet — the next review asks again")
 
 
 # ---------------------------------------------------------------------------
@@ -1133,32 +1119,9 @@ def _answer_view(data: dict, replica: dict, pairs: dict[str, str]) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Rule 7 — brands
-# ---------------------------------------------------------------------------
-
-
-def settle_brands(data: dict, replica: dict, pairs: dict[str, str], log: list) -> None:
-    """Brands. The invoice isn't read for them — that would put a suggestion
-    on nearly every line for nothing — so a line's brand is the one Loaded's
-    line names; when Loaded has no record of it, the answer is a new brand
-    under that name (Loaded won't receive a line naming a brand it doesn't
-    have: Bidfood 109945346, BIOZYME)."""
-    rep_for = {str(w): str(r) for r, w in pairs.items()}
-    rep_lines = {str(rl.get("id")): rl for rl in _lines(replica)}
-    for ln in _lines(data):
-        if ln.get("struck"):
-            continue
-        brand = str(ln.get("brand") or "").strip()
-        if not brand or ln.get("linked_brand_id"):
-            continue
-        rl = rep_lines.get(rep_for.get(str(ln.get("id")), ""))
-        if rl is not None:
-            rl["brand"] = brand
-            rl["brand_create_name"] = brand
-        name = ln.get("item_name") or ln.get("description") or ln.get("code") or "line"
-        log.append(f"brand '{brand}' on '{name}' isn't in Loaded — create it")
-
+# Brands need no rule here: the Replica's brand is what the invoice prints
+# (invoice_replica.brand_fields), never the one Loaded's line names (owner,
+# 19 Oct 2026).
 
 # ---------------------------------------------------------------------------
 
@@ -1172,7 +1135,6 @@ def finish_replica(
     units: list[dict] | None = None,
     suppliers: list[dict] | None = None,
     lh=None,
-    choose_unit=None,
     totals_ask=None,
     db=None,
     extraction: dict | None = None,
@@ -1190,7 +1152,7 @@ def finish_replica(
             ),
         ),
         ("items", lambda: settle_items(data, replica, pairs, catalogue, log)),
-        ("units", lambda: settle_units(data, replica, pairs, units, choose_unit, log)),
+        ("units", lambda: settle_units(data, replica, pairs, units, log)),
         ("order", lambda: settle_order(data, replica, lh, log)),
         ("tax", lambda: settle_tax_rates(data, replica, pairs, log)),
         (
@@ -1199,7 +1161,6 @@ def finish_replica(
                 data, replica, pairs, extraction, totals_ask, db, log
             ),
         ),
-        ("brands", lambda: settle_brands(data, replica, pairs, log)),
     )
     for name, rule in rules:
         try:

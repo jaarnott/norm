@@ -13,9 +13,11 @@ How (14 Oct 2026, replacing one batched choose-from-the-list call):
   is actually sold in (this supplier's listing first), read the supplier's
   price level off the invoice, price each real format against it. One call
   per line, in parallel; the answer is cached per invoice line.
-- Code, not the model, turns that size into a venue unit — an exact match on
-  type and amount ('1 kg' → Kilo, '454 g' → 454 Grams). Asked to pick from
-  379 units by id, the model lost 'Litre' for 'Coconut Milk 1L'.
+- Code, not the model, turns that size into a venue unit, with the one check
+  every step uses (``invoice_units.match_unit_record``): '1 kg' → Kilo,
+  '454 g' → 454 Grams, and a pack only to the same pack ('3x5kg' is never
+  '15 KG'). Asked to pick from 379 units by id, the model lost 'Litre' for
+  'Coconut Milk 1L'.
 - Measured on 45 products whose size the invoice didn't print (sizes printed
   elsewhere on the page): 93% exact, against ~85% for the six Cook Brothers
   venues' own Loaded set-ups of the same products. Its confidence is
@@ -26,8 +28,11 @@ Doctrine kept from the call this replaces:
   ``create_name`` (the existing create-unit path, gated), never a link.
 - Packaging-word units are never answers.
 - Category rules invalidate a type-violating answer.
-- Any failure returns no answer for that line — the caller falls back exactly
-  as if this module didn't exist.
+- A call that fails, or an answer that isn't a usable size, is asked once
+  more. A line still without an answer is left out; the Replica marks it
+  "Norm's answer didn't come through" and the next review asks again (owner,
+  19 Oct 2026). Only usable answers are cached, so a failure never repeats
+  from the cache.
 """
 
 from __future__ import annotations
@@ -37,10 +42,12 @@ import logging
 import re
 
 from app.services.invoice_units import (
+    CATEGORY_UNIT_TYPES,
     count_first,
     is_charge_line,
     is_multipack,
     is_packaging_word,
+    match_unit_record,
     parse_unit,
     unit_type_allowed,
 )
@@ -113,10 +120,52 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _replace_cached(db, key: str, ans: dict) -> None:
+    """Put a usable answer where a cached one the current checks refuse
+    sits. The cache is insert-only on its key, so the refused answer would
+    otherwise be read, refused and asked around on every review."""
+    from sqlalchemy.orm import Session as _Session
+
+    from app.db.models import DocumentExtraction
+
+    try:
+        own = _Session(bind=db.get_bind())
+    except Exception:  # noqa: BLE001 — the cache is best-effort
+        return
+    try:
+        own.query(DocumentExtraction).filter(
+            DocumentExtraction.cache_key == key
+        ).delete()
+        own.add(
+            DocumentExtraction(
+                cache_key=key, connector="norm", action="unit_estimate", data=ans
+            )
+        )
+        own.commit()
+    except Exception as exc:  # noqa: BLE001 — the cache is best-effort
+        logger.debug("unit estimate cache replace skipped: %s", exc)
+        own.rollback()
+    finally:
+        own.close()
+
+
+def _size_problem(ans: dict) -> str | None:
+    """Why an estimate's size can't be booked, or None when it can."""
+    if _usable((ans or {}).get("size")):
+        return None
+    return "it isn't a size a unit can be made from (like 5kg, 750ml, 12 pack or each)"
+
+
+def _usable(size: object) -> bool:
+    """A size the estimate can stand on: measurable, and not a packaging word
+    ('pack' measures as a count of one but says nothing)."""
+    return _measure(size) is not None and not is_packaging_word(size)
+
+
 def _measure(text: object) -> tuple[str, float] | None:
     """(type, amount in g / mL / count) for a size or a unit name — a
     multipack ('6x750mL', '4x6 pack') as its total."""
-    t = count_first(str(text or "").strip())
+    t = count_first(str(text or "").replace("×", "x").strip())
     if not t:
         return None
     if t.lower() in ("each", "ea"):
@@ -129,45 +178,13 @@ def _measure(text: object) -> tuple[str, float] | None:
     return (p[0], float(p[1])) if p else None
 
 
-def match_unit(size: object, units: list[dict]) -> dict | None:
-    """The venue unit that IS this size: same type, same amount. Of several,
-    the one named as the size was written, then a base unit (Kilo, Litre,
-    Each), then the shortest name. Never a looser 'equivalent' — '1 L' is
-    not 'Each'."""
-    want = _measure(size)
-    if want is None:
-        return None
-    hits = []
-    for u in units:
-        got = _measure(u.get("name"))
-        if (
-            got
-            and got[0] == want[0]
-            and abs(got[1] - want[1]) <= 0.001 * max(want[1], 1)
-        ):
-            hits.append(u)
-    if not hits:
-        return None
-
-    def norm(x: object) -> str:
-        return re.sub(r"\s+", "", str(x or "").lower())
-
-    return sorted(
-        hits,
-        key=lambda u: (
-            norm(u.get("name")) != norm(size),
-            any(ch.isdigit() for ch in str(u.get("name") or "")),
-            len(str(u.get("name") or "")),
-        ),
-    )[0]
-
-
 def unit_name_for(size: object) -> str | None:
     """A unit name for a size the venue doesn't have yet, in the venues' own
     style ('454 Grams', '2.5 KG', '750 mL', '4.5 L', '24 Pack')."""
-    raw = str(size or "").strip()
+    raw = str(size or "").replace("×", "x").strip()
     if is_multipack(raw):
-        return raw
+        # Created as the pack it is, count first ('700ml x 6' → '6x700ml').
+        return count_first(raw)
     m = _measure(raw)
     if m is None:
         return None
@@ -263,8 +280,14 @@ def _cache_key(prompt: str) -> str:
     )
 
 
-def _estimate_all(prompts: dict[str, str], ask, db) -> dict[str, dict]:
-    """{line_id: answer} — cached answers first, the rest in parallel."""
+def _estimate_all(prompts: dict[str, str], ask, db, problem=None) -> dict[str, dict]:
+    """{line_id: answer} — cached answers first, the rest in parallel.
+
+    ``problem(line_id, answer)`` names what makes an answer unusable (None
+    when it is fine). An unusable answer is asked once more, with the reason,
+    and is never cached: a failure must not come back from the cache on the
+    next review (owner, 19 Oct 2026)."""
+    problem = problem or (lambda _lid, ans: _size_problem(ans))
     from concurrent.futures import ThreadPoolExecutor
     import contextvars
 
@@ -275,23 +298,42 @@ def _estimate_all(prompts: dict[str, str], ask, db) -> dict[str, dict]:
 
     out: dict[str, dict] = {}
     todo: list[tuple[str, str]] = []
+    stale: set[str] = set()  # cached under older checks, now refused
     for lid, prompt in prompts.items():
         cached = (
             _extraction_cache_get(db, _cache_key(prompt)) if db is not None else None
         )
-        if isinstance(cached, dict):
+        if isinstance(cached, dict) and problem(lid, cached) is None:
             out[lid] = cached
         else:
+            if isinstance(cached, dict):
+                stale.add(lid)
             todo.append((lid, prompt))
 
     def one(item: tuple[str, str]) -> tuple[str, dict]:
         lid, prompt = item
-        try:
-            ans = ask(prompt)
-        except Exception as exc:  # noqa: BLE001 — an answer is never worth an error
-            logger.info("unit estimate failed for %s: %s", lid, exc)
-            ans = {}
-        return lid, ans if isinstance(ans, dict) else {}
+        ans: dict = {}
+        question = prompt
+        # Twice at most: call_llm already retries a dropped connection, so
+        # this covers an answer that couldn't be read or couldn't be used.
+        for attempt in (1, 2):
+            try:
+                got = ask(question)
+            except Exception as exc:  # noqa: BLE001 — an answer is never worth an error
+                logger.info(
+                    "unit estimate failed for %s (try %d): %s", lid, attempt, exc
+                )
+                got = {}
+            ans = got if isinstance(got, dict) else {}
+            why_not = problem(lid, ans)
+            if why_not is None:
+                break
+            if ans.get("size"):
+                question = (
+                    f"{prompt}\n\nYour last answer, '{ans.get('size')}', can't be "
+                    f"used: {why_not}. Answer again."
+                )
+        return lid, ans
 
     if todo:
         # Each worker keeps the caller's organisation (usage is counted to it).
@@ -303,10 +345,13 @@ def _estimate_all(prompts: dict[str, str], ask, db) -> dict[str, dict]:
                 out[lid] = ans
                 # Saved there and then: a batch cut off later keeps every
                 # estimate it already paid for.
-                if db is not None and _measure(ans.get("size")) is not None:
-                    _extraction_cache_put_durable(
-                        db, _cache_key(prompts[lid]), "norm", "unit_estimate", ans
-                    )
+                if db is not None and problem(lid, ans) is None:
+                    if lid in stale:
+                        _replace_cached(db, _cache_key(prompts[lid]), ans)
+                    else:
+                        _extraction_cache_put_durable(
+                            db, _cache_key(prompts[lid]), "norm", "unit_estimate", ans
+                        )
     return out
 
 
@@ -328,8 +373,8 @@ def resolve_units(
     ``all_lines`` are dicts carrying at least id/description/code/quantity/
     unit/unit_of_measure/unit_price; ``units`` is the venue's live unit list.
     ``ask_llm`` (tests) takes one line's prompt and returns
-    ``{"size", "confidence", "why"}``. A line with no usable answer is left
-    out — the caller falls back exactly as before.
+    ``{"size", "confidence", "why"}``. A line with no usable answer after one
+    retry is left out; the Replica marks it, and the next review asks again.
     """
     ids = [str(i) for i in qualifying_ids]
     live = [
@@ -375,7 +420,27 @@ def resolve_units(
                 (evidence_by_line or {}).get(lid),
                 country,
             )
-    asked = _estimate_all(prompts, ask_llm or _default_ask(db), db) if prompts else {}
+
+    def problem(lid: str, ans: dict) -> str | None:
+        # The category rule below, applied while there is still a chance to
+        # ask again: a beverage is never a weight, packaging is a count.
+        why_not = _size_problem(ans)
+        if why_not:
+            return why_not
+        category = (category_by_line or {}).get(lid)
+        kind = _measure(ans.get("size"))[0]
+        if category and not unit_type_allowed(category, kind):
+            allowed = " or ".join(
+                sorted(CATEGORY_UNIT_TYPES.get(str(category).strip().lower(), ()))
+            )
+            return f"a {category} product is measured by {allowed}, not by {kind}"
+        return None
+
+    asked = (
+        _estimate_all(prompts, ask_llm or _default_ask(db), db, problem)
+        if prompts
+        else {}
+    )
     answers = {lid: asked.get(first, {}) for lid, first in asked_as.items()}
     for lid in charges:
         answers[lid] = {
@@ -387,12 +452,14 @@ def resolve_units(
     out: dict[str, dict] = {}
     for lid, ans in answers.items():
         size = ans.get("size")
-        if _measure(size) is None or is_packaging_word(size):
+        if not _usable(size):
             continue
         conf = str(ans.get("confidence") or "").strip().lower()
         if conf not in _CONFIDENCE:
             conf = "low"
-        unit = match_unit(size, live)
+        # The same check as every other step (invoice_units.match_unit_record):
+        # a pack matches only the same pack, never a single size of its total.
+        unit = match_unit_record(size, live)
         create_name = None if unit is not None else unit_name_for(size)
         # Category rules trump the model: a type its category forbids is
         # invalid, whatever the confidence.

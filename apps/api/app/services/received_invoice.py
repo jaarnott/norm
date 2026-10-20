@@ -1260,6 +1260,10 @@ def build_received_invoice_data(detail: dict) -> dict:
         # skips it entirely — costs nothing, /draft fetches the detail anyway.
         "loaded_invoice_fingerprint": invoice_fingerprint(detail),
         "lines": lines,
+        # A person's own changes on the card, kept so a rebuild from Loaded
+        # replays them (services/invoice_edits). Present from the start, so a
+        # card is never mistaken for one from before the record existed.
+        "edits": [],
     }
     # Pristine mirror of what Loaded returned, refreshed on every draft open
     # (admin-only "Loaded view" toggle in the editor): local edits mutate the
@@ -1309,6 +1313,12 @@ _SNAPSHOT_LINE_KEYS = (
     "quantity_ordered",
     "item_is_new",
     "unit_is_new",
+    # What the screen shows, as records: the line's own links, else what it
+    # resolves from the supplier code. A fresh card opens on these
+    # (invoice_po_reference.start_from_screen).
+    "screen_item_id",
+    "screen_unit_id",
+    "screen_unit_ratio",
 )
 
 
@@ -1325,52 +1335,31 @@ def loaded_snapshot(shaped: dict) -> dict:
     }
 
 
-def carry_local_state(fresh: dict, old: dict) -> None:
-    """Copy LOCAL editor state from an old received_invoice doc payload onto a
-    freshly-rebuilt one (in place).
+def card_is_open():
+    """SQL: a received_invoice card neither received nor deleted. The cards
+    for invoices Norm handled are kept (invoice_activity.keep_review), so the
+    queries over a venue's cards filter in the database, never in Python."""
+    from sqlalchemy import and_, func
 
-    Local state = things that exist only in the working document until receive:
-    the suggestion action log, struck flags, item links (local until the
-    receive PUT), and lines the editor added (id prefix "new-"). Used by
-    _reshape_draft_after_write AND the batch fan-out's doc reuse — replacing
-    doc.data wholesale without this silently discards the user's accepted
-    edits. reset-validation deliberately does NOT call it (from-scratch).
-    """
-    for k in ("actioned_suggestions", "suggestion_actions"):
-        if k in old:
-            fresh[k] = old[k]
-    old_lines = old.get("lines") or []
-    fresh_by_id = {ln.get("id"): ln for ln in fresh.get("lines") or [] if ln.get("id")}
-    for old_ln in old_lines:
-        fresh_ln = fresh_by_id.get(old_ln.get("id"))
-        if fresh_ln is None:
-            if str(old_ln.get("id") or "").startswith("new-"):
-                fresh.setdefault("lines", []).append(old_ln)
-            continue
-        if old_ln.get("struck"):
-            fresh_ln["struck"] = True
-        # A brand the person chose (or cleared) outranks Loaded's re-read.
-        if old_ln.get("brand_set"):
-            fresh_ln["brand_set"] = True
-            fresh_ln["brand"] = old_ln.get("brand")
-            fresh_ln["linked_brand_id"] = old_ln.get("linked_brand_id")
-        # The three links, each with the display fields that travel with it.
-        # PEERS, not nested: the unit carry used to sit inside the item branch,
-        # so a unit created on a line whose item link never changed was thrown
-        # away by the next reshape — and each of these cost a real Loaded write
-        # the user already made. Losing one silently restores the "must be
-        # created in Loaded before receiving" refusal it had just cleared.
-        for link, extras in (
-            ("linked_item_id", ("item_name",)),
-            ("linked_unit_id", ("unit", "unit_ratio")),
-            ("linked_brand_id", ("brand",)),
-        ):
-            if not old_ln.get(link) or fresh_ln.get(link):
-                continue
-            fresh_ln[link] = old_ln[link]
-            for k in extras:
-                if old_ln.get(k) is not None:
-                    fresh_ln[k] = old_ln[k]
+    from app.db.models import WorkingDocument
+
+    return and_(
+        func.coalesce(WorkingDocument.data["is_received"].as_string(), "false")
+        != "true",
+        func.coalesce(WorkingDocument.data["is_deleted"].as_string(), "false")
+        != "true",
+    )
+
+
+def cards_for_invoice(db: Session, venue_id: str, invoice_id: str):
+    """The query for one invoice's received_invoice cards, in any state."""
+    from app.db.models import WorkingDocument
+
+    return db.query(WorkingDocument).filter(
+        WorkingDocument.doc_type == "received_invoice",
+        WorkingDocument.venue_id == venue_id,
+        WorkingDocument.external_ref["invoice_id"].as_string() == str(invoice_id),
+    )
 
 
 def open_drafts(db: Session, venue_id: str, invoice_id: str) -> list:
@@ -1380,15 +1369,10 @@ def open_drafts(db: Session, venue_id: str, invoice_id: str) -> list:
     changes must land on ALL of them so any bound card reads the same truth.
     Canonical = a doc that already carries a review, else the newest.
     """
-    from app.db.models import WorkingDocument
-
     docs = [
         d
-        for d in db.query(WorkingDocument)
-        .filter(
-            WorkingDocument.doc_type == "received_invoice",
-            WorkingDocument.venue_id == venue_id,
-        )
+        for d in cards_for_invoice(db, venue_id, invoice_id)
+        .filter(card_is_open())
         .all()
         if (d.external_ref or {}).get("invoice_id") == invoice_id
         and not (d.data or {}).get("is_received")
@@ -1682,11 +1666,20 @@ def invalidate_conflicting_drafts(
     from app.db.models import WorkingDocument
 
     try:
+        from sqlalchemy import or_
+
+        # The acted invoice's cards in any state, and the venue's OPEN cards
+        # (the received and deleted ones Norm keeps are never siblings).
         docs = (
             db.query(WorkingDocument)
             .filter(
                 WorkingDocument.doc_type == "received_invoice",
                 WorkingDocument.venue_id == venue_id,
+                or_(
+                    WorkingDocument.external_ref["invoice_id"].as_string()
+                    == str(invoice_id),
+                    card_is_open(),
+                ),
             )
             .all()
         )
@@ -1739,11 +1732,13 @@ def invalidate_conflicting_drafts(
             }
             sib_pos |= _suggested_po_refs(data.get("suggestions"))
             if duplicate or (po_set and po_set & sib_pos):
-                data["suggestions"] = []
                 # The cached-review marker: clearing reviewed_at makes the
                 # card's next open re-run the review against the fresh feed.
+                # Its suggestions and blockers stay until then: the decisions
+                # made on them are carried by the next review, which needs the
+                # questions they answered (19 Oct 2026 — clearing them lost
+                # every accepted suggestion on the card).
                 data["reviewed_at"] = None
-                data["issues"] = []
                 d.data = data
                 d.version += 1
                 flag_modified(d, "data")

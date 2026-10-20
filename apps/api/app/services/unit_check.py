@@ -97,9 +97,9 @@ def judge_line(
     The invoice decides when it shows a size. When it shows none, Norm's
     catalogue answer decides. A unit the venue doesn't have can't be proposed
     (the line is then left for the next receive to create it). With neither,
-    the unit booked was Norm's unsure estimate (``estimate``) or its pick from
-    the venue's units: a line to confirm — unless the invoice's own charge word
-    decided it.
+    the unit booked was Norm's unsure estimate (``estimate``) or a person's
+    choice: a line to confirm — unless the invoice's own charge word decided
+    it.
     ``has_copy`` False is an Ordermentum invoice: nothing printed to read, so
     ``printed`` (built from Loaded's figures) never confirms a unit."""
     from app.services.invoice_replica import _resolve_unit_record
@@ -148,8 +148,8 @@ def judge_line(
         )
     else:
         reason = (
-            "The invoice shows no size, and Norm had no estimate for this product, "
-            f"so it went in as '{booked_name}', the closest of the venue's units."
+            "The invoice shows no size and Norm had no estimate for this product: "
+            f"it went in as '{booked_name}'."
         )
     return {
         "kind": "confirm",
@@ -483,8 +483,8 @@ def run_unit_check(
 
 
 def _email(db, run) -> None:
-    """Tell the admins the run finished, with a link to the Dojo page. Never
-    raises."""
+    """Tell the admins the run finished, with a link to the Daily unit check
+    page. Never raises."""
     from app.config import settings
     from app.db.models import User
     from app.services.email_service import send_system_email
@@ -511,6 +511,7 @@ def _email(db, run) -> None:
                 "corrections": s.get("corrections", 0),
                 "to_confirm": s.get("to_confirm", 0),
                 "venues": [v for v in s.get("venues") or [] if v.get("invoices")],
+                # Settings → Invoice Dojo → Daily unit check.
                 "link": f"{settings.app_url}/app?open=unit-check",
             },
             db,

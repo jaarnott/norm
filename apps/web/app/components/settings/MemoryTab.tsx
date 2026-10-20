@@ -151,7 +151,7 @@ export default function MemoryTab() {
     </>
   );
 
-  if (!loaded) return <div style={{ maxWidth: 720, lineHeight: 1.45 }}>{header}<PageState kind="loading" title="Loading…" /></div>;
+  if (!loaded) return <div style={{ lineHeight: 1.45 }}>{header}<PageState kind="loading" title="Loading…" /></div>;
 
   const candidates = memories.filter((m) => m.status === 'candidate');
   const inUse = newestFirst(memories.filter((m) => m.status === 'active'), notes);
@@ -260,7 +260,7 @@ export default function MemoryTab() {
   );
 
   return (
-    <div data-testid="what-norm-learned" style={{ maxWidth: 720, lineHeight: 1.45 }}>
+    <div data-testid="what-norm-learned" style={{ lineHeight: 1.45 }}>
       {header}
 
       {error && <div style={{ marginBottom: 16 }}><PageState kind="error" title={error} /></div>}

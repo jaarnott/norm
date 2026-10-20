@@ -1,4 +1,4 @@
-"""The cannot-receive endpoint and the autopilot-confidence report.
+"""The autopilot-confidence report.
 
 The report exists to answer one question honestly — "would autopilot have been
 right?" — so the tests here mostly pin what must be EXCLUDED from the rates:
@@ -7,28 +7,15 @@ Norm's own self-fulfilling receives, and invoices nobody ever reviewed.
 
 from datetime import datetime, timezone
 
-import pytest
 
 from app.db.models import InvoiceAutopilotOutcome
 
-from .conftest import _make_organization, _make_venue, _make_venue_access
-from .supplier_fakes import bind_sessions
+from .conftest import _make_organization, _make_venue
 
 
 def _venue(db, name="Bessie"):
     org = _make_organization(db, name=f"{name} Co")
     return _make_venue(db, name=name, organization_id=org.id)
-
-
-@pytest.fixture()
-def bind_recorder(db_session, monkeypatch):
-    """Let the recorder write into the test's transaction.
-
-    In production it deliberately opens its OWN session — a poisoned session
-    must never turn a completed receive into an error — but that would be a
-    different transaction here, unable to see db_session's uncommitted venue.
-    """
-    return bind_sessions(monkeypatch, db_session, "SessionLocal")
 
 
 def _row(db, venue, outcome, **over):
@@ -146,153 +133,6 @@ class TestReport:
         assert names["Hancocks"]["autopilot_ready"] == 0.0
         # Normalised so the same field on different lines aggregates.
         assert body["top_missed_fields"][0] == {"field": "line.unit_cost", "count": 1}
-
-
-class TestCannotReceive:
-    def test_stages_records_and_never_receives(
-        self,
-        client,
-        manager_user,
-        manager_headers,
-        db_session,
-        monkeypatch,
-        bind_recorder,
-    ):
-        """Also: pressing "Can't receive" on an invoice that was never opened
-        has no working document to read the supplier from, so the row used to
-        land in the report's "(no supplier)" bucket — losing exactly the
-        attribution a supplier's training history is for. Staging has already
-        resolved it, and the row takes it from there."""
-        v = _venue(db_session, "Goose")
-        # The button acts only at a venue the presser can open.
-        _make_venue_access(db_session, manager_user, v)
-        staged = {}
-
-        def fake_stage(db, venue_id, invoice_id, *, draft):
-            staged["draft"] = draft
-            return {
-                "sample_id": "s-1",
-                "spec_id": "sp-1",
-                "spec_name": "Bidfood",
-                "created_spec": False,
-                "already_in_dojo": False,
-            }
-
-        monkeypatch.setattr("app.services.spec_dojo.stage_invoice_sample", fake_stage)
-        # Can't-receive now hands every press to the sensei, including repeats.
-        monkeypatch.setattr(
-            "app.services.sensei_runner.start_analysis",
-            lambda sid, fb=None: staged.setdefault("analysed", sid) and "job" or "job",
-        )
-        # A Loaded receive here would be a bug — there is no client to call.
-        monkeypatch.setattr(
-            "app.services.received_invoice.do_receive",
-            lambda *a, **k: pytest.fail("must not receive"),
-        )
-        res = client.post(
-            "/api/invoice-fixes/cannot-receive",
-            headers=manager_headers,
-            json={"venue_id": v.id, "invoice_id": "inv-x", "reason": "unit is wrong"},
-        )
-        assert res.status_code == 200, res.text
-        body = res.json()
-        assert body["staged"] is True
-        # The card branches on these — a repeat press must not claim it filed
-        # something, and a copy-less invoice must not claim it at all.
-        assert body["already_in_dojo"] is False
-        # A press is a training request, not just a filing.
-        assert staged["analysed"] == "s-1"
-        # NOT a draft. Drafts are the Dojo page's "somebody expanded this row"
-        # state and are hidden from "awaiting review", so filing a human's
-        # explicit verdict that way made the button look like it did nothing.
-        assert staged["draft"] is False
-
-        row = (
-            db_session.query(InvoiceAutopilotOutcome)
-            .filter(InvoiceAutopilotOutcome.invoice_id == "inv-x")
-            .first()
-        )
-        assert row is not None
-        assert row.outcome == "dojo" and row.received is False
-        assert row.detail["dojo"]["reason"] == "unit is wrong"
-        assert row.supplier_name == "Bidfood"  # from staging; there is no draft
-
-    def test_an_invoice_with_no_copy_still_records_the_verdict(
-        self,
-        client,
-        manager_user,
-        manager_headers,
-        db_session,
-        monkeypatch,
-        bind_recorder,
-    ):
-        # It cannot be staged, but the human's verdict IS the measurement —
-        # losing it because Loaded has no PDF would defeat the feature.
-        v = _venue(db_session, "Zeppa")
-        # The button acts only at a venue the presser can open.
-        _make_venue_access(db_session, manager_user, v)
-
-        def no_copy(*a, **k):
-            raise RuntimeError("no invoice copy attached — nothing to add")
-
-        monkeypatch.setattr("app.services.spec_dojo.stage_invoice_sample", no_copy)
-        res = client.post(
-            "/api/invoice-fixes/cannot-receive",
-            headers=manager_headers,
-            json={"venue_id": v.id, "invoice_id": "inv-nopdf"},
-        )
-        assert res.status_code == 200
-        assert res.json()["staged"] is False
-        row = (
-            db_session.query(InvoiceAutopilotOutcome)
-            .filter(InvoiceAutopilotOutcome.invoice_id == "inv-nopdf")
-            .first()
-        )
-        assert row.outcome == "dojo" and row.detail["dojo"]["staged"] is False
-
-
-class TestAFiledInvoiceIsVisible:
-    """The bug behind "Can't receive isn't adding invoices to the dojo".
-
-    Filing worked — a sample row was created every time. But it was created as
-    a DRAFT, and the Dojo page hides drafts: they are excluded from "awaiting
-    review" and never earn the green "in dojo" chip, because a draft means
-    "somebody expanded this row", not "a human filed this for training". The
-    invoice therefore sat in the outstanding list looking exactly as before.
-    """
-
-    def _sample(self, db, spec, *, draft):
-        from app.db.config_models import SupplierSpecSample
-
-        s = SupplierSpecSample(
-            spec_id=spec.id,
-            label=f"draft-{draft}.pdf",
-            pdf_bytes=b"%PDF-",
-            expected=None,  # no baseline yet — this is what "awaiting review" means
-            draft=draft,
-        )
-        db.add(s)
-        db.commit()
-        return s
-
-    def test_a_filed_sample_reaches_awaiting_review(
-        self, client, admin_headers, db_session
-    ):
-        from app.db.config_models import SupplierInvoiceSpec
-
-        spec = SupplierInvoiceSpec(name="Filed Co", aliases=[], instructions="")
-        db_session.add(spec)
-        db_session.commit()
-        filed = self._sample(db_session, spec, draft=False)
-        hidden = self._sample(db_session, spec, draft=True)
-
-        res = client.get(
-            "/api/supplier-invoice-specs/dojo/overview", headers=admin_headers
-        )
-        assert res.status_code == 200, res.text
-        ids = {r["id"] for r in res.json()["pending_review"]}
-        assert filed.id in ids, "a filed invoice must be visible in the dojo"
-        assert hidden.id not in ids, "an incidental draft must stay hidden"
 
 
 class TestFlagsAndAutoVerdicts:

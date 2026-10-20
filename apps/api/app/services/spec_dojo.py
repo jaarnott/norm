@@ -1725,12 +1725,17 @@ _REPLICA_HEADER_FIELDS = (
 def prefetch_replica_reference(db: Session, config_db: Session, venue_id: str) -> dict:
     """One venue's replica reference data, fetched ONCE for a batch run —
     exactly the kwargs ``build_replica`` would otherwise fetch per sample
-    (catalogue + units + suppliers + tax + the 400-day received feed).
+    (catalogue + units + suppliers + tax + brands + the 400-day received
+    feed).
     Best-effort: anything that fails is simply omitted and the builder
     self-fetches it per sample as before."""
     out: dict = {}
     try:
-        from app.services.invoice_replica import _received_feed, sales_tax_rates
+        from app.services.invoice_replica import (
+            _received_feed,
+            fetch_brands,
+            sales_tax_rates,
+        )
         from app.services.item_match import _fetch_raw_stock_items
         from app.services.received_invoice import LoadedInvoiceClient
 
@@ -1743,6 +1748,8 @@ def prefetch_replica_reference(db: Session, config_db: Session, venue_id: str) -
             "suppliers": suppliers if isinstance(suppliers, list) else [],
             "tax_rates": sales_tax_rates(lh),
             "received_feed": _received_feed(lh),
+            # The brands the invoices print are matched to these by name.
+            "brands": fetch_brands(lh),
         }
     except Exception as exc:  # noqa: BLE001 — prefetch is an optimization only
         logger.info("replica reference prefetch failed for %s: %s", venue_id, exc)

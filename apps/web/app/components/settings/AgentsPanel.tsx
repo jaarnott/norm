@@ -102,7 +102,7 @@ export default function AgentsPanel() {
     // The agent's own Apps, then Norm Core (shared by every agent).
     const apps = [...appsFor(editing.slug), ...coreApps()];
     return (
-      <div style={{ maxWidth: 800, lineHeight: 1.45 }}>
+      <div style={{ lineHeight: 1.45 }}>
         <div style={{ marginBottom: 8 }}>
           <BackLink label="Back to agents" onClick={() => setEditing(null)} />
         </div>

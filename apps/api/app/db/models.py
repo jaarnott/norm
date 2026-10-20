@@ -1253,11 +1253,18 @@ class InvoiceAutopilotOutcome(Base):
 
     __tablename__ = "invoice_autopilot_outcomes"
     __table_args__ = (
-        # Loaded receives an invoice once, so a second row with the same
-        # outcome is always a retry — make double-counting impossible rather
-        # than hope the pre-check wins the race.
+        # One row per time it happened: Loaded can restore an invoice that
+        # was received or deleted, and it can go the same way again
+        # (``occurrence`` 1, 2, …). A retry of the same act records nothing
+        # (record_receive_outcome decides), and the key makes a race between
+        # two writes of one occurrence impossible rather than hoping the
+        # pre-check wins it.
         UniqueConstraint(
-            "venue_id", "invoice_id", "outcome", name="uq_autopilot_outcome"
+            "venue_id",
+            "invoice_id",
+            "outcome",
+            "occurrence",
+            name="uq_autopilot_outcome",
         ),
     )
 
@@ -1278,6 +1285,9 @@ class InvoiceAutopilotOutcome(Base):
 
     #: clean | no_suggestions | edited | not_reviewed | dojo
     outcome = Column(String, nullable=False)
+    #: 0 the first time this invoice went this way; 1, 2, … each time it came
+    #: back (restored in Loaded) and went the same way again.
+    occurrence = Column(Integer, nullable=False, default=0, server_default="0")
     received = Column(Boolean, nullable=False, default=False)
     #: interactive | mcp_card | autopilot | approve_fixes
     mode = Column(String, nullable=False)
@@ -1951,3 +1961,40 @@ def _stamp_thread_organization(mapper, connection, target):
         ]
         want = requested_org.get()
         target.organization_id = want if want in rows else (rows[0] if rows else None)
+
+
+class InvoiceActivityEvent(Base):
+    """An invoice Norm handled that neither went in nor was deleted: it stopped
+    for a reason, or is waiting for a person to approve it. Received and
+    deleted invoices are already recorded once each in
+    ``invoice_autopilot_outcomes``; this holds the rest, so the invoice activity
+    page can show every invoice Norm touched (owner, 19 Oct 2026).
+
+    One row per invoice and kind, refreshed each time the invoice is reviewed
+    again: ``created_at`` is when it first stopped, ``updated_at`` the latest.
+    """
+
+    __tablename__ = "invoice_activity_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "venue_id", "invoice_id", "kind", name="uq_invoice_activity_event"
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(String, nullable=True, index=True)
+    venue_id = Column(String, nullable=False, index=True)
+    invoice_id = Column(String, nullable=False, index=True)
+    reference_number = Column(String, nullable=True)
+    supplier_name = Column(String, nullable=True)
+    total = Column(Numeric(14, 2), nullable=True)
+    #: stopped (Norm couldn't finish it) | waiting (ready, a person approves)
+    #: | failed (Loaded refused the receive, or the review itself failed)
+    kind = Column(String, nullable=False)
+    #: The run that handled it: autopilot | approve_fixes | approve_all.
+    mode = Column(String, nullable=True)
+    actor = Column(String, nullable=False, default="norm")
+    #: {reasons: [...], gates_needed: [...], level: {...}, activity: {...}}
+    detail = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now, index=True)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)

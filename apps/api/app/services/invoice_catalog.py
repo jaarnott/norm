@@ -138,51 +138,15 @@ def stock_items(venue_id: str, db: Session, config_db: Session) -> list[dict]:
 
 
 def resolve_unit(lh, proposed: str) -> dict | None:
-    """Find the Loaded unit whose name matches the proposed unit.
-
-    Exact name first; for a simple (non-multipack) unit fall back to a
-    guideline-equivalent match by (type, magnitude). A MULTIPACK proposed name
-    ('5x3kg') matches by exact name ONLY — a ratio-equal but differently-named
-    unit ('15 KG') is a different pack, so an unmatched multipack is created.
-    """
-    from app.services.invoice_units import (
-        _unit_norm,
-        is_multipack,
-        is_packaging_word,
-        multipack_equal,
-        parse_unit,
-    )
+    """The Loaded unit that IS the proposed unit, read from a fresh unit list
+    (creates and the read-back after one need it fresh): the one shared check,
+    ``invoice_units.match_unit_record``. A pack ('5x3kg') matches only the same
+    pack, never a single size of the same total ('15 KG'), so an unmatched pack
+    is created."""
+    from app.services.invoice_units import match_unit_record
 
     rows = lh.get("/1.0/stock/internal/units")
-    rows = [u for u in (rows or []) if not u.get("datestampDeleted")]
-    for u in rows:
-        # Case/whitespace-insensitive, but dots kept — the alnum norm used to
-        # let '1.9 KG' name-match '19 KG'.
-        if _unit_norm(u.get("name")) == _unit_norm(proposed):
-            return u
-    if is_multipack(proposed):
-        # Component-equivalence, not fuzzier: '6x1L' resolves to an existing
-        # '6 X 1 Litre' (same count, same inner size) instead of creating a
-        # near-duplicate unit. A ratio-equal but differently-SHAPED pack
-        # ('24 pack' vs '4x6 pack') still does NOT match.
-        for u in rows:
-            if multipack_equal(u.get("name"), proposed):
-                return u
-        return None
-    target = parse_unit(proposed)
-    if target:
-        for u in rows:
-            # Same guard as the replica's _resolve_unit_record: 'EA' and a
-            # unit literally named 'PACK' both parse as a count of 1, but
-            # magnitude equivalence must not hand an each-line a packaging
-            # word (Trents 5973784, 18 Aug 2026). Packaging-named units are
-            # reachable only by printing their name exactly (the tier above).
-            if is_packaging_word(u.get("name")):
-                continue
-            pu = parse_unit(u.get("name"))
-            if pu and pu[0] == target[0] and abs(pu[1] - target[1]) < 0.001:
-                return u
-    return None
+    return match_unit_record(proposed, rows if isinstance(rows, list) else [])
 
 
 def parsed_unit_spec(name: str) -> dict | None:

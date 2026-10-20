@@ -354,12 +354,15 @@ def pending_candidates(ctx: Context, log: list | None = None) -> list[dict]:
     if ctx.member and ctx.member != "procurement":
         return []
     since = ctx.now - timedelta(days=21)
+    from app.services.received_invoice import card_is_open
+
     docs = (
         ctx.db.query(WorkingDocument.data)
         .filter(
             WorkingDocument.doc_type == "received_invoice",
             WorkingDocument.venue_id == ctx.venue.id,
             WorkingDocument.updated_at >= since,
+            card_is_open(),
         )
         .all()
     )

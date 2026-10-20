@@ -42,23 +42,36 @@ def _fetch_raw_stock_items(
     """The venue's full stock catalogue (raw component-api shape, unpaged) — keeps
     ``groupName`` and ``suppliers[]`` which the slimmed ``list_stock_items`` drops.
 
-    Raises ComponentApiError on a misconfigured/unreachable catalogue — the
-    public ``suggest_item_matches`` swallows it into ``{}``.
+    Raises on a misconfigured/unreachable catalogue and on an error reply: a
+    failed fetch is a failure, never an empty catalogue (an empty list made
+    the matcher skip the model silently).
     """
     from app.services.component_api import execute_component_action
 
     result = execute_component_action(
         "purchase_order_editor", "get_stock_items_detail", {}, venue_id, db, config_db
     )
+    if isinstance(result, dict) and result.get("error"):
+        raise RuntimeError(
+            f"stock items fetch failed (HTTP {result.get('status_code')})"
+        )
     items = result.get("data") if isinstance(result, dict) else result
-    items = items if isinstance(items, list) else (items or {}).get("data") or []
+    if isinstance(items, dict) and isinstance(items.get("data"), list):
+        items = items["data"]
+    if not isinstance(items, list):
+        raise RuntimeError("stock items fetch returned no list")
     return [i for i in items if isinstance(i, dict) and i.get("id")]
 
 
 def _fetch_stock_groups(lh) -> list[dict]:
-    """Loaded stock groups (subcategories) as ``{id, name, category}``."""
+    """Loaded stock groups (subcategories) as ``{id, name, category}``. Raises
+    on a reply that isn't a list: no groups means no new item can be placed."""
     g = lh.get("/1.0/stock/internal/subcategories")
-    rows = g if isinstance(g, list) else (g or {}).get("data") or []
+    if isinstance(g, dict) and isinstance(g.get("data"), list):
+        g = g["data"]
+    if not isinstance(g, list):
+        raise RuntimeError("stock groups fetch returned no list")
+    rows = g
     return [
         {"id": r.get("id"), "name": r.get("name"), "category": r.get("categoryName")}
         for r in rows
@@ -122,7 +135,18 @@ _MATCH_SYSTEM_PROMPT = (
     '{"matches": [{"line_id": "<id>", "match_index": <int index into CATALOGUE or '
     'null>, "suggested_name": "<string>", "suggested_group_index": <int index into '
     "GROUPS or null>}]}\n"
-    "Include one entry for every invoice line."
+    "Include one entry for every invoice line. Every line with no match needs a "
+    "suggested_name and a suggested_group_index."
+)
+
+#: Said to the model when it is asked again for the lines it left without an
+#: answer (owner, 19 Oct 2026: Norm always answers; never a guess in its place).
+_ASK_AGAIN = (
+    "These lines came back without a usable answer last time. For each one, "
+    "either give the match_index of the same product, or give BOTH a "
+    "suggested_name and the suggested_group_index of the closest group in "
+    "GROUPS. A discount, fee or charge is still a line: name it and place it in "
+    "the closest group."
 )
 
 
@@ -178,13 +202,15 @@ def _match_subset(
     candidates: list[dict],
     db: Session,
     supplier_name: str | None = None,
+    note: str | None = None,
 ) -> dict:
     """One LLM match call over a candidate subset. Sends the subset as a numbered
     list and the model returns INDEXES (never UUIDs); indexes are subset-relative.
     Returns ``{line_id: {matched_item, suggested_name, suggested_group_id}}``; ``{}``
-    on any failure so the editor falls back to plain create.
+    on any failure — ``suggest_item_matches`` asks again for what's missing.
+    An empty catalogue is still asked: the model names and groups new items.
     """
-    if not lines or not candidates:
+    if not lines:
         return {}
     from app.interpreter.llm_interpreter import call_llm
 
@@ -214,7 +240,8 @@ def _match_subset(
         + "\n\nGROUPS (index · name · category):\n"
         + grp
         + "\n\nCATALOGUE (index · name · group):\n"
-        + cat
+        + (cat or "(none: the venue has no stock items yet)")
+        + (f"\n\n{note}" if note else "")
     )
     try:
         parsed, _ = call_llm(
@@ -268,6 +295,7 @@ def _match_stock_items(
     candidates: list[dict],
     db: Session,
     supplier_name: str | None = None,
+    note: str | None = None,
 ) -> dict:
     """Match each NEW-item line to an existing catalogue item (to link), else
     suggest a normalized name + group (to create). Classifies each line
@@ -283,7 +311,7 @@ def _match_stock_items(
     28 Aug 2026). Only non-consumables stay out — a lime must never match a mop —
     so the candidate list stays smaller than the full catalogue.
     """
-    if not lines or not candidates:
+    if not lines:
         return {}
     classes = _classify_item_lines(lines, db)
     cat_by_group = {g["id"]: (g.get("category") or "").lower() for g in groups}
@@ -300,19 +328,37 @@ def _match_stock_items(
         buckets[classes.get(ln["id"], "other")].append(ln)
 
     out: dict = {}
-    if buckets["food"]:
-        out.update(
-            _match_subset(buckets["food"], groups, consumable, db, supplier_name)
-        )
-    if buckets["beverage"]:
-        out.update(
-            _match_subset(buckets["beverage"], groups, consumable, db, supplier_name)
-        )
-    if buckets["other"]:
-        out.update(
-            _match_subset(buckets["other"], groups, candidates, db, supplier_name)
-        )
+    for bucket, cands in (
+        ("food", consumable),
+        ("beverage", consumable),
+        ("other", candidates),
+    ):
+        if buckets[bucket]:
+            out.update(
+                _match_subset(buckets[bucket], groups, cands, db, supplier_name, note)
+            )
     return out
+
+
+def _answered(ans: object) -> bool:
+    """An answer Norm can act on: an existing item to link, or a new item's
+    name and the group to create it in."""
+    if not isinstance(ans, dict):
+        return False
+    m = ans.get("matched_item")
+    if isinstance(m, dict) and m.get("id"):
+        return True
+    return bool(ans.get("suggested_name") and ans.get("suggested_group_id"))
+
+
+def _twice(fetch, what: str):
+    """``fetch()``, tried once more on failure; None when both fail."""
+    for attempt in (1, 2):
+        try:
+            return fetch()
+        except Exception as exc:  # noqa: BLE001 — reported as the line's reason
+            logger.warning("%s fetch failed (try %d): %s", what, attempt, exc)
+    return None
 
 
 def suggest_item_matches(
@@ -323,26 +369,79 @@ def suggest_item_matches(
     *,
     lh=None,
     supplier_name: str | None = None,
+    candidates: list[dict] | None = None,
 ) -> dict:
     """Public entry: per-line match/create suggestions for NEW-item lines.
 
     ``lines`` are ``_new_item_lines``-shaped dicts (id/description/code/brand/
-    unit). Never raises — any failure (catalogue unreachable, LLM error) returns
-    ``{}`` so every caller degrades to plain create.
+    unit); ``candidates`` is the venue's raw stock catalogue when the caller
+    already has it (else it is fetched). Every line gets an entry: an existing
+    item, a new item's name and group, or ``{"failed": reason}`` when Norm's
+    answer didn't come through — the fetches and the model are each tried once
+    more first (owner, 19 Oct 2026: retry, then mark the line so the next review
+    asks again; never guess a group). Never raises.
     """
     if not lines:
         return {}
+
+    def failed(reason: str) -> dict:
+        return {ln["id"]: {"failed": reason} for ln in lines}
+
     try:
         if lh is None:
             from app.services.received_invoice import LoadedInvoiceClient
 
             lh = LoadedInvoiceClient(db, config_db, venue_id)
-        candidates = _fetch_raw_stock_items(venue_id, db, config_db)
-        groups = _fetch_stock_groups(lh)
-        return _match_stock_items(lines, groups, candidates, db, supplier_name)
-    except Exception as exc:  # noqa: BLE001 — suggestions are best-effort
-        logger.warning("suggest_item_matches failed: %s", exc)
-        return {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("suggest_item_matches: no Loaded client: %s", exc)
+        return failed("Loaded couldn't be reached")
+    stock = candidates or _twice(
+        lambda: _fetch_raw_stock_items(venue_id, db, config_db), "stock items"
+    )
+    if stock is None:
+        return failed("Loaded's stock items couldn't be fetched")
+    groups = _twice(lambda: _fetch_stock_groups(lh), "stock groups")
+    if groups is None:
+        return failed("Loaded's stock groups couldn't be fetched")
+    if not groups:
+        return failed("the venue has no stock groups in Loaded to place a new item in")
+
+    def ask(todo: list[dict], note: str | None = None) -> dict:
+        try:
+            return _match_stock_items(todo, groups, stock, db, supplier_name, note)
+        except Exception as exc:  # noqa: BLE001 — asked again, then reported
+            logger.warning("suggest_item_matches failed: %s", exc)
+            return {}
+
+    out = ask(lines)
+    todo = [ln for ln in lines if not _answered(out.get(ln["id"]))]
+    if todo:
+        # Once more, for just those lines. call_llm has already retried a
+        # dropped connection; this covers an answer that was unreadable,
+        # skipped a line, or left out the group.
+        again = ask(todo, _ASK_AGAIN)
+        for ln in todo:
+            if _answered(again.get(ln["id"])) or ln["id"] not in out:
+                if ln["id"] in again:
+                    out[ln["id"]] = again[ln["id"]]
+    result: dict = {}
+    for ln in lines:
+        ans = out.get(ln["id"])
+        if _answered(ans):
+            result[ln["id"]] = ans
+        elif isinstance(ans, dict) and ans.get("suggested_group_id"):
+            # A group but no name, twice: the invoice's own words name it.
+            name = str(ln.get("description") or "").strip()
+            result[ln["id"]] = (
+                {**ans, "suggested_name": name}
+                if name
+                else {"failed": "no name for the new item"}
+            )
+        elif isinstance(ans, dict):
+            result[ln["id"]] = {"failed": "no stock group was picked for the new item"}
+        else:
+            result[ln["id"]] = {"failed": "the stock-item match didn't come through"}
+    return result
 
 
 _SUPPLIER_MATCH_SYSTEM_PROMPT = (

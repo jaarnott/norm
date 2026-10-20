@@ -90,6 +90,20 @@ PDF_SCHEMA = {
         {
             "code": "string or null — the product/item code column",
             "description": "string",
+            # Brands come from the invoice, never from Loaded (owner, 19 Oct
+            # 2026). The rules live here, not in the Main prompt row: editing
+            # the row marks every stored read stale (invoice_evidence).
+            "brand": (
+                "string or null — the product's BRAND exactly as this line "
+                "prints it: a brand column, or a brand named in the "
+                "description, e.g. '(MCCAIN 203136)' → 'MCCAIN', "
+                "'SQUID RINGS @ SEAFROST' → 'SEAFROST'. Leave out product "
+                "codes, sizes and pack words. null when the line prints no "
+                "brand, and for bracketed words that aren't a brand ('(ANY "
+                "BRAND)', '(PER KG)', '(NATIONWIDE CODE)'). Never work a "
+                "brand out from the product itself. The description stays "
+                "exactly as printed, brand included."
+            ),
             "quantity": (
                 "number — the TOTAL count of individual units billed for the "
                 "line, per the quantity rules in the instructions (NOT "
@@ -366,6 +380,10 @@ def extraction_from_loaded(detail: dict) -> dict:
             {
                 "code": ln.get("code"),
                 "description": ln.get("description"),
+                # The feed's brand is Loaded's copy of it, like the unit: kept
+                # for the Replica tab, never a reason to suggest a change.
+                "brand": ln.get("brand") or None,
+                "brand_from_loaded": True,
                 "quantity": ln.get("quantityReceived"),
                 "unit": ln.get("unit"),
                 # Loaded's unit, not the supplier's: the review never takes it

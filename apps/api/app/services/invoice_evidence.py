@@ -165,16 +165,9 @@ def stored_header(
     the instructions and would have re-read them; this path bypasses the cache,
     so it has to ask the same question itself.
     """
-    from app.db.models import WorkingDocument
+    from app.services.received_invoice import cards_for_invoice
 
-    rows = (
-        db.query(WorkingDocument)
-        .filter(
-            WorkingDocument.doc_type == "received_invoice",
-            WorkingDocument.venue_id == venue_id,
-        )
-        .all()
-    )
+    rows = cards_for_invoice(db, venue_id, invoice_id).all()
     docs = [
         d
         for d in rows
