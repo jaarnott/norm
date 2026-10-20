@@ -83,6 +83,112 @@ def record_person_edits(doc, data, ops: list[dict], user_id) -> None:
         logger.warning("recording person edits failed", exc_info=True)
 
 
+def apply_decisions(doc, data, ops: list[dict], user, db, config_db) -> list[dict]:
+    """The ``decide`` ops of a PATCH on an invoice card, through the one
+    decision function (services/invoice_decisions) in the shared order of
+    work. Returns one result per op, in the order given, so the card can
+    say what was refused and why. A create records a card action."""
+    from app.services import card_actions
+    from app.services.invoice_decisions import decide, order_decisions
+
+    if getattr(doc, "doc_type", None) != "received_invoice":
+        return [{"ok": False, "detail": "not an invoice card"} for _ in ops]
+    # One result per op sent, in its place: a malformed op is answered as
+    # one, never shifting the others' answers.
+    by_op = {
+        k: o.get("decision")
+        for k, o in enumerate(ops)
+        if isinstance(o.get("decision"), dict)
+    }
+    decisions = list(by_op.values())
+    venue_id = doc.venue_id or (data or {}).get("venue_id")
+    invoice_id = (doc.external_ref or {}).get("invoice_id") or (data or {}).get(
+        "invoice_id"
+    )
+    sugs = {
+        str(s.get("id")): s
+        for s in (data or {}).get("suggestions") or []
+        if isinstance(s, dict)
+    }
+    kind_check = any(_touches_kind(d, sugs) for d in decisions)
+    lh = None
+    if venue_id and (kind_check or any(_needs_loaded(d, sugs) for d in decisions)):
+        try:
+            from app.services.received_invoice import LoadedInvoiceClient
+
+            lh = LoadedInvoiceClient(db, config_db, venue_id)
+        except Exception:  # noqa: BLE001 — a create then says why it couldn't
+            logger.warning("no Loaded client for %s", venue_id, exc_info=True)
+    results: dict[int, dict] = {}
+    ordered = order_decisions(decisions, data)
+    by_identity = {id(d): k for k, d in by_op.items()}
+    for d in ordered:
+        out = decide(
+            data,
+            d,
+            by=getattr(user, "id", None),
+            actor="user",
+            lh=lh,
+            db=db,
+            config_db=config_db,
+            venue_id=venue_id,
+            invoice_id=invoice_id,
+        )
+        results[by_identity[id(d)]] = out
+        if out.get("ok") and out.get("created") and venue_id:
+            what = {"stock item": "a stock item"}.get(
+                out.get("kind"), f"a {out.get('kind')}"
+            )
+            card_actions.record(
+                db, user, venue_id, f"created {what}", f"'{out.get('name')}'"
+            )
+    if lh is not None and kind_check:
+        # A unit a person picked of a different kind from the item's: a
+        # warning on the row, never a stop (owner, 20 Oct 2026).
+        try:
+            from app.services.invoice_decisions import warn_unit_kinds
+            from app.services.invoice_po_reference import loaded_reference
+
+            catalogue, units = loaded_reference(venue_id, db, lh, config_db)
+            warn_unit_kinds(data, catalogue, units)
+        except Exception:  # noqa: BLE001 — a warning is an enhancement
+            logger.info("unit kind warning skipped", exc_info=True)
+    return [
+        results.get(k, {"ok": False, "detail": "not a decision"})
+        for k in range(len(ops))
+    ]
+
+
+def _accepted(d: dict, sugs: dict) -> dict:
+    sid = d.get("accept")
+    return sugs.get(str(sid)) or {} if sid is not None else {}
+
+
+def _needs_loaded(d: dict, sugs: dict) -> bool:
+    """A decision that writes to Loaded: the card's create form, or accepting
+    a create or a delete. Everything else is a change to Norm's own copy."""
+    kind = str(_accepted(d, sugs).get("kind") or "")
+    return "create" in d or kind.startswith("create_") or kind == "delete_invoice"
+
+
+def _touches_kind(d: dict, sugs: dict) -> bool:
+    """A decision that changes a line's unit or item, so the unit-kind
+    warning is worked out again."""
+    edit = d.get("edit") if isinstance(d.get("edit"), dict) else {}
+    fields = edit.get("fields") if isinstance(edit.get("fields"), dict) else {}
+    create = d.get("create") if isinstance(d.get("create"), dict) else {}
+    sug = _accepted(d, sugs)
+    return (
+        "linked_unit_id" in fields
+        or "linked_item_id" in fields
+        or create.get("kind") in ("unit", "item")
+        or sug.get("kind") in ("create_unit", "create_item", "add_line")
+        or sug.get("field") in ("unit", "linked_item_id")
+        or (sugs.get(str(d.get("undo"))) or {}).get("field")
+        in ("unit", "linked_item_id")
+    )
+
+
 def post_apply(doc, data) -> None:
     """Recompute SERVER-OWNED derived state after a patch.
 
@@ -99,22 +205,27 @@ def post_apply(doc, data) -> None:
         if getattr(doc, "doc_type", None) == "received_invoice" and isinstance(
             data, dict
         ):
+            from app.services.invoice_decisions import annotate
             from app.services.invoice_po_reference import project_po_reference
 
             project_po_reference(data)
+            # Readiness is worked out here and sent with the document: the
+            # card shows it, never a rule of its own.
+            annotate(data)
     except Exception:  # noqa: BLE001 — a projection must never sink an edit
         logger.warning("post-apply projection failed", exc_info=True)
 
 
 @router.patch("/threads/{thread_id}/working-documents/{doc_id}")
-async def patch_document(
+def patch_document(
     thread_id: str,
     doc_id: str,
     body: PatchRequest,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    doc = _find_doc(db, thread_id, doc_id)
+    doc = _find_doc(db, thread_id, doc_id, lock=True)
     _check_doc_access(db, user, doc)
 
     # Optimistic concurrency check
@@ -124,11 +235,18 @@ async def patch_document(
             detail=f"Version conflict: expected {doc.version}, got {body.version}",
         )
 
-    # Apply ops to the data
+    # Apply ops to the data. A ``decide`` op is a decision on an invoice
+    # card (accept / decline / undo a suggestion, a person's edit, a create):
+    # the server makes it, in the shared order of work, after the plain ops.
     data = doc.data
-    record_person_edits(doc, data, body.ops, getattr(user, "id", None))
-    for op in body.ops:
+    plain = [o for o in body.ops if o.get("op") != "decide"]
+    decides = [o for o in body.ops if o.get("op") == "decide"]
+    record_person_edits(doc, data, plain, getattr(user, "id", None))
+    for op in plain:
         data = _apply_op(data, op)
+    decided = (
+        apply_decisions(doc, data, decides, user, db, config_db) if decides else []
+    )
     post_apply(doc, data)
 
     doc.data = data
@@ -172,7 +290,7 @@ async def patch_document(
     if doc.sync_mode == "auto":
         _trigger_sync(doc.id)
 
-    return _doc_to_dict(doc)
+    return {**_doc_to_dict(doc, annotated=True), "decisions": decided}
 
 
 # ---------------------------------------------------------------------------
@@ -433,14 +551,20 @@ async def get_standalone_document(
 
 
 @router.patch("/working-documents/{doc_id}")
-async def patch_standalone_document(
+def patch_standalone_document(
     doc_id: str,
     body: PatchRequest,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Patch a working document by ID (no task context required)."""
-    doc = db.query(WorkingDocument).filter(WorkingDocument.id == doc_id).first()
+    doc = (
+        db.query(WorkingDocument)
+        .filter(WorkingDocument.id == doc_id)
+        .with_for_update()
+        .first()
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Working document not found")
     _check_doc_access(db, user, doc)
@@ -452,9 +576,14 @@ async def patch_standalone_document(
         )
 
     data = doc.data
-    record_person_edits(doc, data, body.ops, getattr(user, "id", None))
-    for op in body.ops:
+    plain = [o for o in body.ops if o.get("op") != "decide"]
+    decides = [o for o in body.ops if o.get("op") == "decide"]
+    record_person_edits(doc, data, plain, getattr(user, "id", None))
+    for op in plain:
         data = _apply_op(data, op)
+    decided = (
+        apply_decisions(doc, data, decides, user, db, config_db) if decides else []
+    )
     post_apply(doc, data)
 
     doc.data = data
@@ -478,7 +607,7 @@ async def patch_standalone_document(
     if doc.sync_mode == "auto":
         _trigger_sync(doc.id)
 
-    return _doc_to_dict(doc)
+    return {**_doc_to_dict(doc, annotated=True), "decisions": decided}
 
 
 # ---------------------------------------------------------------------------
@@ -486,25 +615,46 @@ async def patch_standalone_document(
 # ---------------------------------------------------------------------------
 
 
-def _find_doc(db: Session, thread_id: str, doc_id: str) -> WorkingDocument:  # noqa: ARG001 — thread_id kept for the route shape
+def _find_doc(
+    db: Session,
+    thread_id: str,  # noqa: ARG001 — thread_id kept for the route shape
+    doc_id: str,
+    lock: bool = False,
+) -> WorkingDocument:
     # By id alone: ref-keyed documents (one doc per invoice) are shared across
     # threads, so the URL's thread is just the card's context — a card in
     # thread B legitimately holds a doc whose home thread is A. The id is an
-    # unguessable UUID and auth (get_current_user) is unchanged.
-    doc = db.query(WorkingDocument).filter(WorkingDocument.id == doc_id).first()
+    # unguessable UUID and auth (get_current_user) is unchanged. ``lock``: a
+    # save holds the row, so two tabs can't both pass the version check and
+    # both write to Loaded.
+    q = db.query(WorkingDocument).filter(WorkingDocument.id == doc_id)
+    doc = (q.with_for_update() if lock else q).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Working document not found")
     return doc
 
 
-def _doc_to_dict(doc: WorkingDocument) -> dict:
+def _doc_to_dict(doc: WorkingDocument, annotated: bool = False) -> dict:
+    data = doc.data
+    if not annotated and doc.doc_type == "received_invoice" and isinstance(data, dict):
+        # Readiness rides with every document the card reads (a document
+        # saved before it was stored gets it here, on a copy).
+        try:
+            import copy
+
+            from app.services.invoice_decisions import annotate
+
+            data = copy.deepcopy(data)
+            annotate(data)
+        except Exception:  # noqa: BLE001 — the document still reads
+            logger.info("readiness not annotated", exc_info=True)
     return {
         "id": doc.id,
         "thread_id": doc.thread_id,
         "doc_type": doc.doc_type,
         "connector_name": doc.connector_name,
         "sync_mode": doc.sync_mode,
-        "data": doc.data,
+        "data": data,
         "external_ref": doc.external_ref,
         "sync_status": doc.sync_status,
         "sync_error": doc.sync_error,

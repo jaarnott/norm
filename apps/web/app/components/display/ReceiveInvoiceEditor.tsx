@@ -35,8 +35,7 @@ import PageState from '../ui/PageState';
 import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import { autoFocusField, PickerDialog, PickerList, type PickerOption } from './CatalogPicker';
 import {
-  buildReviewList, fixAccepted, fixHolds, LOADED_WRITE_ORDER, needWords,
-  RETRY_CODES, sameLine, settledByHand, UNIT_ISSUE_CODES, type HandEdit, type ReviewRow,
+  buildReviewList, needWords, sameLine, type HandEdit, type ReviewRow,
 } from './invoiceReview';
 
 interface Line {
@@ -124,15 +123,6 @@ interface Suggestion {
   // The blocker a rule set this value to clear.
   fixes?: string | null;
 }
-interface ClearsWhen {
-  scope: 'line' | 'header';
-  line_id?: string;
-  field?: string;
-  // 'balances': the working values come to the invoice total (the totals
-  // blocker — invoice_review.totals_balance).
-  op: 'not_null' | 'truthy' | 'equals' | 'balances';
-  value?: unknown;
-}
 // The review payload this card renders (invoice_review.DOC_SCHEMA). A draft
 // reviewed under an older shape re-reviews once when opened.
 const REVIEW_SCHEMA = 'replica_v2';
@@ -172,7 +162,6 @@ interface Issue {
   line_id?: string | null;
   message: string;
   data?: Record<string, unknown> | null;
-  clears_when?: ClearsWhen;
   // The suggestion(s) that clear this blocker — it stands down once all are
   // accepted. A blocker is never a decision of its own.
   fix?: string[] | null;
@@ -243,6 +232,14 @@ interface DocData {
   // A person's own changes, kept by the server so a rebuild from Loaded
   // replays them (services/invoice_edits). Read back in record mode.
   edits?: HandEdit[];
+  // Readiness, worked out on the server (invoice_decisions.annotate) and
+  // sent with the document: each stop's state, each suggestion's, and
+  // whether Autopilot would receive it / this person can.
+  issue_states?: Record<string, { state: 'open' | 'settled'; how?: string | null }>;
+  suggestion_states?: Record<string, { state: 'pending' | 'accepted' | 'dismissed'; open: boolean }>;
+  receive?: { ready: boolean; person_can_receive: boolean; blocked_by: string[] };
+  // A person's unit of a different kind from the item's: shown on the row.
+  warnings?: { line_id?: string | null; code: string; text: string }[];
   // Sidecars (read-only, admin X-ray): the replica shadow (doc-shaped, our
   // full resolution of the copy), Loaded's pristine mirror, and the verbatim
   // extraction.
@@ -443,10 +440,6 @@ const moneyFieldLabels: Record<string, string> = {
 // ISO string → the YYYY-MM-DD a <input type="date"> wants (and back on change).
 const dateVal = (s: string | null | undefined) => (s ? String(s).slice(0, 10) : '');
 
-// Loaded receives a total within ten cents of its own arithmetic as
-// "Rounding"; further out it refuses (replica_finish.LOADED_ROUNDING).
-const LOADED_ROUNDING = 0.1;
-
 // Loaded's arithmetic (its calculateFooterTotals): lines, tax at each line's
 // rate, less the discount. The totals the card shows and the totals blocker
 // both use it, as the server does (replica_finish._totals_view).
@@ -465,30 +458,6 @@ function docTotals(doc: DocData): { excl: number; tax: number; discount: number;
   const excl2 = round2(excl);
   const tax2 = round2(tax);
   return { excl: excl2, tax: tax2, discount, incl: round2(excl2 + tax2 - discount) };
-}
-
-// The tiny clears_when evaluator — the SAME dumb predicate the server runs
-// (invoice_review._clears): scope line → find the line, else the header;
-// then not_null / truthy / equals; or 'balances' — the working values come
-// to the invoice total. Nothing more.
-function evalClears(data: DocData, issue: Issue): boolean {
-  const cw = issue.clears_when;
-  if (!cw) return false;
-  if (cw.op === 'balances') {
-    if (typeof data.total !== 'number') return true;
-    return Math.abs(docTotals(data).incl - data.total) <= LOADED_ROUNDING + 1e-9;
-  }
-  let v: unknown;
-  if (cw.scope === 'line') {
-    const ln = (data.lines || []).find((l) => String(l.id) === String(cw.line_id));
-    v = ln && cw.field ? (ln as unknown as Record<string, unknown>)[cw.field] : undefined;
-  } else {
-    v = cw.field ? (data as unknown as Record<string, unknown>)[cw.field] : undefined;
-  }
-  if (cw.op === 'not_null') return v !== null && v !== undefined;
-  if (cw.op === 'truthy') return !!v;
-  if (cw.op === 'equals') return v === cw.value;
-  return false;
 }
 
 export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayBlockProps) {
@@ -654,8 +623,6 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     kind: 'item' | 'unit' | 'brand'; lineId: string; mode: 'pick' | 'create';
     query: string; back?: boolean;
   } | null>(null);
-  // Same two-step for creating the copy's supplier in Loaded (create-supplier).
-  const [creatingSupplier, setCreatingSupplier] = useState(false);
   const [linkQuery, setLinkQuery] = useState('');
   // The order sections under the lines ("ordered, not delivered", "received
   // on the sibling delivery") start folded — their count is in the heading.
@@ -843,15 +810,22 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   }, [record, venueId, doc.invoice_id, reviewed]);
 
 
-  // Serialized patches: one at a time, each using the LATEST version.
-  // update_line ops get the target line's id injected so a server-side
-  // reorder (reshape, review merge) can never land the edit on the wrong
-  // line. A 409 is SURFACED (view refreshed + message), never swallowed —
-  // silently dropping it left edits that evaporated on the next refetch.
-  const patchQueue = useRef<Promise<void>>(Promise.resolve());
+  // Serialized patches: one at a time, each using the LATEST version. Every
+  // change the card makes is a decision the SERVER makes
+  // (services/invoice_decisions, through the `decide` op): the card shows
+  // the change at once, sends it, and takes the server's answer — the
+  // document comes back with its readiness worked out — as the truth. A
+  // refused decision says why. Receive waits (with a spinner) while any
+  // save is still out.
+  const patchQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const [pendingSaves, setPendingSaves] = useState(0);
+  type Decided = {
+    ok: boolean; detail?: string | null; created?: boolean; name?: string | null; id?: string | null;
+    ratio?: number | null;
+  };
   const patchDoc = useCallback(
-    (ops: Record<string, unknown>[]) => {
-      if (!docUrl) return Promise.resolve();
+    (ops: Record<string, unknown>[]): Promise<Decided[]> => {
+      if (!docUrl) return Promise.resolve([]);
       const withIds = ops.map((op) => {
         if (op.op === 'update_line' && op.line_id == null && typeof op.index === 'number') {
           const id = docRef.current.lines[op.index as number]?.id;
@@ -859,28 +833,46 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
         }
         return op;
       });
-      const run = async () => {
+      setPendingSaves((n) => n + 1);
+      // The server's copy replaces what the card showed, with a sentence why:
+      // a change shown at once is corrected when it didn't save.
+      const resync = async (why: string): Promise<Decided[]> => {
+        const fresh = await apiFetch(docUrl).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+        if (fresh?.data) {
+          setDoc(fresh.data as DocData);
+          if (typeof fresh.version === 'number') setVersion(fresh.version);
+        }
+        setStatus('error');
+        setMessage(why);
+        return [];
+      };
+      const run = async (): Promise<Decided[]> => {
         try {
           const res = await apiFetch(docUrl, {
             method: 'PATCH',
             body: JSON.stringify({ ops: withIds, version: versionRef.current }),
           });
           if (res.status === 409) {
-            const fresh = await apiFetch(docUrl).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-            if (fresh?.data) {
-              setDoc(fresh.data as DocData);
-              if (typeof fresh.version === 'number') setVersion(fresh.version);
-            }
-            setStatus('error');
-            setMessage('This invoice was updated elsewhere — the view has been refreshed; please re-apply your last change.');
-            return;
+            return await resync('This invoice was updated elsewhere — the view has been refreshed; please re-apply your last change.');
           }
           if (res.ok) {
             const updated = await res.json();
             if (updated?.data) setDoc((prev) => ({ ...prev, ...(updated.data as DocData) }));
             if (typeof updated?.version === 'number') setVersion(updated.version);
+            const decided = (updated?.decisions ?? []) as Decided[];
+            const refused = decided.find((d) => d && d.ok === false && d.detail);
+            if (refused) {
+              setStatus('error');
+              setMessage(String(refused.detail));
+            }
+            return decided;
           }
-        } catch { /* keep local state; the next patch retries */ }
+          return await resync('That change could not be saved — the invoice has been refreshed; please try it again.');
+        } catch {
+          return await resync('That change could not be saved (no connection) — the invoice has been refreshed; please try it again.');
+        } finally {
+          setPendingSaves((n) => Math.max(0, n - 1));
+        }
       };
       const p = patchQueue.current.then(run);
       patchQueue.current = p;
@@ -888,107 +880,47 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     },
     [docUrl],
   );
+  // One decision, or several that the server applies in its order of work.
+  const decideOps = (decisions: Record<string, unknown>[]): Promise<Decided[]> =>
+    workingDocId ? patchDoc(decisions.map((decision) => ({ op: 'decide', decision }))) : Promise.resolve([]);
 
-  const setLine = (idx: number, patch: Partial<Line>, ops: Record<string, unknown>[]) => {
+  const setLine = (idx: number, patch: Partial<Line>) => {
     setDoc((prev) => {
       const lines = prev.lines.map((l, i) => (i === idx ? { ...l, ...patch } : l));
       return { ...prev, lines };
     });
-    if (workingDocId) patchDoc(ops);
   };
-
-  // A person choosing the unit answers the line's unit blocker. Those carry
-  // no clears_when — a unit already on Loaded's line is its OCR, not a
-  // decision — so the choice is recorded, with the before/after the
-  // readiness report reads, or the blocker outlives the unit that settled it.
-  // A person choosing a value by hand answers Norm's suggestion for that
-  // field: accepted when they chose what it proposed, declined otherwise — so
-  // its row doesn't sit open beside their choice.
-  const answerFieldSuggestion = (
-    lineId: string | number,
-    field: 'unit' | 'linked_item_id' | 'linked_brand_id',
-    chosen: Record<string, unknown>,
-    before: Record<string, unknown>,
-  ): SuggestionAction | null => {
-    const sg = (docLive.suggestions || []).find((x) => x && x.kind !== 'add_line'
-      && String(x.line_id) === String(lineId) && x.field === field && stateOf(x.id) === 'pending');
-    if (!sg) return null;
-    const key = field === 'unit' ? 'linked_unit_id' : field;
-    const want = sg.apply?.[key];
-    const got = chosen[key] ?? null;
-    // A brand removal (the invoice prints none) is answered by choosing none.
-    const same = !!sg.apply && key in sg.apply
-      && (want == null ? got == null : String(want) === String(got ?? ''));
-    return same
-      ? { suggestion_id: sg.id, action: 'accepted', by: 'user', at: nowIso(), before, after: { ...chosen } }
-      : { suggestion_id: sg.id, action: 'dismissed', by: 'user', at: nowIso() };
+  // A person's own value on a line: shown at once, decided on the server —
+  // recorded as their edit, answering Norm's pending suggestion for that
+  // field, and settling the line's stop when it is an answer Loaded can take.
+  const editLine = (idx: number, fields: Partial<Line>): Promise<Decided[]> => {
+    const l = docRef.current.lines[idx];
+    if (!l) return Promise.resolve([]);
+    setLine(idx, fields);
+    return decideOps([{ edit: { line_id: l.id, fields } }]);
   };
-  // A value picked by hand that is exactly Norm's answer is still the
-  // person's own pick: it stays theirs if Norm's answer later changes. The op
-  // names the suggestion it also answers (answer_of), so the server keeps it
-  // as the person's edit; Undo cancels it there with the accept.
-  const tagIfAccepted = (op: Record<string, unknown>, answer: SuggestionAction | null) => {
-    if (answer?.action === 'accepted') op.answer_of = answer.suggestion_id;
-  };
-  // A pick that accepts the blocker's own fix settles the blocker through that
-  // fix; recording the blocker too would outlive an Undo of the fix.
-  const settlesThroughFix = (issue: Issue, answer: SuggestionAction | null) =>
-    answer?.action === 'accepted' && (issue.fix || []).includes(answer.suggestion_id);
-  // Any unit blocker on the line — a unit picked by hand settles it, including
-  // a line Norm's answer didn't come through for (unit_answer_missing).
-  const openUnitIssue = (lineId: string | number): Issue | undefined =>
-    issues.find((i) => UNIT_ISSUE_CODES.includes(i.code)
-      && String(i.line_id) === String(lineId) && issueStateOf(i) === 'open');
   const onUnit = (idx: number, unitId: string) => {
+    const u = units.find((x) => x.id === unitId);
+    void editLine(idx, { linked_unit_id: unitId, unit: u?.name ?? null, unit_ratio: u?.ratio ?? null });
+  };
+  // The total follows qty × cost on screen; the server works it out too.
+  const onQty = (idx: number, qty: number) => {
     const l = docRef.current.lines[idx];
     if (!l) return;
-    const u = units.find((x) => x.id === unitId);
-    const fields = { linked_unit_id: unitId, unit: u?.name ?? null, unit_ratio: u?.ratio ?? null };
-    const ops: Record<string, unknown>[] = [{ op: 'update_line', line_id: l.id, index: idx, fields }];
-    const open = openUnitIssue(l.id);
-    const before = { linked_unit_id: l.linked_unit_id ?? null, unit: l.unit ?? null, unit_ratio: l.unit_ratio ?? null };
-    const entries: SuggestionAction[] = [];
-    const answer = answerFieldSuggestion(l.id, 'unit', fields, before);
-    if (open && !settlesThroughFix(open, answer)) {
-      entries.push({
-        suggestion_id: open.id, action: 'accepted', by: 'user', at: nowIso(),
-        before, after: { ...fields },
-      });
-    }
-    if (answer) entries.push(answer);
-    tagIfAccepted(ops[0], answer);
-    let log: SuggestionAction[] | null = null;
-    if (entries.length) {
-      log = [...(docRef.current.suggestion_actions || []), ...entries];
-      ops.push({ op: 'update_header', fields: { suggestion_actions: log } });
-    }
-    setDoc((prev) => {
-      const lines = prev.lines.map((x, i) => (i === idx ? { ...x, ...fields } : x));
-      return log ? { ...prev, lines, suggestion_actions: log } : { ...prev, lines };
-    });
-    if (workingDocId) patchDoc(ops);
-  };
-  const onQty = (idx: number, qty: number) => {
-    const cost = doc.lines[idx]?.unit_cost ?? 0;
-    setLine(
-      idx,
-      { quantity_received: qty, total_cost: round4(qty * cost) },
-      [{ op: 'update_line', index: idx, fields: { quantity_received: qty, total_cost: round4(qty * cost) } }],
-    );
+    setLine(idx, { quantity_received: qty, total_cost: round4(qty * (l.unit_cost ?? 0)) });
+    void decideOps([{ edit: { line_id: l.id, fields: { quantity_received: qty } } }]);
   };
   const onCost = (idx: number, cost: number) => {
-    const qty = doc.lines[idx]?.quantity_received ?? 0;
-    setLine(
-      idx,
-      { unit_cost: cost, total_cost: round4(qty * cost) },
-      [{ op: 'update_line', index: idx, fields: { unit_cost: cost, total_cost: round4(qty * cost) } }],
-    );
+    const l = docRef.current.lines[idx];
+    if (!l) return;
+    setLine(idx, { unit_cost: cost, total_cost: round4((l.quantity_received ?? 0) * cost) });
+    void decideOps([{ edit: { line_id: l.id, fields: { unit_cost: cost } } }]);
   };
   // Strike / un-strike a line. Striking normally happens by accepting the
   // server's strike suggestion; this is the plain toggle (restore, and the
   // manual escape hatch).
   const onStrike = (idx: number, struck: boolean) => {
-    setLine(idx, { struck }, [{ op: 'update_line', index: idx, fields: { struck } }]);
+    void editLine(idx, { struck });
   };
 
   // Linking an order writes only its ID; the order's ROWS live in Loaded, and
@@ -1026,219 +958,128 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
 
   const onPo = async (poId: string) => {
     const po = pos.find((p) => p.id === poId);
-    setDoc((prev) => ({
-      ...prev,
+    const fields = {
       linked_purchase_order_id: poId || null,
-      purchase_order_number: po?.order_number ?? prev.purchase_order_number,
-    }));
+      purchase_order_number: po?.order_number ?? docRef.current.purchase_order_number,
+    };
+    setDoc((prev) => ({ ...prev, ...fields }));
     if (!workingDocId) return;
-    await patchDoc([{ op: 'update_header', fields: { linked_purchase_order_id: poId || null, purchase_order_number: po?.order_number } }]);
+    await decideOps([{ edit: { fields } }]);
     if (poId) await refreshOrderReference();
   };
 
-  // Header field edits (invoice #, dates, total, supplier, tax toggle) — merge
-  // locally and persist via the update_header op.
+  // Header field edits (invoice #, dates, total, supplier, tax toggle) —
+  // shown at once, decided on the server as the person's edit.
   const patchHeader = (fields: Partial<DocData>) => {
     setDoc((prev) => ({ ...prev, ...fields }));
-    if (workingDocId) patchDoc([{ op: 'update_header', fields }]);
+    void decideOps([{ edit: { fields } }]);
   };
   const onSupplier = (id: string) => {
     const s = suppliers.find((x) => x.id === id);
     patchHeader({ linked_supplier_id: id || null, supplier_name: s?.name ?? null });
   };
 
-  // ---- The suggestion/issue action engine ------------------------------
-  // ONE generic applier for every server suggestion, used by BOTH the inline
-  // chips and the summary list — the two surfaces can never diverge. Each
-  // accept is a single PATCH (the value edit + the action-log entry together,
-  // so the doc version can't race), and every decision lands in
-  // doc.suggestion_actions — THE RECORD, shared with autopilot (by: "norm").
-  const nowIso = () => new Date().toISOString();
+  // ---- Decisions on Norm's suggestions -----------------------------------
+  // THE RECORD (doc.suggestion_actions, shared with Autopilot) and the states
+  // the server worked out from it (suggestion_states, issue_states, receive)
+  // are read here, never derived. Accept, Decline and Undo send the decision;
+  // the card shows the obvious change at once and takes the server's
+  // document when it comes back.
   const actionsList = useMemo(() => docLive.suggestion_actions || [], [docLive.suggestion_actions]);
-  // Last action per suggestion_id wins (also covers autopilot's entries).
+  // Last action per suggestion_id (also covers autopilot's entries): who did
+  // it and when, for the record and the Undo button.
   const lastAction = useMemo(() => {
     const m = new Map<string, SuggestionAction>();
     for (const a of actionsList) if (a?.suggestion_id) m.set(a.suggestion_id, a);
     return m;
   }, [actionsList]);
   const stateOf = (id: string): 'pending' | 'accepted' | 'dismissed' => {
+    const st = docLive.suggestion_states?.[id]?.state;
+    if (st === 'accepted' || st === 'dismissed' || st === 'pending') return st;
     const a = lastAction.get(id);
     if (!a || a.action === 'undone') return 'pending';
     return a.action;
   };
-  const recordOp = (entry: SuggestionAction): [SuggestionAction[], Record<string, unknown>] => {
-    const log = [...(docRef.current.suggestion_actions || []), entry];
-    return [log, { op: 'update_header', fields: { suggestion_actions: log } }];
-  };
-
-  // The ONE place a suggestion becomes ops. Single-accept and Accept-all MUST
-  // apply identically: the autopilot metric reads the action log, not which
-  // button was pressed, so a divergence here would describe an invoice that
-  // never existed. Pure — folds against a given state and returns the next.
-  const foldSuggestion = (
-    state: DocData,
-    s: Suggestion,
-  ): { ops: Record<string, unknown>[]; entry: SuggestionAction; next: DocData } | null => {
-    const at = nowIso();
-    if (s.kind === 'confirm') {
-      // Norm agrees with what's there — accepting records the call, nothing
-      // changes.
-      return { ops: [], entry: { suggestion_id: s.id, action: 'accepted', by: 'user', at, before: {}, after: {} }, next: state };
-    }
+  // Still to decide: pending, or declined while its field is still New (the
+  // server keeps that row open until the field is settled).
+  const rowOpen = (id: string): boolean =>
+    docLive.suggestion_states?.[id]?.open ?? (stateOf(id) === 'pending');
+  // A decision's outcome, shown before the server answers.
+  const noteState = (id: string, state: 'accepted' | 'dismissed' | 'pending') =>
+    setDoc((prev) => ({
+      ...prev,
+      suggestion_states: { ...(prev.suggestion_states || {}), [id]: { state, open: state === 'pending' } },
+    }));
+  // What a suggestion changes on the draft, shown at once (the server
+  // applies the same values); a create shows nothing until Loaded answers.
+  const showApplied = (s: Suggestion) => {
     if (s.kind === 'add_line') {
-      const payload = { ...(s.payload || {}) } as Record<string, unknown>;
-      if (!Object.keys(payload).length) return null;
-      return {
-        ops: [{ op: 'add_line', fields: payload, suggestion_id: s.id }],
-        entry: {
-          suggestion_id: s.id, action: 'accepted', by: 'user', at,
-          before: { added_line_id: payload.id ?? null }, after: { added: true },
-        },
-        next: { ...state, lines: [...state.lines, payload as unknown as Line] },
-      };
+      const payload = s.payload as unknown as Line | undefined;
+      if (!payload || !Object.keys(payload).length) return;
+      setDoc((prev) => (prev.lines.some((l) => String(l.id) === String(payload.id))
+        ? prev
+        : { ...prev, lines: [...prev.lines, payload] }));
+      return;
     }
     const apply = s.apply;
-    if (!apply || !Object.keys(apply).length) return null;
+    if (!apply || !Object.keys(apply).length) return;
     if (s.line_id) {
-      const idx = state.lines.findIndex((l) => String(l.id) === String(s.line_id));
-      const ln = state.lines[idx];
-      if (!ln) return null;
-      const fields: Record<string, unknown> = { ...apply };
-      // Total follows qty × cost — the ONLY client math (the receive
-      // recomputes anyway; this keeps the display honest).
-      if ('quantity_received' in apply || 'unit_cost' in apply) {
-        const q = Number(fields.quantity_received ?? ln.quantity_received);
-        const c = Number(fields.unit_cost ?? ln.unit_cost);
-        if (Number.isFinite(q) && Number.isFinite(c)) fields.total_cost = round4(q * c);
-      }
-      const before: Record<string, unknown> = {};
-      for (const k of Object.keys(fields)) before[k] = (ln as unknown as Record<string, unknown>)[k] ?? null;
-      return {
-        ops: [{ op: 'update_line', line_id: ln.id, index: idx, fields, suggestion_id: s.id }],
-        entry: { suggestion_id: s.id, action: 'accepted', by: 'user', at, before, after: apply },
-        next: { ...state, lines: state.lines.map((l, i) => (i === idx ? { ...l, ...(fields as Partial<Line>) } : l)) },
-      };
+      setDoc((prev) => ({
+        ...prev,
+        lines: prev.lines.map((l) => {
+          if (String(l.id) !== String(s.line_id)) return l;
+          const next = { ...l, ...(apply as Partial<Line>) };
+          // The server recomputes the total from quantity and price too.
+          if (('quantity_received' in apply || 'unit_cost' in apply) && !('total_cost' in apply)
+            && next.quantity_received != null && next.unit_cost != null) {
+            next.total_cost = round4(Number(next.quantity_received) * Number(next.unit_cost));
+          }
+          return next;
+        }),
+      }));
+    } else {
+      setDoc((prev) => ({ ...prev, ...(apply as Partial<DocData>) }));
     }
-    const before: Record<string, unknown> = {};
-    for (const k of Object.keys(apply)) before[k] = (state as unknown as Record<string, unknown>)[k] ?? null;
-    return {
-      ops: [{ op: 'update_header', fields: apply, suggestion_id: s.id }],
-      entry: { suggestion_id: s.id, action: 'accepted', by: 'user', at, before, after: apply },
-      next: { ...state, ...(apply as Partial<DocData>) },
-    };
   };
-
   const acceptSuggestion = (s: Suggestion) => {
     if (doneState) return;
     if (s.kind === 'delete_invoice') {
-      // A Loaded write (verified DELETE endpoint) — the server applies it.
+      // A Loaded write (verified DELETE endpoint) with a route of its own:
+      // it tombstones every copy of the draft and records the outcome.
       void acceptFix(s);
       return;
     }
-    if (s.kind === 'create_unit') {
-      // A Loaded write: create the copy's delivered unit and link it. The name
-      // rides in the suggestion payload (no issue backs it); the ✓ is the
-      // confirm, so createUnitAndApply skips its own two-step when given a name.
-      const name = (s.payload?.unit_name as string | undefined)
-        || (typeof s.proposed === 'string' ? s.proposed : undefined);
-      const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
-      if (idx >= 0 && name) void createUnitAndApply(idx, name, s);
-      return;
-    }
-    if (s.kind === 'create_brand') {
-      // A Loaded write: create the brand Loaded named but has no record for.
-      const p = (s.payload || {}) as Record<string, string | undefined>;
-      const name = p.brand_name || (typeof s.proposed === 'string' ? s.proposed : '');
-      void createBrandAndApply(String(s.line_id), name, s);
-      return;
-    }
-    if (s.kind === 'create_item') {
-      // A Loaded write: create the stock item (+ its supplier variant) and
-      // link the line. Name and stock group ride in the payload; the line's
-      // unit must already be resolved (Loaded requires it), which is why
-      // Accept all does the unit creations first.
-      const p = (s.payload || {}) as Record<string, string | undefined>;
-      const name = p.name || (typeof s.proposed === 'string' ? s.proposed : '');
-      void createItemAndApply(String(s.line_id), name, p.group_id || '', s);
-      return;
-    }
-    if (s.kind === 'create_supplier') {
-      void createSupplierAndApply(s);
-      return;
-    }
-    const folded = foldSuggestion(docRef.current, s);
-    if (!folded) return;
-    // A blocker this answers stands down by itself once all of its fixes are
-    // accepted (issueStateOf) — nothing extra to record.
-    const log = [...(docRef.current.suggestion_actions || []), folded.entry];
-    const logOp = { op: 'update_header', fields: { suggestion_actions: log } };
-    const nextState = folded.next;
-    setDoc(() => ({ ...nextState, suggestion_actions: log }));
-    if (workingDocId) {
-      const patched = patchDoc([...folded.ops, logOp]);
-      // The review pre-caches the rows of the order it suggests, so the
-      // projection recomputes on this very patch — no wait, no re-analysis.
-      // Only fetch when the accepted order ISN'T the cached one.
-      if (PO_LINK_KINDS.includes(s.kind) && !ordersCached(s)) {
-        void patched.then(refreshOrderReference);
-      }
-    }
+    void acceptRows([{ key: s.id, fixes: [s], lineId: s.line_id ? String(s.line_id) : null, open: true }]);
   };
-
-  // Dismiss: record-only ("declined without applying"). Also how a blocking
-  // ISSUE is waved through ("I've checked this") — same record, the issue id.
+  // Decline: record-only ("declined without applying").
   const dismissAction = (id: string) => {
     if (doneState) return;
-    const entry: SuggestionAction = { suggestion_id: id, action: 'dismissed', by: 'user', at: nowIso() };
-    const [log, logOp] = recordOp(entry);
-    setDoc((prev) => ({ ...prev, suggestion_actions: log }));
-    if (workingDocId) patchDoc([logOp]);
+    noteState(id, 'dismissed');
+    void decideOps([{ decline: id }]);
   };
-
-  // Undo: apply the recorded `before` back (accepted), or just clear the
-  // record (dismissed). Always appends an "undone" entry — the record is
-  // append-only, so the trail stays honest.
+  // Undo: the server puts back what the decision replaced (and brings back
+  // the person's edits it had retired); the card shows the recorded
+  // `before` at once.
   const undoAction = (s: Suggestion | null, id: string) => {
     if (doneState) return;
     const a = lastAction.get(id);
     if (!a || a.action === 'undone') return;
-    const entry: SuggestionAction = { suggestion_id: id, action: 'undone', by: 'user', at: nowIso() };
-    const [log, logOp] = recordOp(entry);
-    if (a.action === 'dismissed' || !a.before) {
-      setDoc((prev) => ({ ...prev, suggestion_actions: log }));
-      if (workingDocId) patchDoc([logOp]);
-      return;
-    }
-    if (s?.kind === 'add_line') {
-      const lineId = a.before.added_line_id;
-      const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(lineId));
-      setDoc((prev) => ({
-        ...prev,
-        suggestion_actions: log,
-        lines: idx >= 0 ? prev.lines.filter((_, i) => i !== idx) : prev.lines,
-      }));
-      if (workingDocId) patchDoc([...(idx >= 0 ? [{ op: 'remove_line', index: idx, undo_of: id }] : []), logOp]);
-      return;
-    }
-    if (s?.line_id) {
-      const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(s.line_id));
-      const ln = docRef.current.lines[idx];
-      if (ln) {
+    noteState(id, 'pending');
+    if (a.action === 'accepted' && a.before) {
+      const before = a.before;
+      if (s?.kind === 'add_line') {
+        const lineId = before.added_line_id;
+        setDoc((prev) => ({ ...prev, lines: prev.lines.filter((l) => String(l.id) !== String(lineId)) }));
+      } else if (s?.line_id) {
         setDoc((prev) => ({
           ...prev,
-          suggestion_actions: log,
-          lines: prev.lines.map((l, i) => (i === idx ? { ...l, ...(a.before as Partial<Line>) } : l)),
+          lines: prev.lines.map((l) => (String(l.id) === String(s.line_id) ? { ...l, ...(before as Partial<Line>) } : l)),
         }));
-        if (workingDocId) patchDoc([{ op: 'update_line', line_id: ln.id, index: idx, fields: a.before, undo_of: id }, logOp]);
-        return;
+      } else {
+        setDoc((prev) => ({ ...prev, ...(before as Partial<DocData>) }));
       }
-      // The line is gone — record the undo anyway.
-      setDoc((prev) => ({ ...prev, suggestion_actions: log }));
-      if (workingDocId) patchDoc([logOp]);
-      return;
     }
-    setDoc((prev) => ({ ...prev, ...(a.before as Partial<DocData>), suggestion_actions: log }));
-    if (workingDocId) patchDoc([{ op: 'update_header', fields: a.before, undo_of: id }, logOp]);
+    void decideOps([{ undo: id }]);
   };
 
   // ---- Derived review state (rendering only — the server decided) -------
@@ -1258,67 +1099,26 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     () => (docLive.issues || []).filter((i) => !!i && !!i.id && !!i.message),
     [docLive.issues],
   );
-  // An issue is CLEARED when its clears_when predicate holds against the
-  // current working values ('resolved'), or when it was explicitly accepted/
-  // dismissed — "I've checked this" ('checked'). Otherwise it is open, and a
-  // blocking open issue gates the Receive button on BOTH surfaces.
-  type IssueState = 'open' | 'resolved' | 'checked';
-  const issueStateOf = (i: Issue): IssueState => {
-    if (evalClears(docLive, i)) return 'resolved';
-    // The person's own value on the line answers it, however that was
-    // recorded — the same rule as the server's invoice_edits.hand_settles.
-    if (settledByHand(i, docLive as unknown as Record<string, unknown>, docLive.edits)) return 'checked';
-    // Only asking again stands these down (invoice_review.is_settled).
-    if (RETRY_CODES.includes(i.code)) return 'open';
-    if (stateOf(i.id) !== 'pending') return 'checked';
-    // The totals stand down only when they match — accepted fixes are not
-    // enough on their own (the same rule as invoice_review.is_settled).
-    if (i.clears_when?.op === 'balances') return 'open';
-    // Every suggestion that is its fix accepted — the same rule as the
-    // server's invoice_review.is_settled.
-    if (fixAccepted(i, (id) => stateOf(id) === 'accepted'
-      && fixHolds(suggestions.find((x) => x.id === id), docLive))) return 'resolved';
-    return 'open';
-  };
-  const blockingIssues = issues.filter((i) => i.blocking);
-  const blockingOpen = blockingIssues.filter((i) => issueStateOf(i) === 'open');
-  // A GATED blocker (e.g. "the copy's unit isn't in Loaded — create it", gated on
-  // auto_create_units) only stops UNATTENDED auto-receive. A person reviewing the
-  // card is the authority that gate defers to, so it must not grey out the manual
-  // Receive — a line that already holds a valid unit is receivable as-is, and a
-  // wrong suggestion (a misread '4x5L' on a '5 L' line) should never trap it.
-  // Genuine receive-invalidity — no item/unit/supplier — is still caught by
-  // `unresolved` / `supplierBlocking` below, so nothing unsafe slips through.
-  // Norm's answer not coming through (ANSWER_MISSING_CODES) stops Autopilot in
-  // the same way: the person at the card picks the item or unit themselves, and
-  // `unresolved` still refuses a line with neither.
-  const manualBlockingOpen = blockingOpen.filter(
-    (i) => !i.gate && !RETRY_CODES.includes(i.code),
-  );
+  // A stop's state is the server's answer (invoice_decisions.annotate): it
+  // stood down by its predicate, by the person's own value, or by its fix.
+  type IssueState = 'open' | 'resolved';
+  const issueStateOf = (i: Issue): IssueState =>
+    (docLive.issue_states?.[i.id]?.state === 'settled' ? 'resolved' : 'open');
+  const blockingOpen = issues.filter((i) => i.blocking && issueStateOf(i) === 'open');
   const liveConfidence: 'ready' | 'needs_review' | null =
-    reviewed ? (blockingOpen.length ? 'needs_review' : 'ready') : null;
-  const pendingSuggestions = suggestions.filter((s) => stateOf(s.id) === 'pending');
+    reviewed ? (docLive.confidence === 'ready' ? 'ready' : 'needs_review') : null;
+  const pendingSuggestions = suggestions.filter((s) => rowOpen(s.id));
   // What each field's chip shows: the suggestions still to decide, or in
   // `record` mode every suggestion, with what happened to it.
   const fieldSuggestions = record ? suggestions : pendingSuggestions;
 
   // ---- The review list: one row per decision (invoiceReview.ts) ----------
-  // The line's field still names something Loaded has no record of (New).
-  const fieldStillNew = (lineId: string, field: string) => {
-    const l = doc.lines.find((x) => String(x.id) === lineId);
-    if (!l || l.struck) return false;
-    if (field === 'unit') return !l.linked_unit_id;
-    if (field === 'linked_item_id') return !l.linked_item_id;
-    if (field === 'linked_brand_id') return !!l.brand && !l.linked_brand_id;
-    return false;
-  };
   const review = buildReviewList({
     issues,
     suggestions,
     lineOrder: doc.lines.map((l) => String(l.id)),
     issueOpen: (i) => issueStateOf(i as Issue) === 'open',
-    suggestionPending: (sg) => stateOf(sg.id) === 'pending',
-    stillNew: fieldStillNew,
+    suggestionPending: (sg) => rowOpen(sg.id),
     hideSuggestions: studying,
   });
   // While Norm says "delete this draft" (a statement, a duplicate, no copy),
@@ -1328,79 +1128,33 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const openRows = visibleRows.filter((r) => r.open);
   const [acceptingRows, setAcceptingRows] = useState(false);
 
-  // Accept for one row, and Accept all, through ONE path. Every fix that only
-  // edits the draft — a value, an added line, a strike, a "keep it" — lands in
-  // a single patch, so nothing reads stale state; the Loaded writes (creates)
-  // then run in the order they depend on each other, each recording itself.
-  // A draft to delete is accepted alone: nothing else matters once it is gone.
-  // A row nothing can fix records the person's "checked".
-  const runLoadedWrite = async (sg: Suggestion): Promise<void> => {
-    const p = (sg.payload || {}) as Record<string, string | undefined>;
-    const lineId = String(sg.line_id || '');
-    if (sg.kind === 'create_supplier') {
-      await createSupplierAndApply(sg);
-    } else if (sg.kind === 'create_unit') {
-      const idx = docRef.current.lines.findIndex((l) => String(l.id) === lineId);
-      const name = p.unit_name || (typeof sg.proposed === 'string' ? sg.proposed : '');
-      if (idx >= 0 && name) await createUnitAndApply(idx, name, sg);
-    } else if (sg.kind === 'create_item') {
-      const name = p.name || (typeof sg.proposed === 'string' ? sg.proposed : '');
-      await createItemAndApply(lineId, name, p.group_id || '', sg);
-    } else if (sg.kind === 'create_brand') {
-      const name = p.brand_name || (typeof sg.proposed === 'string' ? sg.proposed : '');
-      await createBrandAndApply(lineId, name, sg);
-    }
-  };
+  // Accept for one row, and Accept all, through ONE path: every fix goes to
+  // the server as a decision in one patch, and the server applies them in
+  // its order of work — lines to add, then values, then what is made in
+  // Loaded — each recording itself. A draft to delete is accepted alone.
   const acceptRows = async (rows: ReviewRow[]) => {
     if (doneState || acceptingRows) return;
     const open = rows.filter((r) => r.open);
     if (!open.length) return;
+    const fixes = open.flatMap((r) => r.fixes).filter((sg) => rowOpen(sg.id)) as Suggestion[];
+    const del = fixes.find((sg) => sg.kind === 'delete_invoice');
+    if (del) {
+      void acceptFix(del);
+      return;
+    }
+    if (!fixes.length) return;
     setAcceptingRows(true);
     setMessage('');
     try {
-      // A dismissed answer whose field is still New keeps its row open, and
-      // its Accept takes Norm's answer after all.
-      const fixes = open.flatMap((r) => r.fixes).filter((sg) => stateOf(sg.id) === 'pending'
-        || (stateOf(sg.id) === 'dismissed' && !!sg.line_id && !!sg.field
-          && fieldStillNew(String(sg.line_id), String(sg.field)))) as Suggestion[];
-      const del = fixes.find((sg) => sg.kind === 'delete_invoice');
-      if (del) {
-        acceptSuggestion(del);
-        return;
+      for (const sg of fixes) {
+        showApplied(sg);
+        noteState(sg.id, 'accepted');
       }
-      const writes = fixes.filter((sg) => LOADED_WRITE_ORDER.includes(sg.kind));
-      // An added line first: its unit and item land on it.
-      const local = fixes
-        .filter((sg) => !LOADED_WRITE_ORDER.includes(sg.kind))
-        .sort((x, y) => Number(y.kind === 'add_line') - Number(x.kind === 'add_line'));
-      // Accept all checks the rows with nothing to apply — not one only
-      // asking Norm again can answer.
-      const checked = open.filter((r) => r.issue && !r.fixes.length && !RETRY_CODES.includes(r.issue.code))
-        .map((r) => r.issue as Issue);
-
-      let state = docRef.current;
-      const ops: Record<string, unknown>[] = [];
-      const entries: SuggestionAction[] = [];
-      let orderChanged = false;
-      for (const sg of local) {
-        const folded = foldSuggestion(state, sg);
-        if (!folded) continue;
-        ops.push(...folded.ops);
-        entries.push(folded.entry);
-        state = folded.next;
-        if (PO_LINK_KINDS.includes(sg.kind)) orderChanged = true;
-      }
-      for (const i of checked) entries.push({ suggestion_id: i.id, action: 'accepted', by: 'user', at: nowIso() });
-      if (entries.length) {
-        const log = [...(docRef.current.suggestion_actions || []), ...entries];
-        const nextState = state;
-        setDoc(() => ({ ...nextState, suggestion_actions: log }));
-        if (workingDocId) await patchDoc([...ops, { op: 'update_header', fields: { suggestion_actions: log } }]);
-        if (orderChanged) await refreshOrderReference();
-      }
-      for (const kind of LOADED_WRITE_ORDER) {
-        for (const sg of writes.filter((x) => x.kind === kind)) await runLoadedWrite(sg);
-      }
+      await decideOps(fixes.map((sg) => ({ accept: sg.id })));
+      // The review pre-caches the rows of the order it suggests, so the
+      // projection recomputes on this very patch — no wait, no re-analysis.
+      // Only fetch when the accepted order ISN'T the cached one.
+      if (fixes.some((sg) => PO_LINK_KINDS.includes(sg.kind) && !ordersCached(sg))) await refreshOrderReference();
     } finally {
       setAcceptingRows(false);
     }
@@ -1447,31 +1201,17 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
 
   const doneState = status === 'done' || !!doc.is_received || !!doc.is_deleted;
   const draftDeleted = deletedDraft || !!doc.is_deleted;
-  // Lines still pointing at a NEW (uncreated) stock item or unit — receiving is
-  // blocked until each is explicitly created in Loaded. A struck line is
-  // excluded from the receive entirely, so it never gates it.
-  const unresolved = useMemo(
-    // Mirrors do_receive's own guard, brand included: Loaded refuses a line
-    // naming a brand it has no record for, and finding that out on submit as
-    // a 400 is worse than a greyed button that says why.
-    () => doc.lines.filter((l) => !l.struck && (!l.linked_item_id || !l.linked_unit_id
-      || (!!l.brand && !l.linked_brand_id))),
-    [doc.lines],
-  );
-  // No linked supplier: Loaded rejects the receive outright (500), so block
-  // it here with a visible reason — on BOTH surfaces (same gating).
-  const supplierBlocking = !doneState && !!doc.invoice_id && !doc.linked_supplier_id;
-  // Nothing to receive: an empty draft (a statement/letter uploaded as an
-  // invoice, or every line struck). Deleting the draft is the action.
-  const noLines = !doneState && !!doc.invoice_id && !doc.lines.some((l) => !l.struck);
-  // Everything standing between the user and a receive, counted ONCE — the
-  // per-line NEW badges and the blocked list are two views of the same set.
-  const blockedCount = useMemo(
-    () => new Set([...unresolved.map((l) => String(l.id)), ...manualBlockingOpen.map((i) => i.id)]).size,
-    [unresolved, manualBlockingOpen],
-  );
-  const receiveBlocked = status === 'saving' || unresolved.length > 0
-    || supplierBlocking || noLines || manualBlockingOpen.length > 0;
+  // Whether this person can receive, and why not: the server's answer
+  // (invoice_decisions.annotate) — what Loaded would refuse, and the stops no
+  // switch waves through. A gated stop never greys out a person's Receive:
+  // the person is the authority the switch defers to.
+  const receiveState = docLive.receive;
+  const receiveBlocked = status === 'saving' || pendingSaves > 0 || !receiveState?.person_can_receive;
+  const receiveTitle = status !== 'saving' && pendingSaves > 0
+    ? 'Saving your changes…'
+    : receiveState && !receiveState.person_can_receive
+      ? receiveState.blocked_by.join(' · ')
+      : undefined;
 
   const includesTax = !!doc.unit_cost_includes_tax;
   const totals = useMemo(() => docTotals(doc), [doc]);
@@ -1645,86 +1385,17 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
   };
 
-  // ---- Loaded creates (web-only writes) + local link --------------------
-  // Link a line to a stock item as a LOCAL draft edit. Nothing is written to
+  // ---- Loaded creates + linking --------------------------------------------
+  // Link a line to a stock item: the person's own edit. Nothing is written to
   // Loaded until Accept & Receive — the receive request carries the item id
-  // and do_receive registers the supplier variant then. The item_unmatched
-  // issue clears via its clears_when (linked_item_id not_null); the PO
-  // reference re-attaches server-side on the next open.
-  // The PO reconciliation beside the lines (ordered qty, "ordered, not
-  // delivered", substitutes) is SERVER-owned derived state: the patch
-  // response carries it back recomputed, and the merge at patchDoc paints it.
-  // Never patch those fields from here — two writers is exactly how the list
-  // drifted empty on undo (INV-958).
-  const applyLocalLink = (
-    lineId: string,
-    itemId: string,
-    itemName: string | null,
-    sugg: Suggestion | null = null,
-    extraAfter: Record<string, unknown> = {},
-  ) => {
+  // and do_receive registers the supplier variant then. The PO reconciliation
+  // beside the lines is SERVER-owned derived state: the patch response
+  // carries it back recomputed, and the merge at patchDoc paints it.
+  const linkItem = (lineId: string, itemId: string) => {
     const idx = docRef.current.lines.findIndex((l) => l.id === lineId);
     if (idx < 0) return;
-    const fields: Partial<Line> = { linked_item_id: itemId, item_name: itemName };
-    // Tagged when Norm's suggestion drove it: a decision, not a person's edit
-    // (the server keeps a person's edits to replay on a rebuild).
-    const ops: Record<string, unknown>[] = [
-      { op: 'update_line', line_id: lineId, index: idx, fields, ...(sugg ? { suggestion_id: sugg.id } : {}) },
-    ];
-    // Driven by an accepted suggestion: record it in the SAME patch, or the
-    // suggestion stays pending forever and the click looks like it did
-    // nothing — the create_unit bug, exactly (11 Aug 2026).
-    let log: SuggestionAction[] | null = null;
-    const prev = docRef.current.lines[idx];
-    const before = {
-      linked_item_id: prev?.linked_item_id ?? null,
-      item_name: prev?.item_name ?? null,
-    };
-    if (sugg) {
-      const [nextLog, logOp] = recordOp({
-        suggestion_id: sugg.id,
-        action: 'accepted',
-        by: 'user',
-        at: nowIso(),
-        before,
-        after: { ...fields, ...extraAfter },
-      });
-      log = nextLog;
-      ops.push(logOp);
-    } else {
-      // Picked by hand: that answers Norm's suggestion for the item, and
-      // settles a line Norm's answer didn't come through for.
-      const entries: SuggestionAction[] = [];
-      const answer = answerFieldSuggestion(lineId, 'linked_item_id', fields, before);
-      if (answer) entries.push(answer);
-      tagIfAccepted(ops[0], answer);
-      const missing = issues.find((i) => i.code === 'item_answer_missing'
-        && String(i.line_id) === String(lineId) && issueStateOf(i) === 'open');
-      if (missing) {
-        entries.push({
-          suggestion_id: missing.id, action: 'accepted', by: 'user', at: nowIso(),
-          before, after: { ...fields },
-        });
-      }
-      if (entries.length) {
-        log = [...(docRef.current.suggestion_actions || []), ...entries];
-        ops.push({ op: 'update_header', fields: { suggestion_actions: log } });
-      }
-    }
-    setDoc((prev) => {
-      const lines = prev.lines.map((l, i) => (i === idx ? { ...l, ...fields } : l));
-      return log ? { ...prev, lines, suggestion_actions: log } : { ...prev, lines };
-    });
-    if (workingDocId) patchDoc(ops);
-    setItemForm(null);
-    setLinkQuery('');
-  };
-  // Link the line to an EXISTING Loaded item (a server linked_item_id
-  // suggestion goes through acceptSuggestion instead — this is the manual
-  // pick from the create form's search).
-  const linkItem = (lineId: string, itemId: string) => {
     const cat = stockItems.find((x) => x.id === itemId);
-    applyLocalLink(lineId, itemId, cat?.name ?? null);
+    void editLine(idx, { linked_item_id: itemId, item_name: cat?.name ?? null });
     setPicker(null);
   };
 
@@ -1741,82 +1412,29 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     }
     return null;
   };
-  // Create (or find) a unit in Loaded and give it to the line. From the
-  // new-unit form, with the person's own type and size; or from an accepted
-  // create_unit suggestion or blocker, where accepting IS the confirmation and
-  // the server reads the size off the name. Resolve-first server-side: a unit
-  // Loaded already has comes back instead of a duplicate.
+  // Create (or find) a unit in Loaded and give it to the line, from the
+  // new-unit form with the person's own type and size: their own edit (an
+  // accepted create_unit suggestion goes through acceptRows). Resolve-first
+  // server-side: a unit Loaded already has comes back instead of a duplicate.
   const createUnitAndApply = async (
     idx: number,
     name: string,
-    sugg: Suggestion | null = null,
     spec: { ratio: number; unit_type: string } | null = null,
   ): Promise<boolean> => {
-    const l = doc.lines[idx];
+    const l = docRef.current.lines[idx];
     if (!l || !name || !venueId || creatingUnitLine) return false;
-    // From the form, the line's own unit blocker is what this answers. Only a
-    // suggestion the caller passed in makes the line's change a decision; a
-    // unit the person made in the form is their own edit (kept on a rebuild).
-    const passed = sugg;
-    const openIssue = openUnitIssue(l.id);
-    if (!sugg && openIssue) sugg = { id: openIssue.id } as Suggestion;
     setCreatingUnitLine(l.id);
     setMessage('');
     try {
-      const res = await apiFetch('/api/invoice-fixes/create-unit', {
-        method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id, name, ...(spec ?? {}) }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
-        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
+      const [out] = await decideOps([{ create: { kind: 'unit', line_id: l.id, name, ...(spec ?? {}) } }]);
+      if (!out?.ok) return false;
+      if (out.created === false && spec) setMessage(`Loaded already has ‘${out.name ?? name}’ — using that.`);
+      // Into the dropdown too (the server put it on the line).
+      if (out.id) {
+        const rec: Unit = { id: out.id, name: out.name ?? name, ...(out.ratio != null ? { ratio: out.ratio } : {}) };
+        setUnits((prev) => (prev.some((u) => u.id === rec.id) ? prev : [...prev, rec]));
       }
-      const out = await res.json();
-      if (!out?.unit_id) throw new Error('Loaded did not return the created unit');
-      const rec: Unit = { id: out.unit_id, name: out.unit_name ?? name, ratio: out.unit_ratio ?? undefined };
-      if (out.created === false && spec) {
-        setMessage(`Loaded already has ‘${rec.name}’ — using that.`);
-      }
-      // Into the dropdown before the line takes it.
-      setUnits((prev) => (prev.some((u) => u.id === rec.id) ? prev : [...prev, rec]));
-      const fields = { linked_unit_id: rec.id, unit: rec.name, unit_ratio: rec.ratio ?? null };
-      const ops: Record<string, unknown>[] = [
-        { op: 'update_line', line_id: l.id, index: idx, fields, ...(passed ? { suggestion_id: passed.id } : {}) },
-      ];
-      // Record the accept in the SAME patch as the line. Without this the
-      // suggestion stayed pending forever: the unit landed, the chip never
-      // cleared, and every further click created the unit again (eleven
-      // create-unit POSTs in 90 seconds, 11 Aug 2026). Undo needs the
-      // before/after too, and the autopilot metric reads this log — an
-      // unrecorded accept reads as a silent rejection.
-      let log: SuggestionAction[] | null = null;
-      if (sugg) {
-        const prev = docRef.current.lines[idx];
-        const [nextLog, logOp] = recordOp({
-          suggestion_id: sugg.id,
-          action: 'accepted',
-          by: 'user',
-          at: nowIso(),
-          before: {
-            linked_unit_id: prev?.linked_unit_id ?? null,
-            unit: prev?.unit ?? null,
-            unit_ratio: prev?.unit_ratio ?? null,
-          },
-          after: { ...fields, created: out.created !== false },
-        });
-        log = nextLog;
-        ops.push(logOp);
-      }
-      setDoc((prev) => {
-        const lines = prev.lines.map((x, i) => (i === idx ? { ...x, ...fields } : x));
-        return log ? { ...prev, lines, suggestion_actions: log } : { ...prev, lines };
-      });
-      if (workingDocId) patchDoc(ops);
       return true;
-    } catch (e) {
-      setStatus('error');
-      setMessage(e instanceof Error ? e.message : 'Could not create the unit in Loaded');
-      return false;
     } finally {
       setCreatingUnitLine(null);
     }
@@ -1865,68 +1483,19 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
       return;
     }
     const ratio = parseFloat(unitForm.size);
-    const ok = await createUnitAndApply(
-      idx, unitForm.name.trim(), null, { ratio, unit_type: unitForm.type },
-    );
+    const ok = await createUnitAndApply(idx, unitForm.name.trim(), { ratio, unit_type: unitForm.type });
     if (ok) {
       setUnitForm(null);
       afterCreate();
     }
   };
 
-  // The invoice names a supplier no Loaded record covers: the Replica's
-  // answer is a create_supplier suggestion. Create it and link — resolve-first
-  // server-side (an existing record is returned, never duplicated). Accepting
-  // the suggestion IS the confirmation; the CREATE is the one Loaded write,
-  // the invoice takes the supplier locally (written at receive).
-  const createSupplierAndApply = async (sugg: Suggestion) => {
-    const name = String((sugg.payload || {}).supplier_name || sugg.proposed || '').trim();
-    if (!name || !venueId || creatingSupplier) return;
-    setCreatingSupplier(true);
-    setMessage('');
-    try {
-      const res = await apiFetch('/api/invoice-fixes/create-supplier', {
-        method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id, name }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
-        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
-      }
-      const out = await res.json();
-      if (!out?.supplier_id) throw new Error('Loaded did not return the created supplier');
-      const rec = { id: out.supplier_id as string, name: (out.supplier_name as string) ?? name };
-      // Into the dropdown before the header takes it.
-      setSuppliers((prev) => (prev.some((s) => s.id === rec.id) ? prev : [...prev, rec]));
-      const fields = { linked_supplier_id: rec.id, supplier_name: rec.name };
-      const [log, logOp] = recordOp({
-        suggestion_id: sugg.id, action: 'accepted', by: 'user', at: nowIso(),
-        before: { linked_supplier_id: docRef.current.linked_supplier_id ?? null },
-        after: { ...fields, created: out.created !== false },
-      });
-      setDoc((prev) => ({ ...prev, ...fields, suggestion_actions: log }));
-      if (workingDocId) patchDoc([{ op: 'update_header', fields, suggestion_id: sugg.id }, logOp]);
-    } catch (e) {
-      setStatus('error');
-      setMessage(e instanceof Error ? e.message : 'Could not create the supplier in Loaded');
-    } finally {
-      setCreatingSupplier(false);
-    }
-  };
-
-  // Explicitly create a NEW stock item (+ its supplier variant) in Loaded and
-  // link the line — a deliberate, controlled action, never silent on receive.
-  // ONE implementation for both entry points: the inline form and an accepted
-  // `create_item` suggestion (which carries the replica's name + stock group).
-  // The item takes the LINE's unit, brand and the card's supplier — Loaded
-  // needs the unit to create it, which is why Accept all runs unit creations
-  // ahead of item ones. A same-named item Loaded already has is linked instead.
-  const createItemAndApply = async (
-    lineId: string,
-    name: string,
-    groupId: string,
-    sugg: Suggestion | null = null,
-  ): Promise<boolean> => {
+  // Create a NEW stock item (+ its supplier variant) in Loaded from the inline
+  // form and link the line — the person's own edit (an accepted create_item
+  // suggestion goes through acceptRows like any decision). The item takes the
+  // LINE's unit, brand and the card's supplier — Loaded needs the unit to
+  // create it. A same-named item Loaded already has is linked instead.
+  const createItemAndApply = async (lineId: string, name: string, groupId: string): Promise<boolean> => {
     if (!venueId || creatingItem) return false;
     const line = docRef.current.lines.find((l) => l.id === lineId);
     if (!line?.linked_unit_id) {
@@ -1942,38 +1511,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     setCreatingItem(true);
     setMessage('');
     try {
-      const res = await apiFetch('/api/invoice-fixes/create-item', {
-        method: 'POST',
-        body: JSON.stringify({
-          venue_id: venueId,
-          invoice_id: doc.invoice_id,
-          line_id: lineId,
-          name,
-          group_id: groupId,
-          unit_id: line.linked_unit_id,
-          brand_id: line.linked_brand_id ?? null,
-          supplier_id: docRef.current.linked_supplier_id ?? null,
-        }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
-        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
-      }
-      // The item now exists in Loaded (with its supplier variant); the LINE
-      // links locally and lands in Loaded on receive.
-      const out = await res.json();
-      if (out?.item_id) {
-        applyLocalLink(lineId, out.item_id, out.item_name ?? name, sugg, { created: out.created !== false });
-        const rec: StockItem = { id: out.item_id, name: out.item_name ?? name, code: line.code, unit_id: line.linked_unit_id };
+      const [out] = await decideOps([{ create: { kind: 'item', line_id: lineId, name, group_id: groupId } }]);
+      if (!out?.ok) return false;
+      if (out.id) {
+        const rec: StockItem = { id: out.id, name: out.name ?? name, code: line.code, unit_id: line.linked_unit_id };
         setStockItems((prev) => (prev.some((x) => x.id === rec.id) ? prev : [...prev, rec]));
         if (out.created === false) setMessage(`Loaded already has ‘${rec.name}’ — linked that instead.`);
       }
       setItemForm(null);
       return true;
-    } catch (e) {
-      setStatus('error');
-      setMessage(e instanceof Error ? e.message : 'Could not create the stock item');
-      return false;
     } finally {
       setCreatingItem(false);
     }
@@ -1984,128 +1530,31 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   };
 
   // Loaded names a brand on the line but has no record for it, and refuses to
-  // receive the line until it does. Resolve-first server-side, so a repeated
-  // click returns the existing record instead of duplicating it.
-  const createBrandAndApply = async (
-    lineId: string,
-    name: string,
-    sugg: Suggestion | null = null,
-  ): Promise<boolean> => {
+  // receive the line until it does. Made from the picker: the person's own
+  // edit (an accepted create_brand suggestion goes through acceptRows).
+  const createBrandAndApply = async (lineId: string, name: string): Promise<boolean> => {
     if (!venueId || !name || creatingBrandLine) return false;
-    const idx = docRef.current.lines.findIndex((l) => String(l.id) === String(lineId));
-    if (idx < 0) return false;
     setCreatingBrandLine(lineId);
     setMessage('');
     try {
-      const res = await apiFetch('/api/invoice-fixes/create-brand', {
-        method: 'POST',
-        body: JSON.stringify({ venue_id: venueId, invoice_id: doc.invoice_id, name }),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
-        throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
+      const [out] = await decideOps([{ create: { kind: 'brand', line_id: lineId, name } }]);
+      if (!out?.ok) return false;
+      if (out.id) {
+        const rec: Brand = { id: out.id, name: out.name ?? name };
+        setBrands((prev) => (prev.some((x) => x.id === rec.id) ? prev : [...prev, rec]));
       }
-      const out = await res.json();
-      if (!out?.brand_id) throw new Error('Loaded did not return the created brand');
-      const fields: Partial<Line> = {
-        linked_brand_id: out.brand_id,
-        brand: out.brand_name ?? name,
-        brand_set: true,
-      };
-      const rec: Brand = { id: out.brand_id, name: out.brand_name ?? name };
-      setBrands((prev) => (prev.some((x) => x.id === rec.id) ? prev : [...prev, rec]));
-      const ops: Record<string, unknown>[] = [
-        { op: 'update_line', line_id: lineId, index: idx, fields, ...(sugg ? { suggestion_id: sugg.id } : {}) },
-      ];
-      let log: SuggestionAction[] | null = null;
-      const prev = docRef.current.lines[idx];
-      // brand_set too: an Undo writes back everything the choice changed.
-      const before = {
-        linked_brand_id: prev?.linked_brand_id ?? null, brand: prev?.brand ?? null, brand_set: prev?.brand_set ?? false,
-      };
-      if (sugg) {
-        const [nextLog, logOp] = recordOp({
-          suggestion_id: sugg.id,
-          action: 'accepted',
-          by: 'user',
-          at: nowIso(),
-          before,
-          after: { ...fields, created: out.created !== false },
-        });
-        log = nextLog;
-        ops.push(logOp);
-      } else {
-        // Made from the picker: it settles the line's unknown-brand blocker
-        // and answers Norm's suggestion for the brand, as picking one does.
-        const entries: SuggestionAction[] = [];
-        const open = issues.find((i) => i.code === 'brand_unknown' && String(i.line_id) === String(lineId)
-          && issueStateOf(i) === 'open');
-        const answer = answerFieldSuggestion(lineId, 'linked_brand_id', fields, before);
-        if (open && !settlesThroughFix(open, answer)) {
-          entries.push({ suggestion_id: open.id, action: 'accepted', by: 'user', at: nowIso(), before, after: { ...fields } });
-        }
-        if (answer) entries.push(answer);
-        tagIfAccepted(ops[0], answer);
-        if (entries.length) {
-          log = [...(docRef.current.suggestion_actions || []), ...entries];
-          ops.push({ op: 'update_header', fields: { suggestion_actions: log } });
-        }
-      }
-      setDoc((prev) => {
-        const lines = prev.lines.map((l, i) => (i === idx ? { ...l, ...fields } : l));
-        return log ? { ...prev, lines, suggestion_actions: log } : { ...prev, lines };
-      });
-      if (workingDocId) patchDoc(ops);
       return true;
-    } catch (e) {
-      setStatus('error');
-      setMessage(e instanceof Error ? e.message : 'Could not create the brand');
-      return false;
     } finally {
       setCreatingBrandLine(null);
     }
   };
 
   // Pick a brand Loaded already has for the line — or none at all, the way out
-  // when Loaded's scan read a supplier's name as a brand. A local edit, like
-  // every other; brand_set carries it to Loaded on receive.
+  // when Loaded's scan read a supplier's name as a brand. The person's edit;
+  // brand_set carries it to Loaded on receive.
   const onBrand = (idx: number, brandId: string) => {
-    const l = docRef.current.lines[idx];
-    if (!l) return;
     const b = brands.find((x) => x.id === brandId);
-    const fields: Partial<Line> = {
-      linked_brand_id: b?.id ?? null,
-      brand: b?.name ?? null,
-      brand_set: true,
-    };
-    const ops: Record<string, unknown>[] = [{ op: 'update_line', line_id: l.id, index: idx, fields }];
-    // The line's unknown-brand blocker is answered by this choice — "no brand"
-    // included, which its clears_when (a brand record) can't see. Recorded
-    // like any accept, with the before/after the readiness report reads.
-    const open = issues.find((i) => i.code === 'brand_unknown' && String(i.line_id) === String(l.id)
-      && issueStateOf(i) === 'open');
-    // brand_set too: an Undo writes back everything the choice changed.
-    const before = { brand: l.brand ?? null, linked_brand_id: l.linked_brand_id ?? null, brand_set: l.brand_set ?? false };
-    const entries: SuggestionAction[] = [];
-    const answer = answerFieldSuggestion(l.id, 'linked_brand_id', fields, before);
-    if (open && !settlesThroughFix(open, answer)) {
-      entries.push({
-        suggestion_id: open.id, action: 'accepted', by: 'user', at: nowIso(),
-        before, after: { ...fields },
-      });
-    }
-    if (answer) entries.push(answer);
-    tagIfAccepted(ops[0], answer);
-    let log: SuggestionAction[] | null = null;
-    if (entries.length) {
-      log = [...(docRef.current.suggestion_actions || []), ...entries];
-      ops.push({ op: 'update_header', fields: { suggestion_actions: log } });
-    }
-    setDoc((prev) => {
-      const lines = prev.lines.map((x, i) => (i === idx ? { ...x, ...fields } : x));
-      return log ? { ...prev, lines, suggestion_actions: log } : { ...prev, lines };
-    });
-    if (workingDocId) patchDoc(ops);
+    void editLine(idx, { linked_brand_id: b?.id ?? null, brand: b?.name ?? null, brand_set: true });
   };
   const submitNewBrand = async () => {
     if (!picker || !brandName.trim()) return;
@@ -2159,11 +1608,14 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const onNotes = (value: string) => {
     setDoc((prev) => ({ ...prev, notes: value }));
     if (!workingDocId) return;
+    // The wait counts as a save in progress, so Receive waits for the notes.
     if (notesTimer.current) clearTimeout(notesTimer.current);
-    notesTimer.current = setTimeout(
-      () => patchDoc([{ op: 'update_notes', value }]),
-      500,
-    );
+    else setPendingSaves((n) => n + 1);
+    notesTimer.current = setTimeout(() => {
+      notesTimer.current = null;
+      setPendingSaves((n) => Math.max(0, n - 1));
+      void patchDoc([{ op: 'update_notes', value }]);
+    }, 500);
   };
 
   // Add Item — append a new line from the stock catalogue. A temporary id lets
@@ -2582,7 +2034,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     const live = r.open && !doneState;
     const notActioned = r.open && doneState;
     const hasFix = fixes.length > 0;
-    const checked = !!i && !r.open && !fixes.length && issueStateOf(i) === 'checked';
+    const byHand = !!i && !r.open && docLive.issue_states?.[i.id]?.how === 'by_hand';
     const undoTarget: Suggestion | null = single;
     const onLine = !!r.lineId && doc.lines.some((l) => String(l.id) === r.lineId);
     const goToLine = onLine
@@ -2602,7 +2054,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
             style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', cursor: goToLine ? 'pointer' : undefined, ...(!r.open ? { textDecoration: 'line-through' } : {}) }}>
             {text}
             {needs.length > 0 && ` — once it's added, it still needs ${needs.join(' and ')}`}
-            {checked && <span style={{ fontStyle: 'italic' }}> — checked</span>}
+            {byHand && <span style={{ fontStyle: 'italic' }}> — your pick</span>}
             {notActioned && <span style={{ fontStyle: 'italic' }}> — not actioned</span>}
           </span>
           {byNorm && !r.open && (
@@ -2626,7 +2078,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               )}
             </span>
           )}
-          {!r.open && !doneState && !destructive && undoTarget && lastAction.get(undoTarget.id)?.action === 'accepted' && (
+          {!r.open && !doneState && !destructive && undoTarget && lastAction.get(undoTarget.id)?.action === 'accepted'
+            && !lastAction.get(undoTarget.id)?.after?.by_hand && (
             <Button variant="quiet" size="xs" onClick={() => undoAction(undoTarget, undoTarget.id)} title="undo this change">
               Undo
             </Button>
@@ -3153,6 +2606,15 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                     return suggChip(us, us?.kind === 'create_unit' ? `→ ${fmtVal(us.proposed)} (new)` : undefined);
                   })()}
                   {handChip(l.id, 'unit')}
+                  {/* A unit the person picked of a different kind from what
+                      stocktakes count the item in: a warning, never a stop —
+                      their pick stands (owner, 20 Oct 2026). */}
+                  {(docLive.warnings || []).filter((w) => String(w.line_id ?? '') === String(l.id)).map((w) => (
+                    <div key={w.code} style={{ ...iconLine, marginTop: 3, fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>
+                      <Icon icon={TriangleAlert} size={12} style={iconNudge} />
+                      <span>{w.text}</span>
+                    </div>
+                  ))}
                 </td>
                 <td className="num" style={{ color: 'var(--muted)' }}>
                   {/* Loaded prints a literal 0 where nothing on the order is
@@ -3563,19 +3025,8 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               </Button>
             )}
             {!doneState && (
-              <Button variant="primary" icon={Check} onClick={receive} disabled={receiveBlocked}
-                title={
-                  noLines
-                    ? 'This draft has no line items — nothing to receive'
-                    : supplierBlocking
-                    ? 'Pick the supplier first — Loaded can’t receive a supplier-less invoice'
-                    // It used to say "items/units" whatever was actually wrong —
-                    // including a brand, which is neither.
-                    : blockedCount > 0
-                      ? `${blockedCount} thing${blockedCount > 1 ? 's' : ''} to sort out above — each row says what it needs`
-                      : undefined
-                }>
-                {status === 'saving' ? 'Receiving…' : isCredit ? 'Accept & Receive credit' : 'Accept & Receive'}
+              <Button variant="primary" icon={Check} onClick={receive} disabled={receiveBlocked} title={receiveTitle}>
+                {status === 'saving' ? 'Receiving…' : pendingSaves > 0 ? 'Saving…' : isCredit ? 'Accept & Receive credit' : 'Accept & Receive'}
               </Button>
             )}
           </div>

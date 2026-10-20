@@ -2218,28 +2218,30 @@ def _last_actions(data: dict) -> dict[str, dict]:
     return last
 
 
-def is_settled(data: dict, issue: dict, last: dict[str, dict] | None = None) -> bool:
+def is_settled(
+    data: dict,
+    issue: dict,
+    last: dict[str, dict] | None = None,
+    hand: set | None = None,
+) -> bool:
     """A blocker stands down when its predicate holds against the working
-    values, when a person decided it ("I've checked this", or their own value
-    on the line — invoice_edits.hand_settles), or when every suggestion that
-    is its fix was accepted. The card's ``issueStateOf`` is the same rule."""
+    values, when a person's own value on the line answers it
+    (invoice_edits.hand_settles), or when every suggestion that is its fix
+    was accepted and still holds. Nothing else: there is no "I've checked
+    this" (owner, 20 Oct 2026) — a stop is answered by its fix or by a
+    person's value, or it stands. The one rule; the card shows the server's
+    answer (invoice_decisions.annotate)."""
     if _clears(data, issue):
         return True
     from app.services.invoice_edits import hand_settles
 
-    if hand_settles(data, issue):
+    if hand_settles(data, issue, hand):
         return True
     if issue.get("code") in RETRY_NEXT_REVIEW:
         # Norm's answer (or the copy check) didn't come through: only asking
-        # again, or a person's own record for the line, stands it down —
-        # never "checked" (the card's Accept all writes that for every row).
+        # again, or a person's own record for the line, stands it down.
         return False
     last = _last_actions(data) if last is None else last
-    if (last.get(str(issue.get("id"))) or {}).get("action") in (
-        "accepted",
-        "dismissed",
-    ):
-        return True
     if (issue.get("clears_when") or {}).get("op") == "balances":
         return False  # accepted fixes count only if the totals now match
     fix = issue.get("fix") or []
@@ -2536,11 +2538,8 @@ def carry_forward_decisions(previous: dict, fresh: dict) -> int:
                     _carry(s, action)
                 elif shared and all(apply[k] == after[k] for k in shared):
                     _carry(s, action)
-        # A waved blocker ("I have checked this") is a decision too — carried
-        # while the same blocker is still raised.
-        if iid not in carried_ids:
-            actions.append(dict(action))
-            carried_ids.add(iid)
+        # The blocker's own entry is not carried: a stop is answered by its
+        # fix or by a person's value, never by a mark of its own.
     return len(carried_ids)
 
 
@@ -2555,30 +2554,28 @@ def autopilot_accept(
     lh=None,
 ) -> list[str]:
     """Autopilot's Accept: what the Replica is sure of, plus what the venue's
-    switches allow. Returns what it did, in words, for the run's verdict.
+    switches allow — each decided exactly as a person's Accept on the card
+    (invoice_decisions.decide). Returns what it did, in words, for the run's
+    verdict.
 
-    - a suggestion with a ``gate`` (a create, a delete, a phantom strike, a
-      unit pick) only when that switch is on;
-    - any other suggestion only when the Replica is sure of it — a guess (a
-      likely order, the closest supplier)
-      always waits for a person;
-    - then any blocker a switch waves through on its own (``_SWITCH_SETTLES``).
+    The switches do one thing: say which suggestions Autopilot may accept —
+    a suggestion with a ``gate`` only when that switch is on; any other only
+    when the Replica is sure of it (a guess — a likely order, the closest
+    supplier — always waits for a person). A field a person set by hand on
+    the card is theirs: nothing is applied over it (owner, 19 Oct 2026).
 
-    Order: a delete first (nothing else matters once the draft is gone), then
-    the draft edits (an added line must exist before anything is created on
-    it), then the Loaded creates in ``LOADED_WRITE_ORDER``. The creates run
-    through services/invoice_catalog — the same functions as the card's
-    buttons, so autopilot and a person make byte-identical Loaded writes. A
-    create that fails leaves its blocker standing: the invoice parks instead
-    of receiving half-built.
+    The order of work is the shared one (invoice_decisions.order_key): a
+    delete first, then lines to add, then the draft's other values, then the
+    Loaded creates in the order they depend on each other. A create that
+    fails leaves its blocker standing: the invoice parks instead of
+    receiving half-built.
     """
-    from app.routers import invoice_fixes as IF
-    from app.services import invoice_catalog as catalog
     from app.services import supplier_identity
+    from app.services.invoice_decisions import decide, order_decisions
+    from app.services.invoice_edits import hand_fields, replay_edits
 
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    actions = data.setdefault("suggestion_actions", [])
     done: list[str] = []
+    data.setdefault("suggestion_actions", [])
     last = _last_actions(data)
 
     def _client():
@@ -2587,32 +2584,19 @@ def autopilot_accept(
             lh = LoadedInvoiceClient(db, config_db, venue_id)
         return lh
 
-    def _record(sid: object, before: dict, after: dict) -> None:
-        actions.append(
-            {
-                "suggestion_id": sid,
-                "action": "accepted",
-                "by": "norm",
-                "at": now,
-                "before": before,
-                "after": after,
-            }
-        )
-
     def _allowed(s: dict) -> bool:
         if s.get("gate"):
             return _VA.gate_open(settings, s.get("gate"))
         return s.get("sure", True) is not False
 
-    # A field a person set by hand on the card is theirs: Autopilot applies
-    # nothing over it (owner, 19 Oct 2026: anything a person typed is
-    # received). The card's edits come with the payload (invoice_edits).
-    from app.services.invoice_edits import hand_fields
-
     hand = hand_fields(data)
 
     def _by_hand(s: dict) -> bool:
-        if not hand:
+        # A confirm ("receive it as it is") writes nothing, so it never goes
+        # over a person's value: a unit they picked that clashes in kind with
+        # the item is received when that switch is on, parked when it is off
+        # (owner, 20 Oct 2026).
+        if not hand or s.get("kind") == "confirm":
             return False
         line = s.get("line_id")
         key = str(line) if line else None
@@ -2626,6 +2610,42 @@ def autopilot_accept(
                 fields |= set(group)
         return any((key, f) in hand for f in fields)
 
+    def _supplier_plausible(s: dict) -> bool:
+        # The riskiest create by a distance: supplier identity picks the
+        # extraction layout, so a second 'SERVICE FOODS' sends every later
+        # invoice from that business to a prompt written for someone else
+        # (10 Aug 2026). Autopilot creates only a supplier nothing plausibly
+        # matches — past the close names Norm checked and ruled out.
+        payload = s.get("payload") or {}
+        name = payload.get("supplier_name") or ""
+        try:
+            rows = _client().get("/1.0/stock/internal/suppliers")
+        except Exception as exc:  # noqa: BLE001 — then it is not created
+            logger.info("autopilot supplier check failed on %s: %s", invoice_id, exc)
+            return True
+        rows = rows if isinstance(rows, list) else []
+        live = [
+            r
+            for r in rows
+            if isinstance(r, dict)
+            and not r.get("removedAt")
+            and not r.get("datestampDeleted")
+        ]
+        ruled_out = {str(i) for i in payload.get("not_these") or []}
+        if [
+            m
+            for m in supplier_identity.plausible_matches(name, live)
+            if str(m.get("id")) not in ruled_out
+        ]:
+            logger.info(
+                "autopilot will not create supplier '%s' on %s: an existing "
+                "supplier is a plausible match",
+                name,
+                invoice_id,
+            )
+            return True
+        return False
+
     pending = [
         s
         for s in data.get("suggestions") or []
@@ -2636,39 +2656,48 @@ def autopilot_accept(
         and not _by_hand(s)
     ]
 
+    def _decide(s: dict) -> dict:
+        needs_loaded = (
+            s.get("kind") in LOADED_WRITE_ORDER or s.get("kind") == "delete_invoice"
+        )
+        try:
+            client = _client() if needs_loaded else None
+        except Exception as exc:  # noqa: BLE001 — the blocker simply stands
+            return {"ok": False, "detail": f"no Loaded client: {exc}"}
+        return decide(
+            data,
+            {"accept": s.get("id")},
+            actor="norm",
+            lh=client,
+            db=db,
+            config_db=config_db,
+            venue_id=venue_id,
+            invoice_id=invoice_id,
+        )
+
     for s in pending:
         if s.get("kind") != "delete_invoice":
             continue
-        payload = s.get("payload") or {}
-        try:
-            IF._apply_delete_invoice(_client(), payload, db)
-        except Exception as exc:  # noqa: BLE001 — parks instead of half-done
-            logger.warning("gated delete failed on %s: %s", invoice_id, exc)
+        out = _decide(s)
+        if not out.get("ok"):
+            logger.warning(
+                "gated delete failed on %s: %s", invoice_id, out.get("detail")
+            )
             continue
-        data["is_deleted"] = True
-        data["status"] = "deleted"
         # Why, kept on the draft (the card's Delete does the same) so the run
         # can say what its deletes were — not just how many.
-        data["deleted_reason"] = payload.get("summary") or s.get("explanation")
-        data["deleted_kind"] = payload.get("reason") or "other"
-        _record(s.get("id"), {}, {"deleted": True})
-        done.append(f"deleted the draft ({data['deleted_reason']})")
+        done.append(out.get("did") or "deleted the draft")
         return done
 
-    # add_line first: a later edit or create may be on the line it adds.
-    edits = sorted(
-        (
-            s
-            for s in pending
-            if s.get("kind") not in LOADED_WRITE_ORDER
-            and s.get("kind") != "delete_invoice"
-        ),
-        key=lambda s: s.get("kind") != "add_line",
-    )
-    adds = [s for s in edits if s.get("kind") == "add_line"]
+    decisions = order_decisions([{"accept": s.get("id")} for s in pending], data)
+    by_id = {str(s.get("id")): s for s in pending}
+    adds = [
+        by_id[str(d["accept"])]
+        for d in decisions
+        if by_id[str(d["accept"])].get("kind") == "add_line"
+    ]
     for s in adds:
-        if apply_suggestion(data, s) is not None:
-            _record(s.get("id"), {"added_line_id": s.get("line_id")}, {"added": True})
+        _decide(s)
     added = {str(s.get("line_id")) for s in adds}
     for s in data.get("suggestions") or []:
         # A decision already made on a line Norm adds (carried while the line
@@ -2684,37 +2713,12 @@ def autopilot_accept(
     if adds and data.get("edits"):
         # What a person did on a line Norm adds again — struck it, typed its
         # quantity, picked its unit — goes on it now, as the card's own
-        # rebuild puts it there; then nothing below writes over it, and a
-        # blocker decision on that line holds only if its value came back.
-        from app.services.invoice_edits import drop_stale_blocker_accepts, replay_edits
-
+        # rebuild puts it there; then nothing below writes over it.
         replay_edits(data, data.get("edits"))
         hand = hand_fields(data)
-        drop_stale_blocker_accepts(data)
         pending = [s for s in pending if not _by_hand(s)]
-        edits = [s for s in edits if not _by_hand(s)]
-    for s in edits:
-        if s.get("kind") == "add_line":
-            continue
-        before = apply_suggestion(data, s)
-        if before is None:
-            continue
-        _record(
-            s.get("id"),
-            before,
-            s.get("apply") or ({"added": True} if s.get("kind") == "add_line" else {}),
-        )
-        if s.get("gate"):
-            if s.get("kind") == "strike":
-                ln = _line(data, s.get("line_id")) or {}
-                done.append(
-                    f"struck '{ln.get('description') or ln.get('code') or '?'}' "
-                    "(not billed on the invoice)"
-                )
-            elif s.get("kind") == "confirm":
-                done.append(f"accepted ({str(s.get('gate')).replace('_', ' ')})")
-            elif s.get("field") == "unit":
-                done.append(f"set unit '{s.get('proposed')}' ({s.get('gate')})")
+        by_id = {str(s.get("id")): s for s in pending}
+        decisions = [d for d in decisions if str(d["accept"]) in by_id]
 
     # What this Accept made NEW in Loaded (a get-or-create that found an
     # existing record made nothing) — the run's summary counts these.
@@ -2725,142 +2729,35 @@ def autopilot_accept(
         "brands": [],
     }
     data["autopilot_created"] = created
-    for kind in LOADED_WRITE_ORDER:
-        for s in pending:
-            if s.get("kind") != kind:
-                continue
-            payload = s.get("payload") or {}
-            ln = _line(data, s.get("line_id")) if s.get("line_id") else None
-            if ln is not None and ln.get("struck"):
-                continue  # not received: nothing to make in Loaded for it
-            try:
-                if kind == "create_supplier":
-                    # The riskiest create by a distance: supplier identity
-                    # picks the extraction layout, so a second 'SERVICE FOODS'
-                    # sends every later invoice from that business to a prompt
-                    # written for someone else (10 Aug 2026). Autopilot creates
-                    # only a supplier nothing plausibly matches — past the
-                    # close names Norm checked and ruled out (``not_these``).
-                    name = payload.get("supplier_name") or ""
-                    rows = _client().get("/1.0/stock/internal/suppliers")
-                    rows = rows if isinstance(rows, list) else []
-                    live = [
-                        r
-                        for r in rows
-                        if isinstance(r, dict)
-                        and not r.get("removedAt")
-                        and not r.get("datestampDeleted")
-                    ]
-                    ruled_out = {str(i) for i in payload.get("not_these") or []}
-                    if [
-                        m
-                        for m in supplier_identity.plausible_matches(name, live)
-                        if str(m.get("id")) not in ruled_out
-                    ]:
-                        logger.info(
-                            "autopilot will not create supplier '%s' on %s: an "
-                            "existing supplier is a plausible match",
-                            name,
-                            invoice_id,
-                        )
-                        continue
-                    supplier, new = catalog.get_or_create_supplier(
-                        _client(), name, details=payload.get("details")
-                    )
-                    data["linked_supplier_id"] = supplier["id"]
-                    data["supplier_name"] = supplier.get("name") or name
-                    _record(
-                        s.get("id"),
-                        {},
-                        {"linked_supplier_id": supplier["id"], "created": new},
-                    )
-                    if new:
-                        created["suppliers"].append(supplier.get("name") or name)
-                    verb = "created" if new else "linked existing"
-                    done.append(f"{verb} supplier '{supplier.get('name')}'")
-                elif kind == "create_unit" and ln is not None:
-                    unit, new = catalog.get_or_create_unit(
-                        _client(), payload.get("unit_name") or "", db
-                    )
-                    ln["linked_unit_id"] = unit.get("id")
-                    ln["unit"] = unit.get("name")
-                    if unit.get("ratio") is not None:
-                        ln["unit_ratio"] = unit.get("ratio")
-                    _record(
-                        s.get("id"),
-                        {},
-                        {"linked_unit_id": unit.get("id"), "created": new},
-                    )
-                    if new:
-                        created["units"].append(unit.get("name"))
-                    verb = "created" if new else "used existing"
-                    done.append(f"{verb} unit '{unit.get('name')}'")
-                elif kind == "create_item" and ln is not None:
-                    out = catalog.create_item(
-                        _client(),
-                        db,
-                        config_db,
-                        venue_id=venue_id,
-                        invoice_id=invoice_id,
-                        line_id=str(s.get("line_id")),
-                        name=payload.get("name"),
-                        group_id=payload.get("group_id") or "",
-                        unit_id=ln.get("linked_unit_id"),
-                        brand_id=ln.get("linked_brand_id"),
-                        supplier_id=data.get("linked_supplier_id"),
-                        doc_data=data,
-                    )
-                    ln["linked_item_id"] = out["item_id"]
-                    ln["item_name"] = out["item_name"]
-                    _record(
-                        s.get("id"),
-                        {},
-                        {
-                            "linked_item_id": out["item_id"],
-                            "created": bool(out["created"]),
-                        },
-                    )
-                    if out["created"]:
-                        created["stock_items"].append(out["item_name"])
-                    verb = "created" if out["created"] else "linked existing"
-                    done.append(f"{verb} stock item '{out['item_name']}'")
-                elif kind == "create_brand" and ln is not None:
-                    brand, new = catalog.get_or_create_brand(
-                        _client(), payload.get("brand_name") or ""
-                    )
-                    # The name with the record, and brand_set, as the card's
-                    # create does: do_receive replaces Loaded's text only then.
-                    ln["linked_brand_id"] = brand["id"]
-                    ln["brand"] = brand.get("name")
-                    ln["brand_set"] = True
-                    _record(
-                        s.get("id"),
-                        {},
-                        {
-                            "linked_brand_id": brand["id"],
-                            "brand": brand.get("name"),
-                            "created": new,
-                        },
-                    )
-                    if new:
-                        created["brands"].append(brand.get("name"))
-                    verb = "created" if new else "used existing"
-                    done.append(f"{verb} brand '{brand['name']}'")
-            except Exception as exc:  # noqa: BLE001 — the blocker simply stands
+    buckets = {
+        "supplier": "suppliers",
+        "unit": "units",
+        "brand": "brands",
+        "stock item": "stock_items",
+    }
+    for d in decisions:
+        s = by_id[str(d["accept"])]
+        kind = s.get("kind")
+        if kind == "add_line":
+            continue
+        if kind == "create_supplier" and _supplier_plausible(s):
+            continue
+        out = _decide(s)
+        if not out.get("ok"):
+            if kind in LOADED_WRITE_ORDER:
                 logger.info(
-                    "autopilot %s could not run on %s: %s", kind, invoice_id, exc
+                    "autopilot %s could not run on %s: %s",
+                    kind,
+                    invoice_id,
+                    out.get("detail"),
                 )
-
-    last = _last_actions(data)
-    for issue in data.get("issues") or []:
-        if not issue.get("blocking") or issue.get("code") not in _SWITCH_SETTLES:
             continue
-        if not _VA.gate_open(settings, issue.get("gate")):
-            continue
-        if is_settled(data, issue, last):
-            continue
-        _record(issue.get("id"), {}, {})
-        done.append(f"accepted ({str(issue.get('gate')).replace('_', ' ')})")
+        if kind in LOADED_WRITE_ORDER:
+            if out.get("created") and out.get("kind") in buckets:
+                created[buckets[out["kind"]]].append(out.get("name"))
+            done.append(out.get("did") or f"{kind} done")
+        elif s.get("gate") and out.get("did"):
+            done.append(out["did"])
     return done
 
 
@@ -3444,7 +3341,9 @@ def review_invoice(
             len(missing),
             sorted({str(i.get("code")) for i in missing}),
         )
-    data["confidence"] = compute_confidence(data)
+    from app.services.invoice_decisions import annotate
+
+    annotate(data)
     data["reviewed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     data["reviewed_invoice_fingerprint"] = data.get("loaded_invoice_fingerprint")
     return data
@@ -3864,7 +3763,9 @@ def review_invoices(
             gated = autopilot_accept(
                 db, config_db, venue_id, iid, data, settings, lh=lh
             )
-            data["confidence"] = compute_confidence(data)
+            from app.services.invoice_decisions import annotate
+
+            annotate(data)
             if data.get("is_deleted"):
                 # A gated delete removed the draft — terminal; there is
                 # nothing left to receive or card.

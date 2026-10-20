@@ -996,13 +996,10 @@ class TestFourthReview:
         assert IE.hand_fields(data) == set()  # a matching ratio isn't the unit
         data["lines"][0].update(KILO)
         assert IE.hand_settles(data, issue)
-        # A kind mismatch is between the unit and the item: a unit picked
-        # before Norm's item answer made one is no decision about it.
+        # A kind clash with the item is the venue's switch to decide, whoever
+        # picked the unit (owner, 20 Oct 2026).
         kind = {"code": "unit_kind_mismatch", "line_id": "rep-2"}
         assert not IE.hand_settles(data, kind)
-        data["lines"][0]["linked_item_id"] = "i-kg"
-        data["edits"] += _on("rep-2", "LEMONS", {"linked_item_id": "i-kg"}, seq=9)
-        assert IE.hand_settles(data, kind)
         # A unit name sent without its record (a chat could) is not an answer.
         data["edits"] = _on("rep-2", "LEMONS", {"unit": "Kilo"})
         assert not IE.hand_settles(data, issue)
@@ -1022,39 +1019,6 @@ class TestFourthReview:
         )
         assert IE.hand_settles(data, {"code": "po_unresolved", "line_id": None})
         assert not IE.hand_settles(data, {"code": "po_split_order", "line_id": None})
-
-    def test_a_decision_about_another_invoice_line_under_the_same_id_is_dropped(self):
-        previous = {"lines": [{"id": "rep-2", "description": "LEMONS"}]}
-
-        def fresh(description):
-            return {
-                "lines": [],
-                "suggestions": [
-                    {
-                        "id": "add_line:rep-2",
-                        "kind": "add_line",
-                        "line_id": "rep-2",
-                        "payload": {"id": "rep-2", "description": description},
-                    }
-                ],
-                "issues": [
-                    {
-                        "id": "unit_unconfirmed:rep-2",
-                        "code": "unit_unconfirmed",
-                        "line_id": "rep-2",
-                    }
-                ],
-                "suggestion_actions": [
-                    {"suggestion_id": "unit_unconfirmed:rep-2", "action": "dismissed"}
-                ],
-            }
-
-        limes = fresh("LIMES")
-        IE.drop_stale_blocker_accepts(limes, 0, previous)
-        assert limes["suggestion_actions"] == []
-        lemons = fresh("LEMONS")
-        IE.drop_stale_blocker_accepts(lemons, 0, previous)
-        assert lemons["suggestion_actions"] != []
 
     def test_undoing_a_create_carried_as_its_link_brings_back_the_pick(self):
         create = {

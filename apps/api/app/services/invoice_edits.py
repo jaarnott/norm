@@ -108,14 +108,15 @@ _GROUPED = frozenset(f for fields, _ in _OWNED_BY for f in fields)
 #: value (a line kept or struck). The supplier and the order are the
 #: invoice's own; the rest are a line's. An order held by another delivery
 #: (split, doubled up) is not here: taking its link can break the other
-#: delivery's receive, so its own fix decides.
+#: delivery's receive, so its own fix decides. A unit that clashes in kind
+#: with the item is not here either: the venue's switch decides that one,
+#: whoever picked the unit (owner, 20 Oct 2026).
 _HAND_SETTLES = {
     "unit_missing": ("linked_unit_id", "record"),
     "unit_unconfirmed": ("linked_unit_id", "record"),
     "unit_unknown": ("linked_unit_id", "record"),
     "unit_would_be_created": ("linked_unit_id", "record"),
     "unit_answer_missing": ("linked_unit_id", "record"),
-    "unit_kind_mismatch": ("linked_unit_id", "record"),
     "item_unmatched": ("linked_item_id", "record"),
     "item_answer_missing": ("linked_item_id", "record"),
     "brand_unknown": ("linked_brand_id", "brand"),
@@ -421,6 +422,32 @@ def record_edits(
         seq += 1
         log.append({"seq": seq, "at": at, "by": str(by) if by else None, **e})
     return len(entries)
+
+
+def on_accept(data: dict, sug: dict, actor: str = "user") -> None:
+    """A suggestion was just accepted (invoice_decisions): the person's
+    earlier edits on the fields it writes are retired — all of the line's,
+    for a line a PERSON accepts adding again (they chose Norm's version of
+    it; Autopilot adding it again puts their edits back on it instead)."""
+    sid = str(sug.get("id") or "")
+    if sug.get("kind") == "add_line":
+        if actor == "user":
+            _supersede(data, sid, _key(sug.get("line_id")), None)
+        return
+    wrote = set((sug.get("apply") or {}).keys())
+    if sug.get("field") and sug.get("kind") != "confirm":
+        # A confirm writes nothing ("receive it as it is"), so the person's
+        # value on its field stands.
+        wrote.add(sug["field"])
+    if wrote:
+        _supersede(data, sid, _key(sug.get("line_id")), _group(wrote))
+
+
+def on_undo(data: dict, sid: str, op: dict, at: str | None = None) -> None:
+    """A decision was just undone (invoice_decisions): ``op`` is what the
+    undo wrote back (an update_line / update_header with the fields, or a
+    remove_line for an added line)."""
+    _cancel_later_edits(data, sid, op, at or _now())
 
 
 def _supersede(data: dict, sid: str, line: str | None, fields: set | None) -> None:
@@ -948,12 +975,9 @@ def rebuild_from_decisions(
         _last_actions,
         apply_suggestion,
         carry_forward_decisions,
-        compute_confidence,
     )
 
     previous = previous if isinstance(previous, dict) else {}
-    n0 = len(fresh.get("suggestion_actions") or [])
-    reviewed = bool(previous.get("doc_schema") and fresh.get("doc_schema"))
     if previous.get("doc_schema") and not fresh.get("doc_schema"):
         # A plain re-read of Loaded, not a review: the old card's review and
         # its decisions still stand, on the new base. The next review asks
@@ -1000,8 +1024,6 @@ def rebuild_from_decisions(
     # The record goes on even when empty: the key is what marks a card as
     # having one, so the old-card reading never runs on it again.
     fresh.setdefault("edits", [])
-    if reviewed:
-        drop_stale_blocker_accepts(fresh, n0, previous)
     try:
         from app.services.invoice_po_reference import project_po_reference
 
@@ -1009,7 +1031,9 @@ def rebuild_from_decisions(
     except Exception:  # noqa: BLE001 — a projection never sinks a rebuild
         logger.info("rebuild: order projection failed", exc_info=True)
     if fresh.get("doc_schema") and fresh.get("issues") is not None:
-        fresh["confidence"] = compute_confidence(fresh)
+        from app.services.invoice_decisions import annotate
+
+        annotate(fresh)
     return carried, replayed
 
 
@@ -1077,7 +1101,7 @@ def hand_fields(data: dict) -> set[tuple]:
     return out
 
 
-def hand_settles(data: dict, issue: dict) -> bool:
+def hand_settles(data: dict, issue: dict, hand: set | None = None) -> bool:
     """A blocker answered by a person's own value: a unit, a stock item, a
     supplier or an order they picked, a brand they chose or cleared, a line
     they struck or kept. However the card recorded the decision, the value is
@@ -1095,83 +1119,8 @@ def hand_settles(data: dict, issue: dict) -> bool:
         return False
     if needs == "brand" and not have and _value(data, line, "brand")[1] is not None:
         return False  # a brand name with no record Loaded can take
-    hand = hand_fields(data)
-    if (
-        issue.get("code") == "unit_kind_mismatch"
-        and (line, "linked_item_id") not in hand
-    ):
-        # The mismatch is between the unit and the item: a unit picked before
-        # Norm's item answer made it one is not a decision about it.
-        return False
+    hand = hand_fields(data) if hand is None else hand
     return (line, field) in hand
-
-
-def _identity(data: dict, line_id: str) -> tuple | None:
-    """Which invoice line an id names in a payload — its code and
-    description: the card's line, else the line the review would add."""
-    for ln in data.get("lines") or []:
-        if isinstance(ln, dict) and str(ln.get("id")) == line_id:
-            return (ln.get("code"), ln.get("description"))
-    for s in data.get("suggestions") or []:
-        if (
-            isinstance(s, dict)
-            and s.get("kind") == "add_line"
-            and str(s.get("line_id")) == line_id
-        ):
-            p = s.get("payload") if isinstance(s.get("payload"), dict) else {}
-            return (p.get("code"), p.get("description"))
-    for ln in (data.get("replica") or {}).get("lines") or []:
-        if isinstance(ln, dict) and str(ln.get("id")) == line_id:
-            return (ln.get("code"), ln.get("description"))
-    return None
-
-
-def drop_stale_blocker_accepts(
-    fresh: dict, since: int = 0, previous: dict | None = None
-) -> None:
-    """A person's decision on a blocker carried onto a rebuilt card (from
-    ``since`` on in its record) stands only while it is about the same thing:
-
-    - on a line Norm adds, the same invoice line — positional ids can name
-      another line in a later review (``previous`` is the card it came from);
-    - a blocker they settled by picking a value ("accepted", with what they
-      picked) only while the line still holds that value, or a later value of
-      their own. Otherwise it would read settled over a value nobody chose (an
-      Undo, a pick that didn't come back, a line added again without it)."""
-    actions = fresh.setdefault("suggestion_actions", [])
-    issues = {
-        str(i.get("id")): i for i in fresh.get("issues") or [] if isinstance(i, dict)
-    }
-    lines = {
-        str(ln.get("id")): ln for ln in fresh.get("lines") or [] if isinstance(ln, dict)
-    }
-    hand = hand_fields(fresh)
-    keep = list(actions[:since])
-    for a in list(actions[since:]):
-        issue = issues.get(str(a.get("suggestion_id"))) if isinstance(a, dict) else None
-        line_id = _key((issue or {}).get("line_id"))
-        if issue is None or line_id is None:
-            keep.append(a)
-            continue
-        if line_id.startswith(_ADDED_PREFIXES) and isinstance(previous, dict):
-            was, now = _identity(previous, line_id), _identity(fresh, line_id)
-            if was is not None and now is not None and was != now:
-                continue  # decided about another invoice line under this id
-        after = a.get("after")
-        line = lines.get(line_id)
-        if (
-            a.get("action") == "accepted"
-            and isinstance(after, dict)
-            and after
-            and line is not None
-            and any(k in line and line.get(k) != v for k, v in after.items())
-            and not any((line_id, f) in hand for f in _group(after.keys()))
-        ):
-            continue
-        keep.append(a)
-    # In place: Autopilot is still appending to this list.
-    actions[:] = keep
-    fresh["suggestion_actions"] = actions
 
 
 def decided_fields(data: dict) -> set[tuple]:

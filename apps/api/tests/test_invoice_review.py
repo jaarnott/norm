@@ -701,19 +701,21 @@ class TestBlockingIssues:
         assert unit_issue["line_id"] == "ld-1"
         assert "clears_when" not in unit_issue
         assert data["confidence"] == "needs_review"
-        # a recorded dismissal (the human checked) clears it
+        # There is no "I've checked this": marking the blocker clears nothing.
         data["suggestion_actions"].append(
             {"suggestion_id": unit_issue["id"], "action": "dismissed", "by": "user"}
         )
+        assert compute_confidence(data) == "needs_review"
         # item_unmatched also fired; it clears via linking (clears_when)
         item_issue = next(i for i in data["issues"] if i["code"] == "item_unmatched")
         assert item_issue["clears_when"]["field"] == "linked_item_id"
         data["lines"][0]["linked_item_id"] = "item-salmon"
-        # unit_unconfirmed needs its own confirm too
-        confirm = next(i for i in data["issues"] if i["code"] == "unit_unconfirmed")
-        data["suggestion_actions"].append(
-            {"suggestion_id": confirm["id"], "action": "dismissed", "by": "user"}
-        )
+        # The person's own unit answers both unit blockers (unit_unconfirmed
+        # included): their value, on the line, recorded as their edit.
+        data["lines"][0]["linked_unit_id"] = "u-kilo"
+        data["edits"] = [
+            {"seq": 1, "line_id": "ld-1", "field": "linked_unit_id", "after": "u-kilo"}
+        ]
         assert compute_confidence(data) == "ready"
 
 
@@ -3295,7 +3297,9 @@ class TestDecisionsSurviveARereview:
         fresh = {"lines": [], "suggestions": [], "issues": [], "suggestion_actions": []}
         assert IR.carry_forward_decisions(self._previous(), fresh) == 0
 
-    def test_a_waved_blocker_survives_while_it_is_still_raised(self):
+    def test_a_blockers_own_mark_is_not_carried(self):
+        # A stop is answered by its fix or by a person's value, never by a
+        # mark of its own (owner, 20 Oct 2026): nothing to carry.
         previous = {
             "suggestions": [],
             "suggestion_actions": [
@@ -3312,7 +3316,8 @@ class TestDecisionsSurviveARereview:
             "issues": [{"id": "unit_missing:ld-1", "blocking": True}],
             "suggestion_actions": [],
         }
-        assert IR.carry_forward_decisions(previous, fresh) == 1
+        assert IR.carry_forward_decisions(previous, fresh) == 0
+        assert fresh["suggestion_actions"] == []
 
     def test_a_blocker_no_longer_raised_carries_nothing(self):
         previous = {

@@ -78,6 +78,12 @@ settings.INSIGHTS_ENABLED = False
 # Off for the suite; test_unit_check.py switches it on for its own runs.
 settings.UNIT_CHECK_ENABLED = False
 
+# The Claude connector is off unless switched on, and test_mcp_protocol.py
+# checks exactly that default. A local .env that switches it on for testing
+# against Claude made those checks fail on the dev box (passing in CI, which
+# has no .env). The tests that need it on switch it on in their own fixtures.
+settings.MCP_ENABLED = False
+
 
 @pytest.fixture(autouse=True)
 def _fresh_suggestion_config():
