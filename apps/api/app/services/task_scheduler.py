@@ -166,23 +166,133 @@ def _execute_claimed(task_ids: list[str]) -> None:
             logger.exception("run_due_tasks: task %s failed", task_id[:12])
 
 
+TASK_RUN_JOB = "automated_task_run"
+#: How often a running task tells the job queue it is alive. Well inside the
+#: queue's stale window, so a long run is never taken over while it works.
+_TASK_HEARTBEAT_SECONDS = 60
+
+
 def run_due_tasks(background: bool = True, db=None) -> dict:
     """Claim due tasks and execute them.
 
     Claiming is synchronous (fast, and it's what prevents double-runs). By
-    default execution is dispatched to a background thread so the HTTP caller
-    (Cloud Scheduler) gets a quick response and isn't blocked for the length of
-    an agent tool-loop. Pass ``background=False`` to run inline (used by tests).
+    default each claimed run becomes a durable background job
+    (services/background_jobs) and the HTTP caller (Cloud Scheduler) gets a
+    quick answer. It used to run on a bare thread of whichever server took the
+    request: on 20 Oct 2026 Cloud Run stopped that server ten seconds after it
+    claimed an hourly invoice task — normal scale-in — the run vanished, and
+    the claim had already moved the next run on, so nothing noticed. A job is
+    picked up by a live worker and, if its server dies, by another.
+    Pass ``background=False`` to run inline (used by tests).
     """
     claimed = _claim_due_tasks(db=db)
     if claimed:
         if background:
-            threading.Thread(
-                target=_execute_claimed, args=(claimed,), daemon=True
-            ).start()
+            _enqueue_runs(claimed)
         else:
             _execute_claimed(claimed)
     return {"claimed": len(claimed), "task_ids": claimed}
+
+
+def _enqueue_runs(task_ids: list[str], db=None) -> list[str]:
+    """One queued job per claimed task (a task already queued or running is
+    left alone — never two runs of one task at once). Returns the job ids."""
+    from app.db.engine import SessionLocal
+    from app.db.models import AutomatedTask, BackgroundJob
+
+    own = db is None
+    s = SessionLocal() if own else db
+    ids: list[str] = []
+    try:
+        active = {
+            (j.params or {}).get("task_id")
+            for j in s.query(BackgroundJob).filter(
+                BackgroundJob.kind == TASK_RUN_JOB,
+                BackgroundJob.status.in_(("queued", "running")),
+            )
+        }
+        for task_id in task_ids:
+            if task_id in active:
+                continue
+            task = s.query(AutomatedTask).filter(AutomatedTask.id == task_id).first()
+            if task is None:
+                continue
+            job = BackgroundJob(
+                kind=TASK_RUN_JOB,
+                title=f"Scheduled run: {task.title}"[:200],
+                params={"task_id": task_id, "mode": "live", "unattended": True},
+                progress={},
+                user_id=task.created_by,
+                organization_id=_task_org(task_id, s),
+                status="queued",
+            )
+            s.add(job)
+            s.flush()
+            ids.append(job.id)
+        s.commit()
+        return ids
+    finally:
+        if own:
+            s.close()
+
+
+def _run_task_job(ctx) -> dict:
+    """The job queue's handler for a scheduled run. A previous attempt that
+    died with its server left its run record 'running': it is closed as
+    interrupted before the task runs again. A heartbeat thread keeps the job
+    from looking dead while the run works."""
+    from app.db.engine import SessionLocal
+    from app.db.models import AutomatedTaskRun
+
+    task_id = ctx.params.get("task_id")
+    if ctx.progress.get("started"):
+        s = SessionLocal()
+        try:
+            for run in s.query(AutomatedTaskRun).filter(
+                AutomatedTaskRun.automated_task_id == task_id,
+                AutomatedTaskRun.status == "running",
+            ):
+                run.status = "error"
+                run.error_message = "interrupted by a server restart; run again"
+                run.completed_at = datetime.now(timezone.utc)
+            s.commit()
+        finally:
+            s.close()
+    ctx.update(started=True)
+
+    stop = threading.Event()
+
+    def _beat() -> None:
+        while not stop.wait(_TASK_HEARTBEAT_SECONDS):
+            try:
+                ctx.heartbeat()
+            except Exception:  # noqa: BLE001 — a missed beat must not stop the run
+                logger.info("task run heartbeat failed for job %s", ctx.job_id)
+
+    beat = threading.Thread(target=_beat, daemon=True, name="task-run-heartbeat")
+    beat.start()
+    try:
+        out = execute_task_now(
+            task_id,
+            mode=ctx.params.get("mode") or "live",
+            unattended=bool(ctx.params.get("unattended", True)),
+        )
+    finally:
+        stop.set()
+    return {
+        "status": out.get("status") or ("success" if out.get("success") else "error"),
+        "run_id": out.get("run_id"),
+        "error": out.get("error"),
+    }
+
+
+def _register_task_job() -> None:
+    from app.services import background_jobs
+
+    background_jobs.register(TASK_RUN_JOB)(_run_task_job)
+
+
+_register_task_job()
 
 
 def _ensure_conversation_task(automated_task, db) -> str:
