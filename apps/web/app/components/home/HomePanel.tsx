@@ -16,32 +16,39 @@ interface HomePanelProps {
 }
 
 export default function HomePanel({ onSend, loading, member, venueId, suggestions = 4 }: HomePanelProps) {
+  // Three rows: equal space above and below keeps the title and the box
+  // centred on their own, and the suggestions fill the space below. They
+  // arrive after the page does, so if they were part of the centred block the
+  // box would jump up when they loaded (and back down on each dismiss).
   return (
     <div style={{
       height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
+      display: 'grid',
+      gridTemplateRows: 'minmax(0, 1fr) auto minmax(0, 1fr)',
+      justifyItems: 'center',
       padding: '0 16px',
       backgroundColor: 'var(--canvas)',
     }}>
-      <div style={{ textAlign: 'center', marginBottom: 24 }}>
-        <h1 className="n-page-title" style={{ margin: '0 0 4px', fontSize: 'var(--fs-2xl)', fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--text)' }}>
-          Norm
-        </h1>
-        <div style={{ fontSize: 'var(--fs-md)', color: 'var(--muted)' }}>
-          AI Operations Control — What would you like to do?
-        </div>
-      </div>
-
+      <div />
       <div style={{ width: '100%', maxWidth: 768 }}>
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <h1 className="n-page-title" style={{ margin: '0 0 4px', fontSize: 'var(--fs-2xl)', fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--text)' }}>
+            Norm
+          </h1>
+          <div style={{ fontSize: 'var(--fs-md)', color: 'var(--muted)' }}>
+            AI Operations Control — What would you like to do?
+          </div>
+        </div>
+
         <Composer
           onSend={(text, attachments) => onSend(text, { attachments })}
           loading={loading}
           inputTestId="home-message-input"
           sendTestId="home-send-btn"
         />
+      </div>
+
+      <div style={{ width: '100%', maxWidth: 768, minHeight: 0, overflowY: 'auto' }}>
         <Suggestions
           member={member}
           venueId={venueId}

@@ -76,6 +76,8 @@ button, input, select, textarea {
 /* 17px + a 16px icon + 15px = 48px: the field's text start (Composer). */
 .n-suggestion-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .n-suggestion:hover .n-suggestion-btn { color: var(--text); }
+/* Inset: the suggestions sit in a scrolling row, which would clip an outer ring. */
+.n-suggestion-btn:focus-visible { outline-offset: -2px; }
 .n-suggestion-dismiss { opacity: 0; transition: opacity 0.12s; }
 .n-suggestion:hover .n-suggestion-dismiss, .n-suggestion-dismiss:focus-visible { opacity: 1; }
 @media (hover: none) { .n-suggestion-dismiss { opacity: 0.6; } }
