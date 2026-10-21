@@ -224,6 +224,9 @@ def _describe_tile(chart, layout: list[dict]) -> dict:
     if script.get("action"):
         out["tool"] = f"{script.get('connector')}.{script['action']}"
         out["inputs"] = script.get("params") or {}
+        # Only a tile with a period input follows the page's period control
+        # (reports_crud._apply_global_dates); Norm told a person the opposite.
+        out["follows_period_control"] = "period" in out["inputs"]
         if script.get("rows"):
             out["list"] = script["rows"]
     if kind == "text":
@@ -457,7 +460,12 @@ def _try_tile(db, user, report, chart_type, spec, script, allow_empty) -> dict:
     sample = [
         {k: v for k, v in list(r.items())[:12]} for r in rows[:3] if isinstance(r, dict)
     ]
-    return {"tried": f"{len(rows)} rows for {when}", "first_rows": sample}
+    follows = "period" in (script.get("params") or {})
+    return {
+        "tried": f"{len(rows)} rows for {when}",
+        "first_rows": sample,
+        "follows_period_control": follows,
+    }
 
 
 def _check_app(db, user, report, slug: str) -> None:
@@ -909,13 +917,28 @@ def _manage_dashboard(params: dict, db: Session, thread_id: str | None) -> dict:
         # never roll back here, the tool loop's own rows share this session.
         return {"success": False, "data": None, "error": str(exc)}
     db.refresh(report)
+    rc = _rc()
+    layout = _items(report)
+    last = rc._last_version(db, report.id)
     out = {
         "done": params.get("op"),
         "dashboard_id": report.id,
         "title": report.title,
         "shared": bool(report.is_published),
-        "next": "Read it back with get_dashboards (dashboard_id) to check it and "
-        "show it to the person.",
+        # How it stands NOW. A read sent in the same turn as a change runs
+        # before it and sees the old dashboard: Norm once told a person an
+        # undo hadn't worked when it had (21 Oct 2026).
+        "now": {
+            "version": last.version if last else None,
+            "tiles": [
+                {"tile_id": c.id, "title": c.title, "place": d.get("place")}
+                for c in report.charts
+                for d in [_describe_tile(c, layout)]
+            ],
+        },
+        "next": "`now` is how it stands after this change. To show it to the "
+        "person, read it with get_dashboards in a later turn, never alongside "
+        "a change: a read sent with a change sees it as it was before.",
     }
     if plan.get("tried"):
         out["tile_tried"] = plan["tried"]

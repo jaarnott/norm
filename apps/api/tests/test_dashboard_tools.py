@@ -123,12 +123,16 @@ class TestBuildingADashboard:
         out = world.manage(world.owner, op="add_tile", dashboard_id=did, tile=SALES)
         assert out["success"], out
         assert world.ran == [("read_sales", "this_month")]
+        # the change says how the dashboard stands now
+        assert [t["title"] for t in out["data"]["now"]["tiles"]] == ["Sales"]
         assert out["data"]["tile_tried"]["first_rows"][0]["sales"] == 1200.0
         shown = world.read(world.owner, dashboard_id=did)["data"]
         assert shown["report_id"] == did  # shows the dashboard in the conversation
         (tile,) = shown["tiles"]
         assert tile["tool"] == "testconn.read_sales" and tile["value"] == "sales"
         assert tile["place"] == "row 1, left, a quarter wide, short"
+        # no period input: the page's period control won't move it
+        assert tile["follows_period_control"] is False
 
     def test_a_field_that_isnt_there_is_named_and_nothing_is_saved(
         self, world, db_session
