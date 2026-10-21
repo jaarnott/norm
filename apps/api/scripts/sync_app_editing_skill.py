@@ -74,7 +74,7 @@ def also(db, dry_run: bool) -> list[str]:
     if not dry_run:
         BACKUP_DIR.mkdir(exist_ok=True)
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        path = BACKUP_DIR / f"app-editing-skill-{stamp}.json"
+        path = BACKUP_DIR / f"app-editing-skill-config-{stamp}.json"
         path.write_text(json.dumps({"build_an_app": skill.instructions}, indent=1))
         print(f"backup {path}")
         skill.instructions = SECTION + text.lstrip()
