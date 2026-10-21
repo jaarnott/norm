@@ -1006,6 +1006,29 @@ class ReportChart(Base):
     report = relationship("Report", back_populates="charts")
 
 
+class ReportVersion(Base):
+    """A dashboard as it stood after one change: every version is kept, as an
+    App's are, and any one can be brought back (Oct 2026).
+
+    ``snapshot`` holds the content, not the figures: title, layout, period and
+    each tile's id, title, type, spec, tool and position."""
+
+    __tablename__ = "report_versions"
+    __table_args__ = (
+        UniqueConstraint("report_id", "version", name="uq_report_version"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    report_id = Column(
+        String, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version = Column(Integer, nullable=False)
+    snapshot = Column(JSON, nullable=False)
+    note = Column(Text, nullable=True)
+    created_by = Column(String, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+
 # ── DevOps ──────────────────────────────────────────────────────────
 class Deployment(Base):
     __tablename__ = "deployments"

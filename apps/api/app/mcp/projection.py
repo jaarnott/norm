@@ -66,6 +66,9 @@ MCP_DENYLIST: frozenset[tuple[str, str]] = frozenset(
         # resolve the task from the conversation — there is no conversation
         # here, so two of its four ops could only fail.
         ("norm", "manage_task"),  # conversation bookkeeping
+        # Norm's dashboards are pages in Norm; reading one paints it there.
+        ("norm_reports", "get_dashboards"),
+        ("norm_reports", "manage_dashboard"),
     }
 )
 

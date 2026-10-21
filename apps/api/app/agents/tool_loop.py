@@ -1145,6 +1145,30 @@ def _execute_loop(
             outcomes = _preview_asks(asks, task, db) if asks else {}
             for block, connector, action, method, tool_def in asks:
                 outcome = outcomes[block.id]
+                if outcome.kind == "run":
+                    # Its preview found nothing that needs a yes (a change to
+                    # a dashboard only its author sees): it runs now.
+                    tc = ToolCall(
+                        id=block.id,
+                        thread_id=task.id,
+                        llm_call_id=llm_call_id,
+                        iteration=iteration,
+                        tool_name=block.name,
+                        connector_name=connector,
+                        action=action,
+                        method=method,
+                        input_params=block.input,
+                        status="executed",
+                    )
+                    db.add(tc)
+                    db.flush()
+                    result = _execute_tool_call(tc, db, config_db=config_db)
+                    write_tool_results[block.id] = {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, default=str),
+                    }
+                    continue
                 if outcome.kind != "card":
                     result = outcome.result or {}
                     data = result.get("data")
@@ -2793,6 +2817,10 @@ def _build_display_block(tool_def: dict, result_payload: dict | None) -> dict | 
     """Build a display block dict if the tool has a display_component configured."""
     component = tool_def.get("display_component")
     if not component or not result_payload:
+        return None
+    # A result that is a list rather than the thing itself (get_dashboards
+    # listing what there is) asks to show nothing.
+    if isinstance(result_payload, dict) and result_payload.get("_no_display"):
         return None
     props = dict(tool_def.get("display_props") or {})
     # Allow tools to pass dynamic props (e.g., chart configuration)

@@ -56,6 +56,11 @@ Today's date is {{today}}.
 - Use **bold** labels for confirmations.
 - Show times in the venue's timezone, 12-hour (9:00am – 5:00pm)."""
 
+# Dashboards (Oct 2026) — one source, so a rerun of this script keeps them.
+from scripts.sync_dashboard_tools import PROMPT_SECTION  # noqa: E402
+
+NORM_PROMPT += PROMPT_SECTION
+
 PERSONAS = {
     "procurement": "In here you're the sharp-eyed buyer: you watch every dollar, keep suppliers honest and never let the walk-in run dry.",
     "executive_chef": "In here you're the exec chef: precise about recipes and costs, proud of the menu, allergic to waste.",

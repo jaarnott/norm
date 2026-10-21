@@ -18,8 +18,10 @@ How a write previews itself:
 - **Anything else** shows its parameters as labelled fields.
 
 A preview can also settle the call without asking anyone: a call that would
-fail ("refused" — its error goes straight back to the model) or would change
-nothing ("done" — its result is the real result).
+fail ("refused" — its error goes straight back to the model), would change
+nothing ("done" — its result is the real result), or needs nobody's yes
+("run" — it runs at once: a change to a dashboard only its author sees, where
+the same change to a shared one asks first).
 
 The card carries a fingerprint of what the person saw. The approved run checks
 it against live data just before writing and stops if it moved, so an
@@ -51,7 +53,8 @@ _VENUE_KEYS = ("venue", "venue_name", "venue_id", "_all_venues")
 @dataclass
 class Outcome:
     #: "card" — ask the person; "done" — nothing to change, ``result`` is the
-    #: real result; "refused" — it would fail, ``result`` says why.
+    #: real result; "refused" — it would fail, ``result`` says why; "run" —
+    #: nothing here needs a person's yes, so it runs now.
     kind: str
     card: dict | None = None
     result: dict | None = None
@@ -238,6 +241,8 @@ def _preview(connector, action, params, tool_def, db, thread_id, memo, title, ve
             )
         if "done" in out:
             return Outcome("done", result={"success": True, "data": out["done"]})
+        if out.get("run"):
+            return Outcome("run")
         card = out.get("preview")
         return Outcome(
             "card",
@@ -318,8 +323,8 @@ def changed_since(tc, db: Session) -> dict | None:
     if previewer is None:
         return None
     out = previewer(dict(tc.input_params or {}), db, tc.thread_id) or {}
-    if out.get("error") or "done" in out:
-        return None  # the handler reports either itself
+    if out.get("error") or "done" in out or out.get("run"):
+        return None  # the handler reports either itself; "run" needs no yes
     card = out.get("preview")
     now = fingerprint(out["basis"] if "basis" in out else card)
     if now == shown["fingerprint"]:

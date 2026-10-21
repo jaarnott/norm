@@ -438,3 +438,198 @@ class TestWhoMaySeeAndChange:
 
     def test_the_template_list_needs_a_sign_in(self, client):
         assert client.get("/api/reports/templates").status_code in (401, 403)
+
+
+class TestDashboardsBelongToAnOrganisation:
+    """Stage 1 of docs/plans/norm-builds-dashboards.md (Oct 2026): a dashboard
+    belongs to the organisation it was made in; shared means shared there;
+    only its owner changes it and anyone who sees it can copy it; each tile's
+    saved figures are the loader's; every version is kept."""
+
+    def _world(self, db_session):
+        from datetime import datetime, timedelta, timezone
+
+        from tests.conftest import _make_membership
+        from tests.org_helpers import auth_headers, make_org, make_user
+
+        a, b = make_org(db_session, "A"), make_org(db_session, "B")
+        both, colleague = make_user(db_session), make_user(db_session)
+        _make_membership(db_session, both, a)
+        later = _make_membership(db_session, both, b)
+        later.created_at = datetime.now(timezone.utc) + timedelta(days=1)
+        _make_membership(db_session, colleague, a)
+        db_session.flush()
+
+        def h(user, org):
+            return {**auth_headers(user), "X-Organization": org.id}
+
+        return type("W", (), dict(a=a, b=b, both=both, colleague=colleague, h=h))
+
+    def _dashboard(self, db_session, owner, org, shared=False, tool=True):
+        report = Report(
+            id=str(uuid.uuid4()),
+            user_id=owner.id,
+            organization_id=org.id,
+            title="Operations",
+            is_dashboard=True,
+            agent_slug="reports",
+            is_published=shared,
+        )
+        db_session.add(report)
+        db_session.flush()
+        chart = ReportChart(
+            id=str(uuid.uuid4()),
+            report_id=report.id,
+            title="Sales",
+            chart_type="kpi",
+            script={"connector": "loadedhub", "action": "get_sales"} if tool else {},
+            data=[{"sales": 100}],
+            data_meta={"user_id": owner.id, "refreshed_at": "2026-10-21T00:00:00"},
+            position=0,
+        )
+        db_session.add(chart)
+        db_session.flush()
+        report.layout = [
+            {"chart_id": chart.id, "col": 1, "row": 1, "colSpan": 24, "rowSpan": 4}
+        ]
+        db_session.flush()
+        return report
+
+    def test_made_in_and_seen_in_the_organisation_being_worked_in(
+        self, client, db_session
+    ):
+        w = self._world(db_session)
+        made = client.post(
+            "/api/reports", json={"title": "Mine"}, headers=w.h(w.both, w.b)
+        ).json()
+        assert made["organization_id"] == w.b.id
+        in_b = client.get("/api/reports", headers=w.h(w.both, w.b)).json()
+        in_a = client.get("/api/reports", headers=w.h(w.both, w.a)).json()
+        assert made["id"] in [r["id"] for r in in_b["reports"]]
+        assert made["id"] not in [r["id"] for r in in_a["reports"]]
+        # shared in A: seen by A's people in A, never from B
+        shared = self._dashboard(db_session, w.colleague, w.a, shared=True)
+        url = f"/api/reports/{shared.id}"
+        assert client.get(url, headers=w.h(w.both, w.a)).status_code == 200
+        assert client.get(url, headers=w.h(w.both, w.b)).status_code == 404
+
+    def test_the_dashboard_chosen_is_kept_per_organisation(self, client, db_session):
+        w = self._world(db_session)
+        mine_a = self._dashboard(db_session, w.both, w.a)
+        mine_b = self._dashboard(db_session, w.both, w.b)
+        for org, d in ((w.a, mine_a), (w.b, mine_b)):
+            r = client.post(
+                "/api/reports/dashboards/reports/set-active",
+                json={"dashboard_id": d.id},
+                headers=w.h(w.both, org),
+            )
+            assert r.status_code == 200
+        for org, d in ((w.a, mine_a), (w.b, mine_b)):
+            got = client.get(
+                "/api/reports/dashboards/reports", headers=w.h(w.both, org)
+            ).json()["dashboard"]
+            assert got["id"] == d.id
+        db_session.refresh(w.both)
+        assert w.both.dashboard_preferences["by_org"][w.a.id]["reports"] == mine_a.id
+
+    def test_saved_figures_are_only_the_loaders(self, client, db_session):
+        w = self._world(db_session)
+        d = self._dashboard(db_session, w.both, w.a, shared=True)
+        note = self._dashboard(db_session, w.both, w.a, shared=True, tool=False)
+        own = client.get(f"/api/reports/{d.id}", headers=w.h(w.both, w.a)).json()
+        theirs = client.get(
+            f"/api/reports/{d.id}", headers=w.h(w.colleague, w.a)
+        ).json()
+        assert own["charts"][0]["data"] == [{"sales": 100}]
+        assert (
+            theirs["charts"][0]["data"] == []
+            and theirs["charts"][0]["data_meta"] is None
+        )
+        text = client.get(
+            f"/api/reports/{note.id}", headers=w.h(w.colleague, w.a)
+        ).json()
+        assert text["charts"][0]["data"] == [{"sales": 100}]  # content, not a cache
+
+    def test_anyone_who_sees_it_can_copy_it_and_change_the_copy(
+        self, client, db_session
+    ):
+        w = self._world(db_session)
+        d = self._dashboard(db_session, w.both, w.a, shared=True)
+        headers = w.h(w.colleague, w.a)
+        assert (
+            client.patch(
+                f"/api/reports/{d.id}", json={"title": "X"}, headers=headers
+            ).status_code
+            == 403
+        )
+        copy = client.post(
+            f"/api/reports/{d.id}/copy", json={"make_active": True}, headers=headers
+        ).json()
+        assert copy["is_own"] and not copy["is_published"]
+        assert copy["organization_id"] == w.a.id
+        assert [c["title"] for c in copy["charts"]] == ["Sales"]
+        assert copy["charts"][0]["data"] == []  # the figures were the sharer's
+        assert copy["layout"][0]["chart_id"] == copy["charts"][0]["id"]
+        active = client.get("/api/reports/dashboards/reports", headers=headers)
+        assert active.json()["dashboard"]["id"] == copy["id"]
+        renamed = client.patch(
+            f"/api/reports/{copy['id']}", json={"title": "Mine"}, headers=headers
+        )
+        assert renamed.status_code == 200
+
+    def test_every_version_is_kept_and_any_can_be_brought_back(
+        self, client, db_session
+    ):
+        w = self._world(db_session)
+        d = self._dashboard(db_session, w.both, w.a)
+        headers = w.h(w.both, w.a)
+        chart_id = d.charts[0].id
+        client.patch(f"/api/reports/{d.id}", json={"title": "Ops"}, headers=headers)
+        client.delete(f"/api/reports/{d.id}/charts/{chart_id}", headers=headers)
+        versions = client.get(f"/api/reports/{d.id}/versions", headers=headers).json()[
+            "versions"
+        ]
+        # as it was, renamed, tile removed
+        assert [v["version"] for v in versions] == [3, 2, 1]
+        assert versions[-1]["tiles"] == 1 and versions[0]["tiles"] == 0
+        back = client.post(
+            f"/api/reports/{d.id}/versions/1/restore", headers=headers
+        ).json()
+        assert back["title"] == "Operations"
+        assert [c["id"] for c in back["charts"]] == [chart_id]
+        assert back["layout"][0]["chart_id"] == chart_id
+        after = client.get(f"/api/reports/{d.id}/versions", headers=headers).json()
+        assert after["versions"][0]["version"] == 4
+        assert after["versions"][0]["note"] == "Brought back version 1"
+        # someone else's history is not theirs to read
+        assert (
+            client.get(
+                f"/api/reports/{d.id}/versions", headers=w.h(w.colleague, w.a)
+            ).status_code
+            == 404
+        )
+
+    def test_all_venues_means_the_viewers_own_venues(self, db_session):
+        """A tile left on "All venues" read every connected venue in the
+        organisation, so a team member with one venue saw them all."""
+        from app.db.models import Connection
+        from app.routers.reports_crud import _chart_venue_ids
+        from tests.org_helpers import grant_venue, make_venue
+
+        w = self._world(db_session)
+        mine, other = (
+            make_venue(db_session, "Mine", w.a),
+            make_venue(db_session, "Other", w.a),
+        )
+        for v in (mine, other):
+            db_session.add(
+                Connection(
+                    id=str(uuid.uuid4()),
+                    connector_name="loadedhub",
+                    venue_id=v.id,
+                    enabled="true",
+                )
+            )
+        grant_venue(db_session, w.colleague, mine)
+        db_session.flush()
+        assert _chart_venue_ids(db_session, w.colleague, "loadedhub", None) == [mine.id]

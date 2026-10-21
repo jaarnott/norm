@@ -43,6 +43,8 @@ const EMBEDDABLE_COMPONENTS = [
   { key: 'automated_task_board', label: 'Tasks', needsProps: ['agent_slug'] },
   { key: 'generic_table', label: 'Data table', needsProps: [] },
   { key: 'saved_reports_board', label: 'Reports', needsProps: [] },
+  // One of the person's Apps, or one of Norm's own (Hiring, Training).
+  { key: 'app_runner', label: 'App', needsProps: ['slug'] },
 ];
 
 const DATE_PRESETS = [
@@ -808,6 +810,15 @@ function ComponentSettings({ spec, onChange }: {
   const componentKey = String(spec.component_key || '');
   const componentProps = (spec.component_props as Record<string, unknown>) || {};
   const componentDef = EMBEDDABLE_COMPONENTS.find(c => c.key === componentKey);
+  const needsApp = !!componentDef?.needsProps.includes('slug');
+  const [apps, setApps] = useState<{ slug: string; name: string }[] | null>(null);
+  useEffect(() => {
+    if (!needsApp || apps) return;
+    apiFetch('/api/apps')
+      .then(r => r.ok ? r.json() : { apps: [] })
+      .then(d => setApps((d.apps || []).map((a: { slug: string; name: string }) => ({ slug: a.slug, name: a.name }))))
+      .catch(() => setApps([]));
+  }, [needsApp, apps]);
 
   const updateProps = (patch: Record<string, unknown>) => {
     onChange({ component_props: { ...componentProps, ...patch } });
@@ -855,6 +866,20 @@ function ComponentSettings({ spec, onChange }: {
                 <option value="hr">HR</option>
                 <option value="procurement">Procurement</option>
                 <option value="reports">Reports</option>
+              </select>
+            </FieldGroup>
+          )}
+
+          {needsApp && (
+            <FieldGroup label="App">
+              <select
+                className="n-select"
+                value={String(componentProps.slug || '')}
+                onChange={e => updateProps({ slug: e.target.value })}
+                style={fieldStyle}
+              >
+                <option value="">{apps ? 'Select an App…' : 'Loading Apps…'}</option>
+                {(apps || []).map(a => <option key={a.slug} value={a.slug}>{a.name}</option>)}
               </select>
             </FieldGroup>
           )}

@@ -6,11 +6,12 @@ import type { SavedReport } from '../../types';
 import { autoRefreshLabel, cacheIsFresh, tileInterval, tilesRefreshLabel } from '../../lib/dashboardRefresh';
 import { apiFetch } from '../../lib/api';
 import Chart from './Chart';
-import { RefreshCw, Share2, Check, Settings, Maximize2, LayoutGrid } from 'lucide-react';
+import { RefreshCw, Share2, Check, Settings, Maximize2, LayoutGrid, Copy, History } from 'lucide-react';
 import ChartFullScreenModal from './dashboard/ChartFullScreenModal';
 import ChartConfigPanel from './dashboard/ChartConfigPanel';
 import DrillDownPanel from './dashboard/DrillDownPanel';
 import DashboardPicker from './dashboard/DashboardPicker';
+import DashboardHistory from './dashboard/DashboardHistory';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import PageHeader from '../ui/PageHeader';
@@ -84,6 +85,8 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   // open so a fresh tile is next due when its interval elapses from then.
   const lastStartedRef = useRef<Record<string, number>>({});
   const [showPicker, setShowPicker] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [copying, setCopying] = useState(false);
   const { isMobile, isTablet } = useBreakpoint();
 
   const initialRefreshDone = useRef(false);
@@ -268,6 +271,13 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
 
   const layout = dashboard.layout || [];
   const chartMap = new Map(dashboard.charts.map(c => [c.id, c]));
+  // A dashboard that is one App shows the App whole, filling the page — a
+  // person's choice; asked for a dashboard, Norm builds tiles.
+  const soleChart = layout.length === 1 ? chartMap.get(layout[0].chart_id) : undefined;
+  const soleAppProps = soleChart?.chart_type === 'component'
+    && (soleChart.chart_spec as unknown as Record<string, unknown>)?.component_key === 'app_runner'
+    ? ((soleChart.chart_spec as unknown as Record<string, unknown>).component_props as Record<string, unknown> | undefined) || {}
+    : null;
 
   // Calculate grid height
   const maxRow = layout.reduce((max, item) => Math.max(max, (item.row || 1) + (item.rowSpan || 8)), 1);
@@ -331,6 +341,28 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
   // A dashboard shared with you is view-only: only its owner may change it.
   const canEdit = dashboard.is_own !== false;
 
+  // Another dashboard in place of this one (a copy, a version brought back):
+  // its tiles load at once, as on opening the page.
+  const showDashboard = (next: SavedReport) => {
+    initialRefreshDone.current = false;
+    lastStartedRef.current = {};
+    setDashboard(next);
+  };
+
+  // The copy can wait behind tiles still loading, so the button says so.
+  const makeCopy = async () => {
+    setCopying(true);
+    try {
+      const res = await apiFetch(`/api/reports/${dashboard.id}/copy`, {
+        method: 'POST',
+        body: JSON.stringify({ make_active: true }),
+      });
+      if (res.ok) showDashboard(await res.json());
+    } finally {
+      setCopying(false);
+    }
+  };
+
   const actions = (
     <>
       {periodPicker}
@@ -361,6 +393,9 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       >
         {dashboard.is_published ? 'Published' : 'Share'}
       </Button>}
+      {canEdit
+        ? <Button variant="quiet" icon={History} onClick={() => setShowHistory(true)}>History</Button>
+        : <Button icon={Copy} onClick={makeCopy} disabled={copying} title="Only the person who shared it can change it. Your copy is yours to change.">{copying ? 'Copying…' : 'Make a copy'}</Button>}
       {agentSlug && (
         <Button variant="quiet" icon={LayoutGrid} onClick={() => setShowPicker(true)}>Change dashboard</Button>
       )}
@@ -387,8 +422,17 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
         <PageState kind="empty" title="This dashboard has no charts yet." detail="Ask Norm to add one, or change to another dashboard." />
       )}
 
+      {soleAppProps && (() => {
+        const AppTile = getEmbeddableComponent('app_runner');
+        return AppTile ? (
+          <div style={{ height: 'calc(100vh - 180px)', minHeight: 480 }}>
+            <AppTile data={{}} props={{ ...soleAppProps, fill: true }} />
+          </div>
+        ) : null;
+      })()}
+
       {/* Grid */}
-      <div style={stacked ? {
+      {!soleAppProps && <div style={stacked ? {
         display: 'flex',
         flexDirection: 'column',
         gap: TILE_GAP,
@@ -489,7 +533,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
             </div>
           );
         })}
-      </div>
+      </div>}
 
       {/* Debug / errors panel */}
       {(refreshErrors || debugInfo) && (
@@ -521,6 +565,14 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
             )}
           </div>
         </details>
+      )}
+
+      {showHistory && (
+        <DashboardHistory
+          reportId={dashboard.id}
+          onClose={() => setShowHistory(false)}
+          onRestored={next => { setShowHistory(false); showDashboard(next); }}
+        />
       )}
 
       {/* Drill-down panel */}

@@ -824,6 +824,10 @@ The user has access to multiple venues:
         if _pid.startswith("app:"):
             # A pinned user-built app rendered as its own page.
             page_label = f"the app '{_pid[4:]}'"
+        elif _pid.startswith("dashboard-") and _pid not in _page_labels:
+            # Each AI agent's Dashboard page (it read "dashboard-reports").
+            _agent = _pid[len("dashboard-") :].replace("_", " ")
+            page_label = f"{_agent.capitalize()} Dashboard"
         else:
             page_label = _page_labels.get(_pid, _pid)
         system_prompt += f"""
@@ -832,6 +836,10 @@ The user has access to multiple venues:
 The user is currently viewing the **{page_label}** page.
 Their question likely relates to what they see on this page. Prioritize answers relevant to this context.
 """
+        if _pid.startswith("dashboard-"):
+            system_prompt += _dashboard_on_screen(
+                db, user_id, str(page_context.get("agent") or _pid[len("dashboard-") :])
+            )
 
         # If a document is open (e.g. the recipe being edited), give the agent
         # its identifiers + current state so "change the salt to 5g" resolves
@@ -1056,3 +1064,33 @@ ignore a playbook that turns out not to fit.
         },
     }
     return menu, read_tool
+
+
+def _dashboard_on_screen(db: Session, user_id: str | None, agent_slug: str) -> str:
+    """Which Norm dashboard the person is looking at, so "add a chart here" and
+    "this dashboard" mean THIS one. Rich's "this dashboard" was once read as
+    Loaded's (20 Oct 2026)."""
+    from app.db.models import User
+    from app.routers.reports_crud import _dashboard_in_use
+
+    user = db.query(User).filter(User.id == user_id).first() if user_id else None
+    if user is None:
+        return ""
+    try:
+        report = _dashboard_in_use(db, user, agent_slug)
+    except Exception:  # the prompt must never fail on this
+        logger.warning("dashboard on screen: lookup failed", exc_info=True)
+        return ""
+    if report is None:
+        return ""
+    whose = (
+        "theirs"
+        if report.user_id == user.id
+        else "shared with them; only the person who shared it can change it, "
+        "so to change it copy it first"
+    )
+    return f"""
+## Dashboard on screen
+The page shows the Norm dashboard **{report.title}** (dashboard_id {report.id}), {whose}.
+"This dashboard" means this one, never Loaded's. Read it with `get_dashboards` before changing it with `manage_dashboard`.
+"""

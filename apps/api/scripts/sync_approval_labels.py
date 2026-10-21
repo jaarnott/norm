@@ -66,6 +66,7 @@ READS = [
     "norm.search_tool_result",
     "norm.show_connect",
     "norm_reports.render_chart",
+    "norm_reports.get_dashboards",
     "norm_functions.find_enquiries",
     "norm_functions.get_enquiry",
     "norm_functions.find_events",
@@ -121,6 +122,11 @@ WRITES = {
         "change what Norm may do without asking you", allow_auto=False
     ),
     "norm.remember": _auto("remember what you tell it"),
+    # Asks only for a dashboard shared with the organisation; a change to one
+    # only its author sees runs at once (its preview answers "run").
+    "norm_reports.manage_dashboard": _ask(
+        "change dashboards shared with your organisation"
+    ),
     # Norm Functions (Oct 2026). Record changes ask, and a person may let
     # them through; anything that reaches a customer always asks (owner:
     # every customer send and every priced email needs approval).

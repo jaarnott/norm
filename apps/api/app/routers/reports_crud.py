@@ -72,20 +72,29 @@ def _report_to_dict(report: Report, viewer_id: str | None = None) -> dict:
         "refresh_interval_seconds": report.refresh_interval_seconds,
         "global_filters": report.global_filters,
         "organization_id": report.organization_id,
-        "charts": [_chart_to_dict(c) for c in report.charts],
+        "charts": [_chart_to_dict(c, viewer_id) for c in report.charts],
         "created_at": report.created_at.isoformat() if report.created_at else None,
         "updated_at": report.updated_at.isoformat() if report.updated_at else None,
     }
 
 
-def _chart_to_dict(chart: ReportChart) -> dict:
+def _chart_to_dict(chart: ReportChart, viewer_id: str | None = None) -> dict:
+    data, meta = chart.data, chart.data_meta
+    # A tile's saved figures are the person's who loaded them: they came from
+    # THEIR venues. Anyone else gets an empty tile, which the page refreshes
+    # for them. Until Oct 2026 a team member opening a shared dashboard saw the
+    # manager's figures for venues they cannot see. A tile with no tool keeps
+    # its data: that is its content (a text tile), not a cache.
+    fetched_by = (meta or {}).get("user_id")
+    if viewer_id and (chart.script or {}).get("action") and fetched_by != viewer_id:
+        data, meta = [], None
     return {
         "id": chart.id,
         "title": chart.title,
         "chart_type": chart.chart_type,
         "chart_spec": chart.chart_spec,
-        "data": chart.data,
-        "data_meta": chart.data_meta,
+        "data": data,
+        "data_meta": meta,
         "script": chart.script,
         "position": chart.position,
         "source_thread_id": chart.source_thread_id,
@@ -93,32 +102,47 @@ def _chart_to_dict(chart: ReportChart) -> dict:
     }
 
 
-# Until 21 Oct 2026 every route here checked only "signed in": anyone could
-# read, change or delete any report by its id, and a published dashboard showed
-# in every organisation's picker. A report is now its owner's to change, and a
-# published one is seen only by people who share an organisation with its
-# owner. (Dashboards owned by an organisation come next:
-# docs/plans/norm-builds-dashboards.md.)
+# Who may see and change a report. Until 21 Oct 2026 every route here checked
+# only "signed in": anyone could read, change or delete any report by its id,
+# and a published dashboard showed in every organisation's picker. Now
+# (docs/plans/norm-builds-dashboards.md):
+# - a report belongs to the organisation it was made in, and is seen only
+#   there: by its owner, and by everyone in it once shared;
+# - only its owner changes it; anyone who can see it can copy it;
+# - a report from before organisations were recorded is its owner's, and
+#   shared with people in the owner's organisations.
 
 
-def _visible_to(user: User):
-    """The reports ``user`` may see: their own, and published ones whose owner
-    shares an organisation with them."""
+def _org(db: Session, user: User) -> str | None:
+    """The organisation the person is working in."""
+    from app.services import active_org
+
+    return active_org.org_id_for(db, user.id)
+
+
+def _visible_to(db: Session, user: User):
     from sqlalchemy import select
 
-    orgs = select(OrganizationMembership.organization_id).where(
-        OrganizationMembership.user_id == user.id
-    )
+    own = Report.user_id == user.id
+    shared = Report.is_published.is_(True)
+    org = _org(db, user)
+    if org is None:
+        return own
     colleagues = select(OrganizationMembership.user_id).where(
-        OrganizationMembership.organization_id.in_(orgs)
+        OrganizationMembership.organization_id == org
     )
-    return (Report.user_id == user.id) | (
-        Report.is_published.is_(True) & Report.user_id.in_(colleagues)
+    unassigned = Report.organization_id.is_(None)
+    return (
+        (own & (unassigned | (Report.organization_id == org)))
+        | (shared & (Report.organization_id == org))
+        | (shared & unassigned & Report.user_id.in_(colleagues))
     )
 
 
 def _report_for_viewer(db: Session, report_id: str, user: User) -> Report:
-    report = db.query(Report).filter(Report.id == report_id, _visible_to(user)).first()
+    report = (
+        db.query(Report).filter(Report.id == report_id, _visible_to(db, user)).first()
+    )
     if not report:
         raise HTTPException(404, "Report not found")
     return report
@@ -128,9 +152,118 @@ def _report_for_owner(db: Session, report_id: str, user: User) -> Report:
     report = _report_for_viewer(db, report_id, user)
     if report.user_id != user.id:
         raise HTTPException(
-            403, "Only the person who made this dashboard can change it."
+            403,
+            "Only the person who made this dashboard can change it. "
+            "You can make your own copy.",
         )
     return report
+
+
+# Which dashboard a person uses for each AI agent, kept per organisation:
+# dashboard_preferences = {"by_org": {org: {agent: report_id}}, ...}. The older
+# flat {agent: report_id} is read in every organisation until they choose
+# there. ("_pinned_apps" lives in the same column; it is left alone.)
+
+
+def _choices(db: Session, user: User) -> dict:
+    prefs = user.dashboard_preferences or {}
+    org = _org(db, user)
+    by_org = prefs.get("by_org") or {}
+    if org and org in by_org:
+        return dict(by_org[org])
+    return {
+        k: v
+        for k, v in prefs.items()
+        if not k.startswith("_") and k != "by_org" and isinstance(v, str)
+    }
+
+
+def _choose(db: Session, user: User, agent_slug: str, report_id: str | None):
+    from sqlalchemy.orm.attributes import flag_modified
+
+    prefs = dict(user.dashboard_preferences or {})
+    org = _org(db, user)
+    chosen = _choices(db, user)
+    if report_id:
+        chosen[agent_slug] = report_id
+    else:
+        chosen.pop(agent_slug, None)
+    if org:
+        prefs["by_org"] = {**(prefs.get("by_org") or {}), org: chosen}
+    else:
+        prefs[agent_slug] = report_id
+        if not report_id:
+            prefs.pop(agent_slug, None)
+    user.dashboard_preferences = prefs
+    flag_modified(user, "dashboard_preferences")
+
+
+# History. Every change keeps the dashboard as it then stood, as an App's
+# versions are kept, and any version can be brought back. A version is the
+# content (layout, period, tiles), never the figures or who it is shared with.
+
+
+def _snapshot(report: Report) -> dict:
+    period = (report.global_filters or {}).get("default_period")
+    return {
+        "title": report.title,
+        "description": report.description,
+        "layout": report.layout or [],
+        "is_dashboard": report.is_dashboard,
+        "agent_slug": report.agent_slug,
+        "refresh_interval_seconds": report.refresh_interval_seconds,
+        "default_period": period,
+        "charts": [
+            {
+                "id": c.id,
+                "title": c.title,
+                "chart_type": c.chart_type,
+                "chart_spec": c.chart_spec,
+                "script": c.script,
+                "position": c.position,
+            }
+            for c in sorted(report.charts, key=lambda c: c.position)
+        ],
+    }
+
+
+def _last_version(db: Session, report_id: str):
+    from app.db.models import ReportVersion
+
+    return (
+        db.query(ReportVersion)
+        .filter(ReportVersion.report_id == report_id)
+        .order_by(ReportVersion.version.desc())
+        .first()
+    )
+
+
+def _record(db: Session, report: Report, by: str | None, note: str | None = None):
+    """Keep the dashboard as it now stands, unless nothing changed. Commits."""
+    from app.db.models import ReportVersion
+
+    db.refresh(report)
+    snap = _snapshot(report)
+    last = _last_version(db, report.id)
+    if last is not None and last.snapshot == snap:
+        return
+    db.add(
+        ReportVersion(
+            report_id=report.id,
+            version=(last.version + 1) if last else 1,
+            snapshot=snap,
+            note=note,
+            created_by=by,
+        )
+    )
+    db.commit()
+
+
+def _baseline(db: Session, report: Report):
+    """A dashboard from before history was kept: record it as it stands, so
+    the change about to be made can be undone."""
+    if _last_version(db, report.id) is None:
+        _record(db, report, report.user_id, "As it was before history was kept")
 
 
 def _sample_rows(rows: list, n: int) -> list:
@@ -177,11 +310,13 @@ def _shared_calendar_venue(db, venue_ids):
     return venues[0] if len(calendars) == 1 else None
 
 
-def _data_meta(gf: dict, venue_id) -> dict:
-    """What a refresh fetched the rows for, kept beside them.
+def _data_meta(gf: dict, venue_id, user_id: str | None = None) -> dict:
+    """What a refresh fetched the rows for, and for whom, kept beside them.
 
     The page compares this with the tile's venue, period and its own
     refresh interval to decide whether the cache is still good on open.
+    ``user_id`` keeps the figures to the person they were fetched for
+    (``_chart_to_dict``).
     """
     import datetime as _dt
 
@@ -189,6 +324,7 @@ def _data_meta(gf: dict, venue_id) -> dict:
         "refreshed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         "venue_id": venue_id or "__all__",
         "period": (gf or {}).get("period") or None,
+        "user_id": user_id,
     }
 
 
@@ -421,8 +557,10 @@ def _resolve_date_placeholders(params: dict, venue=None) -> dict:
 def _chart_venue_ids(db: Session, user, connector: str, venue_id: str | None) -> list:
     """The venues a chart reads: the one asked for — if this user may access
     it — or, for "all venues", every connected venue in the user's
-    organisation. It took every connected venue in the DATABASE, and trusted
-    whatever venue a filter sent (Oct 2026)."""
+    organisation that they may access. It took every connected venue in the
+    DATABASE, and trusted whatever venue a filter sent (Oct 2026); then every
+    venue in the organisation, so a team member with one venue saw them all
+    on a dashboard left on "All venues" (21 Oct 2026)."""
     from app.db.models import Connection, Venue
     from app.services import caller_scope
     from app.services.venue_service import user_can_access_venue
@@ -445,7 +583,13 @@ def _chart_venue_ids(db: Session, user, connector: str, venue_id: str | None) ->
         (Connection.venue_id.in_(scoped.with_entities(Venue.id)))
         | Connection.venue_id.is_(None)
     )
-    return [vc.venue_id for vc in q.all()] or [None]
+    ids = [vc.venue_id for vc in q.all()]
+    if getattr(user, "role", None) != "admin":
+        from app.services.venue_service import get_user_venues
+
+        theirs = {v.id for v in get_user_venues(db, user.id)}
+        ids = [v for v in ids if v is None or v in theirs]
+    return ids or [None]
 
 
 @router.post("")
@@ -458,10 +602,11 @@ async def create_report(
         user_id=user.id,
         venue_id=body.venue_id,
         title=body.title,
+        organization_id=_org(db, user),
     )
     db.add(report)
     db.commit()
-    db.refresh(report)
+    _record(db, report, user.id)
     return _report_to_dict(report, user.id)
 
 
@@ -472,13 +617,13 @@ async def list_reports(
 ):
     own = (
         db.query(Report)
-        .filter(Report.user_id == user.id)
+        .filter(_visible_to(db, user), Report.user_id == user.id)
         .order_by(Report.updated_at.desc())
         .all()
     )
     shared = (
         db.query(Report)
-        .filter(_visible_to(user), Report.user_id != user.id)
+        .filter(_visible_to(db, user), Report.user_id != user.id)
         .order_by(Report.updated_at.desc())
         .all()
     )
@@ -557,6 +702,7 @@ def _copy_template(db: Session, config_db: Session, tmpl, user: User) -> Report:
         agent_slug=tmpl.agent_slug,
         refresh_interval_seconds=300,  # 5 min default
         global_filters={"default_period": default_period} if default_period else None,
+        organization_id=_org(db, user),
     )
     db.add(report)
     db.flush()
@@ -597,7 +743,7 @@ def _copy_template(db: Session, config_db: Session, tmpl, user: User) -> Report:
 
     flag_modified(report, "layout")
     db.commit()
-    db.refresh(report)
+    _record(db, report, user.id, f"Copied from the {tmpl.title} template")
     return report
 
 
@@ -640,40 +786,36 @@ async def list_dashboards(
     """List all dashboards visible to the current user."""
     dashboards = (
         db.query(Report)
-        .filter(Report.is_dashboard.is_(True), _visible_to(user))
+        .filter(Report.is_dashboard.is_(True), _visible_to(db, user))
         .order_by(Report.agent_slug, Report.updated_at.desc())
         .all()
     )
     return {"dashboards": [_report_to_dict(d, user.id) for d in dashboards]}
 
 
-@router.get("/dashboards/{agent_slug}")
-async def get_dashboard_for_agent(
-    agent_slug: str,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
-):
-    """Get the active dashboard for a specific agent."""
-    # 1. Check user's explicit preference
-    prefs = user.dashboard_preferences or {}
-    pref_id = prefs.get(agent_slug)
+def _dashboard_in_use(db: Session, user: User, agent_slug: str) -> Report | None:
+    """The dashboard the person sees for an AI agent, short of copying a
+    template for them: their choice, else their newest own, else the newest
+    shared in their organisation."""
+    # 1. The person's choice in this organisation
+    pref_id = _choices(db, user).get(agent_slug)
     if pref_id:
         # A choice that is no longer visible (unshared, another
         # organisation's) falls through to the defaults below.
         dashboard = (
-            db.query(Report).filter(Report.id == pref_id, _visible_to(user)).first()
+            db.query(Report).filter(Report.id == pref_id, _visible_to(db, user)).first()
         )
         if dashboard:
-            return {"dashboard": _report_to_dict(dashboard, user.id)}
+            return dashboard
 
-    # 2. Fall back to user's own dashboard
+    # 2. Fall back to their own dashboard in this organisation
     dashboard = (
         db.query(Report)
         .filter(
             Report.is_dashboard.is_(True),
             Report.agent_slug == agent_slug,
             Report.user_id == user.id,
+            _visible_to(db, user),
         )
         .order_by(Report.updated_at.desc())
         .first()
@@ -686,11 +828,23 @@ async def get_dashboard_for_agent(
                 Report.is_dashboard.is_(True),
                 Report.agent_slug == agent_slug,
                 Report.is_published.is_(True),
-                _visible_to(user),
+                _visible_to(db, user),
             )
             .order_by(Report.updated_at.desc())
             .first()
         )
+    return dashboard
+
+
+@router.get("/dashboards/{agent_slug}")
+async def get_dashboard_for_agent(
+    agent_slug: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Get the active dashboard for a specific agent."""
+    dashboard = _dashboard_in_use(db, user, agent_slug)
     if not dashboard:
         # 4. The AI agent's one template, copied for this person. Until 21 Oct
         # 2026 step 3 lent them the newest dashboard ANYONE had published, in
@@ -734,13 +888,14 @@ async def get_available_dashboards(
         .all()
     )
 
-    # User's own dashboards
+    # Their own dashboards in this organisation
     own = (
         db.query(Report)
         .filter(
             Report.is_dashboard.is_(True),
             Report.agent_slug == agent_slug,
             Report.user_id == user.id,
+            _visible_to(db, user),
         )
         .order_by(Report.updated_at.desc())
         .all()
@@ -752,16 +907,15 @@ async def get_available_dashboards(
         .filter(
             Report.is_dashboard.is_(True),
             Report.agent_slug == agent_slug,
-            _visible_to(user),
+            _visible_to(db, user),
             Report.user_id != user.id,
         )
         .order_by(Report.updated_at.desc())
         .all()
     )
 
-    prefs = user.dashboard_preferences or {}
     return {
-        "active_id": prefs.get(agent_slug),
+        "active_id": _choices(db, user).get(agent_slug),
         "templates": [
             {
                 "slug": t.slug,
@@ -788,15 +942,8 @@ async def set_active_dashboard(
     user: User = Depends(get_current_user),
 ):
     """Set or clear the user's active dashboard for an agent."""
-    prefs = dict(user.dashboard_preferences or {})
-
     if not body.dashboard_id:
-        # Clear preference
-        prefs.pop(agent_slug, None)
-        user.dashboard_preferences = prefs
-        from sqlalchemy.orm.attributes import flag_modified
-
-        flag_modified(user, "dashboard_preferences")
+        _choose(db, user, agent_slug, None)
         db.commit()
         return {"dashboard": None}
 
@@ -805,18 +952,14 @@ async def set_active_dashboard(
         .filter(
             Report.id == body.dashboard_id,
             Report.is_dashboard.is_(True),
-            _visible_to(user),
+            _visible_to(db, user),
         )
         .first()
     )
     if not dashboard:
         raise HTTPException(404, "Dashboard not found")
 
-    prefs[agent_slug] = body.dashboard_id
-    user.dashboard_preferences = prefs
-    from sqlalchemy.orm.attributes import flag_modified as _fm
-
-    _fm(user, "dashboard_preferences")
+    _choose(db, user, agent_slug, body.dashboard_id)
     db.commit()
     return {"dashboard": _report_to_dict(dashboard, user.id)}
 
@@ -843,6 +986,7 @@ async def update_report(
     user: User = Depends(get_current_user),
 ):
     report = _report_for_owner(db, report_id, user)
+    _baseline(db, report)
     if body.title is not None:
         report.title = body.title
     if body.description is not None:
@@ -868,7 +1012,7 @@ async def update_report(
 
         flag_modified(report, "global_filters")
     db.commit()
-    db.refresh(report)
+    _record(db, report, user.id)
     return _report_to_dict(report, user.id)
 
 
@@ -899,6 +1043,7 @@ async def add_chart(
 ):
     report = _report_for_owner(db, report_id, user)
     _require_tool(body.script, config_db)
+    _baseline(db, report)
 
     position = len(report.charts)
     chart = ReportChart(
@@ -907,6 +1052,9 @@ async def add_chart(
         chart_type=body.chart_type,
         chart_spec=body.chart_spec,
         data=body.data,
+        # The rows came from the person's own conversation: theirs to see,
+        # and with no refresh time the page still re-reads them on open.
+        data_meta={"user_id": user.id} if body.data else None,
         script=body.script,
         source_thread_id=body.source_thread_id,
         position=position,
@@ -935,7 +1083,7 @@ async def add_chart(
     flag_modified(report, "layout")
 
     db.commit()
-    db.refresh(report)
+    _record(db, report, user.id)
     return _report_to_dict(report, user.id)
 
 
@@ -948,9 +1096,10 @@ async def update_chart(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    _report_for_owner(db, report_id, user)
+    report = _report_for_owner(db, report_id, user)
     if body.script is not None:
         _require_tool(body.script, config_db)
+    _baseline(db, report)
     chart = (
         db.query(ReportChart)
         .filter(
@@ -980,7 +1129,8 @@ async def update_chart(
         chart.position = body.position
     db.commit()
     db.refresh(chart)
-    return _chart_to_dict(chart)
+    _record(db, report, user.id)
+    return _chart_to_dict(chart, user.id)
 
 
 @router.delete("/{report_id}/charts/{chart_id}")
@@ -1001,6 +1151,7 @@ async def remove_chart(
     )
     if not chart:
         raise HTTPException(404, "Chart not found")
+    _baseline(db, report)
 
     # Remove from grid layout
     if report:
@@ -1015,6 +1166,7 @@ async def remove_chart(
 
     db.delete(chart)
     db.commit()
+    _record(db, report, user.id)
     return {"ok": True}
 
 
@@ -1161,7 +1313,7 @@ async def refresh_report(
 
             if any_success and aggregated_rows:
                 chart.data = aggregated_rows
-                chart.data_meta = _data_meta(gf, venue_id)
+                chart.data_meta = _data_meta(gf, venue_id, user.id)
                 from sqlalchemy.orm.attributes import flag_modified
 
                 flag_modified(chart, "data")
@@ -1181,34 +1333,21 @@ async def refresh_report(
     return result
 
 
-@router.post("/{report_id}/charts/{chart_id}/refresh")
-def refresh_single_chart(
-    report_id: str,
-    chart_id: str,
-    body: RefreshBody | None = None,
-    db: Session = Depends(get_db),
-    config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
-):
-    """Refresh a single chart and return its updated data."""
-    _report_for_viewer(db, report_id, user)
-    chart = (
-        db.query(ReportChart)
-        .filter(ReportChart.id == chart_id, ReportChart.report_id == report_id)
-        .first()
-    )
-    if not chart:
-        raise HTTPException(404, "Chart not found")
-
-    report = db.query(Report).filter(Report.id == report_id).first()
-    script = chart.script
-    if not script or not script.get("connector") or not script.get("action"):
-        return {"chart": _chart_to_dict(chart)}
-
+def run_tile(
+    db: Session,
+    config_db: Session,
+    user: User,
+    report: Report | None,
+    script: dict,
+    gf: dict | None,
+) -> tuple[list[dict], list[str], str | None]:
+    """Run one tile's tool as the page would: for the venue (or every venue
+    the person may see), on the dashboard's period. Returns the rows, why any
+    venue gave nothing, and the venue the rows are for (None: all of them).
+    Used by a tile's refresh and by Norm trying a tile before it saves it."""
     from app.connectors.tool_executor import execute_connector_tool
 
-    gf = (body.global_filters if body else None) or {}
-
+    gf = gf or {}
     # The venue whose business calendar applies to these date placeholders.
     gf_venue = gf.get("venue_id")
     venue_id_for_day = (
@@ -1241,7 +1380,6 @@ def refresh_single_chart(
     # Execute venues sequentially — charts are already parallel at the request level
     # so we don't need nested ThreadPoolExecutors that exhaust DB connections
     aggregated_rows: list[dict] = []
-    any_success = False
     # Why a tile is empty. A tool that failed, or answered with its own
     # {"error": …} document, used to leave the chart on its old data and the
     # page saying "no rows — check the chart's settings" (16 Oct 2026: every
@@ -1272,7 +1410,6 @@ def refresh_single_chart(
             errors.append(str(tool_result.error or "tool failed"))
             continue
         if payload:
-            any_success = True
             rows = _rows_from_payload(payload, script)
             if not venue_id and len(venue_ids) > 1:
                 from app.db.models import Venue
@@ -1285,10 +1422,39 @@ def refresh_single_chart(
                     if isinstance(row, dict):
                         row["venue"] = venue_name
             aggregated_rows.extend(rows)
+    return aggregated_rows, errors, venue_id
 
-    if any_success and aggregated_rows:
-        chart.data = aggregated_rows
-        chart.data_meta = _data_meta(gf, venue_id)
+
+@router.post("/{report_id}/charts/{chart_id}/refresh")
+def refresh_single_chart(
+    report_id: str,
+    chart_id: str,
+    body: RefreshBody | None = None,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Refresh a single chart and return its updated data."""
+    _report_for_viewer(db, report_id, user)
+    chart = (
+        db.query(ReportChart)
+        .filter(ReportChart.id == chart_id, ReportChart.report_id == report_id)
+        .first()
+    )
+    if not chart:
+        raise HTTPException(404, "Chart not found")
+
+    report = db.query(Report).filter(Report.id == report_id).first()
+    script = chart.script
+    if not script or not script.get("connector") or not script.get("action"):
+        return {"chart": _chart_to_dict(chart, user.id)}
+
+    gf = (body.global_filters if body else None) or {}
+    rows, errors, venue_id = run_tile(db, config_db, user, report, script, gf)
+
+    if rows:
+        chart.data = rows
+        chart.data_meta = _data_meta(gf, venue_id, user.id)
         from sqlalchemy.orm.attributes import flag_modified
 
         flag_modified(chart, "data")
@@ -1296,8 +1462,8 @@ def refresh_single_chart(
         db.commit()
         db.refresh(chart)
 
-    out = {"chart": _chart_to_dict(chart)}
-    if errors and not aggregated_rows:
+    out = {"chart": _chart_to_dict(chart, user.id)}
+    if errors and not rows:
         out["error"] = "; ".join(dict.fromkeys(errors))
     return out
 
@@ -1430,9 +1596,188 @@ async def promote_to_dashboard(
 ):
     """Promote a report to a dashboard."""
     report = _report_for_owner(db, report_id, user)
+    _baseline(db, report)
     report.is_dashboard = True
     if body and body.agent_slug:
         report.agent_slug = body.agent_slug
     db.commit()
-    db.refresh(report)
+    _record(db, report, user.id)
     return _report_to_dict(report, user.id)
+
+
+# ---------------------------------------------------------------------------
+# Copies and history
+# ---------------------------------------------------------------------------
+
+
+class CopyReportBody(BaseModel):
+    # Also make the copy the person's dashboard for its AI agent.
+    make_active: bool = False
+
+
+def _copy_report(db: Session, src: Report, user: User, make_active: bool) -> Report:
+    """The person's own copy of ``src``, in the organisation they are working
+    in, unshared; optionally their dashboard for its AI agent."""
+    import copy as _copy
+
+    mine = Report(
+        user_id=user.id,
+        organization_id=_org(db, user),
+        venue_id=src.venue_id,
+        title=src.title,
+        description=src.description,
+        status="saved",
+        is_dashboard=src.is_dashboard,
+        agent_slug=src.agent_slug,
+        refresh_interval_seconds=src.refresh_interval_seconds,
+        global_filters=_copy.deepcopy(src.global_filters),
+    )
+    db.add(mine)
+    db.flush()
+    new_ids = {}
+    for c in src.charts:
+        has_tool = bool((c.script or {}).get("action"))
+        chart = ReportChart(
+            report_id=mine.id,
+            title=c.title,
+            chart_type=c.chart_type,
+            chart_spec=_copy.deepcopy(c.chart_spec),
+            script=_copy.deepcopy(c.script),
+            # Figures are the loader's (_chart_to_dict); a text tile's rows are
+            # its content and come along.
+            data=[] if has_tool else _copy.deepcopy(c.data),
+            position=c.position,
+        )
+        db.add(chart)
+        db.flush()
+        new_ids[c.id] = chart.id
+    mine.layout = [
+        {**item, "chart_id": new_ids[item["chart_id"]]}
+        for item in (src.layout or [])
+        if isinstance(item, dict) and item.get("chart_id") in new_ids
+    ]
+    db.commit()
+    _record(db, mine, user.id, f"Copied from {src.title}")
+    if make_active and mine.is_dashboard and mine.agent_slug:
+        _choose(db, user, mine.agent_slug, mine.id)
+        db.commit()
+    return mine
+
+
+@router.post("/{report_id}/copy")
+async def copy_report(
+    report_id: str,
+    body: CopyReportBody | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """The person's own copy of a dashboard they can see, in the organisation
+    they are working in. A shared dashboard is changed only by the person who
+    shared it; everyone else copies it and changes their copy."""
+    src = _report_for_viewer(db, report_id, user)
+    mine = _copy_report(db, src, user, bool(body and body.make_active))
+    return _report_to_dict(mine, user.id)
+
+
+@router.get("/{report_id}/versions")
+async def list_versions(
+    report_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Every version of the owner's dashboard, newest first."""
+    from app.db.models import ReportVersion
+
+    _report_for_owner(db, report_id, user)
+    rows = (
+        db.query(ReportVersion)
+        .filter(ReportVersion.report_id == report_id)
+        .order_by(ReportVersion.version.desc())
+        .all()
+    )
+    authors = {r.created_by for r in rows if r.created_by}
+    names = {
+        u.id: u.full_name or u.email
+        for u in db.query(User).filter(User.id.in_(authors)).all()
+    }
+    return {
+        "versions": [
+            {
+                "version": r.version,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "by": names.get(r.created_by),
+                "note": r.note,
+                "title": (r.snapshot or {}).get("title"),
+                "tiles": len((r.snapshot or {}).get("charts") or []),
+                "current": i == 0,
+            }
+            for i, r in enumerate(rows)
+        ]
+    }
+
+
+def _restore(db: Session, report: Report, version: int, user: User) -> Report:
+    """Bring back ``version`` of the owner's ``report``, saved as the newest."""
+    import copy as _copy
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.db.models import ReportVersion
+
+    row = (
+        db.query(ReportVersion)
+        .filter(ReportVersion.report_id == report.id, ReportVersion.version == version)
+        .first()
+    )
+    if not row:
+        raise HTTPException(404, "No such version")
+    _baseline(db, report)
+    snap = _copy.deepcopy(row.snapshot)
+    report.title = snap.get("title") or report.title
+    report.description = snap.get("description")
+    report.layout = snap.get("layout") or []
+    report.is_dashboard = bool(snap.get("is_dashboard"))
+    report.agent_slug = snap.get("agent_slug")
+    report.refresh_interval_seconds = snap.get("refresh_interval_seconds")
+    filters = _copy.deepcopy(report.global_filters or {})
+    filters.pop("default_period", None)
+    if snap.get("default_period"):
+        filters["default_period"] = snap["default_period"]
+    report.global_filters = filters or None
+    flag_modified(report, "layout")
+    flag_modified(report, "global_filters")
+
+    wanted = {c["id"]: c for c in snap.get("charts") or []}
+    for chart in [c for c in report.charts if c.id not in wanted]:
+        report.charts.remove(chart)
+    current = {c.id: c for c in report.charts}
+    for chart_id, c in wanted.items():
+        chart = current.get(chart_id)
+        if chart is None:
+            chart = ReportChart(id=chart_id, report_id=report.id, data=[])
+            db.add(chart)
+        elif chart.script != c.get("script"):
+            chart.data, chart.data_meta = [], None
+        chart.title = c.get("title") or ""
+        chart.chart_type = c.get("chart_type") or "bar"
+        chart.chart_spec = c.get("chart_spec") or {}
+        chart.script = c.get("script") or {}
+        chart.position = c.get("position") or 0
+        for field in ("chart_spec", "script", "data"):
+            flag_modified(chart, field)
+    db.commit()
+    _record(db, report, user.id, f"Brought back version {version}")
+    return report
+
+
+@router.post("/{report_id}/versions/{version}/restore")
+async def restore_version(
+    report_id: str,
+    version: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Bring back an earlier version. It is saved as the newest version, so
+    nothing in between is lost and this too can be undone."""
+    report = _report_for_owner(db, report_id, user)
+    return _report_to_dict(_restore(db, report, version, user), user.id)

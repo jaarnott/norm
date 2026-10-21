@@ -3895,3 +3895,4 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
 
 
 from app.agents import functions_tools  # noqa: E402,F401 — registers the norm_functions tools
+from app.agents import dashboard_tools  # noqa: E402,F401 — registers the dashboard tools

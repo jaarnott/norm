@@ -287,6 +287,9 @@ APPS = [
             # what a person says about an insight they clicked on Home
             # (scripts/sync_note_insight_tool.py)
             "norm.note_insight",
+            # Norm builds and changes dashboards (scripts/sync_dashboard_tools.py)
+            "norm_reports.get_dashboards",
+            "norm_reports.manage_dashboard",
         ],
         components=[
             _shared(
