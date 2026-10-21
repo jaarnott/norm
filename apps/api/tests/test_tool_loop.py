@@ -302,6 +302,29 @@ class TestTheCap:
         assert len(executed) == 6
         assert not [r for r in results[0] if json.loads(r["content"]).get("deferred")]
 
+    def test_each_parallel_call_keeps_the_organisation_the_request_asked_for(
+        self, db_session, admin_user, monkeypatch
+    ):
+        """A worker thread starts with an empty context. Without a copy, a
+        person in two organisations had every call Norm ran beside another one
+        act in their oldest organisation (21 Oct 2026)."""
+        from app.services import active_org
+
+        seen = []
+
+        def worker(tc_id, cb):
+            seen.append(active_org.requested_org.get())
+            return tc_id, {"rows": []}
+
+        monkeypatch.setattr(tool_loop, "_execute_tool_call_in_thread", worker)
+        ScriptedLlm([tool_round(*_reads(2)), end_turn("done")]).install(monkeypatch)
+        thread = loop_thread(db_session, admin_user)
+        with active_org.use("org-b"):
+            tool_loop.run_tool_loop(
+                "go", thread, db_session, "system prompt", [READ], config_db=db_session
+            )
+        assert seen == ["org-b", "org-b"]
+
 
 # ---------------------------------------------------------------------------
 # A built-in's file must reach the model.

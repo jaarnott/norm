@@ -76,7 +76,9 @@ class TestReads:
             db_session,
             org,
             "assignments",
-            {"due_date": "2026-10-20", "status": "assigned"},
+            # Outside the window and never overdue. It was 2026-10-20, which
+            # became overdue on 21 Oct 2026 and failed the build.
+            {"due_date": "2099-01-01", "status": "assigned"},
         )
         _row(
             db_session,
@@ -103,8 +105,10 @@ class TestReads:
             before_today=True,
             where={"status": {"ne": "completed"}},
         )
-        assert out["data"]["count"] >= 1
-        assert all(r["due_date"] < "2026-10-18" for r in out["data"]["rows"])
+        assert sorted(r["due_date"] for r in out["data"]["rows"]) == [
+            "2001-01-01",
+            "2026-10-14",
+        ]
 
     def test_fields_trim_the_rows(self, db_session):
         org = _make_organization(db_session, name="Org " + uuid.uuid4().hex[:6])

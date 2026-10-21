@@ -803,6 +803,63 @@ class TestBuilderTools:
         names = {s["name"] for s in out["data"]["scopes"]}
         assert "mcp:reports:read" in names and "mcp:orders:draft" in names
 
+    def test_a_person_in_two_organisations_reads_their_app_beside_another_tool(
+        self, db_session, org, author, monkeypatch
+    ):
+        """An owner at Lott Group, also a team member at Cook Brothers, built
+        apps in Lott conversations. Every call Norm ran beside another tool ran
+        on a worker thread with no organisation and fell back to his OLDER
+        Cook Brothers membership: reads found no app, saves started copies
+        there, and a later change rebuilt from a stale copy and lost a chart
+        (21 Oct 2026). The conversation's organisation decides."""
+        from concurrent.futures import ThreadPoolExecutor
+        from datetime import datetime, timedelta, timezone
+
+        from app.agents import tool_loop
+        from tests.supplier_fakes import bind_sessions
+        from tests.tool_loop_harness import (
+            ScriptedLlm,
+            end_turn,
+            tool,
+            tool_round,
+            tool_use,
+        )
+
+        lott = _make_organization(db_session)
+        joined = _make_membership(db_session, author, lott)
+        joined.role_id = _role(db_session, lott, "owner", ["reports:read"]).id
+        joined.created_at = datetime.now(timezone.utc) + timedelta(days=1)
+        thread = self._thread(db_session, author)
+        thread.organization_id = lott.id
+        app = _app(db_session, lott, author, slug="lott-cafe-dashboard")
+        _version(db_session, app, READ_SPEC, author, ui_source="<div>chart</div>")
+
+        bind_sessions(monkeypatch, db_session)
+        # One worker, so the shared test session is used by one thread at a
+        # time; both calls still leave the request's thread.
+        monkeypatch.setattr(
+            tool_loop,
+            "ThreadPoolExecutor",
+            lambda max_workers: ThreadPoolExecutor(max_workers=1),
+        )
+        read = tool_use("t1", "norm__get_app", {"slug": "lott-cafe-dashboard"})
+        again = tool_use("t2", "norm__get_app", {"slug": "lott-cafe-dashboard"})
+        llm = ScriptedLlm([tool_round(read, again), end_turn("done")]).install(
+            monkeypatch
+        )
+        tool_loop.run_tool_loop(
+            "add a chart",
+            thread,
+            db_session,
+            "system prompt",
+            [tool("norm__get_app")],
+            config_db=db_session,
+        )
+        (results,) = llm.tool_results()
+        assert [r["tool_use_id"] for r in results] == ["t1", "t2"]
+        for r in results:
+            assert "<div>chart</div>" in r["content"], r["content"]
+
 
 class TestSpecValidation:
     """A spec whose permission story is a typo must be refused at save, not

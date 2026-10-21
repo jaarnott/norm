@@ -11,6 +11,13 @@ With one membership nothing changes. With several and no (valid) header, the
 oldest membership wins, which is deterministic rather than whatever row the
 database returned first.
 
+Work done FOR an organisation outranks the header: a tool call in a
+conversation runs under that conversation's organisation (``caller_scope``),
+and that is the organisation it acts in. Without this, a tool Norm ran beside
+another one — on a worker thread, where the header never arrived — fell back
+to the oldest membership: a Lott Group owner's app saves landed in his older
+Cook Brothers membership, and his next read could not find them (21 Oct 2026).
+
 Platform admins get no way into organisations they are not members of: there
 is deliberately no support mode, for privacy.
 """
@@ -59,11 +66,15 @@ def memberships_for(db: Session, user_id: str | None) -> list:
 
 def membership_for(db: Session, user_id: str | None, org_id: str | None = None):
     """The membership the user is acting under: ``org_id`` if given and valid,
-    else the one the request asked for, else the oldest. None if no membership."""
+    else the organisation the work is for (a conversation's tool call), else
+    the one the request asked for, else the oldest. None if no membership."""
+    from app.services import caller_scope
+
     rows = memberships_for(db, user_id)
     if not rows:
         return None
-    for want in (org_id, requested_org.get()):
+    scope = caller_scope.current()
+    for want in (org_id, scope.org_id if scope else None, requested_org.get()):
         if want:
             for m in rows:
                 if m.organization_id == want:

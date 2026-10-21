@@ -5,6 +5,7 @@ Drives multi-turn conversations where the LLM can invoke connector tools
 to MAX_ITERATIONS before returning a response to the user.
 """
 
+import contextvars
 import datetime
 import json
 import logging
@@ -683,9 +684,14 @@ def _execute_loop(
                 max_workers = min(len(read_only_blocks), TOOL_FANOUT_CAP)
 
                 t0 = time.time()
+                # Each worker gets a copy of this request's context — the
+                # organisation the browser asked for among it. A bare worker
+                # thread started empty, so a person in two organisations had
+                # every parallel call act in their oldest one (21 Oct 2026).
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = {
                         executor.submit(
+                            contextvars.copy_context().run,
                             _execute_tool_call_in_thread,
                             block.id,
                             event_cb,
@@ -1585,8 +1591,6 @@ def _preview_asks(asks: list[tuple], task: Thread, db: Session) -> dict:
     share their reads — a batch of 37 stock items fetches the venue's unit
     list once, not 37 times.
     """
-    import contextvars
-
     from app.db.engine import SessionLocal
     from app.services import previews
 
