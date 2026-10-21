@@ -37,6 +37,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, Users } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import { onChange } from '../../lib/liveChanges';
 import { setPageDocument } from '../../lib/pageDocument';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import AppSharePanel from './AppSharePanel';
@@ -246,6 +247,17 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
     })();
     return () => { live = false; };
   }, [slug]);
+
+  // Norm saved a new version of this app (asked from this page, or another
+  // tab): show it. Until Oct 2026 the page kept the version it opened with,
+  // and the person had to leave, refresh and open the app again.
+  useEffect(() => onChange('app', ({ slug: saved }) => {
+    if (saved !== slug) return;
+    apiFetch(`/api/apps/${slug}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((a) => { if (a) setApp(a as AppDetail); })
+      .catch(() => {});
+  }), [slug]);
 
   // The whole document the sandbox runs: runtime first, then the app's markup.
   const srcdoc = useMemo(() => {

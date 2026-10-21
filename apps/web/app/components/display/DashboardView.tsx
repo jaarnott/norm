@@ -5,6 +5,7 @@ import type { DisplayBlockProps } from './DisplayBlockRenderer';
 import type { SavedReport } from '../../types';
 import { autoRefreshLabel, cacheIsFresh, tileInterval, tilesRefreshLabel } from '../../lib/dashboardRefresh';
 import { apiFetch } from '../../lib/api';
+import { onChange } from '../../lib/liveChanges';
 import Chart from './Chart';
 import { RefreshCw, Share2, Check, Settings, Maximize2, LayoutGrid, Copy, History } from 'lucide-react';
 import ChartFullScreenModal from './dashboard/ChartFullScreenModal';
@@ -112,6 +113,28 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
       setLoading(false);
     }
   }, [agentSlug, directReportId]);
+
+  // Norm changed this dashboard, or made or switched the one this AI agent's
+  // page shows: load it again, as on opening the page.
+  const shownIdRef = useRef<string | null>(null);
+  shownIdRef.current = dashboard?.id ?? null;
+  useEffect(() => onChange('dashboard', ({ dashboardId, agent }) => {
+    const mine = !!dashboardId && dashboardId === shownIdRef.current;
+    const url = directReportId
+      ? (dashboardId === directReportId ? `/api/reports/${directReportId}` : null)
+      : (mine || (!!agent && agent === agentSlug)) && agentSlug ? `/api/reports/dashboards/${agentSlug}` : null;
+    if (!url) return;
+    apiFetch(url)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        const next = directReportId ? d : d?.dashboard;
+        if (!next) return;
+        initialRefreshDone.current = false;
+        lastStartedRef.current = {};
+        setDashboard(next);
+      })
+      .catch(() => {});
+  }), [agentSlug, directReportId]);
 
   // Load venues
   useEffect(() => {

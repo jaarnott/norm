@@ -214,6 +214,14 @@ When someone asks for a dashboard, build it with the dashboard tools (`get_dashb
 
 """
 
+#: An App open on the person's screen shows a saved version by itself
+#: (web lib/liveChanges); Norm kept telling Rich to refresh (21 Oct 2026).
+SAVE_MARKER = "## After you save"
+SAVE_NOTE = """## After you save
+An App the person has open, on its page or in another tab, shows the new version by itself as soon as you save. Don't tell them to refresh or reopen it.
+
+"""
+
 
 def also(db, dry_run: bool) -> list[str]:
     import datetime as dt
@@ -299,6 +307,10 @@ def also(db, dry_run: bool) -> list[str]:
         lines.append("build_an_app skill: a dashboard is not an App")
         if not dry_run:
             skill.instructions = SKILL_NOTE + (skill.instructions or "")
+    if skill is not None and SAVE_MARKER not in (skill.instructions or ""):
+        lines.append("build_an_app skill: an open App updates itself")
+        if not dry_run:
+            skill.instructions = SAVE_NOTE + (skill.instructions or "")
 
     if lines and not dry_run:
         BACKUP_DIR.mkdir(exist_ok=True)

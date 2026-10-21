@@ -3890,6 +3890,9 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
             "spec": (version.spec if version else None) or {},
             "ui_source": version.ui_source if version else None,
             "logic_source": version.logic_source if version else None,
+            # Asked for "the link", Norm said the app's details had none (Rich,
+            # 21 Oct 2026); save_app returns it, so reading does too.
+            "open_url": f"/apps/{app.slug}",
         },
     }
 

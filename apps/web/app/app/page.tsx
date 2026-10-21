@@ -20,6 +20,7 @@ import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
 import { OPEN_APP_PAGE_EVENT } from '../components/apps/AppRunner';
 import { apiFetch, apiStream, getToken, setToken, clearToken, getStoredUser, setStoredUser, setActiveOrg } from '../lib/api';
 import { getPageDocument } from '../lib/pageDocument';
+import { announceChanges, statusesOf } from '../lib/liveChanges';
 import { PanelLeft as PanelLeftIcon, Menu, Settings, LogOut, SquarePen, X, type LucideIcon } from 'lucide-react';
 import Icon from '../components/ui/Icon';
 import Avatar from '../components/ui/Avatar';
@@ -52,6 +53,10 @@ export default function Home() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [threads, setThreads] = useState<Thread[]>([]);
+  // The threads as last rendered, for handlers that diff a turn's tool calls
+  // against what was there before it (lib/liveChanges).
+  const threadsRef = useRef<Thread[]>([]);
+  threadsRef.current = threads;
   const [loading, setLoading] = useState(false);
   const [activeAgent, setActiveAgent] = useState('home');
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -513,6 +518,9 @@ export default function Home() {
     // Create an optimistic thread so the conversation view appears immediately
     const optimisticId = unsavedId ?? `_pending_${Date.now()}`;
     const currentId = threadIdForRequest || optimisticId;
+    // What Norm had run in this conversation before the turn: anything it
+    // changes now (an App saved, a dashboard changed) is told to the page.
+    const callsBefore = statusesOf(threadsRef.current.find(t => t.id === threadIdForRequest)?.tool_calls);
     if (!threadIdForRequest && !unsavedId) {
       const optimistic: Thread = {
         id: optimisticId,
@@ -562,6 +570,7 @@ export default function Home() {
     // wiped. Only take over the slot when it's the placeholder for a brand-new
     // conversation, or when the ids actually agree.
     const applyFreshThread = (freshThread: Thread) => {
+      announceChanges(freshThread.tool_calls, callsBefore);
       setThreads(prev => {
         if (!threadIdForRequest || freshThread.id === currentId) {
           return prev.map(t => (t.id === currentId ? freshThread : t));
@@ -764,6 +773,7 @@ export default function Home() {
           } else if (event.type === 'complete') {
             stopTypewriter();
             const data = event.data as Thread;
+            announceChanges(data.tool_calls, callsBefore);
             setThreads(prev => {
               const idx = prev.findIndex(t => t.id === currentId);
               if (idx >= 0) {
@@ -958,6 +968,8 @@ export default function Home() {
       } catch { /* transient — the poller will catch up */ }
     };
     try {
+      // An approved change runs inside this request; tell the page what ran.
+      const callsBefore = statusesOf(threadsRef.current.find(t => t.id === threadId)?.tool_calls);
       const res = await apiFetch(`/api/threads/${threadId}/${action}`, {
         method: 'POST',
         ...(body ? { body: JSON.stringify(body) } : {}),
@@ -968,6 +980,7 @@ export default function Home() {
         return;
       }
       const updated = await res.json();
+      announceChanges(updated.tool_calls, callsBefore);
       setThreads(prev => prev.map(t => (t.id === threadId ? updated : t)));
     } catch (err) {
       console.error(`Failed to ${action}:`, err);

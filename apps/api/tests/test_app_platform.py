@@ -785,6 +785,7 @@ class TestBuilderTools:
         )
         out = get_handler("norm", "get_app")({"slug": "mine"}, db_session, thread.id)
         assert out["success"] and out["data"]["ui_source"] == "<b>hi</b>"
+        assert out["data"]["open_url"] == "/apps/mine"  # Norm can give the link
         # A private app does not exist for anyone else.
         stranger = _member(db_session, org, ["reports:read"])
         s_thread = self._thread(db_session, stranger)

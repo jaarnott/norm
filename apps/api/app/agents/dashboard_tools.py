@@ -923,6 +923,8 @@ def _manage_dashboard(params: dict, db: Session, thread_id: str | None) -> dict:
     out = {
         "done": params.get("op"),
         "dashboard_id": report.id,
+        # The page's dashboard view for this AI agent reloads (lib/liveChanges).
+        "agent": report.agent_slug,
         "title": report.title,
         "shared": bool(report.is_published),
         # How it stands NOW. A read sent in the same turn as a change runs
