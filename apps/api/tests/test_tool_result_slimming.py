@@ -23,6 +23,13 @@ class TestToolMaxResultChars:
     def test_absent_key_uses_default(self):
         assert _tool_max_result_chars({"action": "x"}) == MAX_TOOL_RESULT_CHARS
 
+    def test_an_apps_code_comes_back_whole(self):
+        """Cut to 30k, a 33k page came back as its data sources only, and
+        Norm couldn't change it without losing a person's hand edits."""
+        assert (
+            _tool_max_result_chars({"action": "get_app"}) == HARD_MAX_TOOL_RESULT_CHARS
+        )
+
     def test_override_honoured(self):
         assert _tool_max_result_chars({"max_result_chars": 100_000}) == 100_000
 

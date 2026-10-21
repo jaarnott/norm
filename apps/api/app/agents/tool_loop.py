@@ -2039,13 +2039,24 @@ MAX_TOOL_RESULT_CHARS_NO_SEARCH = (
 HARD_MAX_TOOL_RESULT_CHARS = 120_000
 
 
+#: Tools whose answer is useless cut short, when their row sets no budget.
+#: Reading an app returns its code, and Norm changes an app by editing that
+#: code: cut to 30k, a 33k page came back as its data sources only, and Norm
+#: (rightly) refused to rebuild it from memory over a person's hand edits
+#: (Oct 2026).
+WHOLE_RESULT_ACTIONS = {"get_app": HARD_MAX_TOOL_RESULT_CHARS}
+
+
 def _tool_max_result_chars(tool_def: dict | None) -> int:
     """Result-size budget for a tool: its `max_result_chars` override (clamped
     to [MAX_TOOL_RESULT_CHARS, HARD_MAX_TOOL_RESULT_CHARS]) or the default."""
     if not tool_def:
         return MAX_TOOL_RESULT_CHARS
     try:
-        override = int(tool_def.get("max_result_chars") or 0)
+        override = int(
+            tool_def.get("max_result_chars")
+            or WHOLE_RESULT_ACTIONS.get(str(tool_def.get("action") or ""), 0)
+        )
     except (TypeError, ValueError):
         return MAX_TOOL_RESULT_CHARS
     if override <= 0:

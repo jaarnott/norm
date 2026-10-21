@@ -311,6 +311,70 @@ async def save_app_endpoint(
     return save_app(db, user, body.model_dump())
 
 
+class HandEditRequest(BaseModel):
+    ui_source: str
+    #: The version the person started editing. A newer one (Norm saved while
+    #: they edited) is never overwritten: 409, and they edit again on top.
+    base_version: int
+    note: str | None = None
+
+
+@router.post("/apps/{slug}/edit")
+async def save_hand_edit(
+    slug: str,
+    body: HandEditRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(require_permission("apps:build")),
+):
+    """A person's own edit of an app's page (text retyped, sections moved),
+    saved as a new version. Only the page changes: the version's declared
+    reach and its logic are carried over as they are, so an edit by hand can
+    never widen what the app may do. Norm starts its next change from it."""
+    from app.db.models import AppVersion
+
+    app, version = _load(db, slug, user, config_db)
+    if getattr(app, "builtin", False):
+        raise HTTPException(403, "Norm's own apps can't be edited")
+    if resolve_access(db, app, user).role not in ("owner", "edit"):
+        raise HTTPException(403, "you can't edit this app")
+    # As for Norm's save: the page runs as whoever opens it, so it is written
+    # only by someone who could declare the app's reach themselves.
+    missing = required_permissions(version.spec or {}) - org_permissions(db, user)
+    if missing:
+        raise HTTPException(
+            403,
+            "this app can do more than you can yourself — missing: "
+            + ", ".join(sorted(missing)),
+        )
+    if version.version != body.base_version:
+        raise HTTPException(
+            409,
+            f"Version {version.version} was saved while you were editing "
+            f"version {body.base_version}.",
+        )
+    last = (
+        db.query(AppVersion)
+        .filter(AppVersion.app_id == app.id)
+        .order_by(AppVersion.version.desc())
+        .first()
+    )
+    edited = AppVersion(
+        app_id=app.id,
+        version=(last.version if last else 0) + 1,
+        spec=version.spec,
+        ui_source=body.ui_source,
+        logic_source=version.logic_source,
+        changelog=(body.note or "Edited by hand")[:2000],
+        created_by=user.id,
+    )
+    db.add(edited)
+    db.flush()
+    app.current_version_id = edited.id
+    db.commit()
+    return {"slug": app.slug, "version": edited.version}
+
+
 class ShareRequest(BaseModel):
     principal_type: str  # user | venue | organization
     principal_id: str

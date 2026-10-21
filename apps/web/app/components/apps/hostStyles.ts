@@ -120,6 +120,29 @@ export const HOST_CSS = `
   .n-badge--info { background: var(--norm-info-bg); color: var(--norm-info); }
   .n-badge--accent { background: var(--norm-accent-soft); color: var(--norm-accent); }
 
+  /* Pages laid out in rows, columns and sections (Edit mode moves them):
+     a row is one line of columns, which stack on a phone; a column's
+     data-norm-span is its share of the row; sections size to their content.
+     These win over an app's own column rules, so a width a person drags to
+     always shows: no row wraps, and no column brings its own basis. */
+  [data-norm-row] { display: flex; flex-wrap: nowrap !important; gap: 16px; align-items: flex-start; margin: 0 0 16px; }
+  [data-norm-col] { flex: 1 1 0 !important; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+  [data-norm-col][data-norm-span="1"] { flex-grow: 1 !important; }
+  [data-norm-col][data-norm-span="2"] { flex-grow: 2 !important; }
+  [data-norm-col][data-norm-span="3"] { flex-grow: 3 !important; }
+  [data-norm-col][data-norm-span="4"] { flex-grow: 4 !important; }
+  [data-norm-col][data-norm-span="5"] { flex-grow: 5 !important; }
+  [data-norm-col][data-norm-span="6"] { flex-grow: 6 !important; }
+  [data-norm-col][data-norm-span="7"] { flex-grow: 7 !important; }
+  [data-norm-col][data-norm-span="8"] { flex-grow: 8 !important; }
+  [data-norm-col][data-norm-span="9"] { flex-grow: 9 !important; }
+  [data-norm-col][data-norm-span="10"] { flex-grow: 10 !important; }
+  [data-norm-col][data-norm-span="11"] { flex-grow: 11 !important; }
+  [data-norm-col][data-norm-span="12"] { flex-grow: 12 !important; }
+  @media (max-width: 760px) {
+    [data-norm-row] { flex-direction: column; align-items: stretch; }
+    [data-norm-row] > [data-norm-col], [data-norm-row] > [data-norm-col][data-norm-span] { flex: 0 0 auto !important; }
+  }
   .n-card { background: var(--norm-bg); border: 1px solid var(--norm-line); border-radius: var(--norm-radius-lg); }
 
   .n-table { width: 100%; border-collapse: collapse; font-size: var(--norm-fs-base); font-variant-numeric: tabular-nums; }

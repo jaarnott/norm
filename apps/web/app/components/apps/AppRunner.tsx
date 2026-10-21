@@ -35,9 +35,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ExternalLink, Users } from 'lucide-react';
+import { ExternalLink, Users, PencilLine, Undo2 } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
-import { onChange } from '../../lib/liveChanges';
+import { announceAppSaved, onChange } from '../../lib/liveChanges';
+import {
+  applyText, editableValues, findPieces, markersIn, markPieces, moveBlock, planTextEdit,
+  removeBlock, setColSpan, stripMarkers, type Candidate, type Target,
+} from '../../lib/codeEdits';
+import { EDIT_CSS, EDIT_RUNTIME } from './editRuntime';
 import { setPageDocument } from '../../lib/pageDocument';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import AppSharePanel from './AppSharePanel';
@@ -128,6 +133,13 @@ const HOST_RUNTIME = `
     resize: function () {
       parent.postMessage({ type: 'norm:resize', height: document.documentElement.scrollHeight }, '*');
     },
+    // A section of a page laid out in rows, columns and sections
+    // (data-norm-block): fill it with norm.block('sales').innerHTML = ….
+    // A section someone removed by hand is a detached element, so code that
+    // still fills it carries on.
+    block: function (id) {
+      return document.querySelector('[data-norm-block="' + String(id).replace(/"/g, '') + '"]') || document.createElement('section');
+    },
     files: {
       // The picker and the upload live here so an app never has to hold a
       // token or build a URL — it asks the host, which is the only side that
@@ -217,6 +229,36 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
   const startRef = useRef<{ component: string | null; inputs: Record<string, unknown> }>({ component: null, inputs: {} });
   startRef.current = { component: component || null, inputs: inputs || {} };
 
+  // Edit mode: the person retypes text and moves sections on the page itself,
+  // and the change is written into the app's code (lib/codeEdits). `working`
+  // is the code being edited; each change redraws the page from it, with the
+  // data fetched once for the whole session, so a redraw is instant. Save
+  // keeps it as a new version, which Norm starts from next time.
+  const [editing, setEditing] = useState(false);
+  const [working, setWorking] = useState<string | null>(null);
+  // What the frame was last drawn from. A change already showing on the page
+  // (typed text, a section dragged) is written into `working` without a
+  // redraw, so the page keeps its place and state; anything else redraws.
+  const [drawn, setDrawn] = useState<string | null>(null);
+  const [history, setHistory] = useState<string[]>([]);
+  const [changes, setChanges] = useState<string[]>([]);
+  const [redraw, setRedraw] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [sections, setSections] = useState(0);
+  const [newerSaved, setNewerSaved] = useState(false);
+  const editingRef = useRef(false);
+  editingRef.current = editing;
+  const workingRef = useRef<string | null>(null);
+  workingRef.current = working;
+  const callCache = useRef(new Map<string, unknown>());
+  const scrollRef = useRef(0);
+  // A hidden copy of the page, drawn to tell repeated words apart.
+  const probeRef = useRef<HTMLIFrameElement>(null);
+  const [probeDoc, setProbeDoc] = useState<string | null>(null);
+  const probeReply = useRef<((r: { text: string | null; byOcc: string | null }) => void) | null>(null);
+  const probeReady = useRef<(() => void) | null>(null);
+
   // Tell the chat what the user is LOOKING AT: "rename this app" must
   // resolve to this slug without asking. Same publish/clear contract as the
   // RecipeEditor; module-scope, so it survives the send.
@@ -253,6 +295,8 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
   // and the person had to leave, refresh and open the app again.
   useEffect(() => onChange('app', ({ slug: saved }) => {
     if (saved !== slug) return;
+    // Not under someone's hands: their Save will say a newer version exists.
+    if (editingRef.current) { setNewerSaved(true); return; }
     apiFetch(`/api/apps/${slug}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((a) => { if (a) setApp(a as AppDetail); })
@@ -260,10 +304,16 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
   }), [slug]);
 
   // The whole document the sandbox runs: runtime first, then the app's markup.
+  const docFor = useCallback((source: string) => (
+    `<!doctype html><html lang="en" data-norm-variant="${variant}"><head><meta charset="utf-8"><style>${fontFace ?? ''}${HOST_CSS}${EDIT_CSS}</style><script>${HOST_RUNTIME}</script><script>${EDIT_RUNTIME}</script></head><body>${source}</body></html>`
+  ), [fontFace, variant]);
+  const shown = editing && drawn !== null ? drawn : app?.ui_source;
   const srcdoc = useMemo(() => {
-    if (!app?.ui_source || fontFace === null) return null;
-    return `<!doctype html><html lang="en" data-norm-variant="${variant}"><head><meta charset="utf-8"><style>${fontFace}${HOST_CSS}</style><script>${HOST_RUNTIME}</script></head><body>${app.ui_source}</body></html>`;
-  }, [app?.ui_source, fontFace, variant]);
+    if (!shown || fontFace === null) return null;
+    // `redraw` forces a fresh draw when an edit couldn't be made (the page
+    // already shows the person's typing, which has to go back).
+    return docFor(shown) + (redraw ? `<!--${redraw}-->` : '');
+  }, [shown, fontFace, docFor, redraw]);
 
   const post = useCallback((msg: Record<string, unknown>) => {
     iframeRef.current?.contentWindow?.postMessage(msg, '*');
@@ -272,9 +322,20 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
   useEffect(() => {
     if (!app) return undefined;
     const onMessage = async (ev: MessageEvent) => {
-      // Only our own iframe — a message from anywhere else is not ours to answer.
-      if (ev.source !== iframeRef.current?.contentWindow) return;
+      // Only our own iframes — a message from anywhere else is not ours to answer.
+      const fromProbe = !!probeRef.current && ev.source === probeRef.current.contentWindow;
+      if (!fromProbe && ev.source !== iframeRef.current?.contentWindow) return;
+      const sender = ev.source as Window;
+      const post = (msg: Record<string, unknown>) => sender.postMessage(msg, '*');
       const m = ev.data || {};
+      if (fromProbe && m.type === 'norm:probe-text') {
+        probeReply.current?.({ text: m.text ?? null, byOcc: m.byOcc ?? null });
+        return;
+      }
+      if (fromProbe && m.type === 'norm:store' && !['list', 'get', 'files', 'file-url'].includes(m.op)) {
+        post({ type: 'norm:result', id: m.id, ok: false, error: 'not while checking an edit' });
+        return;
+      }
       if (m.type === 'norm:ready') {
         post({
           type: 'norm:init',
@@ -286,7 +347,14 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
             ...startRef.current,
           },
         });
-      } else if (m.type === 'norm:resize' && typeof m.height === 'number') {
+        if (fromProbe) probeReady.current?.();
+        else if (editingRef.current && workingRef.current !== null) {
+          post({ type: 'norm:edit', on: true, values: editableValues(findPieces(workingRef.current)), scroll: scrollRef.current });
+        }
+      } else if (fromProbe) {
+        if (m.type !== 'norm:call' && m.type !== 'norm:store') return;
+      }
+      if (m.type === 'norm:resize' && typeof m.height === 'number') {
         // A filling iframe scrolls inside itself; only an inline card grows.
         if (!fills) setHeight(Math.min(Math.max(m.height, 120), 4000));
       } else if (m.type === 'norm:file-pick') {
@@ -398,6 +466,12 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
         }
       } else if (m.type === 'norm:call' || m.type === 'norm:run') {
         const isCall = m.type === 'norm:call';
+        // While editing, each redraw asks for the same figures: fetch them once.
+        const key = isCall ? JSON.stringify([m.connector, m.action, m.params, m.venueId || venueRef.current || null]) : '';
+        if (isCall && (editingRef.current || fromProbe) && callCache.current.has(key)) {
+          post({ type: 'norm:result', id: m.id, ok: true, data: callCache.current.get(key) });
+          return;
+        }
         try {
           const res = await apiFetch(`/api/apps/${app.slug}/${isCall ? 'call' : 'run'}`, {
             method: 'POST',
@@ -412,6 +486,9 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
             throw new Error(typeof b.detail === 'string' ? b.detail : `Error ${res.status}`);
           }
           const out = await res.json();
+          // Kept always, used only while editing: entering Edit mode redraws
+          // from the figures already on screen.
+          if (isCall) callCache.current.set(key, out.data);
           post({ type: 'norm:result', id: m.id, ok: true, data: out.data });
         } catch (e) {
           post({ type: 'norm:result', id: m.id, ok: false, error: e instanceof Error ? e.message : 'call failed' });
@@ -428,6 +505,198 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
       post({ type: 'norm:init', context: { app: { slug: app.slug, name: app.name, version: app.version }, venueId, venues, host: { variant }, ...startRef.current } });
     }
   }, [venueId, app, venues, post, variant]);
+
+  // ---- Edit mode -------------------------------------------------------
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const t = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const startEditing = () => {
+    if (!app?.ui_source) return;
+    scrollRef.current = 0;
+    setWorking(app.ui_source);
+    setDrawn(app.ui_source);
+    setHistory([]);
+    setChanges([]);
+    setNewerSaved(false);
+    setEditing(true);
+  };
+  const stopEditing = () => {
+    setEditing(false);
+    setWorking(null);
+    setDrawn(null);
+    setHistory([]);
+    setChanges([]);
+    setSections(0);
+    post({ type: 'norm:edit', on: false });
+  };
+
+  // Entering Edit mode doesn't change the page, so the frame isn't redrawn:
+  // tell it now. (After each change it is redrawn and told on `norm:ready`.)
+  useEffect(() => {
+    if (editing && workingRef.current !== null) {
+      post({ type: 'norm:edit', on: true, values: editableValues(findPieces(workingRef.current)), scroll: 0 });
+    }
+  }, [editing, post]);
+
+  /** Keep `next` as the page being edited, described for the history note.
+   * `shown`: the page already shows it, so the frame isn't redrawn — it is
+   * only told which words it can retype now. Null: the change couldn't be
+   * made, and the page is redrawn to drop what it shows. */
+  const commit = useCallback((next: string | null, what: string, scroll?: number, shown = false) => {
+    const current = workingRef.current;
+    if (current === null) return;
+    if (typeof scroll === 'number') scrollRef.current = scroll;
+    if (next === null || next === current) {
+      setDrawn(current);
+      setRedraw((n) => n + 1);
+      return;
+    }
+    setHistory((h) => [...h, current]);
+    setChanges((c) => [...c, what]);
+    setWorking(next);
+    if (shown) {
+      iframeRef.current?.contentWindow?.postMessage({ type: 'norm:edit-values', values: editableValues(findPieces(next)) }, '*');
+    } else {
+      setDrawn(next);
+    }
+  }, []);
+
+  const undo = () => {
+    const prev = history[history.length - 1];
+    if (prev === undefined) return;
+    setHistory(history.slice(0, -1));
+    setChanges(changes.slice(0, -1));
+    setWorking(prev);
+    setDrawn(prev);
+  };
+
+  /** Draw a hidden copy with each candidate tagged, and read which tag shows
+   * at the text the person changed. Null when it can't tell. */
+  const whichCandidate = useCallback(async (
+    source: string, candidates: Candidate[], at: { path: number[] | null; occ: number; before: string },
+  ): Promise<number | null> => {
+    const ready = new Promise<void>((resolve) => { probeReady.current = resolve; });
+    setProbeDoc(docFor(markPieces(source, candidates)) + `<!--probe ${Date.now()}-->`);
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    try {
+      await Promise.race([ready, wait(6000)]);
+      for (let tries = 0; tries < 20; tries++) {
+        await wait(250);
+        const frame = probeRef.current?.contentWindow;
+        if (!frame) continue;
+        const reply = await Promise.race([
+          new Promise<{ text: string | null; byOcc: string | null }>((resolve) => {
+            probeReply.current = resolve;
+            frame.postMessage({ type: 'norm:probe-read', path: at.path, occ: at.occ, before: at.before }, '*');
+          }),
+          wait(800).then(() => ({ text: null, byOcc: null })),
+        ]);
+        // The node at the same place, if it holds the same words; else the
+        // same words, counted down the page.
+        const text = reply.text !== null && stripMarkers(reply.text) === at.before ? reply.text : reply.byOcc;
+        const found = text ? markersIn(text) : [];
+        if (found.length) return found[0];
+      }
+      return null;
+    } finally {
+      probeReply.current = null;
+      probeReady.current = null;
+      setProbeDoc(null);
+    }
+  }, [docFor]);
+
+  useEffect(() => {
+    if (!editing) return undefined;
+    const onEdit = async (ev: MessageEvent) => {
+      if (ev.source !== iframeRef.current?.contentWindow) return;
+      const m = ev.data || {};
+      const source = workingRef.current;
+      if (source === null) return;
+      if (m.type === 'norm:edit-layout') {
+        setSections(Number(m.blocks) || 0);
+      } else if (m.type === 'norm:edit-hint') {
+        setToast(m.kind === 'chart'
+          ? 'Charts are drawn from your data. Ask Norm to change a chart.'
+          : `“${String(m.text || 'That')}” comes from your data, so it can’t be retyped. Ask Norm to change how it’s shown.`);
+      } else if (m.type === 'norm:edit-text') {
+        const before = String(m.before ?? '');
+        const after = String(m.after ?? '');
+        const plan = planTextEdit(findPieces(source), before, after);
+        if (plan.kind === 'none') {
+          setToast('That part comes from your data, so it can’t be retyped. Ask Norm to change it.');
+          commit(null, '', m.scroll);
+          return;
+        }
+        let chosen: Candidate[] = plan.kind === 'one' ? [plan.candidate] : plan.candidates;
+        if (plan.kind === 'many') {
+          const n = await whichCandidate(source, plan.candidates, { path: m.path ?? null, occ: Number(m.occ ?? 0), before });
+          if (n !== null && plan.candidates[n]) chosen = [plan.candidates[n]];
+          else setToast(`Changed in ${plan.candidates.length} places: the page uses the same words in each.`);
+        }
+        const b = before.trim();
+        const a = after.trim();
+        // One place changed is exactly what the page shows already.
+        commit(applyText(source, chosen), a ? `“${b}” → “${a}”` : `removed “${b}”`, m.scroll, chosen.length === 1);
+      } else if (m.type === 'norm:move-block') {
+        const next = moveBlock(source, String(m.block), m.target as Target);
+        if (next === null) setToast('That section couldn’t be moved.');
+        commit(next, `moved “${m.block}”`, undefined, true);
+      } else if (m.type === 'norm:remove-block') {
+        commit(removeBlock(source, String(m.block)), `removed the “${m.block}” section`, undefined, true);
+      } else if (m.type === 'norm:col-spans') {
+        let next: string | null = source;
+        for (const { col, span } of (m.spans || []) as { col: number; span: number }[]) {
+          next = next === null ? null : setColSpan(next, Number(col), Math.max(1, Math.min(12, Number(span) || 1)));
+        }
+        commit(next, 'resized columns', undefined, true);
+      }
+    };
+    window.addEventListener('message', onEdit);
+    return () => window.removeEventListener('message', onEdit);
+  }, [editing, commit, whichCandidate]);
+
+  // Escape belongs to whatever is under the pointer in the page (a drag, a
+  // resize, the text being typed), wherever the keyboard focus happens to be.
+  useEffect(() => {
+    if (!editing) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') iframeRef.current?.contentWindow?.postMessage({ type: 'norm:escape' }, '*');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [editing]);
+
+  const save = async () => {
+    if (!app || working === null || !changes.length) return;
+    setSaving(true);
+    try {
+      const res = await apiFetch(`/api/apps/${app.slug}/edit`, {
+        method: 'POST',
+        body: JSON.stringify({ ui_source: working, base_version: app.version, note: `Edited by hand: ${changes.join('; ')}` }),
+      });
+      if (res.status === 409) {
+        setNewerSaved(true);
+        setToast('A newer version was saved while you were editing, so this wasn’t saved. Cancel, then make your changes again on the new version.');
+        return;
+      }
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        setToast(typeof b.detail === 'string' ? b.detail : `Couldn’t save (error ${res.status}).`);
+        return;
+      }
+      const fresh = await apiFetch(`/api/apps/${app.slug}`).then((r) => (r.ok ? r.json() : null));
+      stopEditing();
+      if (fresh) setApp(fresh as AppDetail);
+      announceAppSaved(app.slug);
+      setToast('Saved. Norm will start from this version next time.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const changeVenue = (id: string) => {
     setVenueId(id);
@@ -451,6 +720,8 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
     ? (app.description || 'Built into Norm')
     : [`Version ${app.version}`, reach].filter(Boolean).join(' · ');
   const canShare = !app.builtin && (app.access === 'owner' || app.access === 'edit');
+  // Owners and editors can retype text and move sections on the page itself.
+  const canEdit = canShare && variant !== 'embedded' && !!app.ui_source;
   const venuePicker = venues.length > 1
     ? <VenueSelect venues={venues} value={venueId} onChange={changeVenue} />
     : null;
@@ -508,19 +779,45 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
     );
   }
 
+  const editMeta = sections > 0
+    ? 'Editing · click words to retype them · drag a section by its grip · drag a section’s edge to resize'
+    : 'Editing · click words to retype them';
+  const editActions = (
+    <>
+      <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+        {changes.length ? `${changes.length} change${changes.length === 1 ? '' : 's'}` : 'No changes yet'}
+      </span>
+      <Button size="sm" variant="quiet" icon={Undo2} disabled={!history.length} onClick={undo}>Undo</Button>
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => {
+          if (changes.length && !window.confirm(`Discard ${changes.length === 1 ? 'your change' : `your ${changes.length} changes`}?`)) return;
+          stopEditing();
+        }}
+      >
+        Cancel
+      </Button>
+      <Button size="sm" variant="primary" disabled={!changes.length || saving} onClick={save}>{saving ? 'Saving…' : 'Save'}</Button>
+    </>
+  );
+
   // page / standalone: the app fills the content area under one page header,
   // like Orders — no box around it, no centred column.
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, position: 'relative' }}>
       <div style={pagePad}>
         <PageHeader
           title={app.name}
           back={back}
-          meta={meta}
+          meta={editing ? editMeta : meta}
           status={writesBlocked ? <Badge tone="warn">Writes not approved for you</Badge> : undefined}
-          actions={(venuePicker || canShare) ? (
+          actions={editing ? editActions : (venuePicker || canShare) ? (
             <>
               {venuePicker}
+              {canEdit && (
+                <Button size="sm" variant="secondary" icon={PencilLine} onClick={startEditing}>Edit</Button>
+              )}
               {canShare && (
                 <Button size="sm" variant={sharing ? 'quiet' : 'secondary'} icon={Users} aria-expanded={sharing} onClick={() => setSharing((x) => !x)}>
                   Sharing
@@ -529,11 +826,39 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
             </>
           ) : undefined}
         />
+        {editing && newerSaved && (
+          <div role="status" style={{ margin: '0 0 12px', padding: '8px 12px', borderRadius: 'var(--radius)', background: 'var(--warn-soft, #fdf3e1)', color: 'var(--text)', fontSize: 'var(--fs-sm)' }}>
+            A newer version of this app was saved while you were editing. Saving now won’t replace it: cancel, then edit the new version.
+          </div>
+        )}
         {/* Owners manage who can run it; the endpoint 403s for anyone else and
             the panel renders nothing. */}
-        {sharing && canShare && <div style={{ marginBottom: 16 }}><AppSharePanel slug={app.slug} /></div>}
+        {!editing && sharing && canShare && <div style={{ marginBottom: 16 }}><AppSharePanel slug={app.slug} /></div>}
       </div>
       {frame}
+      {probeDoc && (
+        <iframe
+          ref={probeRef}
+          aria-hidden
+          tabIndex={-1}
+          sandbox="allow-scripts"
+          srcDoc={probeDoc}
+          title="Checking an edit"
+          style={{ position: 'fixed', left: -20000, top: 0, width: iframeRef.current?.clientWidth || 1200, height: 900, visibility: 'hidden', pointerEvents: 'none', border: 'none' }}
+        />
+      )}
+      {toast && (
+        <div
+          role="status"
+          style={{
+            position: 'absolute', left: '50%', bottom: 20, transform: 'translateX(-50%)', maxWidth: 'min(560px, calc(100% - 32px))',
+            padding: '10px 16px', borderRadius: 999, background: 'var(--text)', color: 'var(--bg)',
+            fontSize: 'var(--fs-sm)', boxShadow: '0 6px 24px rgba(0,0,0,.18)', zIndex: 5,
+          }}
+        >
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

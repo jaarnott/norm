@@ -89,6 +89,14 @@ export function announceChanges(
   others?.close();
 }
 
+/** A person saved an app by hand (Edit mode): other tabs showing it update. */
+export function announceAppSaved(slug: string): void {
+  if (typeof window === 'undefined') return;
+  const others = channel();
+  others?.postMessage({ from: TAB, change: { kind: 'app', detail: { slug } } });
+  others?.close();
+}
+
 /** Listen for one kind of change, from this tab or another. Returns the
  * unsubscribe. */
 export function onChange(kind: 'app', handler: (d: AppSaved) => void): () => void;

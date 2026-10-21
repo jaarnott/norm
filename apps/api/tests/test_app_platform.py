@@ -1164,3 +1164,101 @@ class TestAppAgent:
         apps = client.get("/api/apps", headers=self._headers(author)).json()["apps"]
         by_slug = {a["slug"]: a for a in apps}
         assert by_slug["hiring3"]["agent"] == "hr"
+
+
+class TestHandEdits:
+    """A person retypes text and moves sections on an app's page; the edited
+    page is saved as a new version Norm starts from (Oct 2026). Only the page
+    changes: an edit by hand can never widen what the app may do."""
+
+    def _headers(self, user):
+        from app.auth.security import create_access_token
+
+        return {
+            "Authorization": f"Bearer {create_access_token({'sub': user.id, 'email': user.email})}"
+        }
+
+    def test_an_edit_is_a_new_version_with_the_same_reach(
+        self, client, db_session, org, author
+    ):
+        app = _app(db_session, org, author, slug="hand", name="Hand")
+        _version(
+            db_session,
+            app,
+            READ_SPEC,
+            author,
+            ui_source="<h3>Wages</h3>",
+            logic_source="def run(params): return {}",
+        )
+        db_session.commit()
+        r = client.post(
+            "/api/apps/hand/edit",
+            json={
+                "ui_source": "<h3>Wages and hours</h3>",
+                "base_version": 1,
+                "note": "Edited by hand: “Wages” → “Wages and hours”",
+            },
+            headers=self._headers(author),
+        )
+        assert r.status_code == 200 and r.json()["version"] == 2
+        db_session.refresh(app)
+        current = db_session.get(AppVersion, app.current_version_id)
+        assert current.ui_source == "<h3>Wages and hours</h3>"
+        assert current.spec == READ_SPEC
+        assert current.logic_source == "def run(params): return {}"
+        # Norm reads what changed when it next opens the app
+        from app.agents.internal_tools import get_handler
+        from tests.conftest import _make_thread
+
+        thread = _make_thread(db_session, user=author)
+        got = get_handler("norm", "get_app")({"slug": "hand"}, db_session, thread.id)
+        assert got["data"]["last_change"].startswith("Edited by hand")
+
+    def test_a_newer_version_is_never_overwritten(
+        self, client, db_session, org, author
+    ):
+        app = _app(db_session, org, author, slug="stale", name="Stale")
+        _version(db_session, app, READ_SPEC, author, ui_source="<p>a</p>")
+        _version(db_session, app, READ_SPEC, author, version=2, ui_source="<p>b</p>")
+        db_session.commit()
+        r = client.post(
+            "/api/apps/stale/edit",
+            json={"ui_source": "<p>mine</p>", "base_version": 1},
+            headers=self._headers(author),
+        )
+        assert r.status_code == 409 and "Version 2" in r.json()["detail"]
+
+    def test_only_its_editors_can_edit_it(self, client, db_session, org, author):
+        app = _app(db_session, org, author, slug="viewonly", name="View only")
+        _version(db_session, app, READ_SPEC, author, ui_source="<p>a</p>")
+        viewer = _member(db_session, org, ["reports:read", "apps:build"])
+        db_session.add(
+            AppShare(app_id=app.id, principal_type="user", principal_id=viewer.id)
+        )
+        db_session.commit()
+        r = client.post(
+            "/api/apps/viewonly/edit",
+            json={"ui_source": "<p>mine</p>", "base_version": 1},
+            headers=self._headers(viewer),
+        )
+        assert r.status_code == 403
+
+        # An editor who couldn't declare the app's reach can't write the page
+        # that runs with it for whoever opens it (Norm's save refuses them too).
+        orders = _app(db_session, org, author, slug="orders", name="Orders")
+        _version(db_session, orders, WRITE_SPEC, author, ui_source="<p>a</p>")
+        db_session.add(
+            AppShare(
+                app_id=orders.id,
+                principal_type="user",
+                principal_id=viewer.id,
+                access="edit",
+            )
+        )
+        db_session.commit()
+        r = client.post(
+            "/api/apps/orders/edit",
+            json={"ui_source": "<p>mine</p>", "base_version": 1},
+            headers=self._headers(viewer),
+        )
+        assert r.status_code == 403 and "orders:write" in r.json()["detail"]
