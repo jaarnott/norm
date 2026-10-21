@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.engine import get_db, get_config_db
-from app.db.models import Report, ReportChart, User
+from app.db.models import OrganizationMembership, Report, ReportChart, User
 from app.auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -55,9 +55,11 @@ class UpdateChartBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _report_to_dict(report: Report) -> dict:
+def _report_to_dict(report: Report, viewer_id: str | None = None) -> dict:
     return {
         "id": report.id,
+        # Whether the person asking may change it: only its owner may.
+        "is_own": viewer_id is not None and report.user_id == viewer_id,
         "title": report.title,
         "description": report.description,
         "layout": report.layout,
@@ -89,6 +91,46 @@ def _chart_to_dict(chart: ReportChart) -> dict:
         "source_thread_id": chart.source_thread_id,
         "created_at": chart.created_at.isoformat() if chart.created_at else None,
     }
+
+
+# Until 21 Oct 2026 every route here checked only "signed in": anyone could
+# read, change or delete any report by its id, and a published dashboard showed
+# in every organisation's picker. A report is now its owner's to change, and a
+# published one is seen only by people who share an organisation with its
+# owner. (Dashboards owned by an organisation come next:
+# docs/plans/norm-builds-dashboards.md.)
+
+
+def _visible_to(user: User):
+    """The reports ``user`` may see: their own, and published ones whose owner
+    shares an organisation with them."""
+    from sqlalchemy import select
+
+    orgs = select(OrganizationMembership.organization_id).where(
+        OrganizationMembership.user_id == user.id
+    )
+    colleagues = select(OrganizationMembership.user_id).where(
+        OrganizationMembership.organization_id.in_(orgs)
+    )
+    return (Report.user_id == user.id) | (
+        Report.is_published.is_(True) & Report.user_id.in_(colleagues)
+    )
+
+
+def _report_for_viewer(db: Session, report_id: str, user: User) -> Report:
+    report = db.query(Report).filter(Report.id == report_id, _visible_to(user)).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    return report
+
+
+def _report_for_owner(db: Session, report_id: str, user: User) -> Report:
+    report = _report_for_viewer(db, report_id, user)
+    if report.user_id != user.id:
+        raise HTTPException(
+            403, "Only the person who made this dashboard can change it."
+        )
+    return report
 
 
 def _sample_rows(rows: list, n: int) -> list:
@@ -420,7 +462,7 @@ async def create_report(
     db.add(report)
     db.commit()
     db.refresh(report)
-    return _report_to_dict(report)
+    return _report_to_dict(report, user.id)
 
 
 @router.get("")
@@ -436,16 +478,13 @@ async def list_reports(
     )
     shared = (
         db.query(Report)
-        .filter(
-            Report.is_published.is_(True),
-            Report.user_id != user.id,
-        )
+        .filter(_visible_to(user), Report.user_id != user.id)
         .order_by(Report.updated_at.desc())
         .all()
     )
     return {
-        "reports": [_report_to_dict(r) for r in own],
-        "shared_reports": [_report_to_dict(r) for r in shared],
+        "reports": [_report_to_dict(r, user.id) for r in own],
+        "shared_reports": [_report_to_dict(r, user.id) for r in shared],
     }
 
 
@@ -457,6 +496,7 @@ async def list_reports(
 @router.get("/templates")
 async def list_templates(
     config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
 ):
     """List available dashboard templates from config DB."""
     from app.db.config_models import DashboardTemplate
@@ -498,8 +538,11 @@ async def instantiate_template(
     )
     if not tmpl:
         raise HTTPException(404, "Template not found")
+    return _report_to_dict(_copy_template(db, config_db, tmpl, user), user.id)
 
-    # Create the report
+
+def _copy_template(db: Session, config_db: Session, tmpl, user: User) -> Report:
+    """The person's own dashboard, copied from a template."""
     # A template may name the period its board opens on (Operations: today;
     # the cost boards: this month). It travels on the dashboard's filters.
     default_period = None
@@ -555,7 +598,7 @@ async def instantiate_template(
     flag_modified(report, "layout")
     db.commit()
     db.refresh(report)
-    return _report_to_dict(report)
+    return report
 
 
 @router.get("/connector-list")
@@ -597,20 +640,18 @@ async def list_dashboards(
     """List all dashboards visible to the current user."""
     dashboards = (
         db.query(Report)
-        .filter(
-            Report.is_dashboard.is_(True),
-            (Report.user_id == user.id) | (Report.is_published.is_(True)),
-        )
+        .filter(Report.is_dashboard.is_(True), _visible_to(user))
         .order_by(Report.agent_slug, Report.updated_at.desc())
         .all()
     )
-    return {"dashboards": [_report_to_dict(d) for d in dashboards]}
+    return {"dashboards": [_report_to_dict(d, user.id) for d in dashboards]}
 
 
 @router.get("/dashboards/{agent_slug}")
 async def get_dashboard_for_agent(
     agent_slug: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Get the active dashboard for a specific agent."""
@@ -618,9 +659,13 @@ async def get_dashboard_for_agent(
     prefs = user.dashboard_preferences or {}
     pref_id = prefs.get(agent_slug)
     if pref_id:
-        dashboard = db.query(Report).filter(Report.id == pref_id).first()
+        # A choice that is no longer visible (unshared, another
+        # organisation's) falls through to the defaults below.
+        dashboard = (
+            db.query(Report).filter(Report.id == pref_id, _visible_to(user)).first()
+        )
         if dashboard:
-            return {"dashboard": _report_to_dict(dashboard)}
+            return {"dashboard": _report_to_dict(dashboard, user.id)}
 
     # 2. Fall back to user's own dashboard
     dashboard = (
@@ -634,20 +679,38 @@ async def get_dashboard_for_agent(
         .first()
     )
     if not dashboard:
-        # 3. Fall back to published dashboards
+        # 3. Fall back to a dashboard shared within their organisations
         dashboard = (
             db.query(Report)
             .filter(
                 Report.is_dashboard.is_(True),
                 Report.agent_slug == agent_slug,
                 Report.is_published.is_(True),
+                _visible_to(user),
             )
             .order_by(Report.updated_at.desc())
             .first()
         )
     if not dashboard:
+        # 4. The AI agent's one template, copied for this person. Until 21 Oct
+        # 2026 step 3 lent them the newest dashboard ANYONE had published, in
+        # any organisation: six people outside Cook Brothers were looking at
+        # the platform admin's. With two templates to choose from, they pick.
+        from app.db.config_models import DashboardTemplate
+
+        templates = (
+            config_db.query(DashboardTemplate)
+            .filter(
+                DashboardTemplate.agent_slug == agent_slug,
+                DashboardTemplate.enabled.is_(True),
+            )
+            .all()
+        )
+        if len(templates) == 1:
+            dashboard = _copy_template(db, config_db, templates[0], user)
+    if not dashboard:
         return {"dashboard": None}
-    return {"dashboard": _report_to_dict(dashboard)}
+    return {"dashboard": _report_to_dict(dashboard, user.id)}
 
 
 @router.get("/dashboards/{agent_slug}/available")
@@ -683,13 +746,13 @@ async def get_available_dashboards(
         .all()
     )
 
-    # Shared dashboards from other users
+    # Dashboards shared by people in the same organisations
     shared = (
         db.query(Report)
         .filter(
             Report.is_dashboard.is_(True),
             Report.agent_slug == agent_slug,
-            Report.is_published.is_(True),
+            _visible_to(user),
             Report.user_id != user.id,
         )
         .order_by(Report.updated_at.desc())
@@ -708,8 +771,8 @@ async def get_available_dashboards(
             }
             for t in templates
         ],
-        "own": [_report_to_dict(r) for r in own],
-        "shared": [_report_to_dict(r) for r in shared],
+        "own": [_report_to_dict(r, user.id) for r in own],
+        "shared": [_report_to_dict(r, user.id) for r in shared],
     }
 
 
@@ -737,7 +800,15 @@ async def set_active_dashboard(
         db.commit()
         return {"dashboard": None}
 
-    dashboard = db.query(Report).filter(Report.id == body.dashboard_id).first()
+    dashboard = (
+        db.query(Report)
+        .filter(
+            Report.id == body.dashboard_id,
+            Report.is_dashboard.is_(True),
+            _visible_to(user),
+        )
+        .first()
+    )
     if not dashboard:
         raise HTTPException(404, "Dashboard not found")
 
@@ -747,7 +818,7 @@ async def set_active_dashboard(
 
     _fm(user, "dashboard_preferences")
     db.commit()
-    return {"dashboard": _report_to_dict(dashboard)}
+    return {"dashboard": _report_to_dict(dashboard, user.id)}
 
 
 class TestChartBody(BaseModel):
@@ -761,10 +832,7 @@ async def get_report(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    report = db.query(Report).filter(Report.id == report_id).first()
-    if not report:
-        raise HTTPException(404, "Report not found")
-    return _report_to_dict(report)
+    return _report_to_dict(_report_for_viewer(db, report_id, user), user.id)
 
 
 @router.patch("/{report_id}")
@@ -774,9 +842,7 @@ async def update_report(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    report = db.query(Report).filter(Report.id == report_id).first()
-    if not report:
-        raise HTTPException(404, "Report not found")
+    report = _report_for_owner(db, report_id, user)
     if body.title is not None:
         report.title = body.title
     if body.description is not None:
@@ -803,7 +869,7 @@ async def update_report(
         flag_modified(report, "global_filters")
     db.commit()
     db.refresh(report)
-    return _report_to_dict(report)
+    return _report_to_dict(report, user.id)
 
 
 @router.delete("/{report_id}")
@@ -812,9 +878,7 @@ async def delete_report(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    report = db.query(Report).filter(Report.id == report_id).first()
-    if not report:
-        raise HTTPException(404, "Report not found")
+    report = _report_for_owner(db, report_id, user)
     db.delete(report)
     db.commit()
     return {"ok": True}
@@ -833,9 +897,7 @@ async def add_chart(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    report = db.query(Report).filter(Report.id == report_id).first()
-    if not report:
-        raise HTTPException(404, "Report not found")
+    report = _report_for_owner(db, report_id, user)
     _require_tool(body.script, config_db)
 
     position = len(report.charts)
@@ -874,7 +936,7 @@ async def add_chart(
 
     db.commit()
     db.refresh(report)
-    return _report_to_dict(report)
+    return _report_to_dict(report, user.id)
 
 
 @router.patch("/{report_id}/charts/{chart_id}")
@@ -886,6 +948,7 @@ async def update_chart(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
+    _report_for_owner(db, report_id, user)
     if body.script is not None:
         _require_tool(body.script, config_db)
     chart = (
@@ -927,6 +990,7 @@ async def remove_chart(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    report = _report_for_owner(db, report_id, user)
     chart = (
         db.query(ReportChart)
         .filter(
@@ -939,7 +1003,6 @@ async def remove_chart(
         raise HTTPException(404, "Chart not found")
 
     # Remove from grid layout
-    report = db.query(Report).filter(Report.id == report_id).first()
     if report:
         report.layout = [
             item
@@ -973,9 +1036,7 @@ async def refresh_report(
     user: User = Depends(get_current_user),
 ):
     """Re-run all chart scripts and update with fresh data."""
-    report = db.query(Report).filter(Report.id == report_id).first()
-    if not report:
-        raise HTTPException(404, "Report not found")
+    report = _report_for_viewer(db, report_id, user)
 
     from app.connectors.tool_executor import execute_connector_tool
 
@@ -1112,7 +1173,7 @@ async def refresh_report(
 
     db.commit()
     db.refresh(report)
-    result = _report_to_dict(report)
+    result = _report_to_dict(report, user.id)
     if errors:
         result["refresh_errors"] = errors
     if debug_info:
@@ -1130,6 +1191,7 @@ def refresh_single_chart(
     user: User = Depends(get_current_user),
 ):
     """Refresh a single chart and return its updated data."""
+    _report_for_viewer(db, report_id, user)
     chart = (
         db.query(ReportChart)
         .filter(ReportChart.id == chart_id, ReportChart.report_id == report_id)
@@ -1252,6 +1314,7 @@ async def test_chart_script(
     """Test a single chart's script — returns the rendered request, response, and accepted params."""
     from app.connectors.tool_executor import execute_connector_tool, get_tool_info
 
+    _report_for_viewer(db, report_id, user)
     chart = (
         db.query(ReportChart)
         .filter(ReportChart.id == chart_id, ReportChart.report_id == report_id)
@@ -1366,12 +1429,10 @@ async def promote_to_dashboard(
     user: User = Depends(get_current_user),
 ):
     """Promote a report to a dashboard."""
-    report = db.query(Report).filter(Report.id == report_id).first()
-    if not report:
-        raise HTTPException(404, "Report not found")
+    report = _report_for_owner(db, report_id, user)
     report.is_dashboard = True
     if body and body.agent_slug:
         report.agent_slug = body.agent_slug
     db.commit()
     db.refresh(report)
-    return _report_to_dict(report)
+    return _report_to_dict(report, user.id)

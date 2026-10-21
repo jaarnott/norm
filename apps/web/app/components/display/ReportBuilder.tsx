@@ -232,6 +232,7 @@ export default function ReportBuilder({ data }: Props) {
           </div>
           <div style={{ marginTop: 2, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
             {report.charts.length} chart{report.charts.length !== 1 ? 's' : ''}
+            {report.is_own === false && ' · Shared with you. Only the person who made it can change it.'}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -254,7 +255,7 @@ export default function ReportBuilder({ data }: Props) {
             onClick={() => refreshAll()}
             disabled={refreshing}
           >{refreshing ? 'Refreshing…' : 'Refresh all'}</Button>
-          {!report.is_dashboard && (
+          {!report.is_dashboard && report.is_own !== false && (
             // One control: pick who the dashboard is for, then set it.
             <div style={{ display: 'flex' }}>
               <select
@@ -287,9 +288,11 @@ export default function ReportBuilder({ data }: Props) {
               >Set as dashboard</Button>
             </div>
           )}
-          <Button variant="primary" onClick={saveReport}>
-            {report.status === 'saved' ? 'Saved' : 'Save report'}
-          </Button>
+          {report.is_own !== false && (
+            <Button variant="primary" onClick={saveReport}>
+              {report.status === 'saved' ? 'Saved' : 'Save report'}
+            </Button>
+          )}
         </div>
       </div>
 

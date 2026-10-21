@@ -176,6 +176,8 @@ export interface ReportGridItem {
 
 export interface SavedReport {
   id: string;
+  // Only the owner may change a report; a shared one is view-only to others.
+  is_own?: boolean;
   title: string;
   description: string | null;
   layout: ReportGridItem[];

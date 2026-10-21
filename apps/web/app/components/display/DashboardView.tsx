@@ -328,6 +328,9 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
     </select>
   ) : null;
 
+  // A dashboard shared with you is view-only: only its owner may change it.
+  const canEdit = dashboard.is_own !== false;
+
   const actions = (
     <>
       {periodPicker}
@@ -340,7 +343,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
         <Icon icon={RefreshCw} size="inline" style={refreshing ? { animation: 'n-spin 1s linear infinite' } : undefined} />
         {refreshing ? 'Refreshing…' : 'Refresh'}
       </Button>
-      <Button
+      {canEdit && <Button
         icon={dashboard.is_published ? Check : Share2}
         onClick={async () => {
           const next = !dashboard.is_published;
@@ -357,7 +360,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
         style={dashboard.is_published ? { color: 'var(--ok)' } : undefined}
       >
         {dashboard.is_published ? 'Published' : 'Share'}
-      </Button>
+      </Button>}
       {agentSlug && (
         <Button variant="quiet" icon={LayoutGrid} onClick={() => setShowPicker(true)}>Change dashboard</Button>
       )}
@@ -449,7 +452,7 @@ export default function DashboardView({ data, props }: DisplayBlockProps) {
                 }}
               >
                 <IconButton icon={Maximize2} label="Full screen" iconSize={16} onClick={() => setExpandedChartId(chart.id)} />
-                <IconButton icon={Settings} label="Chart settings" iconSize={16} onClick={() => setInspectedChartId(chart.id)} />
+                {canEdit && <IconButton icon={Settings} label="Chart settings" iconSize={16} onClick={() => setInspectedChartId(chart.id)} />}
               </div>
               {isEmbedded && EmbeddedComponent ? (
                 // Inset like the card it is, so the component never runs into the tile's edge.
