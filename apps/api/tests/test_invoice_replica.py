@@ -358,10 +358,12 @@ class _PoLh:
 
 
 class TestPoSplitValidator:
-    """The replica's PO stage runs the engine's split-order validator: a PO
-    claimed by a sibling invoice is classified doubled-up (reference removed)
-    vs genuine split (reference kept, never linked); a PO claimed by the very
-    invoice being replicated links normally."""
+    """The replica's PO stage runs the split-order validator: an order already
+    held by a sibling invoice with the same goods and amounts is the same
+    delivery again — a duplicate, deleted under the venue's switch, the first
+    received staying (Single O S442860, 21 Oct 2026); anything less is a split
+    (reference kept, never linked); an order held by the very invoice being
+    replicated links normally."""
 
     EXT = dict(EXTRACTION, customer_purchase_order_number="po#1521145")
 
@@ -429,17 +431,25 @@ class TestPoSplitValidator:
             ],
         }
 
-    def test_doubled_up_removes_the_reference(self):
-        # Sibling already carries the SAME lines and total → not a split:
-        # the reference is bogus and the replica drops it.
+    def _duplicate_of(self, doc):
+        dup = [i for i in doc["issues"] if i["code"] == "duplicate_invoice"]
+        return dup[0]["data"]["duplicate_of_invoice_id"] if dup else None
+
+    def test_the_same_delivery_under_one_order_is_a_duplicate(self):
+        # The sibling already carries the SAME lines and total: a second copy
+        # of the same delivery. The first received stays; this one goes.
         doc = _build(
             self.EXT,
             lh=_PoLh("inv-sib", self._sibling("unitCostExclTax")),
             own_invoice_id="inv-own",
         )
+        assert self._duplicate_of(doc) == "inv-sib"
+        assert doc["duplicate_of_invoice_id"] == "inv-sib"
         assert doc["linked_purchase_order_id"] is None
         assert doc["purchase_order_number"] is None
-        assert any("doubled-up" in e for e in doc["resolution_log"])
+        assert any(
+            "second copy of the same delivery" in e for e in doc["resolution_log"]
+        )
 
     def test_the_feed_spelling_of_the_cost_is_also_understood(self):
         doc = _build(
@@ -447,7 +457,19 @@ class TestPoSplitValidator:
             lh=_PoLh("inv-sib", self._sibling("unitCost")),
             own_invoice_id="inv-own",
         )
-        assert any("doubled-up" in e for e in doc["resolution_log"])
+        assert self._duplicate_of(doc) == "inv-sib"
+
+    def test_a_copy_printing_no_total_compares_the_subtotal(self):
+        # A supplier's sales order prints no total (Single O S442860): the
+        # same lines and the same subtotal are the same delivery.
+        ext = dict(self.EXT, subtotal_ex_tax=None, tax_amount=None, total_incl_tax=None)
+        sib = self._sibling("unitCostExclTax")
+        sib["subtotal"] = round(4.95 * 44.4, 2)
+        doc = _build(ext, lh=_PoLh("inv-sib", sib), own_invoice_id="inv-own")
+        assert self._duplicate_of(doc) == "inv-sib"
+        sib["subtotal"] = 999.0
+        doc = _build(ext, lh=_PoLh("inv-sib", sib), own_invoice_id="inv-own")
+        assert self._duplicate_of(doc) is None
 
     def test_a_different_cost_is_a_split_not_a_doubled_up(self):
         """The check must still DISCRIMINATE — reading the right field is only
@@ -456,6 +478,7 @@ class TestPoSplitValidator:
         sib["lines"][0]["unitCostExclTax"] = 99.99
         doc = _build(self.EXT, lh=_PoLh("inv-sib", sib), own_invoice_id="inv-own")
         assert doc["purchase_order_number"] is not None
+        assert self._duplicate_of(doc) is None
 
 
 class TestPackagingWordNeverLinks:

@@ -356,14 +356,17 @@ def _resolve_unit_record(name: object, units: list[dict]) -> dict | None:
 def _sibling_doubled_up(
     lh, sibling_invoice_id: str, replica_lines: list[dict], extraction: dict
 ) -> tuple[bool, str]:
-    """The engine's split-order classifier, replica-side.
-
-    The referenced PO is claimed by a sibling invoice: doubled-up means every
-    replica line pairs (``plain_match`` — the same tiers as the engine) with a
-    sibling line at the same quantity and cost AND the totals agree; anything
-    less — unreadable sibling, unpaired line, quantity/cost/total drift — is a
-    genuine split. Any doubt → split, never removal. Returns
-    ``(doubled_up, sibling_reference)``."""
+    """Is this the same delivery as the received invoice that already holds
+    its order? A second copy of one order — a supplier's sales order beside
+    its invoice (Single O S442860 and OMI89351, order 505043, 20 Oct 2026) —
+    has every line the same by product code or stock item, quantity and price
+    to the cent (freight left out; services/ordermentum_pairs.same_goods),
+    and the same total, or the same subtotal when the copy prints no total.
+    Anything less — an unreadable sibling, a line short, a quantity or price
+    apart — is a delivery split across invoices, never a delete. Tested on 400
+    days at all ten venues: 183 split-order copies, none the same goods.
+    Returns ``(same_delivery, sibling_reference)``."""
+    from app.services.ordermentum_pairs import same_goods
 
     def _close(a: object, b: object, tol: float = 0.011) -> bool:
         try:
@@ -378,38 +381,17 @@ def _sibling_doubled_up(
     if not isinstance(sib, dict):
         return False, "another invoice"
     sib_ref = sib.get("referenceNumber") or "another invoice"
-    pool = [
-        {"code": sl.get("code"), "description": sl.get("description"), "_sl": sl}
-        for sl in sib.get("lines") or []
-        if isinstance(sl, dict) and not sl.get("deletedAt")
-    ]
-    if not replica_lines:
+    if not replica_lines or not same_goods(replica_lines, sib.get("lines") or []):
         return False, sib_ref
-    for ln in replica_lines:
-        m = line_match.plain_match(
-            {"code": ln.get("code"), "description": ln.get("description")}, pool
-        )
-        if m is None:
-            return False, sib_ref
-        sl = m["_sl"]
-        if not _close(sl.get("quantityReceived"), ln.get("quantity_received"), 0.001):
-            return False, sib_ref
-        # Loaded's invoice DETAIL returns unitCostExclTax; `unitCost` is only
-        # on the received-invoice FEED. Reading one name meant the cost check
-        # could never pass on a real sibling, so every doubled-up invoice was
-        # classified a split and the reference was never removed. Verified
-        # against live invoices in two venues, 25 Aug 2026 — unitCost was None
-        # on every detail line.
-        sib_cost = (
-            sl.get("unitCost")
-            if sl.get("unitCost") is not None
-            else sl.get("unitCostExclTax")
-        )
-        if not _close(sib_cost, ln.get("unit_cost")):
-            return False, sib_ref
-    if not _close(sib.get("total"), extraction.get("total_incl_tax")):
-        return False, sib_ref
-    return True, sib_ref
+    total = extraction.get("total_incl_tax")
+    if total is not None:
+        return _close(sib.get("total"), total), sib_ref
+    line_sum = sum(
+        float(ln.get("total_cost") or 0)
+        for ln in replica_lines
+        if isinstance(ln, dict) and not ln.get("struck")
+    )
+    return _close(sib.get("subtotal"), round(line_sum, 2)), sib_ref
 
 
 def build_replica(
@@ -1403,6 +1385,7 @@ def build_replica(
         "purchase_order_number"
     )
     linked_po_id = None
+    order_duplicate_of = None
     if po_number and is_credit_note:
         # Never resolve a credit note's PO reference. It names the ORIGINAL
         # order, which Loaded (1:1) has already linked to the original
@@ -1433,22 +1416,24 @@ def build_replica(
                         lh, other, out_lines, extraction
                     )
                     if doubled:
+                        # The same delivery again: the first received stays,
+                        # this copy goes (owner, 21 Oct 2026).
                         msg = (
-                            f"order {order_no}: already fully invoiced by "
-                            f"{sib_ref} (same lines and total) — doubled-up "
-                            "invoice, reference removed"
+                            f"order {order_no} is already invoiced by {sib_ref} "
+                            "with the same lines and amounts — this is a second "
+                            "copy of the same delivery; delete it"
                         )
                         log.append(msg)
+                        warnings.append(msg)
                         _issue(
-                            "po_doubled_up",
+                            "duplicate_invoice",
                             msg,
                             data={
-                                "po_id": r.get("id"),
-                                "sibling_invoice_id": other,
-                                "sibling_reference": sib_ref,
+                                "duplicate_of_invoice_id": other,
                                 "order_number": str(order_no),
                             },
                         )
+                        order_duplicate_of = other
                         po_number = None
                     else:
                         # Written as the REASON auto-receive stopped, not the
@@ -1570,8 +1555,9 @@ def build_replica(
     # goods were receipted straight against the ORDER (no invoice document
     # exists in Loaded — the row id is the PO's id).
     dup_invoice_id = dup_file_id = dup_po_id = None
+    dup_invoice_id = order_duplicate_of
     inv_no = extraction.get("invoice_number")
-    if inv_no:
+    if inv_no and not order_duplicate_of:
         try:
             rows = received_feed if received_feed is not None else _received_feed(lh)
             row = received_copy(
@@ -1616,8 +1602,8 @@ def build_replica(
             # A supplier's copy of an Ordermentum order whose order number only
             # the read found (Loaded's draft didn't carry it): the same twin
             # check the review runs before reading.
+            from app.services import ordermentum_pairs
             from app.services.invoice_extraction import (
-                find_ordermentum_twin,
                 ordermentum_order_number,
                 ordermentum_twin_message,
             )
@@ -1625,16 +1611,22 @@ def build_replica(
             if not (dup_invoice_id or dup_po_id) and ordermentum_order_number(
                 extraction.get("customer_purchase_order_number"), inv_no
             ):
-                twin = find_ordermentum_twin(
+                dup = ordermentum_pairs.check(
+                    ordermentum_pairs.Copy.from_reading(
+                        invoice_id=own_invoice_id,
+                        supplier_id=supplier_id,
+                        supplier_name=(supplier or {}).get("name") or supplier_printed,
+                        reference=inv_no,
+                        order=extraction.get("customer_purchase_order_number"),
+                        date=_iso_date(extraction.get("invoice_date")),
+                        lines=out_lines,
+                        total=extraction.get("total_incl_tax"),
+                    ),
                     rows,
-                    feed=False,
-                    supplier_id=supplier_id,
-                    supplier_name=(supplier or {}).get("name") or supplier_printed,
-                    total=extraction.get("total_incl_tax"),
-                    invoice_date=_iso_date(extraction.get("invoice_date")),
-                    own_invoice_id=own_invoice_id,
+                    venue_id=venue_id,
                 )
-                if twin:
+                if dup:
+                    twin = dup.twin_row
                     dup_invoice_id = twin.get("id")
                     dup_file_id = twin.get("fileId")
                     dup_msg = ordermentum_twin_message(twin, feed=False)
@@ -1643,7 +1635,14 @@ def build_replica(
                     _issue(
                         "duplicate_invoice",
                         dup_msg,
-                        data={"duplicate_of_invoice_id": dup_invoice_id},
+                        data={
+                            "duplicate_of_invoice_id": dup_invoice_id,
+                            **(
+                                {"also_remove": dup.also_remove}
+                                if dup.also_remove
+                                else {}
+                            ),
+                        },
                     )
         except Exception as exc:  # noqa: BLE001
             log.append(f"duplicate check failed: {exc}")

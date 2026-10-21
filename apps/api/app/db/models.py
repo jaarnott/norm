@@ -15,6 +15,8 @@ from sqlalchemy import (
     Index,
     CheckConstraint,
     Numeric,
+    Date,
+    BigInteger,
 )
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -2023,6 +2025,52 @@ def _stamp_task_organization(mapper, connection, target):
             return
     if target.created_by:
         target.organization_id = _acting_org(connection, target.created_by)
+
+
+class OrdermentumPair(Base):
+    """The two copies of one Ordermentum delivery, once Norm has settled them:
+    Ordermentum's own copy (Loaded ``source = Ordermentum``, no file) and the
+    supplier's emailed invoice, which prints Ordermentum's order number.
+
+    Two jobs (services/ordermentum_pairs, docs/plans/ordermentum-pairing.md):
+    a copy already in a pair is never offered as anyone else's twin (that
+    alone stopped most wrong pairs when a copy arrived late), and each
+    supplier's number gap — its order number minus Ordermentum's invoice
+    number, 450 for every Sonoma pair — is learned from these rows.
+
+    ``status``: ``paired`` (settled, a duplicate raised), ``suspected`` (a
+    steady supplier's number didn't line up but the goods did: held, nothing
+    deleted), ``confirmed`` (a suspected pair proved right when the supplier's
+    gap was seen to drift). Loaded ids carry no FK — a foreign system's keys.
+    """
+
+    __tablename__ = "ordermentum_pairs"
+    __table_args__ = (
+        UniqueConstraint(
+            "ordermentum_invoice_id", "supplier_invoice_id", name="uq_ordermentum_pair"
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True, index=True)
+    #: The supplier's name, folded (``supplier_key``): the gap is the
+    #: supplier's, the same at every venue.
+    supplier_key = Column(String, nullable=False, index=True)
+    supplier_name = Column(String, nullable=True)
+    ordermentum_invoice_id = Column(String, nullable=False, index=True)
+    ordermentum_number = Column(BigInteger, nullable=True)
+    supplier_invoice_id = Column(String, nullable=False, index=True)
+    supplier_order_number = Column(BigInteger, nullable=True)
+    #: supplier_order_number − ordermentum_number, when both are known.
+    gap = Column(Integer, nullable=True)
+    #: The supplier's copy's date: the history is read in date order.
+    delivered_on = Column(Date, nullable=True)
+    status = Column(String, nullable=False, default="paired")
+    #: How it was found: exact number | same goods | seed.
+    how = Column(String, nullable=True)
+    #: The copy received second — the one that goes (first received stays).
+    later_invoice_id = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
 
 
 class InvoiceActivityEvent(Base):

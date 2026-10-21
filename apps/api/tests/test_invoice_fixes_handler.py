@@ -75,6 +75,20 @@ class TestDeleteInvoice:
         assert "deleted" in msg.lower()
         assert lh.writes == [("DELETE", "/1.0/stock/internal/invoices/inv-1", None)]
 
+    def test_a_proven_drift_takes_the_held_later_copies_too(self):
+        # An Ordermentum supplier's number seen to move proves the held pair
+        # real: its later copy, already received, goes with this one
+        # (services/ordermentum_pairs). The draft itself is never listed twice.
+        lh = FakeLoaded({}, {})
+        msg = IF._apply_delete_invoice(
+            lh, {"invoice_id": "inv-1", "also_remove": ["inv-0", "inv-1"]}, None
+        )
+        assert lh.writes == [
+            ("DELETE", "/1.0/stock/internal/invoices/inv-1", None),
+            ("DELETE", "/1.0/stock/internal/invoices/inv-0", None),
+        ]
+        assert "1 earlier second copy" in msg
+
 
 class TestReceive:
     """The Accept & Receive orchestration: link PO, apply line edits, receive,

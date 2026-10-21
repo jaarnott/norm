@@ -522,7 +522,7 @@ def settle_order(data: dict, replica: dict, lh, log: list) -> None:
     if data.get("is_credit_note") or replica.get("is_credit_note"):
         return
     codes = {i.get("code") for i in replica.get("issues") or []}
-    if codes & {"po_split_order", "po_doubled_up"}:
+    if codes & {"po_split_order"}:
         return  # the order's story is already told
     supplier_id = data.get("linked_supplier_id") or replica.get("linked_supplier_id")
     if lh is None or not supplier_id:

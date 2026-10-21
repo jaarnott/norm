@@ -651,6 +651,7 @@ async def delete_venue(
         EmailLog,
         InvoiceActivityEvent,
         InvoiceAutopilotOutcome,
+        OrdermentumPair,
         HiringCriteria,
         HrSetup,
         Insight,
@@ -762,6 +763,9 @@ async def delete_venue(
         # How well Norm did on this venue's invoices is evidence about NORM,
         # not about the venue — it stays useful after the venue is gone.
         InvoiceAutopilotOutcome,
+        # A settled Ordermentum pair teaches the SUPPLIER's number gap (the
+        # same at every venue), so it outlives the venue it was found at.
+        OrdermentumPair,
         # A memory's venue_id is a tag, not ownership — "Mr Murdochs is
         # closed" is an org fact that happens to be narrow. Deleting the venue
         # should not delete what the org learned, so drop the tag and keep the

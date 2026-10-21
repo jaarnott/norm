@@ -88,6 +88,14 @@ def _apply_delete_invoice(lh: _Loaded, fix: dict, db: Session) -> str:  # noqa: 
     fired by the user's explicit Accept.
     """
     lh.request("DELETE", f"/1.0/stock/internal/invoices/{fix['invoice_id']}")
+    # An Ordermentum supplier's number seen to drift proves earlier held pairs
+    # real: their later copies (already received) go with this one — the
+    # first received stays (services/ordermentum_pairs, owner 21 Oct 2026).
+    also = [i for i in fix.get("also_remove") or [] if i and i != fix["invoice_id"]]
+    for other in also:
+        lh.request("DELETE", f"/1.0/stock/internal/invoices/{other}")
+    if also:
+        return f"Draft deleted from Loaded, with {len(also)} earlier second copy(ies)"
     return "Draft deleted from Loaded"
 
 

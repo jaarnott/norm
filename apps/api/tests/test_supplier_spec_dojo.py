@@ -2031,6 +2031,26 @@ class TestAutostudyTrigger:
         assert calls["staged"][-1] == ("v1", "inv-2")
         assert review["sensei_studying"] is True
 
+    def test_the_layout_that_read_the_copy_counts(self, db_session, monkeypatch):
+        # Filed under its canonical name, the spec read this copy: Loaded's
+        # shorter name finding nothing is no reason to study (S442860).
+        self._spec(
+            db_session,
+            "Single Origin Wholesale Pty Ltd",
+            instructions="the Options column holds the pack weight",
+        )
+        calls = self._record(monkeypatch)
+        review = {
+            "supplier_name": "Single O",
+            "process": {"layout": "Single Origin Wholesale Pty Ltd"},
+        }
+        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-3", review)
+        assert calls["staged"] == [] and "sensei_studying" not in review
+        # Read with no layout, the same supplier is studied.
+        review = {"supplier_name": "Single O", "process": {"layout": None}}
+        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-4", review)
+        assert calls["staged"] == [("v1", "inv-4")]
+
     def test_no_supplier_name_is_a_noop(self, db_session, monkeypatch):
         calls = self._record(monkeypatch)
         review = {}

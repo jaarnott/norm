@@ -1580,6 +1580,19 @@ def receive_request_from_doc(
     derived_subtotal = (
         round(sum(line_totals), 2) if line_totals else data.get("subtotal")
     )
+    # A copy that prints no total (a sales order) with nobody having set one:
+    # the total is what the lines come to, worked out as Loaded works it
+    # (each line's tax at its own rate). Sending none, Loaded refused the
+    # receive — "line totals do not match the invoice total" (S442860, 20 Oct
+    # 2026); the owner: "we should add up the total if there is none".
+    total, tax_amount = data.get("total"), data.get("tax_amount")
+    if total is None and lines:
+        from app.services.replica_finish import _totals_view
+
+        _, tax, derived_total, _ = _totals_view(data)
+        total = derived_total
+        if tax_amount is None:
+            tax_amount = round(tax, 2)
     return ReceiveRequest(
         venue_id=venue_id,
         invoice_id=invoice_id,
@@ -1600,9 +1613,9 @@ def receive_request_from_doc(
         issued_at=data.get("issued_at"),
         due_at=data.get("due_at"),
         received_at=data.get("received_at"),
-        total=data.get("total"),
+        total=total,
         subtotal=derived_subtotal,
-        tax_amount=data.get("tax_amount"),
+        tax_amount=tax_amount,
         linked_supplier_id=data.get("linked_supplier_id"),
         unit_cost_includes_tax=data.get("unit_cost_includes_tax"),
         notes=data.get("notes"),

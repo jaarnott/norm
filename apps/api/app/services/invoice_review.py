@@ -54,7 +54,6 @@ from app.services.invoice_extraction import (
     compose_pdf_instructions,
     extract_invoice_copy,
     extraction_from_loaded,
-    find_ordermentum_twin,
     find_spec_for_supplier,
     is_feed_invoice,
     ordermentum_order_number,
@@ -1250,27 +1249,6 @@ def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> N
                 "split_sibling_invoice_id": d.get("sibling_invoice_id"),
             },
         )
-    doubled = rep_issues.get("po_doubled_up")
-    if doubled:
-        d = doubled.get("data") or {}
-        _sugg(
-            suggestions,
-            "unlink_po",
-            field="purchase_order_number",
-            current=data.get("purchase_order_number"),
-            proposed=None,
-            explanation=(
-                f"order {d.get('order_number')} is already fully invoiced by "
-                f"{d.get('sibling_reference')} — remove the reference"
-            ),
-            apply={
-                "purchase_order_number": None,
-                "linked_purchase_order_id": None,
-                "po_unlinked": bool(data.get("linked_purchase_order_id")),
-            },
-            # A judgement, not a create: no switch authorises it.
-            sure=False,
-        )
     # No unlink for a supplier mismatch. An order owned by another Loaded
     # supplier is usually a through-supplier arrangement (Soho ordered, Procure
     # delivers), so detaching a correct link was the wrong remedy for a
@@ -1981,8 +1959,6 @@ def _answers(s: dict, issue: dict) -> bool:
         return kind == "link_po"
     if code == "po_split_order":
         return kind == "split_reference"
-    if code == "po_doubled_up":
-        return kind == "unlink_po"
     if code in _DELETE_CODES:
         return kind == "delete_invoice"
     return False
@@ -2858,19 +2834,19 @@ def review_invoice(
     # Ordermentum order number). When the other copy is already received this
     # one is a duplicate — settled here, before any copy is read.
     twin = message = summary = None
+    also_remove: list[str] = []
     if feed or ordermentum_order_number(
         detail.get("purchaseOrderNumber"), detail.get("referenceNumber")
     ):
-        twin = find_ordermentum_twin(
+        from app.services import ordermentum_pairs
+
+        dup = ordermentum_pairs.check(
+            ordermentum_pairs.Copy.from_detail(detail, invoice_id),
             received,
-            feed=feed,
-            supplier_id=detail.get("linkedSupplierId"),
-            supplier_name=detail.get("supplierName"),
-            total=detail.get("total"),
-            invoice_date=detail.get("issuedAt"),
-            own_invoice_id=invoice_id,
+            venue_id=venue_id,
         )
-        if twin:
+        if dup:
+            twin, also_remove = dup.twin_row, dup.also_remove
             message = ordermentum_twin_message(twin, feed=feed)
             summary = "the other copy of an Ordermentum delivery is already received"
     # The same invoice sent more than once becomes several drafts, each with its
@@ -2923,6 +2899,9 @@ def review_invoice(
             extra={
                 "duplicate_of_invoice_id": twin.get("id"),
                 "duplicate_of_file_id": twin.get("fileId"),
+                # Held pairs proved real once the supplier's number moved:
+                # their later copies (already received) go with this one.
+                **({"also_remove": also_remove} if also_remove else {}),
             },
             summary=summary,
         )
@@ -3291,9 +3270,7 @@ def review_invoice(
                     for s in suggestions
                 )
                 and not any(
-                    i.get("code")
-                    in ("po_unresolved", "po_split_order", "po_doubled_up")
-                    for i in issues
+                    i.get("code") in ("po_unresolved", "po_split_order") for i in issues
                 )
             ):
                 issues.append(

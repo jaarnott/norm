@@ -517,7 +517,15 @@ def autostudy_if_spec_less(
             return
         from app.services import sensei_runner
 
-        spec = find_spec_for_supplier(config_db, supplier)
+        # Asked with the layout the copy was actually read with, as the
+        # batch's own check asks with the supplier's other names: a spec filed
+        # under its canonical name ("Single Origin Wholesale Pty Ltd") read
+        # this copy, yet the bare feed name ("Single O") found nothing and
+        # the card queued a study the batch rightly never did (S442860,
+        # 20 Oct 2026).
+        layout = str(((review or {}).get("process") or {}).get("layout") or "")
+        hints = [layout.strip()] if layout.strip() else []
+        spec = find_spec_for_supplier(config_db, supplier, *hints)
         if spec is not None and (spec.instructions or "").strip():
             return  # a spec with content already exists — nothing to study
 

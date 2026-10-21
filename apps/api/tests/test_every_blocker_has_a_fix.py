@@ -1633,7 +1633,6 @@ class TestEveryBlockerHasAnAutopilotDecision:
         "unit_kind_mismatch": {"kind": "confirm", "fixes": "unit_kind_mismatch"},
         "po_unresolved": {"kind": "link_po"},
         "po_split_order": {"kind": "split_reference"},
-        "po_doubled_up": {"kind": "unlink_po"},
         "duplicate_invoice": {"kind": "delete_invoice"},
         "not_an_invoice": {"kind": "delete_invoice"},
         "no_copy_attached": {"kind": "delete_invoice"},

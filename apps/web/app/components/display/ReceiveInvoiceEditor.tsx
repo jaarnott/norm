@@ -2270,7 +2270,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
               {[doc.reference_number || '(no number)', doc.issued_at ? dateVal(doc.issued_at) : null, doneState ? null : reviewSummaryText]
                 .filter(Boolean).join(' · ')}
             </span>
-            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{cur(doc.total)}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
+              {/* A copy that prints no total (a sales order): what the lines
+                  come to — the figure the receive sends. */}
+              {cur(typeof doc.total === 'number' ? doc.total : totals.incl)}
+            </span>
           </div>
         )}
         {/* Two columns like Loaded: order/supplier on the left, invoice on the

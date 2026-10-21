@@ -486,103 +486,13 @@ class TestFeedInvoices:
         )
 
 
-def _om(number, day, total, sup="sup-sonoma", **over):
-    """A received row from Loaded's stock-received feed — Ordermentum's copy."""
-    return {
-        "id": f"r-{number}",
-        "invoiceNumber": number,
-        "fileId": None,
-        "supplierId": sup,
-        "supplierName": "Sonoma Baking Company",
-        "invoicedAt": day,
-        "receivedAt": f"{day}T00:00:00",
-        "total": total,
-        **over,
-    }
-
-
-def _copy(number, day, total, po=None, sup="sup-sonoma", **over):
-    """A received row — the supplier's emailed copy, carrying the order number."""
-    return {
-        "id": f"r-{number}",
-        "invoiceNumber": number,
-        "purchaseOrderNumber": po,
-        "fileId": f"f-{number}",
-        "supplierId": sup,
-        "supplierName": "Sonoma Baking Company",
-        "invoicedAt": day,
-        "receivedAt": f"{day}T00:00:00",
-        "total": total,
-        **over,
-    }
-
-
-class TestOrdermentumTwins:
-    """One Ordermentum delivery, two copies under different numbers: Norm
-    received both for 260 deliveries at the Australian venues (16 Oct 2026)."""
-
-    def _twin(self, rows, *, feed, total=104.64, day="2026-09-02", sup="sup-sonoma"):
-        return ie.find_ordermentum_twin(
-            rows,
-            feed=feed,
-            supplier_id=sup,
-            supplier_name="Sonoma Baking Company",
-            total=total,
-            invoice_date=day,
-            own_invoice_id="me",
-        )
+class TestOrdermentumOrderNumbers:
+    """The order number a supplier's copy of an Ordermentum order carries —
+    which copy is its other half is decided in services/ordermentum_pairs
+    (tests/test_ordermentum_pairs.py)."""
 
     def test_the_order_number_is_found_wherever_the_supplier_prints_it(self):
         assert ie.ordermentum_order_number(None, "OMO1073025") == "OMO1073025"
         assert ie.ordermentum_order_number("PO: omo 29044", "133714") == "OMO29044"
         assert ie.ordermentum_order_number("1520001", "3693436") is None
         assert ie.ordermentum_order_number("OMI1072575") is None
-
-    def test_the_supplier_copy_finds_ordermentums(self):
-        # Sonoma 3693436 (dated 2 Sep, order OMO1073025) and Ordermentum's
-        # OMI1072575 (1 Sep) — the same four lines, the same $104.64.
-        om = _om("OMI1072575", "2026-09-01", 104.64)
-        assert self._twin([om], feed=False) is om
-
-    def test_ordermentums_copy_finds_the_supplier_copy(self):
-        copy = _copy("3693436", "2026-09-02", 104.64, po="OMO1073025")
-        assert self._twin([copy], feed=True, day="2026-09-01") is copy
-
-    def test_a_standing_order_resolves_to_the_copy_dated_the_day_before(self):
-        # The same $105.58 order on 21 and 23 Jun (Little West): the supplier's
-        # copy dated the 22nd belongs to the 21st.
-        mon = _om("OMI1024523", "2026-06-21", 105.58)
-        wed = _om("OMI1026472", "2026-06-23", 105.58)
-        assert self._twin([wed, mon], feed=False, total=105.58, day="2026-06-22") is mon
-
-    def test_two_equally_likely_copies_delete_nothing(self):
-        a = _om("OMI1", "2026-09-01", 50.0)
-        b = _om("OMI2", "2026-09-01", 50.0)
-        assert self._twin([a, b], feed=False, total=50.0) is None
-
-    def test_what_isnt_the_same_delivery_never_matches(self):
-        om = _om("OMI1072575", "2026-09-01", 104.64)
-        assert self._twin([om], feed=False, total=104.80) is None  # 16c apart
-        assert self._twin([om], feed=False, day="2026-09-06") is None  # 5 days
-        assert self._twin([om], feed=False, day="2026-08-31") is None  # before it
-        assert self._twin([om], feed=False, sup="sup-other") is None
-        # An ordinary supplier's invoice is never Ordermentum's copy: standing
-        # orders under different numbers (453 at the Cook Brothers venues).
-        plain = _om("20944717", "2026-09-01", 104.64)
-        assert self._twin([plain], feed=False) is None
-        # A supplier copy without an order number isn't one either.
-        assert (
-            self._twin(
-                [_copy("3693436", "2026-09-02", 104.64)], feed=True, day="2026-09-01"
-            )
-            is None
-        )
-
-    def test_credit_notes_are_left_alone(self):
-        credit = _copy("CN12823", "2026-10-05", -54.63, po="OMO1087155")
-        assert self._twin([credit], feed=True, total=-54.63, day="2026-10-04") is None
-        assert self._twin([credit], feed=True, total=54.63, day="2026-10-04") is None
-
-    def test_the_invoice_itself_is_not_its_own_twin(self):
-        om = _om("OMI1072575", "2026-09-01", 104.64, id="me")
-        assert self._twin([om], feed=False) is None

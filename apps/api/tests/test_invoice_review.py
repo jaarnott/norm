@@ -726,6 +726,16 @@ class TestOrdermentumDuplicates:
     is received first stays; the other is a duplicate, settled before a copy
     is read."""
 
+    # Loaded's received feed carries each copy's lines: the pair is judged on
+    # them (services/ordermentum_pairs).
+    LINES = [
+        {
+            "itemId": "item-salmon",
+            "itemCode": "PBO0.7",
+            "quantityReceived": 4.95,
+            "unitCost": 44.4,
+        }
+    ]
     OM_ROW = {
         "id": "inv-om",
         "invoiceNumber": "OMI1072575",
@@ -735,6 +745,7 @@ class TestOrdermentumDuplicates:
         "invoicedAt": "2026-08-06",
         "receivedAt": "2026-08-06T00:00:00",
         "total": 252.75,
+        "lines": LINES,
     }
     COPY_ROW = {
         "id": "inv-copy",
@@ -746,6 +757,7 @@ class TestOrdermentumDuplicates:
         "invoicedAt": "2026-08-08",
         "receivedAt": "2026-08-08T00:00:00",
         "total": 252.75,
+        "lines": LINES,
     }
 
     def _no_read(self, monkeypatch):
@@ -808,9 +820,11 @@ class TestOrdermentumDuplicates:
         assert delete["payload"]["reason"] == "duplicate"
 
     def test_no_twin_received_reviews_as_usual(self):
+        # Ordermentum's copy of another order: different goods.
+        other = {**self.LINES[0], "quantityReceived": 2.0}
         data = _review(
             detail=DETAIL(purchaseOrderNumber="OMO1073025"),
-            reference=REFERENCE(received_feed=[{**self.OM_ROW, "total": 99.0}]),
+            reference=REFERENCE(received_feed=[{**self.OM_ROW, "lines": [other]}]),
         )
         assert "duplicate_invoice" not in _issue_codes(data)
         assert data["replica"]["replica"] is True
@@ -1035,6 +1049,38 @@ class TestReceiveRequestFromDoc:
         assert req.purchase_order_number == "1520001"
         assert req.linked_purchase_order_id is None
         assert req.split_po_id == "po-7"
+
+    def test_a_copy_with_no_total_receives_what_the_lines_come_to(self):
+        # A sales order prints no subtotal, tax or total; sending none,
+        # Loaded refused the receive (S442860, 20 Oct 2026). The total is the
+        # lines with each one's tax at its own rate, as Loaded works it.
+        data = _review()
+        data["lines"] = [
+            {
+                "id": "ld-1",
+                "quantity_received": 48,
+                "unit_cost": 36.0,
+                "total_cost": 1728.0,
+                "sale_tax_rate": 0.0,
+                "linked_item_id": "i-1",
+                "linked_unit_id": "u-1",
+            },
+            {
+                "id": "ld-2",
+                "quantity_received": 1,
+                "unit_cost": 29.0,
+                "total_cost": 29.0,
+                "sale_tax_rate": 0.1,
+                "linked_item_id": "i-2",
+                "linked_unit_id": "u-2",
+            },
+        ]
+        data.update(total=None, tax_amount=None, subtotal=None, discount_amount=None)
+        req = receive_request_from_doc(data, "v-1", "inv-1")
+        assert (req.subtotal, req.tax_amount, req.total) == (1757.0, 2.9, 1759.9)
+        # A total the invoice printed (or a person set) is never replaced.
+        data["total"] = 1800.0
+        assert receive_request_from_doc(data, "v-1", "inv-1").total == 1800.0
 
     def test_unlink_flag(self):
         data = _review()
@@ -2030,65 +2076,6 @@ class TestAnOrderOwnedByAnotherSupplierIsJustWorthKnowing:
             **self._mismatched(),
             "issues": self._issues(),
             "suggestion_actions": [],
-        }
-        assert IR.compute_confidence(data) == "ready"
-
-
-class TestAnUnlinkIsItsBlockersFix:
-    """`unlink_po` sat in Suggested changes next to its own blocker — and
-    accepting it did not clear the blocker. Autopilot auto-accepted the unlink
-    and then parked the invoice citing the thing it had just remedied.
-    """
-
-    def _doubled(self):
-        return [
-            {
-                "id": "po_doubled_up",
-                "code": "po_doubled_up",
-                "blocking": True,
-                "message": "order 1520987 is already fully invoiced by INV-2",
-            }
-        ]
-
-    def _unlink(self):
-        return {
-            "id": "unlink_po:purchase_order_number",
-            "kind": "unlink_po",
-            "field": "purchase_order_number",
-            "line_id": None,
-            "explanation": "order 1520987 is already fully invoiced — remove the reference",
-            "apply": {"purchase_order_number": None, "linked_purchase_order_id": None},
-            "sure": False,
-        }
-
-    def _linked(self):
-        issues, suggestions = self._doubled(), [self._unlink()]
-        IR.link_fixes({"lines": []}, None, issues, suggestions)
-        return issues, suggestions
-
-    def test_no_switch_authorises_it(self):
-        """An order already invoiced by a sibling is a judgement, not a create
-        — no venue setting may wave it through."""
-        issues, suggestions = self._linked()
-        assert issues[0].get("gate") is None and suggestions[0].get("gate") is None
-        data = {"lines": [], "suggestions": suggestions, "issues": issues}
-        settings = VA.settings_from({g: True for g in VA.GATES})
-        autopilot_accept(None, None, "v-1", "inv-1", data, settings)
-        assert data["suggestion_actions"] == []
-
-    def test_accepting_it_clears_the_blocker(self):
-        issues, _s = self._linked()
-        assert issues[0]["fix"] == ["unlink_po:purchase_order_number"]  # points at it
-        data = {
-            "lines": [],
-            "issues": issues,
-            "suggestion_actions": [
-                {
-                    "suggestion_id": "unlink_po:purchase_order_number",
-                    "action": "accepted",
-                    "by": "user",
-                }
-            ],
         }
         assert IR.compute_confidence(data) == "ready"
 
