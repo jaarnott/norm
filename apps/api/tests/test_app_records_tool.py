@@ -110,6 +110,44 @@ class TestReads:
             "2026-10-14",
         ]
 
+    def test_a_period_means_the_venues_trading_days(self, db_session):
+        """A dashboard passes a period ("this_week"), and it was ignored: the
+        HR dashboard's "interviews this week" counted every interview (22 Oct
+        2026)."""
+        import datetime as dt
+
+        from app.services import business_calendar
+        from tests.org_helpers import make_venue
+
+        org = _make_organization(db_session, name="Org " + uuid.uuid4().hex[:6])
+        venue = make_venue(db_session, "Cafe", org)
+        window = business_calendar.resolve_phrase(venue, "this week")
+        first = window.start.date()
+        last = (window.end - dt.timedelta(hours=12)).date()
+        for day in (first, last, last + dt.timedelta(days=1)):
+            _row(db_session, org, "assignments", {"due_date": day.isoformat()})
+        out = _call(
+            db_session,
+            org,
+            app="training",
+            collection="assignments",
+            date_field="due_date",
+            period="this_week",
+        )
+        assert sorted(r["due_date"] for r in out["data"]["rows"]) == [
+            first.isoformat(),
+            last.isoformat(),
+        ]
+        out = _call(
+            db_session,
+            org,
+            app="training",
+            collection="assignments",
+            date_field="due_date",
+            period="the twelfth of never",
+        )
+        assert not out["success"] and "start and end" in out["error"]
+
     def test_fields_trim_the_rows(self, db_session):
         org = _make_organization(db_session, name="Org " + uuid.uuid4().hex[:6])
         _row(db_session, org, "people", {"name": "Ana", "email": "a@x", "pay": 1})

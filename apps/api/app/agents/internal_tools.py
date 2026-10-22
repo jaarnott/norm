@@ -2651,6 +2651,38 @@ def _scoped_venue_id(params: dict, db: Session) -> tuple[str | None, str | None]
     return (v.id, None) if v else (None, err)
 
 
+def _period_dates(db, org_id: str, scope, period: str):
+    """``(first day, last day)`` of a period in the organisation's trading days
+    (its venue's, or the caller's venue's), or None if it can't be read."""
+    import datetime as _dt
+
+    from app.db.models import Venue
+    from app.services import business_calendar
+
+    venue = None
+    if scope is not None and getattr(scope, "venue_id", None):
+        venue = db.get(Venue, scope.venue_id)
+    if venue is None:
+        venue = (
+            db.query(Venue)
+            .filter(Venue.organization_id == org_id)
+            .order_by(Venue.name)
+            .first()
+        )
+    if venue is None:
+        return None
+    try:
+        window = business_calendar.resolve_phrase(venue, period)
+    except Exception:  # noqa: BLE001 — an unreadable phrase is "can't tell"
+        return None
+    if window is None:
+        return None
+    # A trading day ends early the next morning (Mon 07:00 -> Tue 06:59), so
+    # the last day is the one twelve hours before the window closes.
+    last = (window.end - _dt.timedelta(hours=12)).date()
+    return window.start.date().isoformat(), last.isoformat()
+
+
 @register("norm", "app_records")
 def _app_records(params: dict, db: Session, thread_id: str | None) -> dict:
     """Rows of one of Norm's built-in apps (Hiring, Training, Performance),
@@ -2726,12 +2758,26 @@ def _app_records(params: dict, db: Session, thread_id: str | None) -> dict:
             today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
             q = q.filter(_condition(date_field, {"lt": today}))
         else:
-            if params.get("start"):
-                q = q.filter(_condition(date_field, {"gte": str(params["start"])[:10]}))
-            if params.get("end"):
-                q = q.filter(
-                    _condition(date_field, {"lte": str(params["end"])[:10] + "~"})
-                )
+            start, end = params.get("start"), params.get("end")
+            # A period ("this week", or a dashboard's "this_week") was IGNORED
+            # until Oct 2026: the HR dashboard's "interviews this week" counted
+            # every interview there was (Norm found it rebuilding the HR
+            # template, 22 Oct). It means the venues' trading days.
+            period = str(params.get("period") or "").strip().replace("_", " ")
+            if period and not (start or end):
+                window = _period_dates(db, org_id, scope, period)
+                if window is None:
+                    return {
+                        "success": False,
+                        "data": {},
+                        "error": f"Norm couldn't turn the period '{period}' into "
+                        "dates — pass start and end instead.",
+                    }
+                start, end = window
+            if start:
+                q = q.filter(_condition(date_field, {"gte": str(start)[:10]}))
+            if end:
+                q = q.filter(_condition(date_field, {"lte": str(end)[:10] + "~"}))
     try:
         limit = max(1, min(int(params.get("limit") or 500), 2000))
     except (TypeError, ValueError):
