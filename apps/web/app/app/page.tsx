@@ -32,7 +32,7 @@ import { useTeam } from '../hooks/useTeam';
 import { threadMembers } from '../lib/threadApps';
 import type { Thread, WidgetAction, VenueDetail } from '../types';
 
-type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null };
+type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null; kind?: 'app' | 'dashboard' };
 
 type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null; organizations?: { id: string; name: string | null }[]; active_organization_id?: string | null };
 
@@ -146,7 +146,8 @@ export default function Home() {
     }
     setAppPages(
       appRows
-        .filter((r) => r.pinned || auto.has(r.slug))
+        // A dashboard lives on its AI agent's Dashboard page, never in a menu.
+        .filter((r) => r.kind !== 'dashboard' && (r.pinned || auto.has(r.slug)))
         .map((r) => {
           const cfg = appPageConfig(r);
           const hit = auto.get(r.slug);

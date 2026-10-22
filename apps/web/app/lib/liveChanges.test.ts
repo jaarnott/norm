@@ -18,6 +18,14 @@ describe('changesIn', () => {
     expect(changesIn([saved], new Map())).toEqual([{ kind: 'app', detail: { slug: 'lott-cafe-dashboard' } }]);
   });
 
+  it('tells the Dashboard page about a dashboard Norm saved', () => {
+    const saved = call({ result_payload: { slug: 'ops', version: 1, kind: 'dashboard', agent: 'reports' } });
+    expect(changesIn([saved], new Map())).toEqual([
+      { kind: 'app', detail: { slug: 'ops' } },
+      { kind: 'dashboard', detail: { dashboardId: 'app:ops', agent: 'reports' } },
+    ]);
+  });
+
   it('ignores what had already run before the turn', () => {
     const old = call({ id: 'old', result_payload: { slug: 'a' } });
     const fresh = call({ id: 'new', result_payload: { slug: 'b' } });

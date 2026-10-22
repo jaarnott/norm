@@ -287,7 +287,8 @@ APPS = [
             # what a person says about an insight they clicked on Home
             # (scripts/sync_note_insight_tool.py)
             "norm.note_insight",
-            # Norm builds and changes dashboards (scripts/sync_dashboard_tools.py)
+            # which dashboard each Dashboard page shows: use, copy, share…
+            # (scripts/sync_dashboard_tools.py); building one is save_app
             "norm_reports.get_dashboards",
             "norm_reports.manage_dashboard",
         ],
@@ -625,14 +626,18 @@ APPS = [
     ),
     _app(
         "app-builder",
-        note="To build or change an App, open the build_an_app skill first.",
+        note=(
+            "To build or change a dashboard, open the build_a_dashboard skill "
+            "first; an app, the build_an_app skill."
+        ),
         name="App Builder",
         member="app_builder",
         switchable=False,
         icon="🧩",
         description="Build custom Apps for your team by chatting.",
         tools=["norm.list_app_capabilities", "norm.save_app", "norm.get_app"],
-        skills=["build_an_app"],
+        # build_a_dashboard: scripts/sync_dashboard_tools.py
+        skills=["build_an_app", "build_a_dashboard"],
         components=[
             _c(
                 "apps_dashboard",

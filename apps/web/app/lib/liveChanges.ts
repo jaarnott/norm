@@ -42,6 +42,10 @@ export function changesIn(
     if (c.connector_name === 'norm' && c.action === 'save_app') {
       const slug = str(result.slug) || str(input.slug);
       if (slug) out.push({ kind: 'app', detail: { slug } });
+      // A dashboard Norm has just made is what its Dashboard page shows now.
+      if (result.kind === 'dashboard') {
+        out.push({ kind: 'dashboard', detail: { dashboardId: slug ? `app:${slug}` : null, agent: str(result.agent) } });
+      }
     } else if (c.connector_name === 'norm_reports' && c.action === 'manage_dashboard') {
       out.push({
         kind: 'dashboard',
@@ -87,6 +91,14 @@ export function announceChanges(
     others?.postMessage({ from: TAB, change });
   }
   others?.close();
+}
+
+/** An app changed from this page (a version brought back): this tab and
+ * the others showing it reload. */
+export function announceAppChanged(slug: string): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(APP_SAVED, { detail: { slug } }));
+  announceAppSaved(slug);
 }
 
 /** A person saved an app by hand (Edit mode): other tabs showing it update. */

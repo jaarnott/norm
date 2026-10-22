@@ -35,9 +35,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ExternalLink, Users, PencilLine, Undo2 } from 'lucide-react';
+import { ExternalLink, History, Users, PencilLine, Undo2 } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
-import { announceAppSaved, onChange } from '../../lib/liveChanges';
+import { announceAppChanged, announceAppSaved, onChange } from '../../lib/liveChanges';
 import {
   applyText, editableValues, findPieces, markersIn, markPieces, moveBlock, planTextEdit,
   removeBlock, setColSpan, stripMarkers, type Candidate, type Target,
@@ -46,6 +46,7 @@ import { EDIT_CSS, EDIT_RUNTIME } from './editRuntime';
 import { setPageDocument } from '../../lib/pageDocument';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import AppSharePanel from './AppSharePanel';
+import AppHistory from './AppHistory';
 import { HOST_CSS } from './hostStyles';
 import PageHeader from '../ui/PageHeader';
 import PageState from '../ui/PageState';
@@ -89,6 +90,11 @@ function loadFontFace(): Promise<string> {
 interface AppDetail {
   slug: string;
   name: string;
+  /** app | dashboard; a template is a dashboard everyone uses as it is */
+  kind?: 'app' | 'dashboard';
+  template?: boolean;
+  /** "you", the maker's name, or "Norm" */
+  owner?: string;
   icon?: string | null;
   description?: string | null;
   access: string;
@@ -159,6 +165,13 @@ const HOST_RUNTIME = `
       // hence the blob handed back by pick/list rather than a raw URL.
       urlFor: function (fileId) { return _store('file-url', null, fileId, {}); },
     },
+    // This person's own choices on this page (colours, % or $, the last
+    // period): nobody else's screen changes. Records (storage) are shared.
+    mine: {
+      get: function (name) { return _mine('get', name); },
+      set: function (name, value) { return _mine('set', name, value); },
+      all: function () { return _mine('all'); },
+    },
     storage: {
       list: function (collection, query) { return _store('list', collection, null, query || {}); },
       get: function (collection, id) { return _store('get', collection, id, {}); },
@@ -167,6 +180,13 @@ const HOST_RUNTIME = `
       remove: function (collection, id) { return _store('delete', collection, id, {}); },
     },
   };
+  function _mine(op, name, value) {
+    return new Promise(function (resolve, reject) {
+      var rid = 'm' + (++seq);
+      pending[rid] = { resolve: resolve, reject: reject };
+      parent.postMessage({ type: 'norm:mine', id: rid, op: op, name: name == null ? null : String(name), value: value === undefined ? null : value }, '*');
+    });
+  }
   function _store(op, collection, id, body) {
     return new Promise(function (resolve, reject) {
       var rid = 's' + (++seq);
@@ -195,7 +215,7 @@ const HOST_RUNTIME = `
 })();
 `;
 
-export default function AppRunner({ slug, component, inputs, variant = 'embedded', fill = false, back }: {
+export default function AppRunner({ slug, component, inputs, variant = 'embedded', fill = false, back, extraActions, meta: metaOverride, bottomGap = 0 }: {
   slug: string;
   /** which of the app's declared components to start on */
   component?: string;
@@ -206,6 +226,13 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
   fill?: boolean;
   /** a back link above the title (Team, Apps, /apps/<slug>) */
   back?: { label: string; onClick: () => void };
+  /** page only: more buttons beside Edit (a Dashboard page's own) */
+  extraActions?: React.ReactNode;
+  /** page only: the line under the title, instead of "Version N · reach" */
+  meta?: string;
+  /** page only: room (px) after the content, so the last section scrolls
+   * clear of a message box floating over the page (a Dashboard page) */
+  bottomGap?: number;
 }) {
   const [app, setApp] = useState<AppDetail | null>(null);
   const [venues, setVenues] = useState<VenueRow[]>([]);
@@ -214,6 +241,9 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
   const [height, setHeight] = useState(360);
   const [fontFace, setFontFace] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // This person's own settings on the page (norm.mine), read once per load.
+  const mineRef = useRef<Record<string, unknown> | null>(null);
   // A page remembers the venue it was last looking at, shared with every other
   // page (Orders, Roster…). A card in a conversation keeps its own.
   const persistVenue = variant !== 'embedded';
@@ -264,16 +294,17 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
   // RecipeEditor; module-scope, so it survives the send.
   useEffect(() => {
     if (app) {
-      setPageDocument({ kind: 'app', slug: app.slug, name: app.name, version: app.version });
+      setPageDocument({ kind: app.kind === 'dashboard' ? 'dashboard' : 'app', slug: app.slug, name: app.name, version: app.version });
     }
     return () => setPageDocument(null);
   }, [app]);
 
   useEffect(() => {
     let live = true;
+    mineRef.current = null;
     (async () => {
       const [a, v, font] = await Promise.all([
-        apiFetch(`/api/apps/${slug}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Error ${r.status}`)))),
+        apiFetch(`/api/apps/${encodeURIComponent(slug)}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Error ${r.status}`)))),
         apiFetch('/api/venues').then((r) => (r.ok ? r.json() : { venues: [] })).catch(() => ({ venues: [] })),
         loadFontFace(),
       ]).catch((e) => { if (live) setError(e instanceof Error ? e.message : 'Could not load the app'); return [null, null, '']; });
@@ -297,7 +328,7 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
     if (saved !== slug) return;
     // Not under someone's hands: their Save will say a newer version exists.
     if (editingRef.current) { setNewerSaved(true); return; }
-    apiFetch(`/api/apps/${slug}`)
+    apiFetch(`/api/apps/${encodeURIComponent(slug)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((a) => { if (a) setApp(a as AppDetail); })
       .catch(() => {});
@@ -305,8 +336,8 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
 
   // The whole document the sandbox runs: runtime first, then the app's markup.
   const docFor = useCallback((source: string) => (
-    `<!doctype html><html lang="en" data-norm-variant="${variant}"><head><meta charset="utf-8"><style>${fontFace ?? ''}${HOST_CSS}${EDIT_CSS}</style><script>${HOST_RUNTIME}</script><script>${EDIT_RUNTIME}</script></head><body>${source}</body></html>`
-  ), [fontFace, variant]);
+    `<!doctype html><html lang="en" data-norm-variant="${variant}"><head><meta charset="utf-8"><style>${fontFace ?? ''}${HOST_CSS}${EDIT_CSS}${bottomGap > 0 ? `body::after{content:'';display:block;height:${Math.round(bottomGap)}px}` : ''}</style><script>${HOST_RUNTIME}</script><script>${EDIT_RUNTIME}</script></head><body>${source}</body></html>`
+  ), [fontFace, variant, bottomGap]);
   const shown = editing && drawn !== null ? drawn : app?.ui_source;
   const srcdoc = useMemo(() => {
     if (!shown || fontFace === null) return null;
@@ -372,7 +403,7 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
           if (venueRef.current) form.append('venue_id', venueRef.current);
           try {
             const res = await apiFetch(
-              `/api/apps/${app.slug}/files/${encodeURIComponent(String(m.collection))}`,
+              `/api/apps/${encodeURIComponent(app.slug)}/files/${encodeURIComponent(String(m.collection))}`,
               { method: 'POST', body: form },
             );
             const json = await res.json().catch(() => ({}));
@@ -384,6 +415,28 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
           }
         };
         input.click();
+      } else if (m.type === 'norm:mine') {
+        // One person's own settings: read once per page load, then kept here.
+        try {
+          if (!mineRef.current) {
+            const res = await apiFetch(`/api/apps/${encodeURIComponent(app.slug)}/mine`);
+            mineRef.current = res.ok ? ((await res.json()).data || {}) : {};
+          }
+          const mine = mineRef.current as Record<string, unknown>;
+          if (m.op === 'set' && m.name) {
+            const res = await apiFetch(`/api/apps/${encodeURIComponent(app.slug)}/mine`, {
+              method: 'PUT', body: JSON.stringify({ data: { [String(m.name)]: m.value ?? null } }),
+            });
+            const json = await res.json().catch(() => ({}));
+            if (!res.ok) { post({ type: 'norm:result', id: m.id, ok: false, error: json?.detail || `Error ${res.status}` }); return; }
+            mineRef.current = json.data || {};
+            post({ type: 'norm:result', id: m.id, ok: true, data: m.value ?? null });
+          } else {
+            post({ type: 'norm:result', id: m.id, ok: true, data: m.op === 'all' ? { ...mine } : (mine[String(m.name)] ?? null) });
+          }
+        } catch (e) {
+          post({ type: 'norm:result', id: m.id, ok: false, error: e instanceof Error ? e.message : 'settings call failed' });
+        }
       } else if (m.type === 'norm:store') {
         // The app's own rows. Same shape of forwarding as norm:call — the
         // server-side door decides what this app may touch; this side just
@@ -398,11 +451,11 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
         const col = encodeURIComponent(String(m.collection ?? ''));
         const rid = encodeURIComponent(String(m.recordId ?? ''));
         const paths: Record<string, [string, string]> = {
-          list: ['POST', `/api/apps/${app.slug}/records/${col}/query`],
-          get: ['GET', `/api/apps/${app.slug}/records/${col}/${rid}`],
-          create: ['POST', `/api/apps/${app.slug}/records/${col}`],
-          update: ['PUT', `/api/apps/${app.slug}/records/${col}/${rid}`],
-          delete: ['DELETE', `/api/apps/${app.slug}/records/${col}/${rid}`],
+          list: ['POST', `/api/apps/${encodeURIComponent(app.slug)}/records/${col}/query`],
+          get: ['GET', `/api/apps/${encodeURIComponent(app.slug)}/records/${col}/${rid}`],
+          create: ['POST', `/api/apps/${encodeURIComponent(app.slug)}/records/${col}`],
+          update: ['PUT', `/api/apps/${encodeURIComponent(app.slug)}/records/${col}/${rid}`],
+          delete: ['DELETE', `/api/apps/${encodeURIComponent(app.slug)}/records/${col}/${rid}`],
         };
         // File ops share the bridge but not the record paths.
         if (m.op === 'files' || m.op === 'file-delete' || m.op === 'file-url') {
@@ -410,13 +463,13 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
           try {
             if (m.op === 'files') {
               const q = m.recordId ? `?record_id=${fileId}` : '';
-              const res = await apiFetch(`/api/apps/${app.slug}/files/${encodeURIComponent(String(m.collection))}${q}`);
+              const res = await apiFetch(`/api/apps/${encodeURIComponent(app.slug)}/files/${encodeURIComponent(String(m.collection))}${q}`);
               const json = await res.json().catch(() => ({}));
               post(res.ok
                 ? { type: 'norm:result', id: m.id, ok: true, data: json.files }
                 : { type: 'norm:result', id: m.id, ok: false, error: json?.detail || `Error ${res.status}` });
             } else if (m.op === 'file-delete') {
-              const res = await apiFetch(`/api/apps/${app.slug}/file/${fileId}`, { method: 'DELETE' });
+              const res = await apiFetch(`/api/apps/${encodeURIComponent(app.slug)}/file/${fileId}`, { method: 'DELETE' });
               post({ type: 'norm:result', id: m.id, ok: res.ok, data: { deleted: m.recordId } });
             } else {
               // Fetched here and handed to the iframe as a data: URL. The
@@ -424,7 +477,7 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
               // itself (no token) nor load a parent-origin blob: URL — but a
               // data: URL carries no origin, so an <img src> in the sandbox
               // renders it.
-              const res = await apiFetch(`/api/apps/${app.slug}/file/${fileId}`);
+              const res = await apiFetch(`/api/apps/${encodeURIComponent(app.slug)}/file/${fileId}`);
               if (!res.ok) { post({ type: 'norm:result', id: m.id, ok: false, error: `Error ${res.status}` }); return; }
               const blob = await res.blob();
               const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -473,7 +526,7 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
           return;
         }
         try {
-          const res = await apiFetch(`/api/apps/${app.slug}/${isCall ? 'call' : 'run'}`, {
+          const res = await apiFetch(`/api/apps/${encodeURIComponent(app.slug)}/${isCall ? 'call' : 'run'}`, {
             method: 'POST',
             body: JSON.stringify(
               isCall
@@ -674,7 +727,7 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
     if (!app || working === null || !changes.length) return;
     setSaving(true);
     try {
-      const res = await apiFetch(`/api/apps/${app.slug}/edit`, {
+      const res = await apiFetch(`/api/apps/${encodeURIComponent(app.slug)}/edit`, {
         method: 'POST',
         body: JSON.stringify({ ui_source: working, base_version: app.version, note: `Edited by hand: ${changes.join('; ')}` }),
       });
@@ -688,7 +741,7 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
         setToast(typeof b.detail === 'string' ? b.detail : `Couldn’t save (error ${res.status}).`);
         return;
       }
-      const fresh = await apiFetch(`/api/apps/${app.slug}`).then((r) => (r.ok ? r.json() : null));
+      const fresh = await apiFetch(`/api/apps/${encodeURIComponent(app.slug)}`).then((r) => (r.ok ? r.json() : null));
       stopEditing();
       if (fresh) setApp(fresh as AppDetail);
       announceAppSaved(app.slug);
@@ -722,6 +775,9 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
   const canShare = !app.builtin && (app.access === 'owner' || app.access === 'edit');
   // Owners and editors can retype text and move sections on the page itself.
   const canEdit = canShare && variant !== 'embedded' && !!app.ui_source;
+  // A dashboard is shared with the whole organisation from its Dashboard
+  // page's own buttons, never with named people.
+  const showSharing = canShare && app.kind !== 'dashboard';
   const venuePicker = venues.length > 1
     ? <VenueSelect venues={venues} value={venueId} onChange={changeVenue} />
     : null;
@@ -810,15 +866,21 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
         <PageHeader
           title={app.name}
           back={back}
-          meta={editing ? editMeta : meta}
+          meta={editing ? editMeta : (metaOverride ?? meta)}
           status={writesBlocked ? <Badge tone="warn">Writes not approved for you</Badge> : undefined}
-          actions={editing ? editActions : (venuePicker || canShare) ? (
+          actions={editing ? editActions : (venuePicker || canShare || extraActions) ? (
             <>
               {venuePicker}
+              {extraActions}
               {canEdit && (
                 <Button size="sm" variant="secondary" icon={PencilLine} onClick={startEditing}>Edit</Button>
               )}
               {canShare && (
+                <Button size="sm" variant="secondary" icon={History} onClick={() => { setHistoryOpen(true); setSharing(false); }}>
+                  History
+                </Button>
+              )}
+              {showSharing && (
                 <Button size="sm" variant={sharing ? 'quiet' : 'secondary'} icon={Users} aria-expanded={sharing} onClick={() => setSharing((x) => !x)}>
                   Sharing
                 </Button>
@@ -833,7 +895,10 @@ export default function AppRunner({ slug, component, inputs, variant = 'embedded
         )}
         {/* Owners manage who can run it; the endpoint 403s for anyone else and
             the panel renders nothing. */}
-        {!editing && sharing && canShare && <div style={{ marginBottom: 16 }}><AppSharePanel slug={app.slug} /></div>}
+        {!editing && sharing && showSharing && <div style={{ marginBottom: 16 }}><AppSharePanel slug={app.slug} /></div>}
+        {!editing && historyOpen && canShare && (
+          <AppHistory slug={app.slug} onClose={() => setHistoryOpen(false)} onRestored={() => { setHistoryOpen(false); announceAppChanged(app.slug); }} />
+        )}
       </div>
       {frame}
       {probeDoc && (

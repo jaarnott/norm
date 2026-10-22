@@ -357,7 +357,6 @@ class TestReadOnlyOverTransport:
             )
         assert "not declared as a write" in str(e.value.detail)
 
-
     def test_an_endpoint_is_not_an_action_an_app_can_call(
         self, db_session, org, author
     ):
@@ -374,13 +373,21 @@ class TestReadOnlyOverTransport:
                 execution_mode="mcp",
                 auth_type="none",
                 tools=[],
-                endpoints=[{"action": "training_list_job_openings", "method": "POST", "read_only": True}],
+                endpoints=[
+                    {
+                        "action": "training_list_job_openings",
+                        "method": "POST",
+                        "read_only": True,
+                    }
+                ],
                 enabled=True,
             )
         )
         db_session.flush()
         spec = {
-            "actions": [{"connector": "orbit_raw", "action": "training_list_job_openings"}],
+            "actions": [
+                {"connector": "orbit_raw", "action": "training_list_job_openings"}
+            ],
             "writes": [],
             "scopes": [],
         }
@@ -700,6 +707,8 @@ class TestBuilderTools:
         payload = {
             "name": "Outstanding invoices",
             "slug": "outstanding-invoices",
+            "kind": "app",
+            "agent": "procurement",
             "icon": "🧾",
             "spec": READ_SPEC,
             "ui_source": "<div>v1</div>",
@@ -732,7 +741,13 @@ class TestBuilderTools:
 
         thread = self._thread(db_session, author)
         out = get_handler("norm", "save_app")(
-            {"name": "Renamed", "spec": READ_SPEC, "ui_source": "<div/>"},
+            {
+                "name": "Renamed",
+                "spec": READ_SPEC,
+                "ui_source": "<div/>",
+                "kind": "app",
+                "agent": "reports",
+            },
             db_session,
             thread.id,
         )
@@ -746,6 +761,8 @@ class TestBuilderTools:
         thread = self._thread(db_session, weak)
         out = get_handler("norm", "save_app")(
             {
+                "kind": "app",
+                "agent": "reports",
                 "name": "Too far",
                 "slug": "too-far",
                 "spec": READ_SPEC,
@@ -763,7 +780,14 @@ class TestBuilderTools:
         norole = _member(db_session, org, ["tasks:read"])
         thread = self._thread(db_session, norole)
         out = get_handler("norm", "save_app")(
-            {"name": "X", "slug": "x", "spec": {}, "ui_source": "<div/>"},
+            {
+                "name": "X",
+                "slug": "x",
+                "spec": {},
+                "ui_source": "<div/>",
+                "kind": "app",
+                "agent": "reports",
+            },
             db_session,
             thread.id,
         )
@@ -775,6 +799,8 @@ class TestBuilderTools:
         thread = self._thread(db_session, author)
         get_handler("norm", "save_app")(
             {
+                "kind": "app",
+                "agent": "reports",
                 "name": "Mine",
                 "slug": "mine",
                 "spec": READ_SPEC,
@@ -875,6 +901,8 @@ class TestSpecValidation:
                 db_session,
                 author,
                 {
+                    "kind": "app",
+                    "agent": "reports",
                     "name": "Typo app",
                     "spec": {"actions": [], "scopes": ["loadedhub:read"]},
                     "ui_source": "<div/>",
@@ -890,6 +918,8 @@ class TestSpecValidation:
                 db_session,
                 author,
                 {
+                    "kind": "app",
+                    "agent": "reports",
                     "name": "Bad actions",
                     "spec": {"actions": ["get_sales"], "scopes": []},
                     "ui_source": "<div/>",
@@ -1087,6 +1117,7 @@ class TestAppAgent:
                 db_session,
                 author,
                 {
+                    "kind": "app",
                     "name": "Nowhere",
                     "slug": "nowhere",
                     # Any slug that is not a team member. ("finance" was the
@@ -1100,19 +1131,28 @@ class TestAppAgent:
         assert "astronomy" in str(e.value.detail)
         assert "hr" in str(e.value.detail)  # names the valid set
 
-    def test_omitting_the_agent_keeps_the_old_home(self, db_session, org, author):
-        AR.save_app(
-            db_session,
-            author,
-            {
-                "name": "Legacy",
-                "slug": "legacy",
-                "spec": READ_SPEC,
-                "ui_source": "<div/>",
-            },
-        )
-        app = db_session.query(App).filter(App.slug == "legacy").first()
-        assert app.agent is None  # → app_builder at the surface
+    def test_a_new_page_names_its_agent_and_kind(self, db_session, org, author):
+        """Every app belongs to the AI agent whose job it does, never the App
+        Builder (owner, 21 Oct 2026), and says whether it's a dashboard or an
+        app — so a new one without either is refused with what to ask."""
+        base = {
+            "name": "Legacy",
+            "slug": "legacy",
+            "spec": READ_SPEC,
+            "ui_source": "<div/>",
+        }
+        with pytest.raises(HTTPException) as e:
+            AR.save_app(db_session, author, {**base, "kind": "app"})
+        assert "hr" in str(e.value.detail)  # names the AI agents to pick from
+        with pytest.raises(HTTPException) as e:
+            AR.save_app(
+                db_session, author, {**base, "kind": "app", "agent": "app_builder"}
+            )
+        assert "not the App Builder" in str(e.value.detail)
+        with pytest.raises(HTTPException) as e:
+            AR.save_app(db_session, author, {**base, "agent": "reports"})
+        assert "dashboard" in str(e.value.detail) and "ask" in str(e.value.detail)
+        assert db_session.query(App).filter(App.slug == "legacy").first() is None
 
     def test_a_later_save_that_omits_the_agent_does_not_move_the_app(
         self, db_session, org, author
@@ -1125,6 +1165,7 @@ class TestAppAgent:
             db_session,
             author,
             {
+                "kind": "app",
                 "name": "Hiring",
                 "slug": "hiring2",
                 "agent": "hr",
@@ -1153,6 +1194,7 @@ class TestAppAgent:
             db_session,
             author,
             {
+                "kind": "app",
                 "name": "Hiring",
                 "slug": "hiring3",
                 "agent": "hr",

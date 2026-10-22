@@ -428,6 +428,8 @@ class TestNamespaceClaim:
                 db_session,
                 author,
                 {
+                    "kind": "app",
+                    "agent": "reports",
                     "name": "Nosy",
                     "slug": "nosy",
                     "spec": {
@@ -453,6 +455,8 @@ class TestNamespaceClaim:
             db_session,
             author,
             {
+                "kind": "app",
+                "agent": "reports",
                 "name": "Coaching",
                 "slug": "coaching",
                 "spec": {
@@ -493,6 +497,8 @@ class TestNamespaceClaim:
                 db_session,
                 author,
                 {
+                    "kind": "app",
+                    "agent": "reports",
                     "name": "Bad",
                     "slug": "bad",
                     "spec": {"storage": {"namespace": "x", "collections": "people"}},
@@ -875,6 +881,8 @@ class TestNamespaceOwnershipSurvivesRevision:
             db_session,
             author,
             {
+                "kind": "app",
+                "agent": "reports",
                 "name": "Coaching",
                 "slug": "coaching",
                 "spec": {
@@ -890,6 +898,8 @@ class TestNamespaceOwnershipSurvivesRevision:
             db_session,
             author,
             {
+                "kind": "app",
+                "agent": "reports",
                 "name": "Hiring",
                 "slug": owner.slug,
                 "spec": STORAGE_SPEC,
@@ -909,6 +919,8 @@ class TestNamespaceOwnershipSurvivesRevision:
             db_session,
             author,
             {
+                "kind": "app",
+                "agent": "reports",
                 "name": "Coaching",
                 "slug": "coaching",
                 "spec": joiner_spec,
@@ -919,6 +931,8 @@ class TestNamespaceOwnershipSurvivesRevision:
             db_session,
             author,
             {
+                "kind": "app",
+                "agent": "reports",
                 "name": "Coaching",
                 "slug": "coaching",
                 "spec": joiner_spec,
@@ -935,6 +949,8 @@ class TestNamespaceOwnershipSurvivesRevision:
             db_session,
             author,
             {
+                "kind": "app",
+                "agent": "reports",
                 "name": "Coaching",
                 "slug": "coaching",
                 "spec": {
@@ -950,12 +966,17 @@ class TestNamespaceOwnershipSurvivesRevision:
                 db_session,
                 author,
                 {
+                    "kind": "app",
+                    "agent": "reports",
                     "name": "Nosy",
                     "slug": "nosy",
                     "spec": {
                         "actions": [],
                         "scopes": [],
-                        "storage": {"namespace": "team_suite", "collections": ["people"]},
+                        "storage": {
+                            "namespace": "team_suite",
+                            "collections": ["people"],
+                        },
                     },
                     "ui_source": "<div/>",
                 },

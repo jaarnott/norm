@@ -7,12 +7,10 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import type { ChartType, ChartSpec } from '../../types';
-import { apiFetch } from '../../lib/api';
-import { Maximize2, Plus, X } from 'lucide-react';
+import { Maximize2, X } from 'lucide-react';
 import KpiCard from './KpiCard';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import Button from '../ui/Button';
 import IconButton from '../ui/IconButton';
 
 // Series colours: one categorical palette, assigned in this order. Literal hex
@@ -108,6 +106,7 @@ interface Props {
   onAction?: (action: { connector_name: string; action: string; params: Record<string, unknown> }) => Promise<Record<string, unknown> | void>;
   threadId?: string;
   height?: number;
+  /** No longer used: the "+ Report" button went with the tile dashboards. */
   hideAddToReport?: boolean;
   onRemove?: () => void;
   onExpand?: () => void;
@@ -122,9 +121,8 @@ interface Props {
   loading?: boolean;
 }
 
-function Chart({ data, props: chartProps, onAction, threadId, height: chartHeight = 280, hideAddToReport, onRemove, onExpand, onDrillDown, fillContainer, hideBorder, className, emptyReason, loading }: Props) {
+function Chart({ data, props: chartProps, height: chartHeight = 280, onRemove, onExpand, onDrillDown, fillContainer, hideBorder, className, emptyReason, loading }: Props) {
   const [chartType, setChartType] = useState<ChartType>(chartProps?.chart_type || 'bar');
-  const [addingToReport, setAddingToReport] = useState(false);
   const fieldLabels = chartProps?.field_labels || {};
 
   const rows = useMemo(() => {
@@ -278,63 +276,6 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
     return { chartRows: inBucketOrder(Array.from(grouped.values())), chartSeries: effectiveSeries };
   }, [rows, xKey, chartType, effectiveSeries, dataKeys]);
 
-  const handleAddToReport = async () => {
-    setAddingToReport(true);
-    try {
-      // Check if a report builder is already open
-      let reportId: string | null = null;
-      if (onAction) {
-        try {
-          const result = await onAction({
-            connector_name: 'norm_reports',
-            action: 'get_active_report',
-            params: {},
-          });
-          if (result && (result as Record<string, unknown>).report_id) {
-            reportId = (result as Record<string, unknown>).report_id as string;
-          }
-        } catch { /* ignore */ }
-      }
-
-      // No active report open — create a new one
-      if (!reportId) {
-        const createRes = await apiFetch('/api/reports', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: title || 'New Report' }),
-        });
-        const report = await createRes.json();
-        reportId = report.id;
-      }
-
-      // Add this chart to the report
-      await apiFetch(`/api/reports/${reportId}/charts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title,
-          chart_type: chartType,
-          chart_spec: { x_axis: chartProps?.x_axis, series: effectiveSeries, orientation: chartProps?.orientation },
-          data: rows,
-          script: data?.script || {},
-          source_thread_id: threadId,
-        }),
-      });
-
-      // Tell parent to open the Report Builder
-      if (onAction && reportId) {
-        await onAction({
-          connector_name: 'norm_reports',
-          action: 'open_report_builder',
-          params: { report_id: reportId },
-        });
-      }
-    } catch (e) {
-      console.error('Failed to add to report:', e);
-    }
-    setAddingToReport(false);
-  };
-
   return (
     <div className={className} style={{
       border: hideBorder ? '1px solid transparent' : '1px solid var(--line)',
@@ -356,16 +297,6 @@ function Chart({ data, props: chartProps, onAction, threadId, height: chartHeigh
           display: 'flex', gap: 2, alignItems: 'center', flex: '0 0 auto',
           ...(fillContainer ? { position: 'absolute', right: '0.75rem' } : {}),
         }}>
-          {!hideAddToReport && (
-            <Button
-              variant="quiet"
-              size="sm"
-              icon={addingToReport ? undefined : Plus}
-              onClick={handleAddToReport}
-              disabled={addingToReport}
-              title="Add this chart to a report"
-            >{addingToReport ? 'Adding…' : 'Report'}</Button>
-          )}
           {onExpand && fillContainer && (
             <IconButton icon={Maximize2} label="Full screen" iconSize={16} onClick={onExpand} />
           )}

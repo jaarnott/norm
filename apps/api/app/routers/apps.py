@@ -46,11 +46,17 @@ def _load(db: Session, slug: str, user: User, config_db: Session):
     the org has its catalog App on (services/builtin_apps.py).
     """
     from app.db.models import App, AppVersion
+    from app.services import page_templates
     from app.services.builtin_apps import load_for_user
 
     builtin = load_for_user(db, config_db, slug, user)
     if builtin is not None:
         return builtin
+    # One of Norm's ready-made dashboards, bound to the viewer's own org
+    # (services/page_templates.py).
+    template = page_templates.load_for_user(db, config_db, slug, user)
+    if template is not None:
+        return template
 
     membership = active_org.membership_for(db, user.id)
     q = db.query(App).filter(App.slug == slug)
@@ -94,12 +100,19 @@ def _refuse_builtin(app) -> None:
     """Sharing is how a user-built app reaches people. A built-in app already
     reaches everyone in the org, and has no row a share could point at."""
     from app.services.builtin_apps import is_builtin
+    from app.services.page_templates import is_template
 
     if is_builtin(app):
         raise HTTPException(
             400,
             f"{app.name} is built into Norm — everyone in your organization "
             "already has it",
+        )
+    if is_template(app):
+        raise HTTPException(
+            400,
+            f"{app.name} is one of Norm's templates — everyone already has it. "
+            "Make a copy to change or share your own.",
         )
 
 
@@ -206,6 +219,7 @@ async def list_apps(
                 "access": "view",
                 "pinned": b.slug in pinned,
                 "agent": b.agent or "app_builder",
+                "kind": "app",
             }
         )
     for app in (
@@ -229,6 +243,7 @@ async def list_apps(
                 "description": app.description,
                 "icon": app.icon,
                 "visibility": app.visibility,
+                "kind": app.kind,
                 "mine": app.created_by == user.id,
                 "access": access.role,
                 "pinned": app.slug in pinned,
@@ -254,11 +269,14 @@ async def get_app(
     connector uses, and a viewer who cannot do what the app does is told which
     permission is missing rather than watching every call fail.
     """
+    from app.services.app_runtime import owner_name
+
     app, version = _load(db, slug, user, config_db)
     access = resolve_access(db, app, user)
     if not access.can_run:
         raise HTTPException(404, "app not found")
     spec = version.spec or {}
+    template = bool(getattr(app, "template", False))
     return {
         "slug": app.slug,
         "name": app.name,
@@ -267,6 +285,14 @@ async def get_app(
         "agent": app.agent or "app_builder",
         "purpose": app.purpose,
         "visibility": app.visibility,
+        # app | dashboard; one of Norm's templates is a dashboard anyone uses
+        "kind": getattr(app, "kind", "app"),
+        "template": template,
+        "owner": (
+            "Norm"
+            if template or getattr(app, "builtin", False)
+            else ("you" if app.created_by == user.id else owner_name(db, app))
+        ),
         "builtin": bool(getattr(app, "builtin", False)),
         # a built-in's version is its code's hash — it changes with Norm
         "build": getattr(version, "build", None),
@@ -284,16 +310,24 @@ async def get_app(
 
 
 class SaveRequest(BaseModel):
-    name: str
+    #: Required for a new page; a change to an existing one may leave out
+    #: whatever it doesn't change (app_runtime.save_app carries it over).
+    name: str | None = None
     slug: str | None = None
     description: str | None = None
     icon: str | None = None
-    #: Which agent's menu this app's pages join. Omit for the App Builder.
+    #: The AI agent whose Dashboard page or menu it joins (required when new).
     agent: str | None = None
+    #: dashboard | app (required when new); changes only with change_kind.
+    kind: str | None = None
+    change_kind: bool | None = None
     purpose: str | None = None
-    spec: dict
+    spec: dict | None = None
     ui_source: str | None = None
     logic_source: str | None = None
+    #: [{find, replace}] instead of the whole ui_source / logic_source.
+    edits: list | None = None
+    logic_edits: list | None = None
     changelog: str | None = None
 
 
@@ -308,7 +342,8 @@ async def save_app_endpoint(
     never drift."""
     from app.services.app_runtime import save_app
 
-    return save_app(db, user, body.model_dump())
+    # Only what was sent: an unsent ui_source must carry over, never be wiped.
+    return save_app(db, user, body.model_dump(exclude_unset=True))
 
 
 class HandEditRequest(BaseModel):
@@ -400,6 +435,12 @@ async def share_app(
 
     app, version = _load(db, slug, user, config_db)
     _refuse_builtin(app)
+    if getattr(app, "kind", "app") == "dashboard":
+        raise HTTPException(
+            400,
+            "a dashboard is shared with the whole organisation, to use as it "
+            "is: use Share on the dashboard (POST /api/dashboards/share)",
+        )
     access = resolve_access(db, app, user)
     if access.role != "owner" and access.role != "edit":
         raise HTTPException(403, "only the author can share this app")
@@ -591,6 +632,82 @@ class PinRequest(BaseModel):
     pinned: bool
 
 
+@router.get("/apps/{slug}/versions")
+async def app_versions(
+    slug: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Every saved version, newest first — for the person who can bring one
+    back (an App's owner and editors; a Dashboard's owner)."""
+    from app.services.app_runtime import list_versions
+
+    app, _ = _load(db, slug, user, config_db)
+    _refuse_builtin(app)
+    access = resolve_access(db, app, user)
+    if access.role not in ("owner", "edit"):
+        raise HTTPException(403, "only the person who made it can see its history")
+    return {"versions": list_versions(db, app)}
+
+
+@router.post("/apps/{slug}/versions/{number}/restore")
+async def restore_app_version(
+    slug: str,
+    number: int,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Bring back an old version as the newest one (nothing is overwritten)."""
+    from app.services.app_runtime import restore_version
+
+    app, _ = _load(db, slug, user, config_db)
+    _refuse_builtin(app)
+    return restore_version(db, app, user, number, resolve_access(db, app, user))
+
+
+class MineRequest(BaseModel):
+    #: Names to set; a null value removes that one.
+    data: dict
+
+
+@router.get("/apps/{slug}/mine")
+async def get_mine(
+    slug: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """This person's own settings on this page (norm.mine) — nobody else's."""
+    from app.services.app_runtime import mine_get
+
+    app, _ = _load(db, slug, user, config_db)
+    if not resolve_access(db, app, user).can_run:
+        raise HTTPException(404, "app not found")
+    return {"data": mine_get(db, app, user)}
+
+
+@router.put("/apps/{slug}/mine")
+async def put_mine(
+    slug: str,
+    body: MineRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Change this person's own settings on this page. Anyone who can use the
+    page may — it changes only their own screen, so it needs no approval."""
+    from app.services.app_runtime import mine_set
+
+    app, _ = _load(db, slug, user, config_db)
+    if not resolve_access(db, app, user).can_run:
+        raise HTTPException(404, "app not found")
+    data = mine_set(db, app, user, body.data)
+    db.commit()
+    return {"data": data}
+
+
 @router.post("/apps/{slug}/pin")
 async def pin_app(
     slug: str,
@@ -611,6 +728,12 @@ async def pin_app(
     app, _ = _load(db, slug, user, config_db)
     if not resolve_access(db, app, user).can_run:
         raise HTTPException(404, "app not found")
+    if body.pinned and getattr(app, "kind", "app") == "dashboard":
+        raise HTTPException(
+            400,
+            f"'{app.name}' is a dashboard: it sits on the "
+            "AI agent's Dashboard page — pick it there with Change dashboard",
+        )
 
     prefs = dict(user.dashboard_preferences or {})
     pins = [s for s in (prefs.get("_pinned_apps") or []) if isinstance(s, str)]

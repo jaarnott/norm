@@ -13,6 +13,7 @@ import ChartConfigPanel from './dashboard/ChartConfigPanel';
 import DrillDownPanel from './dashboard/DrillDownPanel';
 import DashboardPicker from './dashboard/DashboardPicker';
 import DashboardHistory from './dashboard/DashboardHistory';
+import DashboardPage from './dashboard/DashboardPage';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { useActiveVenue } from '../../hooks/useActiveVenue';
 import PageHeader from '../ui/PageHeader';
@@ -53,7 +54,37 @@ const ROW_HEIGHT = 40;
 // Space between tiles: white cards on the cream page need a visible gutter.
 const TILE_GAP = 12;
 
+/**
+ * An AI agent's Dashboard page, or one tile dashboard shown in a conversation.
+ *
+ * Dashboards are becoming pages of code, like apps (docs/plans/
+ * apps-and-dashboards-one-system.md): once an agent's page has any of those
+ * (the person's own, one shared with them, or a template), it shows that —
+ * DashboardPage. Until then it shows the tile dashboard as before.
+ */
 export default function DashboardView({ data, props }: DisplayBlockProps) {
+  const agentSlug = (data?.agent_slug as string) || (props?.agent_slug as string) || '';
+  const directReportId = (data?.report_id as string) || '';
+  const pageMode = !!agentSlug && !directReportId;
+  const [tiles, setTiles] = useState<boolean | null>(pageMode ? null : true);
+
+  useEffect(() => {
+    if (!pageMode) return;
+    const check = () => apiFetch(`/api/dashboards/${agentSlug}`)
+      .then((r) => (r.ok ? r.json() : { tiles: true }))
+      .then((d) => setTiles(d.tiles !== false))
+      .catch(() => setTiles(true));
+    check();
+    // Norm made or changed a dashboard: the page may have its first one now.
+    return onChange('dashboard', ({ agent }) => { if (!agent || agent === agentSlug) check(); });
+  }, [pageMode, agentSlug]);
+
+  if (tiles === null) return <div className="n-page"><PageState kind="loading" title="Loading the dashboard…" /></div>;
+  if (!tiles) return <DashboardPage agentSlug={agentSlug} />;
+  return <TileDashboardView data={data} props={props} />;
+}
+
+function TileDashboardView({ data, props }: DisplayBlockProps) {
   const agentSlug = (data?.agent_slug as string) || (props?.agent_slug as string) || '';
   const directReportId = (data?.report_id as string) || '';
   const [dashboard, setDashboard] = useState<SavedReport | null>(null);

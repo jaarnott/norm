@@ -243,6 +243,8 @@ class TestUserBuiltAppsCannotReachIt:
                 db_session,
                 user,
                 {
+                    "kind": "app",
+                    "agent": "reports",
                     "name": "Nosy",
                     "spec": {
                         "storage": {"namespace": "hr_suite", "collections": ["people"]}
@@ -298,7 +300,15 @@ class TestUserBuiltAppsCannotReachIt:
         user = _member(db_session, org)
         with pytest.raises(HTTPException) as e:
             AR.save_app(
-                db_session, user, {"name": "Hiring", "slug": "hiring", "spec": {}}
+                db_session,
+                user,
+                {
+                    "name": "Hiring",
+                    "slug": "hiring",
+                    "spec": {},
+                    "kind": "app",
+                    "agent": "reports",
+                },
             )
         assert "built into Norm" in e.value.detail
 

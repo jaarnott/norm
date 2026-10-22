@@ -1408,6 +1408,13 @@ class App(Base):
     #: private | users | venue | organization. Private on creation, always —
     #: widening is an explicit act recorded in AppShare.
     visibility = Column(String, nullable=False, default="private")
+    #: app | dashboard. Both do the same things; they differ in where they live
+    #: and how they're shared. An App sits in its agent's menu, is shared with
+    #: people, venues or the organisation, and can be published. A Dashboard
+    #: sits on its agent's Dashboard page: only its owner changes it, and anyone
+    #: it's shared with uses it as it is or makes their own copy. Changed only
+    #: as a deliberate step (save_app's change_kind), never by an edit.
+    kind = Column(String, nullable=False, default="app", server_default="app")
     #: Plain String, not an FK: apps and app_versions reference each other, and
     #: a circular FK pair costs a use_alter dance for no protection we need.
     current_version_id = Column(String, nullable=True)
@@ -1564,6 +1571,34 @@ class AppRecord(Base):
         String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class AppViewerSetting(Base):
+    """One person's own choices on one page — colours, % or $, the last period.
+
+    Records (``AppRecord``) are shared by everyone using a page; these are not.
+    Rich picked chart colours on his dashboard and they were saved as one row
+    for the whole organisation, so anyone else's pick would have changed his
+    screen (Oct 2026). A page reads and writes these with ``norm.mine``.
+
+    ``app_key`` is the app's id, or ``template:<slug>`` / ``builtin:<slug>`` for
+    a page with no ``apps`` row, so a copy of a dashboard starts with none."""
+
+    __tablename__ = "app_viewer_settings"
+    __table_args__ = (
+        UniqueConstraint(
+            "app_key", "organization_id", "user_id", name="uq_app_viewer_setting"
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    app_key = Column(String, nullable=False)
+    organization_id = Column(
+        String, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    data = Column(JSONB, nullable=False, default=dict)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 

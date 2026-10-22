@@ -212,6 +212,12 @@ async def submit_app(
     )
     if not app_row:
         raise HTTPException(404, f"No app '{req.app_slug}' in your organization.")
+    if app_row.kind == "dashboard":
+        raise HTTPException(
+            400,
+            f"'{app_row.name}' is a dashboard, and dashboards stay inside the "
+            "business. To publish it, make it an app first.",
+        )
     version = (
         db.query(AppVersion).filter(AppVersion.id == app_row.current_version_id).first()
     )

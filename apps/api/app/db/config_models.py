@@ -414,6 +414,64 @@ class DashboardTemplate(ConfigBase):
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
+class PageTemplate(ConfigBase):
+    """A ready-made dashboard Norm offers every organisation — a page of code,
+    like an App, that anyone can use AS IT IS on an AI agent's Dashboard page.
+
+    Using a template never copies it: everyone using it runs the current
+    version, so when a platform admin improves it, they all get the change. To
+    change one for themselves a person makes a copy, which is their own
+    Dashboard (an ``apps`` row of kind ``dashboard``) from then on.
+
+    It is served like a built-in app (services/page_templates.py): bound to the
+    viewer's own organisation on the server, so its figures and records are
+    that organisation's. Unlike a built-in it has no email, calendar or PDF
+    doors and never writes: a template is for looking at.
+
+    Made from a platform admin's own dashboard ("Make this a template"); a
+    later publish from the same dashboard is the template's next version.
+    Lives in the shared config DB like the tile templates it replaces
+    (``DashboardTemplate``), so it can be improved without a release.
+    """
+
+    __tablename__ = "page_templates"
+
+    #: Plain name, e.g. "operations". Pages address it as "template:<slug>".
+    slug = Column(String, primary_key=True)
+    agent_slug = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    icon = Column(String, nullable=True)
+    spec = Column(JSON, nullable=False, default=dict)
+    ui_source = Column(Text, nullable=False)
+    logic_source = Column(Text, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    enabled = Column(Boolean, nullable=False, default=True)
+    #: The dashboard it was published from: its org and slug in that
+    #: environment's app DB. Publishing again from it makes the next version.
+    source_org_id = Column(String, nullable=True)
+    source_slug = Column(String, nullable=True)
+    updated_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class PageTemplateVersion(ConfigBase):
+    """Every published version of a template, so one can be brought back."""
+
+    __tablename__ = "page_template_versions"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    slug = Column(String, nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    spec = Column(JSON, nullable=False, default=dict)
+    ui_source = Column(Text, nullable=False)
+    logic_source = Column(Text, nullable=True)
+    changelog = Column(Text, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+
 class SuggestionConfig(ConfigBase):
     """Site-wide tuning of Home's suggestions (services/suggestions/config.py,
     docs/plans/suggestions-config.md), edited on Settings → AI team →

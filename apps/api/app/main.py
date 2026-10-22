@@ -38,6 +38,7 @@ from app.routers import (  # noqa: E402
     email,
     component_apis,
     apps as apps_router,
+    dashboards as dashboards_router,
     invoice_fixes,
     invoice_activity,
     background_jobs as background_jobs_router,
@@ -111,6 +112,7 @@ app.include_router(invoice_fixes.router, prefix="/api")
 app.include_router(invoice_activity.router, prefix="/api")
 app.include_router(background_jobs_router.router, prefix="/api")
 app.include_router(apps_router.router, prefix="/api")
+app.include_router(dashboards_router.router, prefix="/api")
 app.include_router(marketplace.router, prefix="/api")
 app.include_router(recipe_editor.router, prefix="/api")
 app.include_router(uploads.router, prefix="/api")

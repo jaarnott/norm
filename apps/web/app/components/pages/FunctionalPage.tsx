@@ -50,6 +50,12 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   // A page component can ask for the whole area (the Apps page, once it has
   // opened an app). App pages always have it.
   const [fillRequested, setFillRequested] = useState(false);
+  // …and may keep the composer floating over it (a Dashboard page).
+  const [floatRequested, setFloatRequested] = useState(false);
+  const requestFill = useCallback((on: boolean, floatComposer?: boolean) => {
+    setFillRequested(on);
+    setFloatRequested(on && !!floatComposer);
+  }, []);
   // An open saved report fills too: it scrolls itself, and the composer (or
   // the conversation) docks under it like any other page.
   const fill = config.component === 'app_runner' || fillRequested || !!activeReportId;
@@ -224,7 +230,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
   // around it means sending a message never remounts what you're looking at.
   // (The same holds for `fill`: only the wrapper's props change.)
   return (
-    <PageFillContext.Provider value={setFillRequested}>
+    <PageFillContext.Provider value={requestFill}>
       <div ref={containerRef} style={{
         height: '100%', display: 'flex', flexDirection: 'column', position: 'relative',
         backgroundColor: 'var(--canvas)', userSelect: isDragging ? 'none' : undefined,
@@ -273,7 +279,7 @@ export default function FunctionalPage({ config, thread, onSend, loading, onWidg
             </div>
             <div className="n-composer-dock">{composer}</div>
           </div>
-        ) : fill ? (
+        ) : fill && !floatRequested ? (
           <div className="n-composer-dock" style={{ paddingTop: 8 }}>{composer}</div>
         ) : floatingComposer}
       </div>

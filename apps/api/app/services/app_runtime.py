@@ -129,6 +129,24 @@ def resolve_access(db: Session, app, user) -> AppAccess:
     # org was taken from the viewer's membership when it was bound; it is
     # re-checked here on every call rather than trusted.
     from app.services.builtin_apps import is_builtin
+    from app.services.page_templates import is_template
+
+    if is_template(app):
+        # Norm's ready-made dashboard, bound to the viewer's own org
+        # (services/page_templates.py): anyone in it may look, nobody writes.
+        if is_system(user):
+            return AppAccess(False, "none", False, "app not found")
+        member = (
+            db.query(OrganizationMembership)
+            .filter(
+                OrganizationMembership.user_id == user.id,
+                OrganizationMembership.organization_id == app.organization_id,
+            )
+            .first()
+        )
+        if not member:
+            return AppAccess(False, "none", False, "app not found")
+        return AppAccess(True, "view", False)
 
     if is_builtin(app):
         from app.db.models import OrganizationMembership
@@ -186,10 +204,12 @@ def resolve_access(db: Session, app, user) -> AppAccess:
         return AppAccess(False, "none", False, "app not found")
     # Several grants can apply at once (named directly AND org-wide). The widest
     # wins: an explicit share should not be narrowed by a broader one that
-    # happens to exist too.
+    # happens to exist too. A dashboard is changed by its owner only — anyone
+    # it's shared with uses it as it is or makes a copy — whatever a share says.
+    editable = getattr(app, "kind", "app") != "dashboard"
     return AppAccess(
         True,
-        "edit" if any(s.access == "edit" for s in matches) else "view",
+        "edit" if editable and any(s.access == "edit" for s in matches) else "view",
         any(s.write_actions_approved for s in matches),
     )
 
@@ -604,8 +624,9 @@ def _audit_app(app) -> dict:
     """Who an audit row is about. A built-in app has no ``apps`` row to point
     at, so it is named by slug instead (its org is on the viewer's own row)."""
     from app.services.builtin_apps import is_builtin
+    from app.services.page_templates import is_template
 
-    if is_builtin(app):
+    if is_builtin(app) or is_template(app):
         return {
             "app_id": None,
             "builtin_slug": app.slug,
@@ -1056,6 +1077,12 @@ def _check_namespace_claim(
         raise HTTPException(
             403, f"storage namespace '{namespace}' is reserved for Norm's own apps"
         )
+    # Each of Norm's templates keeps its records under its own name
+    # (services/page_templates.bind), so no app can claim one.
+    if namespace.startswith("template_"):
+        raise HTTPException(
+            403, f"storage namespace '{namespace}' is reserved for Norm's templates"
+        )
 
     collections = st.get("collections")
     if not isinstance(collections, list) or not collections:
@@ -1292,6 +1319,93 @@ def file_delete(db: Session, *, app, version, user, file_id: str) -> dict:
     return {"deleted": file_id}
 
 
+#: The AI agents with a Dashboard page — where a Dashboard can live.
+DASHBOARD_AGENTS = (
+    "reports",
+    "procurement",
+    "hr",
+    "time_attendance",
+    "executive_chef",
+    "finance",
+    "marketing",
+)
+KINDS = ("app", "dashboard")
+
+KIND_QUESTION = (
+    "say which kind this is: kind 'dashboard' (it sits on that AI agent's "
+    "Dashboard page) or kind 'app' (its own page in that AI agent's menu). Go by "
+    "the person's word — 'dashboard' or 'app'. If they said neither, ask them "
+    "where it should sit before saving; if they don't mind, figures to look at "
+    "are a dashboard and something people work through is an app."
+)
+
+
+def apply_edits(source: str | None, edits, what: str = "page") -> str:
+    """``source`` with each ``{"find", "replace"}`` applied in turn.
+
+    A change sent as edits leaves everything it doesn't name exactly as it is,
+    which is the point: a whole page re-sent for a one-line change is how a
+    chart went missing (21 Oct 2026). So each ``find`` must appear EXACTLY once
+    in the text as it stands, or the whole save is refused and nothing moves."""
+    text = source or ""
+    if not isinstance(edits, list) or not edits:
+        raise HTTPException(
+            400, f"{what} edits must be a non-empty list of {{find, replace}}"
+        )
+    for i, e in enumerate(edits, 1):
+        find = e.get("find") if isinstance(e, dict) else None
+        if not isinstance(find, str) or not find:
+            raise HTTPException(
+                400, f"{what} edit {i}: needs a non-empty `find` and a `replace`"
+            )
+        n = text.count(find)
+        if n != 1:
+            shown = find[:80] + ("…" if len(find) > 80 else "")
+            raise HTTPException(
+                400,
+                f"{what} edit {i}: `find` appears {n} times in the current {what}, "
+                f"and it must appear exactly once: {shown!r}. Read it again with "
+                "get_app and copy the text exactly, with enough around it to be "
+                "unique. Nothing was saved.",
+            )
+        text = text.replace(find, str(e.get("replace") or ""), 1)
+    return text
+
+
+def owner_name(db: Session, app) -> str:
+    from app.db.models import User
+
+    owner = db.get(User, app.created_by) if app.created_by else None
+    return (owner.full_name or owner.email) if owner else "someone else"
+
+
+def not_yours(db: Session, app) -> str:
+    """Why a person can't change a dashboard they're using, worded for Norm to
+    act on: they use it as it is, or make their own copy."""
+    return (
+        f"'{app.name}' is {owner_name(db, app)}'s dashboard, shared with the "
+        "organisation: only they can change it. The person can keep using it "
+        "as it is (they get its updates), or make their own copy and change "
+        "that. Ask whether they'd like a copy (manage_dashboard op 'copy'); "
+        "don't change anything until they say yes."
+    )
+
+
+def current_version(db: Session, app):
+    from app.db.models import AppVersion
+
+    if app.current_version_id:
+        v = db.get(AppVersion, app.current_version_id)
+        if v is not None:
+            return v
+    return (
+        db.query(AppVersion)
+        .filter(AppVersion.app_id == app.id)
+        .order_by(AppVersion.version.desc())
+        .first()
+    )
+
+
 def save_app(db: Session, user, payload: dict) -> dict:
     """Create an app, or add an immutable version to one the user may edit.
 
@@ -1301,16 +1415,85 @@ def save_app(db: Session, user, payload: dict) -> dict:
     hold — the same intersection the door applies at call time, applied at save
     time so the refusal names the missing permission while it can still be
     fixed.
+
+    A save of an existing app may leave out what it doesn't change: the name,
+    the spec and the page carry over, and ``edits`` / ``logic_edits`` change
+    just the parts they name (:func:`apply_edits`). A new one names its
+    ``kind`` and its ``agent``; the kind changes only with ``change_kind``.
     """
+    import copy
     import re
 
+    from app.agents.registry import registered_domains
     from app.db.models import App, AppVersion
 
     membership = active_org.membership_for(db, user.id)
     if not membership:
         raise HTTPException(403, "no organization membership")
 
-    spec = payload.get("spec") or {}
+    name = str(payload.get("name") or "").strip()
+    slug = str(payload.get("slug") or re.sub(r"[^a-z0-9]+", "-", name.lower())).strip(
+        "-"
+    )
+    if not slug:
+        raise HTTPException(400, "a name is required")
+    # "template:<slug>" is how pages address Norm's templates
+    # (services/page_templates.py); no app can take that form.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", slug):
+        raise HTTPException(
+            400, "an app's slug is lower-case letters, numbers and dashes"
+        )
+    # Built into Norm (services/builtin_apps.py): the slug is Norm's, so a
+    # user-built app can't shadow Norm Hiring in anyone's menu.
+    from app.services.builtin_apps import reserved_slugs
+
+    if slug in reserved_slugs():
+        raise HTTPException(
+            400, f"'{slug}' is the name of an app built into Norm — pick another"
+        )
+
+    app = (
+        db.query(App)
+        .filter(App.organization_id == membership.organization_id, App.slug == slug)
+        .first()
+    )
+    current = None
+    if app is not None:
+        access = resolve_access(db, app, user)
+        if app.kind == "dashboard" and access.can_run and access.role != "owner":
+            raise HTTPException(403, not_yours(db, app))
+        if access.role not in ("owner", "edit"):
+            raise HTTPException(403, "you cannot edit this app")
+        current = current_version(db, app)
+
+    name = name or (app.name if app is not None else "")
+    if not name:
+        raise HTTPException(400, "a name is required")
+    if payload.get("spec") is not None:
+        spec = payload["spec"]
+    else:
+        spec = copy.deepcopy(current.spec) if current is not None else {}
+    spec = spec or {}
+
+    def _source(key: str, edits_key: str, what: str):
+        sent = payload.get(key)
+        edits = payload.get(edits_key)
+        if edits is not None:
+            if sent is not None:
+                raise HTTPException(400, f"send either {key} or {edits_key}, not both")
+            if current is None:
+                raise HTTPException(
+                    400,
+                    f"{edits_key} change an app that exists; a new app needs "
+                    f"its whole {what} in {key}",
+                )
+            return apply_edits(getattr(current, key), edits, what)
+        if sent is not None or key in payload or current is None:
+            return sent or None
+        return getattr(current, key)
+
+    ui_source = _source("ui_source", "edits", "page")
+    logic_source = _source("logic_source", "logic_edits", "logic")
 
     # Unknown scope names are REJECTED, not ignored. required_permissions
     # treats an unknown scope as granting nothing — safe at call time, but at
@@ -1351,46 +1534,73 @@ def save_app(db: Session, user, payload: dict) -> dict:
             + ", ".join(sorted(missing)),
         )
 
-    # An app's pages join an agent's menu. A slug with no agent behind it is
-    # worse than useless: no sidebar button can ever select it, so the pages
-    # are orphaned — and `page_context.agent` is taken on faith by the
-    # supervisor, so chatting from such a page silently does nothing. Refuse it
-    # here, the one choke point both the web endpoint and the builder tool go
-    # through, and name the valid set.
+    # Every app belongs to the AI agent whose job it does (owner, 21 Oct 2026,
+    # docs/plans/apps-attached-to-agents.md): it sits in that agent's menu like
+    # Norm's own apps, and the marketplace files it under that agent. The App
+    # Builder is where apps are made, not where they live, and Home is not an
+    # agent — an app that fits no agent goes under the nearest one. A slug with
+    # no agent behind it is worse than useless: no sidebar button can select
+    # it, and `page_context.agent` is taken on faith by the supervisor.
     agent = str(payload.get("agent") or "").strip() or None
-    if agent:
-        from app.agents.registry import registered_domains
-
-        known = set(registered_domains())
-        if agent not in known:
-            raise HTTPException(
-                400,
-                f"unknown agent '{agent}' — an app's pages must join one of: "
-                + ", ".join(sorted(known)),
-            )
-
-    name = str(payload.get("name") or "").strip()
-    slug = str(payload.get("slug") or re.sub(r"[^a-z0-9]+", "-", name.lower())).strip(
-        "-"
-    )
-    if not name or not slug:
-        raise HTTPException(400, "a name is required")
-    # Built into Norm (services/builtin_apps.py): the slug is Norm's, so a
-    # user-built app can't shadow Norm Hiring in anyone's menu.
-    from app.services.builtin_apps import reserved_slugs
-
-    if slug in reserved_slugs():
+    homes = sorted(d for d in registered_domains() if d != "app_builder")
+    if agent == "app_builder":
         raise HTTPException(
-            400, f"'{slug}' is the name of an app built into Norm — pick another"
+            400,
+            "an app belongs to the AI agent whose job it does, not the App "
+            "Builder — pick the nearest of: " + ", ".join(homes),
+        )
+    if agent and agent not in homes:
+        raise HTTPException(
+            400,
+            f"unknown agent '{agent}' — an app's pages must join one of: "
+            + ", ".join(homes),
+        )
+    no_agent = HTTPException(
+        400,
+        "pick the AI agent whose job this does — it sits on that agent's "
+        "Dashboard page or in its menu. The nearest of: " + ", ".join(homes),
+    )
+
+    # Dashboard or App: the person's word decides (docs/plans/
+    # apps-and-dashboards-one-system.md §4). Changing an existing one's kind is
+    # a deliberate step of its own, never a side effect of an edit.
+    kind = str(payload.get("kind") or "").strip().lower() or None
+    if kind is not None and kind not in KINDS:
+        raise HTTPException(400, "kind is 'dashboard' or 'app'")
+    change_kind = False
+    if app is None:
+        if kind is None:
+            raise HTTPException(400, KIND_QUESTION)
+        if agent is None:
+            raise no_agent
+    else:
+        if agent is None and app.agent is None:
+            raise no_agent
+        if kind is not None and kind != app.kind:
+            if not payload.get("change_kind"):
+                raise HTTPException(
+                    400,
+                    f"'{app.name}' is a{'n' if app.kind == 'app' else ''} "
+                    f"{app.kind}. Making it a{'n' if kind == 'app' else ''} "
+                    f"{kind} is a step of its own: only when the person asks "
+                    "for it, save again with change_kind: true.",
+                )
+            if access.role != "owner":
+                raise HTTPException(
+                    403, "only the person who made it can change what kind it is"
+                )
+            change_kind = True
+    kind = kind or app.kind
+    final_agent = agent or (app.agent if app is not None else None)
+    if kind == "dashboard" and final_agent not in DASHBOARD_AGENTS:
+        raise HTTPException(
+            400,
+            "a dashboard sits on an AI agent's Dashboard page — one of: "
+            + ", ".join(DASHBOARD_AGENTS),
         )
 
     _check_namespace_claim(db, membership.organization_id, slug, spec)
 
-    app = (
-        db.query(App)
-        .filter(App.organization_id == membership.organization_id, App.slug == slug)
-        .first()
-    )
     if app is None:
         app = App(
             organization_id=membership.organization_id,
@@ -1402,20 +1612,22 @@ def save_app(db: Session, user, payload: dict) -> dict:
             agent=agent,
             purpose=payload.get("purpose"),
             visibility="private",
+            kind=kind,
         )
         db.add(app)
         db.flush()
     else:
-        access = resolve_access(db, app, user)
-        if access.role not in ("owner", "edit"):
-            raise HTTPException(403, "you cannot edit this app")
         app.name = name
-        app.description = payload.get("description")
-        app.icon = payload.get("icon")
+        if "description" in payload:
+            app.description = payload.get("description")
+        if "icon" in payload:
+            app.icon = payload.get("icon")
         if agent:
             app.agent = agent
         if payload.get("purpose"):
             app.purpose = payload.get("purpose")
+        if change_kind:
+            _change_kind(db, app, kind)
 
     last = (
         db.query(AppVersion)
@@ -1427,8 +1639,8 @@ def save_app(db: Session, user, payload: dict) -> dict:
         app_id=app.id,
         version=(last.version + 1) if last else 1,
         spec=spec,
-        ui_source=payload.get("ui_source"),
-        logic_source=payload.get("logic_source"),
+        ui_source=ui_source,
+        logic_source=logic_source,
         changelog=payload.get("changelog"),
         created_by=user.id,
     )
@@ -1441,8 +1653,208 @@ def save_app(db: Session, user, payload: dict) -> dict:
         "version": version.version,
         "id": app.id,
         "name": app.name,
+        "kind": app.kind,
+        "agent": app.agent,
         "reach": describe_reach(spec),
     }
+
+
+def _change_kind(db: Session, app, kind: str) -> None:
+    """App <-> Dashboard. A Dashboard is shared only with its organisation, to
+    use as it is, so becoming one drops any share with named people or venues
+    and any edit right, and takes it off the marketplace."""
+    from app.db.models import AppShare
+
+    app.kind = kind
+    if kind != "dashboard":
+        return
+    for share in db.query(AppShare).filter(AppShare.app_id == app.id).all():
+        if share.principal_type == "organization" and share.principal_id == (
+            app.organization_id
+        ):
+            share.access = "view"
+        else:
+            db.delete(share)
+    db.flush()
+    org_shared = (
+        db.query(AppShare)
+        .filter(AppShare.app_id == app.id, AppShare.principal_type == "organization")
+        .first()
+    )
+    app.visibility = "organization" if org_shared else "private"
+    _withdraw_listing(app)
+
+
+def _withdraw_listing(app) -> None:
+    """Take an app off the marketplace (its listing is named after the app and
+    its organisation — routers/marketplace.submit_app). Publishing it again,
+    once it's an app again, puts it back up for approval."""
+    from app.db.config_models import MarketplaceApp
+    from app.db.engine import _ConfigSessionLocal
+
+    cdb = _ConfigSessionLocal()
+    try:
+        row = (
+            cdb.query(MarketplaceApp)
+            .filter(
+                MarketplaceApp.slug == f"{app.slug}-{app.organization_id[:8]}",
+                MarketplaceApp.tier == "user",
+            )
+            .first()
+        )
+        if row is not None and row.status != "withdrawn":
+            row.status = "withdrawn"
+            cdb.commit()
+    finally:
+        cdb.close()
+
+
+# ── Each person's own settings on a page (norm.mine) ─────────────────────
+
+#: A person's settings on one page are a handful of choices, not data.
+MINE_MAX_BYTES = 16_000
+
+
+def viewer_key(app) -> str:
+    """Whose settings row a page uses: the app's own id; a template or a
+    built-in has no apps row, so it goes by its name."""
+    from app.services.builtin_apps import is_builtin
+
+    if is_builtin(app):
+        return f"builtin:{app.slug}"
+    return str(app.id)
+
+
+def mine_get(db: Session, app, user) -> dict:
+    from app.db.models import AppViewerSetting
+
+    row = (
+        db.query(AppViewerSetting)
+        .filter(
+            AppViewerSetting.app_key == viewer_key(app),
+            AppViewerSetting.organization_id == app.organization_id,
+            AppViewerSetting.user_id == user.id,
+        )
+        .first()
+    )
+    return dict(row.data or {}) if row else {}
+
+
+def mine_set(db: Session, app, user, changes: dict) -> dict:
+    """Merge ``changes`` into the person's own settings (a None value removes
+    that one). Nobody else's screen changes. The caller commits."""
+    import json
+
+    from app.db.models import AppViewerSetting
+
+    if not isinstance(changes, dict):
+        raise HTTPException(400, "settings are an object of names and values")
+    row = (
+        db.query(AppViewerSetting)
+        .filter(
+            AppViewerSetting.app_key == viewer_key(app),
+            AppViewerSetting.organization_id == app.organization_id,
+            AppViewerSetting.user_id == user.id,
+        )
+        .first()
+    )
+    data = dict(row.data or {}) if row else {}
+    for k, v in changes.items():
+        if v is None:
+            data.pop(str(k), None)
+        else:
+            data[str(k)] = v
+    if len(json.dumps(data)) > MINE_MAX_BYTES:
+        raise HTTPException(
+            413, "too much to keep as one person's settings — keep choices small"
+        )
+    if row is None:
+        row = AppViewerSetting(
+            app_key=viewer_key(app),
+            organization_id=app.organization_id,
+            user_id=user.id,
+            data=data,
+        )
+        db.add(row)
+    else:
+        row.data = data
+    db.flush()
+    return data
+
+
+# ── History: every save is kept, and any version can be brought back ──────
+
+
+def list_versions(db: Session, app) -> list[dict]:
+    from app.db.models import AppVersion, User
+
+    rows = (
+        db.query(AppVersion)
+        .filter(AppVersion.app_id == app.id)
+        .order_by(AppVersion.version.desc())
+        .all()
+    )
+    names = {
+        u.id: (u.full_name or u.email)
+        for u in db.query(User)
+        .filter(User.id.in_({r.created_by for r in rows if r.created_by}))
+        .all()
+    }
+    return [
+        {
+            "version": r.version,
+            "current": r.id == app.current_version_id,
+            "note": r.changelog,
+            "by": names.get(r.created_by),
+            "at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+def restore_version(db: Session, app, user, number: int, access) -> dict:
+    """Bring back version ``number`` as the newest version — nothing is ever
+    overwritten, so bringing one back can itself be undone."""
+    from app.db.models import AppVersion
+
+    if access.role != "owner" and not (
+        access.role == "edit" and getattr(app, "kind", "app") == "app"
+    ):
+        raise HTTPException(403, "only the person who made it can bring back a version")
+    old = (
+        db.query(AppVersion)
+        .filter(AppVersion.app_id == app.id, AppVersion.version == int(number))
+        .first()
+    )
+    if old is None:
+        raise HTTPException(404, f"there is no version {number}")
+    missing = required_permissions(old.spec or {}) - org_permissions(db, user)
+    if missing:
+        raise HTTPException(
+            403,
+            "that version can do more than you can yourself — missing: "
+            + ", ".join(sorted(missing)),
+        )
+    last = (
+        db.query(AppVersion)
+        .filter(AppVersion.app_id == app.id)
+        .order_by(AppVersion.version.desc())
+        .first()
+    )
+    version = AppVersion(
+        app_id=app.id,
+        version=last.version + 1,
+        spec=old.spec,
+        ui_source=old.ui_source,
+        logic_source=old.logic_source,
+        changelog=f"Brought back version {old.version}",
+        created_by=user.id,
+    )
+    db.add(version)
+    db.flush()
+    app.current_version_id = version.id
+    db.commit()
+    return {"slug": app.slug, "version": version.version, "from": old.version}
 
 
 def viewer_of(db: Session, user, app) -> dict:

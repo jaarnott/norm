@@ -871,7 +871,11 @@ draft only; it does NOT save to Loaded. Tell the user the change is on the card
 and they can press Save.
 """
 
-        elif isinstance(document, dict) and document.get("kind") == "app":
+        elif (
+            isinstance(document, dict)
+            and document.get("kind") == "app"
+            and not str(page_context.get("page_id") or "").startswith("dashboard-")
+        ):
             system_prompt += f"""
 
 ## Open App (act on THIS one)
@@ -1066,6 +1070,50 @@ ignore a playbook that turns out not to fit.
     return menu, read_tool
 
 
+def _dashboard_page_on_screen(db: Session, user, agent_slug: str) -> str | None:
+    """The dashboard (a page of code) this Dashboard page shows, or None while
+    the page still shows the old tiles."""
+    from app.db.engine import _ConfigSessionLocal
+    from app.services import dashboards
+
+    cdb = _ConfigSessionLocal()
+    try:
+        if not dashboards.has_any(db, cdb, user, agent_slug):
+            return None
+        one = dashboards.shown(db, cdb, user, agent_slug)
+    finally:
+        cdb.close()
+    if one is None:
+        return """
+## Dashboard on screen
+The page is asking the person to choose a dashboard. Offer what `get_dashboards` lists; using one needs no copy.
+"""
+    if one["source"] == "mine":
+        how = (
+            f"It's theirs: change it with `save_app` (kind 'dashboard', slug "
+            f"'{one['slug']}'), reading it with `get_app` first and sending "
+            "`edits` for small changes."
+        )
+    elif one["source"] == "shared":
+        how = (
+            f"It's {one['owner']}'s, shared with the organisation: the person uses "
+            "it as it is and can't change it. If they ask to change it, ask "
+            f"whether they'd like their own copy (`manage_dashboard` op 'copy', "
+            f"ref '{one['ref']}') — never change it before they say yes."
+        )
+    else:
+        how = (
+            "It's one of Norm's templates, used as it is: nobody changes it. If "
+            "they ask to change it, ask whether they'd like their own copy "
+            f"(`manage_dashboard` op 'copy', ref '{one['ref']}') — never change "
+            "anything before they say yes."
+        )
+    return f"""
+## Dashboard on screen
+The page shows the dashboard **{one["name"]}** (ref `{one["ref"]}`, version {one["version"]}). "This dashboard" means this one, never Loaded's. {how}
+"""
+
+
 def _dashboard_on_screen(db: Session, user_id: str | None, agent_slug: str) -> str:
     """Which Norm dashboard the person is looking at, so "add a chart here" and
     "this dashboard" mean THIS one. Rich's "this dashboard" was once read as
@@ -1076,6 +1124,13 @@ def _dashboard_on_screen(db: Session, user_id: str | None, agent_slug: str) -> s
     user = db.query(User).filter(User.id == user_id).first() if user_id else None
     if user is None:
         return ""
+    try:
+        page = _dashboard_page_on_screen(db, user, agent_slug)
+    except Exception:  # the prompt must never fail on this
+        logger.warning("dashboard on screen: page lookup failed", exc_info=True)
+        page = None
+    if page is not None:
+        return page
     try:
         report = _dashboard_in_use(db, user, agent_slug)
     except Exception:  # the prompt must never fail on this

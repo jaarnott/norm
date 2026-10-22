@@ -60,6 +60,7 @@ from app.routers import (
     recipe_editor,
     uploads,
     apps as apps_router,
+    dashboards as dashboards_router,
 )
 
 # The insight run's rewording is a real model call; a test that wants it
@@ -131,6 +132,7 @@ _test_app.include_router(invoice_activity.router, prefix="/api")
 _test_app.include_router(recipe_editor.router, prefix="/api")
 _test_app.include_router(uploads.router, prefix="/api")
 _test_app.include_router(apps_router.router, prefix="/api")
+_test_app.include_router(dashboards_router.router, prefix="/api")
 _test_app.include_router(marketplace.router, prefix="/api")
 
 from app.routers import internal as _internal  # noqa: E402

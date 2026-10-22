@@ -3810,6 +3810,18 @@ def _save_app(params: dict, db: Session, thread_id: str | None) -> dict:
                 "data": None,
                 "error": "spec must be a JSON object with actions/writes/scopes/params",
             }
+    for key in ("edits", "logic_edits"):
+        if isinstance(params.get(key), str):
+            try:
+                params[key] = _json.loads(params[key])
+            except ValueError:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": f"{key} must be a JSON list of {{find, replace}}",
+                }
+    if isinstance(params.get("change_kind"), str):
+        params["change_kind"] = params["change_kind"].strip().lower() == "true"
 
     # The same permission the web endpoint requires — a role that cannot build
     # apps cannot build them by asking the agent instead.
@@ -3842,8 +3854,39 @@ def _save_app(params: dict, db: Session, thread_id: str | None) -> dict:
         out = save_app(db, user, dict(params or {}))
     except HTTPException as exc:
         return {"success": False, "data": None, "error": str(exc.detail)}
-    out["open_url"] = f"/apps/{out['slug']}"
+    if out.get("kind") == "dashboard":
+        # A dashboard lives on its AI agent's Dashboard page. One Norm has
+        # just made (or turned into a dashboard) is what the person asked
+        # for, so it's what that page shows them now.
+        if out["version"] == 1 or params.get("change_kind"):
+            from app.services import dashboards
+
+            org = active_org.org_id_for(db, user.id)
+            dashboards._choose(db, user, org, out["agent"], f"app:{out['slug']}")
+            db.commit()
+        out["open_url"] = f"/app?page=dashboard-{out['agent']}"
+        out["where"] = (
+            f"on the {_agent_label(out['agent'])} Dashboard page (it's the one "
+            "that page shows them now)"
+        )
+    else:
+        out["open_url"] = f"/apps/{out['slug']}"
+        out["where"] = f"in the {_agent_label(out['agent'])} menu"
     return {"success": True, "data": out}
+
+
+def _agent_label(agent: str | None) -> str:
+    labels = {
+        "reports": "Reports",
+        "procurement": "Procurement",
+        "hr": "HR",
+        "time_attendance": "Time & Attendance",
+        "executive_chef": "Executive Chef",
+        "finance": "Finance",
+        "marketing": "Marketing",
+        "functions": "Functions",
+    }
+    return labels.get(agent or "") or str(agent or "its").replace("_", " ").title()
 
 
 @register("norm", "get_app")
@@ -3858,6 +3901,47 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
     if not slug:
         return {"success": False, "data": None, "error": "a slug is required"}
 
+    from app.services import page_templates
+    from app.services.app_runtime import not_yours, owner_name
+
+    if page_templates.is_template_slug(slug):
+        # One of Norm's templates: readable (to build the person's own copy
+        # from), never changeable.
+        from app.db.engine import _ConfigSessionLocal
+
+        cdb = _ConfigSessionLocal()
+        try:
+            t = page_templates.get(cdb, slug)
+            if t is None:
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": f"no template '{slug}'",
+                }
+            return {
+                "success": True,
+                "data": {
+                    "slug": f"{page_templates.PREFIX}{t.slug}",
+                    "name": t.name,
+                    "kind": "dashboard",
+                    "agent": t.agent_slug,
+                    "owner": "Norm",
+                    "can_change": False,
+                    "why_not": (
+                        f"'{t.name}' is one of Norm's templates: nobody changes it. "
+                        "The person can use it as it is, or make their own copy and "
+                        "change that. Ask whether they'd like a copy (manage_dashboard "
+                        "op 'copy'); don't change anything until they say yes."
+                    ),
+                    "version": t.version,
+                    "spec": t.spec or {},
+                    "ui_source": t.ui_source,
+                    "logic_source": t.logic_source,
+                },
+            }
+        finally:
+            cdb.close()
+
     membership = active_org.membership_for(db, user.id)
     app = (
         db.query(App)
@@ -3867,7 +3951,8 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
         )
         .first()
     )
-    if not app or not resolve_access(db, app, user).can_run:
+    access = resolve_access(db, app, user) if app else None
+    if not app or not access.can_run:
         return {"success": False, "data": None, "error": f"no app '{slug}'"}
     version = (
         db.query(AppVersion).filter(AppVersion.id == app.current_version_id).first()
@@ -3877,11 +3962,24 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
         .order_by(AppVersion.version.desc())
         .first()
     )
+    can_change = access.role in ("owner", "edit")
+    why_not = None
+    if not can_change:
+        why_not = (
+            not_yours(db, app)
+            if app.kind == "dashboard"
+            else f"'{app.name}' is shared with the person to use, not to change."
+        )
     return {
         "success": True,
         "data": {
             "slug": app.slug,
             "name": app.name,
+            "kind": app.kind,
+            "agent": app.agent,
+            "owner": "the person" if app.created_by == user.id else owner_name(db, app),
+            "can_change": can_change,
+            "why_not": why_not,
             "description": app.description,
             "icon": app.icon,
             "purpose": app.purpose,
@@ -3895,7 +3993,11 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
             "last_change": version.changelog if version else None,
             # Asked for "the link", Norm said the app's details had none (Rich,
             # 21 Oct 2026); save_app returns it, so reading does too.
-            "open_url": f"/apps/{app.slug}",
+            "open_url": (
+                f"/app?page=dashboard-{app.agent}"
+                if app.kind == "dashboard"
+                else f"/apps/{app.slug}"
+            ),
         },
     }
 

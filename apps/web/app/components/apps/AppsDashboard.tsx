@@ -51,6 +51,8 @@ interface AppRow {
   access: string;
   pinned: boolean;
   agent: string;
+  /** a dashboard lives on its AI agent's Dashboard page, never in a menu */
+  kind?: 'app' | 'dashboard';
 }
 
 interface CatalogComponent {
@@ -416,6 +418,7 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
                     <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
                       {a.builtin ? 'Built into Norm' : a.mine ? 'Yours' : `Shared · ${a.access}`}
                       {!a.builtin && a.visibility !== 'private' && ` · ${a.visibility}`}
+                      {a.kind === 'dashboard' && ` · Dashboard on ${agentLabel(a.agent)}`}
                     </span>
                     {sub && (
                       <Badge tone={sub.status === 'pending' ? 'warn' : 'ok'}>
@@ -426,19 +429,19 @@ export default function AppsDashboard({ props }: DisplayBlockProps) {
                   {a.description && <div style={DESCRIPTION}>{a.description}</div>}
                 </div>
                 <div style={ACTIONS}>
-                  {!sub && !a.builtin && (
+                  {!sub && !a.builtin && a.kind !== 'dashboard' && (
                     <Button size="sm" variant="quiet" title="Publish this app to the marketplace (owners only)"
                       onClick={() => { void submitApp(a); }} disabled={busy === a.slug}>
                       Publish
                     </Button>
                   )}
-                  <label title={`Show this app as a page link under ${agentLabel(a.agent)} (only for you)`}
+                  {a.kind !== 'dashboard' && <label title={`Show this app as a page link under ${agentLabel(a.agent)} (only for you)`}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', whiteSpace: 'nowrap', cursor: 'pointer' }}>
                     <input type="checkbox" checked={a.pinned} disabled={busy === a.slug}
                       onChange={() => { void togglePin(a); }}
                       style={{ width: 16, height: 16, margin: 0, accentColor: 'var(--accent)', cursor: 'pointer' }} />
                     Show in {agentLabel(a.agent)}
-                  </label>
+                  </label>}
                   <Button size="sm" variant="secondary" onClick={() => setOpenSlug(a.slug)}>
                     Open
                   </Button>
