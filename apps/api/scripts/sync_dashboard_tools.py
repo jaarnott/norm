@@ -334,9 +334,15 @@ def also(db, dry_run: bool) -> list[str]:
             lines.append(f"{CONNECTOR}.{row['action']}: add tool row")
             tools.append(row)
             changed = True
-        elif live != row:
+        elif {k: v for k, v in live.items() if k != "added_at"} != row:
+            # Replaced whole (the tile fields are gone); the config layer's
+            # own added_at stamp stays.
             lines.append(f"{CONNECTOR}.{row['action']}: replace tool row")
-            tools = [row if t.get("action") == row["action"] else t for t in tools]
+            new = {
+                **row,
+                **({"added_at": live["added_at"]} if "added_at" in live else {}),
+            }
+            tools = [new if t.get("action") == row["action"] else t for t in tools]
             changed = True
     if changed and not dry_run:
         spec.tools = tools
