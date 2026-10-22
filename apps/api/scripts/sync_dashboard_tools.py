@@ -214,7 +214,7 @@ A dashboard is a page of figures on an AI agent's Dashboard page: `save_app` wit
 
 ## Controls
 - Period tabs at the top (today, this week, last week, this month, last month), passed to tools in plain English.
-- The venue comes from Norm's venue picker; use it, don't build another.
+- The venue comes from Norm's venue picker; use it, don't build another. To compare venues side by side (sales by venue), call the tool once for each of the person's venues (`ctx.venues`, passing `venue_id`); the picker still decides the venue the rest of the page is about.
 - Keep controls quiet: small, grey, out of the way.
 
 ## Look
