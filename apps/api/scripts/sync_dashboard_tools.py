@@ -219,6 +219,7 @@ A dashboard is a page of figures on an AI agent's Dashboard page: `save_app` wit
 
 ## Look
 - Use Norm's own styles (cards, tables, tabs).
+- A `.n-card` has no padding of its own: give each section's heading, figures and notes 16px 20px of room, so nothing touches the card's edge. A table may run edge to edge under its padded heading.
 - Default colours from Norm's palette. If people want to choose, offer a short palette (about 20 colours) and save each person's choice with `norm.mine`, never in storage: one person's colours must never change anyone else's screen.
 
 ## States
