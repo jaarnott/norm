@@ -422,8 +422,11 @@ export interface ReportsThread extends BaseThread {
 export type Thread = ProcurementThread | HrThread | ReportsThread | BaseThread;
 
 export interface AdminThread extends BaseThread {
+  user_id: string | null;
   user_name: string | null;
   user_email: string | null;
+  /** When the thread was last talked in (its start if it has no messages). */
+  last_message_at: string | null;
 }
 
 export interface AgentBinding {

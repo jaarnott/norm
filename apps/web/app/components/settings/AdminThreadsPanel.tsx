@@ -105,22 +105,14 @@ export default function AdminThreadsPanel() {
     return () => clearTimeout(t);
   }, [search]);
 
-  // Collect unique users from thread results for the user filter
+  // Everyone who has a thread, once: the filter offers all of them, not just
+  // the people on the page that happens to be loaded.
   useEffect(() => {
-    const seen = new Map<string, UserOption>();
-    for (const t of threads) {
-      if (t.user_email && !seen.has(t.user_email)) {
-        seen.set(t.user_email, { id: (t as unknown as Record<string, string>).user_id || '', email: t.user_email, full_name: t.user_name || '' });
-      }
-    }
-    // Merge with existing to accumulate across pages
-    setUsers(prev => {
-      const map = new Map<string, UserOption>();
-      for (const u of prev) map.set(u.email, u);
-      for (const u of seen.values()) map.set(u.email, u);
-      return Array.from(map.values()).sort((a, b) => a.full_name.localeCompare(b.full_name));
-    });
-  }, [threads]);
+    apiFetch('/api/admin/threads/users')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (data) setUsers(data.users || []); })
+      .catch(() => {});
+  }, []);
 
   // Fetch threads
   useEffect(() => {
@@ -202,7 +194,7 @@ export default function AdminThreadsPanel() {
             <select className="n-select" aria-label="User" value={userFilter} onChange={e => setUserFilter(e.target.value)} style={field}>
               <option value="">All users</option>
               {users.map(u => (
-                <option key={u.email} value={u.id || u.email}>{u.full_name || u.email}</option>
+                <option key={u.id} value={u.id}>{u.full_name || u.email}</option>
               ))}
             </select>
             <select className="n-select" aria-label="Domain" value={domainFilter} onChange={e => setDomainFilter(e.target.value)} style={field}>
@@ -231,6 +223,8 @@ export default function AdminThreadsPanel() {
           )}
           {threads.map(t => {
             const isSelected = t.id === selectedThreadId;
+            // When it was last talked in (the list's order), not when it started.
+            const lastAt = t.last_message_at || t.created_at;
             return (
               <div
                 key={t.id}
@@ -260,8 +254,11 @@ export default function AdminThreadsPanel() {
                   }}>
                     {t.title || t.message?.slice(0, 80) || 'Untitled'}
                   </span>
-                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
-                    {t.created_at ? timeAgo(t.created_at) : ''}
+                  <span
+                    title={lastAt ? `Last message ${new Date(lastAt).toLocaleString()}` : undefined}
+                    style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                  >
+                    {lastAt ? timeAgo(lastAt) : ''}
                   </span>
                 </div>
                 {/* Thread id (for debugging reference) */}

@@ -15,6 +15,7 @@ from app.db.models import (
     AutomatedTaskRun,
     Deployment,
     E2ETestRun,
+    Message,
     SystemSecret,
     Thread,
     User,
@@ -683,6 +684,36 @@ def test_run_webhook(
 # ── Admin Thread Viewer ────────────────────────────────────────────
 
 
+def _not_automated():
+    """Threads a person had with Norm, not automated task runs."""
+    from sqlalchemy import or_
+
+    return or_(Thread.intent.is_(None), ~Thread.intent.like("%.automated_task"))
+
+
+def _admin_threads_query(db: Session):
+    """Threads people had with Norm (not automated task runs), each with the
+    time of its last message: a thread's date is when it was last talked in,
+    not when it started. A thread with no messages yet counts from its start."""
+    from sqlalchemy import func
+
+    last = (
+        db.query(
+            Message.thread_id.label("thread_id"),
+            func.max(Message.created_at).label("at"),
+        )
+        .group_by(Message.thread_id)
+        .subquery()
+    )
+    last_message_at = func.coalesce(last.c.at, Thread.created_at)
+    query = (
+        db.query(Thread, last_message_at.label("last_message_at"))
+        .outerjoin(last, last.c.thread_id == Thread.id)
+        .filter(_not_automated())
+    )
+    return query, last_message_at
+
+
 @router.get("/admin/threads")
 def list_all_threads(
     page: int = 1,
@@ -696,14 +727,14 @@ def list_all_threads(
     user: User = Depends(require_permission("admin:system")),
     db: Session = Depends(get_db),
 ):
-    """List all threads across all users with pagination and filters."""
+    """List all threads across all users with pagination and filters, most
+    recently talked-in first. The dates filter on the last message too, so
+    every thread listed shows a date inside the range asked for."""
     from sqlalchemy import or_
 
     from app.routers.threads import _thread_summary
 
-    query = db.query(Thread).filter(
-        or_(Thread.intent.is_(None), ~Thread.intent.like("%.automated_task")),
-    )
+    query, last_message_at = _admin_threads_query(db)
 
     if user_id:
         query = query.filter(Thread.user_id == user_id)
@@ -712,9 +743,9 @@ def list_all_threads(
     if status:
         query = query.filter(Thread.status == status)
     if date_from:
-        query = query.filter(Thread.created_at >= date_from)
+        query = query.filter(last_message_at >= date_from)
     if date_to:
-        query = query.filter(Thread.created_at <= date_to + "T23:59:59")
+        query = query.filter(last_message_at <= date_to + "T23:59:59")
     if search:
         query = query.filter(
             or_(
@@ -724,29 +755,52 @@ def list_all_threads(
         )
 
     total = query.count()
-    threads = (
-        query.order_by(Thread.created_at.desc())
+    rows = (
+        query.order_by(last_message_at.desc(), Thread.id)
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
 
     # Batch-resolve user info
-    thread_user_ids = {t.user_id for t in threads if t.user_id}
+    thread_user_ids = {t.user_id for t, _ in rows if t.user_id}
     users_map: dict[str, User] = {}
     if thread_user_ids:
         for u in db.query(User).filter(User.id.in_(thread_user_ids)).all():
             users_map[u.id] = u
 
     result = []
-    for t in threads:
+    for t, last_at in rows:
         summary = _thread_summary(t, db)
         u = users_map.get(t.user_id) if t.user_id else None
+        summary["user_id"] = t.user_id
         summary["user_name"] = u.full_name if u else None
         summary["user_email"] = u.email if u else None
+        summary["last_message_at"] = last_at.isoformat() if last_at else None
         result.append(summary)
 
     return {"threads": result, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/admin/threads/users")
+def list_thread_users(
+    user: User = Depends(require_permission("admin:system")),
+    db: Session = Depends(get_db),
+):
+    """Everyone who has a thread, for the viewer's person filter — all of them,
+    not just the people on the page of threads that happens to be loaded."""
+    has_thread = (
+        db.query(Thread.user_id)
+        .filter(Thread.user_id.isnot(None), _not_automated())
+        .distinct()
+    )
+    people = db.query(User).filter(User.id.in_(has_thread)).all()
+    people.sort(key=lambda u: ((u.full_name or u.email or "").lower(), u.email or ""))
+    return {
+        "users": [
+            {"id": u.id, "email": u.email, "full_name": u.full_name} for u in people
+        ]
+    }
 
 
 @router.get("/admin/threads/{thread_id}")

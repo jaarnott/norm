@@ -156,3 +156,84 @@ class TestListEnvironments:
         assert staging["latest_deploy"] is not None
         assert staging["latest_deploy"]["image_tag"] == "v3.0.0"
         assert staging["latest_deploy"]["status"] == "success"
+
+
+class TestAdminThreadViewer:
+    """GET /api/admin/threads and /api/admin/threads/users"""
+
+    def _world(self, db_session):
+        from datetime import datetime, timezone
+
+        from app.db.models import Message, Thread
+        from tests.conftest import _make_user
+
+        def at(day, hour=9):
+            return datetime(2026, 10, day, hour, tzinfo=timezone.utc)
+
+        ann = _make_user(db_session, full_name="Ann")
+        bob = _make_user(db_session, full_name="Bob")
+        robot = _make_user(db_session, full_name="Only automated runs")
+        # Ann's thread started first but was talked in last.
+        old = Thread(user_id=ann.id, title="old start", created_at=at(1))
+        new = Thread(user_id=bob.id, title="new start", created_at=at(5))
+        empty = Thread(user_id=bob.id, title="no messages", created_at=at(3))
+        run = Thread(user_id=robot.id, intent="x.automated_task", created_at=at(9))
+        db_session.add_all([old, new, empty, run])
+        db_session.flush()
+        db_session.add_all(
+            [
+                Message(thread_id=old.id, role="user", content="hi", created_at=at(2)),
+                Message(
+                    thread_id=old.id, role="user", content="again", created_at=at(8)
+                ),
+                Message(thread_id=new.id, role="user", content="hi", created_at=at(6)),
+            ]
+        )
+        db_session.flush()
+        return ann, bob
+
+    def test_newest_message_first_and_dated_by_it(
+        self, client, admin_headers, db_session
+    ):
+        self._world(db_session)
+        rows = client.get("/api/admin/threads", headers=admin_headers).json()["threads"]
+        assert [r["title"] for r in rows] == ["old start", "new start", "no messages"]
+        assert rows[0]["last_message_at"].startswith("2026-10-08")
+        # A thread with no messages yet is dated by its start.
+        assert rows[2]["last_message_at"].startswith("2026-10-03")
+
+    def test_person_filter_uses_the_id_the_list_offers(
+        self, client, admin_headers, db_session
+    ):
+        """The filter sent the person's email as their id and matched nothing
+        (Oct 2026): the list carried no user_id."""
+        ann, bob = self._world(db_session)
+        people = client.get("/api/admin/threads/users", headers=admin_headers).json()[
+            "users"
+        ]
+        assert [p["full_name"] for p in people] == [
+            "Ann",
+            "Bob",
+        ]  # not the automated-only one
+        rows = client.get(
+            "/api/admin/threads",
+            params={"user_id": people[1]["id"]},
+            headers=admin_headers,
+        ).json()
+        assert rows["total"] == 2
+        assert {r["user_id"] for r in rows["threads"]} == {bob.id}
+
+    def test_dates_filter_on_the_last_message(self, client, admin_headers, db_session):
+        self._world(db_session)
+        rows = client.get(
+            "/api/admin/threads",
+            params={"date_from": "2026-10-07", "date_to": "2026-10-08"},
+            headers=admin_headers,
+        ).json()["threads"]
+        assert [r["title"] for r in rows] == ["old start"]
+
+    def test_people_list_is_admin_only(self, client, manager_headers):
+        assert (
+            client.get("/api/admin/threads/users", headers=manager_headers).status_code
+            == 403
+        )
