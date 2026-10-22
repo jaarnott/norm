@@ -126,7 +126,11 @@ const HOST_RUNTIME = `
       return new Promise(function (resolve, reject) {
         var id = 'c' + (++seq);
         pending[id] = { resolve: resolve, reject: reject };
-        parent.postMessage({ type: 'norm:call', id: id, connector: connector, action: action, params: params || {} }, '*');
+        var p = params || {};
+        // params.venue_id asks for another venue (a by-venue comparison);
+        // the server still checks the viewer may see it. It used to be
+        // dropped, so every venue's bar showed the picked venue (22 Oct 2026).
+        parent.postMessage({ type: 'norm:call', id: id, connector: connector, action: action, params: p, venueId: p.venue_id || null }, '*');
       });
     },
     run: function (params) {
