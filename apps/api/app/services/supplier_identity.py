@@ -69,48 +69,112 @@ def is_placeholder_supplier_name(name: object) -> bool:
 
 def words(text: object) -> set[str]:
     """Identity-bearing words: lowercase tokens, legal suffixes dropped."""
-    out: set[str] = set()
-    token = ""
-    for ch in str(text or "").lower():
-        if ch.isalnum():
-            token += ch
-        else:
-            if token and token not in _NOISE:
-                out.add(token)
-            token = ""
-    if token and token not in _NOISE:
-        out.add(token)
-    return out
+    return set(_tokens(text))
+
+
+def _tokens(text: object) -> list[str]:
+    """The name's words in order: lowercase alphanumeric runs, legal suffixes
+    dropped."""
+    spaced = "".join(c if c.isalnum() else " " for c in str(text or "").lower())
+    return [t for t in spaced.split() if t not in _NOISE]
+
+
+def has_identity(name: object) -> bool:
+    """Whether a name says WHO a business is: it needs a word of three or more
+    letters that is not a legal suffix.
+
+    Loaded's document scanning sometimes reads only a fragment of a supplier's
+    name, and Norm named layouts after the fragments: "PTY LTD", "LTD", "PTY."
+    and "&" (16–17 Oct 2026), and "AF", the first line of a name printed over
+    two (20 Oct). A name like that fits every supplier that shares the suffix:
+    14 Foodlink, Select Fresh and Brighton invoices were received under Reward
+    Supply Co. Pty Ltd because a layout called "PTY LTD" said so (21 Oct). So
+    no such name may name a layout, be an alias, or match anything."""
+    return any(len(t) >= 3 for t in _tokens(name))
+
+
+def identity_name(text: object) -> str | None:
+    """The name to file a business under: the first line of ``text`` that has
+    an identity, or None when no line has one. "AF" above "Fistonich Family
+    VINEYARDS" is Fistonich Family VINEYARDS."""
+    for line in str(text or "").splitlines():
+        if has_identity(line):
+            return line.strip()
+    return None
+
+
+def same_name(a: object, b: object) -> bool:
+    """Whether two names are one name, legal suffixes aside ('SERVICE FOODS
+    LTD' and 'Service Foods')."""
+    if norm(a) == norm(b):
+        return bool(norm(a))
+    pa = "".join(_tokens(a))
+    return bool(pa) and pa == "".join(_tokens(b))
 
 
 def _targets(names) -> list[str]:
-    """The normalised identity hints, ≥3 chars (shorter substring-matches half
-    the supplier list), deduplicated but ORDER PRESERVED — callers rank hints
-    by authority and that ranking has to survive."""
+    """The normalised identity hints, deduplicated but ORDER PRESERVED —
+    callers rank hints by authority and that ranking has to survive. A hint
+    with no identity ('PTY LTD') is dropped: it would match half the supplier
+    list."""
     out: list[str] = []
     for x in names:
-        if is_placeholder_supplier_name(x):
+        if is_placeholder_supplier_name(x) or not has_identity(x):
             continue  # "[Unnamed Supplier]" is a shrug, not a hint
         n = norm(x)
-        if len(n) >= 3 and n not in out:
+        if n not in out:
             out.append(n)
     return out
 
 
-def _rank(candidate: str, targets: set[str]) -> tuple[int, int] | None:
+def _distinctive(tokens: list[str]) -> bool:
+    """Whether a name may match by being INSIDE another one. A single word
+    that only says what is sold ('FRESH') is inside Select Fresh, Bidfresh
+    and Fresh Connection alike, so it may only match a name equal to it."""
+    return len(tokens) > 1 or _stem(tokens[0]) not in {_stem(w) for w in _TRADE_WORDS}
+
+
+def _inside(tokens: list[str], hint: list[str]) -> bool:
+    """Whether a name's words are all in the hint, word by word ('Select
+    Fresh' is inside 'Select Fresh Providores Pty Ltd'; 'Lion' is not inside
+    'Lionel's Bakery'). Spacing may differ: 'FreshConnection' is inside 'Fresh
+    Connection Ltd', 'Kiwi Fish' inside 'KIWIFISH INTERNATIONAL'."""
+    if not tokens or not hint:
+        return False
+    stems = {_stem(t) for t in hint}
+    if all(_stem(t) in stems for t in tokens):
+        return True
+    joined = "".join(tokens)
+    for i in range(len(hint)):
+        run = ""
+        for t in hint[i:]:
+            run += t
+            if run == joined:
+                return True
+            if len(run) >= len(joined):
+                break
+    return False
+
+
+def _rank(candidate: str, hints: list[tuple]) -> tuple[int, int] | None:
     """How well one candidate name matches, lower = better.
 
-    (0, …) equality · (1, …) the candidate is contained in an identity hint.
-    Ties break on LENGTH: the most specific match wins, which is what stops a
-    short generic alias beating a full exact name.
+    (0, …) the same name · (1, …) the same name once legal suffixes are
+    dropped ('SERVICE FOODS LTD' is 'Service Foods') · (2, …) the candidate's
+    words are inside an identity hint. Ties break on LENGTH: the most specific
+    match wins, which is what stops a short generic alias beating a full exact
+    name. A name with no identity never matches.
     """
-    c = norm(candidate)
-    if len(c) < 3:
+    if not has_identity(candidate):
         return None
-    if c in targets:
-        return (0, -len(c))
-    if any(c in t for t in targets):
-        return (1, -len(c))
+    c, tokens = norm(candidate), _tokens(candidate)
+    phrase = "".join(tokens)
+    if any(c == h for h, _p, _t in hints):
+        return (0, -len(phrase))
+    if any(phrase == p for _h, p, _t in hints):
+        return (1, -len(phrase))
+    if _distinctive(tokens) and any(_inside(tokens, t) for _h, _p, t in hints):
+        return (2, -len(phrase))
     return None
 
 
@@ -123,8 +187,16 @@ def match_spec(specs, names, *, main_prompt_name: str):
     alphabetically-first match, which is how 'Eurovintage' silently claimed
     Service Foods invoices. No spec means the generic prompt plus a sensei
     pass, which is self-correcting; a confidently wrong spec is not.
+
+    ``how`` is "name" or "alias" when the hint IS that name (legal suffixes
+    aside), "contains" when the name was only found inside it. Only the
+    first two may say which business an invoice is from.
     """
-    targets = _targets(names)
+    targets = [
+        (norm(x), "".join(_tokens(x)), _tokens(x))
+        for x in names
+        if not is_placeholder_supplier_name(x) and has_identity(x)
+    ]
     if not targets:
         return None, None
     ranked: list[tuple[tuple[int, int, int], object]] = []
@@ -149,7 +221,7 @@ def match_spec(specs, names, *, main_prompt_name: str):
     for score, sp in ranked[1:]:
         if score == top_score and str(sp.id) != str(top_spec.id):
             return None, "ambiguous"
-    how = ("name", "alias")[top_score[1]] if top_score[0] == 0 else "contains"
+    how = ("name", "alias")[top_score[1]] if top_score[0] < 2 else "contains"
     return top_spec, how
 
 
@@ -407,7 +479,10 @@ def resolve_supplier(names, suppliers, aliases_by_id=None):
     live = live_suppliers(suppliers)
 
     def known(s: dict) -> list[str]:
-        return [s.get("name")] + list(aliases_by_id.get(str(s.get("id")), []))
+        # A record name or Loaded alias with no identity ('Ltd', which Loaded's
+        # scanning left on several records) is inside every hint sharing it.
+        names = [s.get("name")] + list(aliases_by_id.get(str(s.get("id")), []))
+        return [n for n in names if has_identity(n)]
 
     # Hint by hint, in the caller's order of authority — and ALL tiers run
     # for a hint before the next hint is consulted. Running the exact tier

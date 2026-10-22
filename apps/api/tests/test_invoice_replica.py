@@ -1629,6 +1629,93 @@ class TestTheCopyDecidesTheSupplier:
         assert doc["linked_supplier_id"] == "sup-bidvest"
 
 
+class TestALayoutNamesTheBusinessOnlyWhenItIsTheName:
+    """Grange Gully Bistro, 21 Oct 2026: a Foodlink Australia invoice matched a
+    layout called "PTY LTD", whose name then picked the only 'Pty Ltd' record
+    there — 14 invoices from Foodlink, Select Fresh and Brighton were received
+    under Reward Supply Co., and the card said "the invoice names 'Reward
+    Supply Co. Pty Ltd'"."""
+
+    POOL = [
+        {"id": "sup-reward", "name": "Reward Supply Co. Pty Ltd"},
+        {"id": "sup-tamar", "name": "Tamar Farming Company"},
+        {"id": "sup-bidvest", "name": "Bidvest Food Service"},
+    ]
+
+    def _build(self, db, monkeypatch, printed, layouts):
+        from app.db.config_models import SupplierInvoiceSpec
+
+        for name, aliases in layouts:
+            db.add(SupplierInvoiceSpec(name=name, aliases=aliases, instructions="x"))
+        db.flush()
+        monkeypatch.setattr(
+            "app.services.item_match.suggest_supplier_match", lambda *a, **k: None
+        )
+        return build_replica(
+            None,
+            db,
+            "v-1",
+            dict(EXTRACTION, supplier_name=printed),
+            lh=object(),
+            catalogue=CATALOGUE,
+            units=UNITS,
+            suppliers=self.POOL,
+            tax_rates=TAX,
+            aliases_by_id={},
+            item_matcher=lambda *a, **k: {},
+        )
+
+    @pytest.mark.parametrize(
+        "printed",
+        [
+            "Foodlink Australia Pty Ltd",
+            "Select Fresh Providores Pty Ltd",
+            "Brighton Technologies Group Pty Ltd",
+        ],
+    )
+    def test_the_grange_gully_invoices_are_never_reward(
+        self, db_session, monkeypatch, printed
+    ):
+        # The layout as it stood that day, alias self-healed in and all.
+        doc = self._build(
+            db_session,
+            monkeypatch,
+            printed,
+            [("PTY LTD", ["Foodlink Australia Pty Ltd"])],
+        )
+        assert doc["linked_supplier_id"] is None
+        assert "supplier_unresolved" in {i["code"] for i in doc["issues"]}
+
+    def test_a_layout_found_inside_the_name_lends_it_no_business(
+        self, db_session, monkeypatch
+    ):
+        # A business whose name contains 'Bidfood' may be read with the
+        # Bidfood layout's notes; it is not Bidvest Food Service for that.
+        doc = self._build(
+            db_session,
+            monkeypatch,
+            "Bidfood Express Couriers Ltd",
+            [("Bidfood", ["Bidvest Food Service"])],
+        )
+        assert doc["linked_supplier_id"] is None
+
+    def test_the_name_itself_still_names_the_business_and_says_where_from(
+        self, db_session, monkeypatch
+    ):
+        doc = self._build(
+            db_session,
+            monkeypatch,
+            "Ellesmere Butchery",
+            [("Tamar Farming Company", ["Ellesmere Butchery"])],
+        )
+        assert doc["linked_supplier_id"] == "sup-tamar"
+        assert (
+            "Norm's saved layout for Tamar Farming Company lists"
+            in (doc["supplier_why"])
+        )
+        assert "the invoice names" not in doc["supplier_why"]
+
+
 class TestSupplierPlaceholder:
     """The 110016259 regression (19 Aug 2026): Loaded's literal
     '[Unnamed Supplier]' record exact-matched the DRAFT's placeholder name

@@ -14,6 +14,8 @@ from app.services.supplier_identity import (
     admissible_aliases,
     alias_candidates,
     alias_conflict,
+    has_identity,
+    identity_name,
     match_spec,
     norm,
     resolve_supplier,
@@ -124,6 +126,98 @@ class TestSpecMatching:
             None,
             None,
         )
+
+
+class TestANameMustNameABusiness:
+    """The rogue layouts (16–21 Oct 2026). Loaded's scan read some suppliers
+    as "PTY LTD", "LTD", "PTY." or "&", and a two-line name as "AF"; each
+    became a layout's name, and "PTY LTD" fitted every 'Pty Ltd' supplier — a
+    Foodlink Australia invoice matched it, and 14 invoices from three
+    businesses were received under Reward Supply Co. Pty Ltd."""
+
+    ROGUES = [spec(n) for n in ("PTY LTD", "LTD", "PTY.", "&", "AF")]
+
+    def test_a_legal_suffix_or_initials_alone_is_no_business(self):
+        for name in ("PTY LTD", "LTD", "PTY.", "&", "AF", "Pty Ltd", "the", ""):
+            assert not has_identity(name), name
+        for name in ("ILT", "Foodlink Australia", "B&E FOODS", "Allie's"):
+            assert has_identity(name), name
+
+    def test_a_two_line_name_is_named_by_its_first_real_line(self):
+        assert identity_name("AF\nFistonich Family VINEYARDS") == (
+            "Fistonich Family VINEYARDS"
+        )
+        assert identity_name("M H Luxe Holdings Pty Ltd\nLuxe Bakery Sydney") == (
+            "M H Luxe Holdings Pty Ltd"
+        )
+        assert identity_name("PTY LTD") is None
+
+    def test_a_rogue_layout_matches_nothing(self):
+        for printed in (
+            "Foodlink Australia Pty Ltd",
+            "Select Fresh Providores Pty Ltd",
+            "Reward Supply Co. Pty Ltd",
+            "Lambert Ltd T/A Sea 2 You",
+            "PTY LTD",
+        ):
+            assert match_spec(self.ROGUES, [printed], main_prompt_name=MAIN) == (
+                None,
+                None,
+            ), printed
+
+    def test_a_name_matches_word_by_word(self):
+        """Squashed letters found 'fresho' inside 'Just Fresh Online Limited'
+        and 'lion' inside 'Lionel'. Spacing still may differ."""
+        fresho, lion, fc = spec("FRESHO"), spec("Lion"), spec("FreshConnection")
+        roster = [fresho, lion, fc]
+        assert match_spec(
+            roster, ["Just Fresh Online Limited"], main_prompt_name=MAIN
+        ) == (
+            None,
+            None,
+        )
+        assert match_spec(roster, ["Lionel's Bakery"], main_prompt_name=MAIN)[0] is None
+        assert match_spec(roster, ["Lion NZ Ltd"], main_prompt_name=MAIN)[0] is lion
+        assert (
+            match_spec(roster, ["Fresh Connection Ltd"], main_prompt_name=MAIN)[0] is fc
+        )
+
+    def test_a_single_trade_word_only_matches_itself(self):
+        """'FRESH' was inside Select Fresh, Bidfresh and Sydney Direct Fresh."""
+        fresh = spec("FRESH")
+        assert match_spec(
+            [fresh], ["Select Fresh Providores"], main_prompt_name=MAIN
+        ) == (
+            None,
+            None,
+        )
+        assert match_spec([fresh], ["Fresh Ltd"], main_prompt_name=MAIN) == (
+            fresh,
+            "name",
+        )
+
+    def test_a_legal_suffix_does_not_stop_a_name_being_the_name(self):
+        """Only a match on the name itself may say which business it is, so
+        'SERVICE FOODS LTD' must count as the name 'Service Foods', and a
+        name found inside a longer one must not."""
+        assert match_spec(
+            [SERVICE_FOODS], ["SERVICE FOODS LTD"], main_prompt_name=MAIN
+        ) == (SERVICE_FOODS, "name")
+        assert match_spec(
+            [SERVICE_FOODS], ["Service Foods Christchurch"], main_prompt_name=MAIN
+        ) == (SERVICE_FOODS, "contains")
+
+    def test_a_record_with_no_business_in_its_name_is_never_resolved(self):
+        """Loaded's scanning left aliases like 'Ltd' on supplier records."""
+        sups = [
+            {"id": "reward", "name": "Reward Supply Co. Pty Ltd"},
+            {"id": "junk", "name": "Ltd"},
+        ]
+        assert resolve_supplier(["PTY LTD"], sups) == (None, None)
+        assert resolve_supplier(["Lambert Ltd T/A Sea 2 You"], sups) == (None, None)
+        assert resolve_supplier(
+            ["Sea 2 You"], [{"id": "s", "name": "Sea 2 You"}], {"s": ["Ltd"]}
+        ) == ({"id": "s", "name": "Sea 2 You"}, "exact")
 
 
 class TestAliasCandidates:

@@ -721,3 +721,31 @@ class TestTeamCatalog:
         ]
         issues = check_priced_rows_have_stripe_keys(rows)
         assert len(issues) == 1 and "bidfood-app" in issues[0].where
+
+
+class TestSupplierLayoutNames:
+    """A layout named "PTY LTD" fitted every 'Pty Ltd' supplier (21 Oct
+    2026); the admin config check now names any such layout or alias."""
+
+    def test_a_layout_or_alias_with_no_business_in_it_is_an_error(self, db_session):
+        from app.db.config_models import SupplierInvoiceSpec
+        from app.services.config_validator import check_supplier_layout_names
+
+        db_session.add_all(
+            [
+                SupplierInvoiceSpec(name="PTY LTD", aliases=[], instructions=""),
+                SupplierInvoiceSpec(
+                    name="Unison Estate", aliases=["Ltd"], instructions=""
+                ),
+                SupplierInvoiceSpec(
+                    name="Foodlink Australia", aliases=[], instructions=""
+                ),
+            ]
+        )
+        db_session.flush()
+        got = check_supplier_layout_names(db_session)
+        assert sorted(i.where for i in got) == [
+            "supplier_layouts.PTY LTD",
+            "supplier_layouts.Unison Estate/Ltd",
+        ]
+        assert {i.severity for i in got} == {"error"}

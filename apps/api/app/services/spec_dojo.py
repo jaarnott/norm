@@ -18,8 +18,16 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.db.config_models import SupplierInvoiceSpec
+from app.services import supplier_catalog
 from app.services.roster_health import regressions, roster_issues
-from app.services.supplier_identity import alias_conflict, norm
+from app.services.supplier_identity import (
+    alias_conflict,
+    has_identity,
+    identity_name,
+    match_spec,
+    norm,
+    same_name,
+)
 from app.services.invoice_extraction import (
     BUILTIN_MAIN_PROMPT,
     MAIN_PROMPT_NAME,
@@ -352,38 +360,49 @@ def find_or_create_spec_for_supplier(
     A name printed over two lines is two names: "M H Luxe Holdings Pty Ltd"
     above "Luxe Bakery Sydney" arrived as one string with a line break, and
     the spec it made matched nothing but that exact text (15 Oct 2026). The
-    first line names the spec, the others are its aliases.
+    first line that names a business names the spec ("AF" above "Fistonich
+    Family VINEYARDS" made a layout called "AF", 20 Oct), the others are its
+    aliases. A name with no business in it at all ("PTY LTD") files nothing.
     """
     lines = [ln.strip() for ln in str(supplier_name or "").splitlines() if ln.strip()]
-    other_lines = lines[1:]
-    if other_lines:
-        supplier_name = lines[0]
-        also_known_as = (*other_lines, *also_known_as)
-    spec = find_spec_for_supplier(config_db, supplier_name, *also_known_as)
+    name = identity_name(supplier_name) or ""
+    other_lines = [ln for ln in lines if ln != name and has_identity(ln)]
+    also_known_as = (*other_lines, *also_known_as)
+    spec, how = match_spec(
+        config_db.query(SupplierInvoiceSpec)
+        .filter(SupplierInvoiceSpec.enabled.is_(True))
+        .all(),
+        [name, *also_known_as],
+        main_prompt_name=MAIN_PROMPT_NAME,
+    )
     if spec:
-        # Self-heal: the invoice arrives under ``supplier_name``, but the spec may
-        # be filed under a CANONICAL name (a rename) and have been matched only
-        # via an alias hint. Record ``supplier_name`` as an alias so a plain
-        # lookup by it — the autostudy gate — finds the spec directly. Without
-        # this the supplier re-trains on EVERY review: the study keeps finding
-        # the spec (via the Loaded aliases) and concluding "no spec needed", so
-        # no rename ever fires to add the alias, while the gate, which has only
+        # Self-heal: the invoice arrives under ``name``, but the spec may be
+        # filed under a CANONICAL name (a rename) and have been matched only
+        # via an alias hint. Record ``name`` as an alias so a plain lookup by
+        # it — the autostudy gate — finds the spec directly. Without this the
+        # supplier re-trains on EVERY review: the study keeps finding the spec
+        # (via the Loaded aliases) and concluding "no spec needed", so no
+        # rename ever fires to add the alias, while the gate, which has only
         # the bare feed name, never sees the renamed spec (ATOMIC, 29 Aug 2026).
-        nm = (supplier_name or "").strip()
+        # Only after an EXACT match: a layout found by containment is a guess,
+        # and recording the guess makes it permanent — "Foodlink Australia Pty
+        # Ltd" became an alias of a layout called "PTY LTD" (21 Oct 2026).
         if (
-            nm
-            and norm(nm) != norm(spec.name)
-            and not any(norm(a) == norm(nm) for a in (spec.aliases or []))
+            how in ("name", "alias")
+            and name
+            and not any(same_name(name, n) for n in [spec.name, *(spec.aliases or [])])
             and not alias_conflict(
-                config_db.query(SupplierInvoiceSpec).all(), nm, spec_id=spec.id
+                config_db.query(SupplierInvoiceSpec).all(), name, spec_id=spec.id
             )
         ):
-            spec.aliases = list(spec.aliases or []) + [nm]
+            spec.aliases = list(spec.aliases or []) + [name]
             config_db.commit()
         return spec, False
-    name = (supplier_name or "").strip()
     if not name:
-        raise RuntimeError("invoice has no supplier name — cannot file a spec")
+        raise RuntimeError(
+            f"the invoice's supplier name {str(supplier_name or '')!r} names no "
+            "business — cannot file a spec"
+        )
     spec = SupplierInvoiceSpec(name=name, aliases=other_lines, instructions="")
     config_db.add(spec)
     config_db.commit()
@@ -513,7 +532,13 @@ def autostudy_if_spec_less(
     """
     try:
         supplier = str((review or {}).get("supplier_name") or "").strip()
-        if not supplier:
+        # The study files the sample under — and so names any new layout
+        # after — the business the copy PRINTS. Loaded's name for the draft is
+        # its own scan of the paper, and named layouts "PTY LTD" and "LTD"
+        # (16–17 Oct 2026). No printed name, no study.
+        header = ((review or {}).get("extracted_snapshot") or {}).get("header") or {}
+        printed = identity_name(header.get("supplier_name"))
+        if not printed:
             return
         from app.services import sensei_runner
 
@@ -524,12 +549,14 @@ def autostudy_if_spec_less(
         # the card queued a study the batch rightly never did (S442860,
         # 20 Oct 2026).
         layout = str(((review or {}).get("process") or {}).get("layout") or "")
-        hints = [layout.strip()] if layout.strip() else []
-        spec = find_spec_for_supplier(config_db, supplier, *hints)
+        hints = [n for n in (supplier, layout.strip()) if n]
+        spec = find_spec_for_supplier(config_db, printed, *hints)
         if spec is not None and (spec.instructions or "").strip():
             return  # a spec with content already exists — nothing to study
 
-        staged = stage_invoice_sample(db, venue_id, invoice_id, draft=False)
+        staged = stage_invoice_sample(
+            db, venue_id, invoice_id, draft=False, supplier_name=printed
+        )
         sensei_runner.enqueue(staged["sample_id"])
         review["sensei_studying"] = True
         logger.info(
@@ -857,7 +884,7 @@ def _clean_rename(config_db: Session, spec, proposed: object) -> str | None:
     offers a rename that Apply would refuse.
     """
     name = str(proposed or "").strip()
-    if not name or spec.name == MAIN_PROMPT_NAME:
+    if not name or spec.name == MAIN_PROMPT_NAME or not has_identity(name):
         return None
     if norm(name) == norm(spec.name):
         return None
@@ -1102,7 +1129,8 @@ def apply_analysis_proposal(
             merged = list(target.aliases or [])
             cand = spec.name
             if (
-                norm(cand) != norm(target.name)
+                has_identity(cand)
+                and norm(cand) != norm(target.name)
                 and all(norm(cand) != norm(a) for a in merged)
                 and not alias_conflict(
                     [
@@ -1117,7 +1145,7 @@ def apply_analysis_proposal(
                 merged.append(cand)
             target.aliases = merged
         rename = str(analysis.get("canonical_name") or "").strip()
-        if rename and host.name != MAIN_PROMPT_NAME:
+        if rename and host.name != MAIN_PROMPT_NAME and has_identity(rename):
             if not alias_conflict(
                 config_db.query(SupplierInvoiceSpec).all(), rename, spec_id=host.id
             ):
@@ -1128,10 +1156,13 @@ def apply_analysis_proposal(
                 # a lookup by 'ATOMIC' could no longer find a spec renamed to the
                 # footer entity 'Atomic Coffee Roasters', so every review of that
                 # supplier re-studied forever (29 Aug 2026).
-                if norm(old_name) != norm(rename) and not any(
-                    norm(a) == norm(old_name) for a in (host.aliases or [])
+                if (
+                    has_identity(old_name)
+                    and norm(old_name) != norm(rename)
+                    and not any(norm(a) == norm(old_name) for a in (host.aliases or []))
                 ):
                     host.aliases = list(host.aliases or []) + [old_name]
+                supplier_catalog.rekey(config_db, old_name, rename)
         if proposed.strip():
             host.instructions = proposed
     if target is not None:
@@ -1144,6 +1175,7 @@ def apply_analysis_proposal(
         # The auto-created row is now redundant — but never delete one that
         # carries its own instructions (an admin wrote those).
         if not (spec.instructions or "").strip():
+            supplier_catalog.rekey(config_db, spec.name, host.name)
             config_db.delete(spec)
     # Baseline the agent's ground truth ONLY when no expected values are
     # stored yet — an admin-corrected baseline outranks the agent's, and the

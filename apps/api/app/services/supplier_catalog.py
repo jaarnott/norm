@@ -355,11 +355,20 @@ def observe_practice_from_doc(config_db: Session, doc: dict) -> None:
     The one hook every receive path calls (autopilot, the card's Receive
     button, the MCP card). Fully best-effort with its OWN commit — a receive
     that Loaded already accepted must never fail on bookkeeping.
+
+    Filed under the layout the copy's PRINTED name selects, as the review
+    files what it reads; the Loaded record's name only when no copy was read.
+    The record's name found a different layout: The Lott Cafe's 'Sydney Direct
+    Fresh' record filed Sydney Direct Fresh Produce's products under a layout
+    called "FRESH" (20 Oct 2026).
     """
     try:
         if not isinstance(doc, dict):
             return
-        key = supplier_key_for(doc.get("supplier_name"), config_db)
+        printed = ((doc.get("extracted_snapshot") or {}).get("header") or {}).get(
+            "supplier_name"
+        )
+        key = supplier_key_for(printed or doc.get("supplier_name"), config_db)
         if not key:
             return
         lines = [
@@ -690,6 +699,33 @@ def lookup(
         )
         .first()
     )
+
+
+def rekey(config_db: Session, old: str | None, new: str | None) -> int:
+    """Move a supplier's products to its layout's new name; returns how many
+    moved. The catalogue is keyed by the layout's NAME, so a rename or merge
+    that leaves them behind orphans them: 'ATOMIC' (4 products) and 'KEMP WINE
+    MERCHANTS LIMITED' (2) sat under names no layout had (22 Oct 2026). A
+    product both names hold keeps the better-ranked row. No commit: the
+    caller's rename and this move land together."""
+    if not old or not new or old == new:
+        return 0
+    moved = 0
+    for row in (
+        config_db.query(SupplierProduct)
+        .filter(SupplierProduct.supplier_key == old)
+        .all()
+    ):
+        twin = lookup(config_db, new, row.code)
+        if twin is not None:
+            if _RANK.get(row.provenance, -1) <= _RANK.get(twin.provenance, -1):
+                config_db.delete(row)
+                continue
+            config_db.delete(twin)
+            config_db.flush()
+        row.supplier_key = new
+        moved += 1
+    return moved
 
 
 def catalog_unit_for_line(

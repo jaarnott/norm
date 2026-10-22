@@ -247,16 +247,12 @@ def copy_headers(
         # and the pre-fix answer was served for ever. Composing identically
         # puts both paths on one cache row, as the docstring already promises.
         #
-        # The sensei runs here too, on the same terms receiving uses: a
-        # spec-less supplier is a spec-less supplier, whether the invoice came
-        # from Bidfood or from a sister venue. Every one is studied, once (16 Oct
-        # 2026: the old limit of two per run left suppliers spec-less, and a
-        # supplier with no spec isn't catalogued — its products were asked
-        # about again on every invoice).
-        from app.services.invoice_review import (
-            _maybe_sensei,
-            extraction_instructions,
-        )
+        # No supplier is studied here. This pass knows only Loaded's name for
+        # each draft, Loaded's own scan of the paper, and a study names the
+        # layout it writes: "PTY LTD", "LTD" and "PTY." became layouts this way
+        # (16–17 Oct 2026). The review studies each spec-less supplier by the
+        # name its copy prints, and reads the copy again under what it learnt.
+        from app.services.invoice_review import extraction_instructions
 
         # One instruction set per SUPPLIER, not per invoice: composing it hits
         # the config DB for the spec and Loaded for the aliases, and a run is
@@ -266,16 +262,9 @@ def copy_headers(
         requests = []
         for inv in pending:
             ctx = aliases_for(inv)
-            name = str(inv.get("supplierName") or "")
             key = ctx["key"]
             if key not in by_supplier:
                 detail, aliases = ctx["detail"], ctx["aliases"]
-                # BEFORE the instructions are composed — a spec trained now has
-                # to be in this pass's cache key, not the next one's.
-                if name and inv.get("fileId"):
-                    _maybe_sensei(
-                        db, config_db, venue_id, str(inv.get("id")), name, *aliases
-                    )
                 by_supplier[key] = extraction_instructions(
                     config_db, lh, detail, aliases
                 )

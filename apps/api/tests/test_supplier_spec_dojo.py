@@ -851,7 +851,7 @@ class TestAnalyseSample:
         # re-training on every review (the ATOMIC self-heal, 29 Aug 2026).
         spec = SupplierInvoiceSpec(
             name="Atomic Coffee Roasters",
-            aliases=["ATOMIC LTD"],
+            aliases=["ATOMIC COFFEE"],
             instructions="rules",
             enabled=True,
         )
@@ -860,7 +860,7 @@ class TestAnalyseSample:
         found, created = spec_dojo.find_or_create_spec_for_supplier(
             db_session,
             "ATOMIC",
-            "ATOMIC LTD",  # matched via the Loaded alias hint
+            "ATOMIC COFFEE",  # matched via the Loaded alias hint
         )
         assert created is False and found.id == spec.id
         db_session.refresh(spec)
@@ -868,6 +868,20 @@ class TestAnalyseSample:
         from app.services.invoice_extraction import find_spec_for_supplier
 
         assert find_spec_for_supplier(db_session, "ATOMIC").id == spec.id
+
+    def test_a_layout_found_inside_the_name_gains_no_alias(self, db_session):
+        # Only an exact match may grow a layout's names. A layout called
+        # "PTY LTD" was found inside "Foodlink Australia Pty Ltd", gained it as
+        # an alias, and so grew into a second business's layout (21 Oct 2026).
+        spec = SupplierInvoiceSpec(name="Select Fresh", aliases=[], instructions="x")
+        db_session.add(spec)
+        db_session.flush()
+        found, created = spec_dojo.find_or_create_spec_for_supplier(
+            db_session, "Select Fresh Providores Pty Ltd"
+        )
+        assert created is False and found.id == spec.id
+        db_session.refresh(spec)
+        assert spec.aliases == []
 
     def test_green_analysis_keeps_admin_expected(self, db_session, monkeypatch):
         # An admin-entered baseline is never clobbered by the agent's ground
@@ -1990,12 +2004,14 @@ class TestAutostudyTrigger:
         return spec
 
     def _record(self, monkeypatch):
-        calls = {"staged": [], "enqueued": []}
+        calls = {"staged": [], "enqueued": [], "named": []}
         monkeypatch.setattr(
             spec_dojo,
             "stage_invoice_sample",
             lambda db, vid, iid, **k: (
-                calls["staged"].append((vid, iid)) or {"sample_id": f"sample-{iid}"}
+                calls["staged"].append((vid, iid))
+                or calls["named"].append(k.get("supplier_name"))
+                or {"sample_id": f"sample-{iid}"}
             ),
         )
         from app.services import sensei_runner
@@ -2007,17 +2023,28 @@ class TestAutostudyTrigger:
         )
         return calls
 
+    @staticmethod
+    def _review(loaded, printed=None, **extra):
+        """A card as the screen reviews it: Loaded's supplier, and the copy's
+        reading with the name it prints."""
+        printed = loaded if printed is None else printed
+        return {
+            "supplier_name": loaded,
+            "extracted_snapshot": {"header": {"supplier_name": printed}},
+            **extra,
+        }
+
     def test_a_spec_with_content_is_not_studied(self, db_session, monkeypatch):
         self._spec(db_session, "Acme", instructions="read column 2 as the size")
         calls = self._record(monkeypatch)
-        review = {"supplier_name": "Acme"}
+        review = self._review("Acme")
         spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-1", review)
         assert calls["staged"] == [] and calls["enqueued"] == []
         assert "sensei_studying" not in review
 
     def test_a_spec_less_supplier_starts_a_study(self, db_session, monkeypatch):
         calls = self._record(monkeypatch)
-        review = {"supplier_name": "Newco"}
+        review = self._review("Newco")
         spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-9", review)
         assert calls["staged"] == [("v1", "inv-9")]
         assert calls["enqueued"] == ["sample-inv-9"]
@@ -2026,28 +2053,47 @@ class TestAutostudyTrigger:
         # one) is NOT "done": the gate checks content, not row existence, so a
         # missing/empty spec always studies again.
         self._spec(db_session, "Holder", instructions="")
-        review = {"supplier_name": "Holder"}
+        review = self._review("Holder")
         spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-2", review)
         assert calls["staged"][-1] == ("v1", "inv-2")
         assert review["sensei_studying"] is True
 
+    def test_the_study_is_named_by_the_copy_never_by_loaded(
+        self, db_session, monkeypatch
+    ):
+        """Loaded's name for a draft is its own scan of the paper. Read as
+        "PTY LTD", it named a layout that later picked Reward Supply Co. for
+        14 invoices from other businesses (16–21 Oct 2026). The sample — and
+        any layout it founds — takes the name the copy prints."""
+        calls = self._record(monkeypatch)
+        review = self._review("PTY LTD", "PNM SYDNEY PTY LTD")
+        spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-5", review)
+        assert calls["named"] == ["PNM SYDNEY PTY LTD"]
+        # A copy that prints no business is not studied at all.
+        for printed in ("PTY LTD", "", None):
+            review = self._review("PTY LTD", printed or "")
+            if printed is None:
+                review.pop("extracted_snapshot")
+            spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-6", review)
+            assert "sensei_studying" not in review
+        assert calls["named"] == ["PNM SYDNEY PTY LTD"]
+
     def test_the_layout_that_read_the_copy_counts(self, db_session, monkeypatch):
-        # Filed under its canonical name, the spec read this copy: Loaded's
-        # shorter name finding nothing is no reason to study (S442860).
+        # Filed under its canonical name, the spec read this copy: the names
+        # on the card finding nothing is no reason to study (S442860).
         self._spec(
             db_session,
             "Single Origin Wholesale Pty Ltd",
             instructions="the Options column holds the pack weight",
         )
         calls = self._record(monkeypatch)
-        review = {
-            "supplier_name": "Single O",
-            "process": {"layout": "Single Origin Wholesale Pty Ltd"},
-        }
+        review = self._review(
+            "Single O", process={"layout": "Single Origin Wholesale Pty Ltd"}
+        )
         spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-3", review)
         assert calls["staged"] == [] and "sensei_studying" not in review
         # Read with no layout, the same supplier is studied.
-        review = {"supplier_name": "Single O", "process": {"layout": None}}
+        review = self._review("Single O", process={"layout": None})
         spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-4", review)
         assert calls["staged"] == [("v1", "inv-4")]
 
@@ -2062,6 +2108,6 @@ class TestAutostudyTrigger:
             raise RuntimeError("no invoice copy attached — nothing to add")
 
         monkeypatch.setattr(spec_dojo, "stage_invoice_sample", boom)
-        review = {"supplier_name": "Errco"}
+        review = self._review("Errco")
         spec_dojo.autostudy_if_spec_less(None, db_session, "v1", "inv-1", review)
         assert "sensei_studying" not in review

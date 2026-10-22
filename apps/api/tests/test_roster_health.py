@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from app.services.roster_health import (
     check_alias_collisions,
     check_misfiled_samples,
+    check_names_without_identity,
     check_near_duplicates,
     check_untested_specs,
     regressions,
@@ -147,6 +148,31 @@ class TestUntestedSpecs:
     def test_a_covered_spec_is_silent(self):
         s = sample("Service Foods", "a.pdf", "SERVICE FOODS LTD")
         assert check_untested_specs([SF], [s], main_prompt_name=MAIN) == []
+
+
+class TestNamesWithoutIdentity:
+    """The roster as it stood on 21 Oct 2026, rogue rows and all."""
+
+    def test_the_rogue_layouts_are_errors(self):
+        rows = [
+            spec("PTY LTD", ["Foodlink Australia Pty Ltd"]),
+            spec("LTD", ["Jacket Beverage"]),
+            spec("PRIME FRESH", enabled=False),  # disabled still counts
+            spec("&", enabled=False),
+            spec("Unison Estate", ["Ltd"]),
+            spec("ILT"),
+            spec(MAIN),
+        ]
+        got = check_names_without_identity(rows, main_prompt_name=MAIN)
+        assert {(i.where, i.severity) for i in got} == {
+            ("PTY LTD", "error"),
+            ("LTD", "error"),
+            ("&", "error"),
+            ("Unison Estate/Ltd", "error"),
+        }
+        assert {i.kind for i in roster_issues(rows, [], main_prompt_name=MAIN)} >= {
+            "no_identity"
+        }
 
 
 class TestTheGate:

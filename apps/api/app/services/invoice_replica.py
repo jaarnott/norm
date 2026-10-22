@@ -560,21 +560,28 @@ def build_replica(
     supplier, sup_by = resolve_supplier(deciding, suppliers, aliases_by_id)
     # A spec's alias list is a global statement that several names mean ONE
     # business ('Ellesmere Butchery' is Tamar Farming Company): the names
-    # the printed one stands for when it matches no record directly.
+    # the printed one stands for when it matches no record directly. Only a
+    # layout the printed name IS may say so. One merely found inside it says
+    # nothing about the business: "Foodlink Australia Pty Ltd" contained a
+    # layout called "PTY LTD", whose name then picked Reward Supply Co. Pty
+    # Ltd, and 14 invoices were received under Reward (21 Oct 2026).
     spec_names: list = []
+    spec_named = None
+    supplier_why = None
     if supplier is None and supplier_printed:
         try:
             from app.db.config_models import SupplierInvoiceSpec
             from app.services.invoice_extraction import MAIN_PROMPT_NAME
 
-            spec, _how = match_spec(
+            spec, how = match_spec(
                 config_db.query(SupplierInvoiceSpec)
                 .filter(SupplierInvoiceSpec.enabled.is_(True))
                 .all(),
                 deciding,
                 main_prompt_name=MAIN_PROMPT_NAME,
             )
-            if spec is not None:
+            if spec is not None and how in ("name", "alias"):
+                spec_named = spec.name
                 spec_names = [spec.name, *(spec.aliases or [])]
         except Exception:  # noqa: BLE001 — hints only
             pass
@@ -601,6 +608,14 @@ def build_replica(
         # overrule the account's own records.
         supplier, _ = resolve_supplier(spec_names, suppliers, aliases_by_id)
         sup_by = "spec_alias" if supplier else None
+        if supplier:
+            # Where the answer came from — the card used to say "the invoice
+            # names 'Reward Supply Co. Pty Ltd'", which the invoice did not.
+            supplier_why = (
+                f"the invoice prints '{supplier_printed}', and Norm's saved layout "
+                f"for {spec_named} lists that name — Loaded's supplier for it is "
+                f"'{supplier.get('name')}'"
+            )
     if supplier is None and supplier_printed:
         try:
             from app.services.item_match import suggest_supplier_match
@@ -1653,6 +1668,7 @@ def build_replica(
         "reference_number": extraction.get("invoice_number"),
         "supplier_name": (supplier or {}).get("name") or supplier_printed,
         "linked_supplier_id": supplier_id,
+        **({"supplier_why": supplier_why} if supplier_why else {}),
         "purchase_order_number": str(po_number) if po_number else None,
         "linked_purchase_order_id": linked_po_id,
         "issued_at": _iso_date(extraction.get("invoice_date")),

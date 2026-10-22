@@ -12,7 +12,11 @@ saw the wine spec as "the current spec" for the next Service Foods sample.
 
 import pytest
 
-from app.db.config_models import SupplierInvoiceSpec, SupplierSpecSample
+from app.db.config_models import (
+    SupplierInvoiceSpec,
+    SupplierProduct,
+    SupplierSpecSample,
+)
 from app.services import spec_dojo
 
 from .supplier_fakes import bind_sessions, install_fake_loaded
@@ -70,6 +74,44 @@ class TestAliasWritesAreGuarded:
             json={"name": "Wine Co", "aliases": ["Service Foods Auckland"]},
         )
         assert res.status_code == 409
+
+    def test_a_name_or_alias_that_names_no_business_is_refused(
+        self, client, admin_headers, roster
+    ):
+        """'PTY LTD' named a layout, and every 'Pty Ltd' supplier fitted it."""
+        sf, _ev = roster
+        res = client.post(
+            "/api/supplier-invoice-specs",
+            headers=admin_headers,
+            json={"name": "PTY LTD"},
+        )
+        assert res.status_code == 422 and "names no business" in res.text
+        for body in (
+            {"name": "LTD"},
+            {"aliases": ["Service Foods Auckland", "Pty Ltd"]},
+        ):
+            res = client.put(
+                f"/api/supplier-invoice-specs/{sf.id}", headers=admin_headers, json=body
+            )
+            assert res.status_code == 422, body
+
+    def test_a_rename_takes_the_suppliers_products_with_it(
+        self, client, admin_headers, roster, db_session
+    ):
+        """The catalogue files products under the layout's name: 'ATOMIC' and
+        'KEMP WINE MERCHANTS LIMITED' kept 6 products no layout could reach
+        after renames (22 Oct 2026)."""
+        sf, _ev = roster
+        db_session.add(SupplierProduct(supplier_key="Service Foods", code="SF1"))
+        db_session.commit()
+        res = client.put(
+            f"/api/supplier-invoice-specs/{sf.id}",
+            headers=admin_headers,
+            json={"name": "Service Foods Group"},
+        )
+        assert res.status_code == 200, res.text
+        keys = {r.supplier_key for r in db_session.query(SupplierProduct).all()}
+        assert keys == {"Service Foods Group"}
 
 
 def _sample(db_session, spec, analysis):
@@ -212,9 +254,52 @@ class TestSenseiCleansTheRoster:
         )
         db_session.add(branch)
         db_session.commit()
+        db_session.add(
+            SupplierProduct(supplier_key=branch.name, code="T1", provenance="enriched")
+        )
+        db_session.commit()
         sample = _sample(db_session, branch, _proposal(canonical_name="Trents"))
         spec_dojo.apply_analysis_proposal(db_session, sample)
         assert branch.name == "Trents"
+        # Its products follow it — they were left under the old name before.
+        assert [r.supplier_key for r in db_session.query(SupplierProduct).all()] == [
+            "Trents"
+        ]
+
+    def test_a_rename_to_a_name_with_no_business_is_refused(self, db_session, roster):
+        _sf, ev = roster
+        sample = _sample(db_session, ev, _proposal(canonical_name="PTY LTD"))
+        spec_dojo.apply_analysis_proposal(db_session, sample)
+        assert ev.name == "Eurovintage"
+
+    def test_a_merge_takes_the_duplicates_products_to_the_business(
+        self, db_session, roster
+    ):
+        """A product both rows know keeps the better-ranked reading."""
+        sf, _ev = roster
+        dupe = SupplierInvoiceSpec(name="SERVICE FOODS LTD", instructions="")
+        db_session.add(dupe)
+        db_session.add_all(
+            [
+                SupplierProduct(
+                    supplier_key="SERVICE FOODS LTD", code="A", provenance="enriched"
+                ),
+                SupplierProduct(
+                    supplier_key="SERVICE FOODS LTD", code="B", provenance="printed"
+                ),
+                SupplierProduct(
+                    supplier_key="Service Foods", code="B", provenance="enriched"
+                ),
+            ]
+        )
+        db_session.commit()
+        sample = _sample(db_session, dupe, _proposal(alias_of="Service Foods"))
+        spec_dojo.apply_analysis_proposal(db_session, sample)
+        rows = db_session.query(SupplierProduct).order_by(SupplierProduct.code).all()
+        assert [(r.supplier_key, r.code, r.provenance) for r in rows] == [
+            ("Service Foods", "A", "enriched"),
+            ("Service Foods", "B", "enriched"),
+        ]
 
     def test_a_rename_onto_another_specs_identity_is_refused(self, db_session, roster):
         _sf, ev = roster
@@ -252,6 +337,33 @@ class TestNoDuplicateSpecIsBorn:
             db_session, "Luxe Bakery Sydney"
         )
         assert (found.id, created) == (spec.id, False)
+
+    def test_the_first_line_that_names_a_business_names_the_layout(
+        self, db_session, roster
+    ):
+        """Bessie & Engineers, 20 Oct 2026: Loaded holds Fistonich as two
+        lines, "AF" then the name, and the layout was called "AF"."""
+        spec, created = spec_dojo.find_or_create_spec_for_supplier(
+            db_session, "AF\nFistonich Family VINEYARDS"
+        )
+        assert created is True
+        assert (spec.name, spec.aliases) == ("Fistonich Family VINEYARDS", [])
+
+    @pytest.mark.parametrize("fragment", ["PTY LTD", "LTD", "PTY.", "&", "AF"])
+    def test_a_name_that_names_no_business_files_nothing(
+        self, db_session, roster, fragment
+    ):
+        """Loaded's scan read some Somewhere North statements' supplier as
+        "PTY LTD", "LTD" or "PTY." (16–17 Oct 2026), and each became a layout
+        that matched every supplier sharing the suffix."""
+        with pytest.raises(RuntimeError, match="names no business"):
+            spec_dojo.find_or_create_spec_for_supplier(db_session, fragment)
+        assert (
+            db_session.query(SupplierInvoiceSpec)
+            .filter(SupplierInvoiceSpec.name == fragment)
+            .first()
+            is None
+        )
 
     def test_a_stolen_alias_no_longer_beats_the_real_spec(self, db_session, roster):
         """The incident, at the staging door. Even with 'Service Foods'

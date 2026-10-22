@@ -17,7 +17,8 @@ from app.auth.dependencies import require_permission
 from app.db.config_models import SupplierInvoiceSpec
 from app.db.engine import get_config_db, get_config_db_rw
 from app.db.models import User
-from app.services.supplier_identity import alias_conflict, norm
+from app.services import supplier_catalog
+from app.services.supplier_identity import alias_conflict, has_identity, norm
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,11 @@ def _validate(
 ) -> None:
     if name is not None and not name.strip():
         raise HTTPException(422, "name must not be empty")
+    if name is not None and not has_identity(name):
+        # 'PTY LTD' named a layout once, and every 'Pty Ltd' supplier fitted it.
+        raise HTTPException(
+            422, f"'{name}' names no business — a legal suffix or initials alone"
+        )
     if aliases is None:
         return
     for a in aliases:
@@ -60,6 +66,10 @@ def _validate(
             # list — the engine ignores those, so reject them at entry.
             raise HTTPException(
                 422, f"alias '{a}' is too short to match safely (min 3 characters)"
+            )
+        if not has_identity(a):
+            raise HTTPException(
+                422, f"alias '{a}' names no business — a legal suffix or initials alone"
             )
     if config_db is None:
         return
@@ -159,6 +169,8 @@ async def update_spec(
         )
     if "aliases" in fields and fields["aliases"] is not None:
         fields["aliases"] = [a.strip() for a in fields["aliases"]]
+    # The supplier's products are filed under the layout's name.
+    supplier_catalog.rekey(config_db, spec.name, fields.get("name") or spec.name)
     for k, v in fields.items():
         setattr(spec, k, v)
     config_db.commit()

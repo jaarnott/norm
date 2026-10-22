@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from app.services.supplier_identity import match_spec, norm, words
+from app.services.supplier_identity import has_identity, match_spec, norm, words
 
 
 @dataclass
@@ -236,9 +236,45 @@ def check_untested_specs(specs, samples, *, main_prompt_name: str) -> list[Roste
     return issues
 
 
+def check_names_without_identity(specs, *, main_prompt_name: str) -> list[RosterIssue]:
+    """A layout name or alias that names no business ('PTY LTD', 'LTD', 'AF').
+
+    Every write path refuses one now; this finds any that got past. Disabled
+    rows too: re-enabling one is all it would take. 'PTY LTD' fitted every Pty
+    Ltd supplier, and its names picked Reward Supply Co. Pty Ltd for 14
+    invoices from three other businesses (21 Oct 2026)."""
+    issues: list[RosterIssue] = []
+    for sp in specs:
+        if sp.name == main_prompt_name:
+            continue
+        for kind, claim in [("name", sp.name)] + [
+            ("alias", a) for a in (sp.aliases or [])
+        ]:
+            if has_identity(claim):
+                continue
+            issues.append(
+                RosterIssue(
+                    severity="error",
+                    kind="no_identity",
+                    where=sp.name if kind == "name" else f"{sp.name}/{claim}",
+                    problem=(
+                        f"the {kind} '{claim}' names no business — only a legal "
+                        "suffix or initials — so it fits any supplier sharing it"
+                    ),
+                    fix=(
+                        "Rename the layout after the business its notes describe."
+                        if kind == "name"
+                        else "Remove the alias."
+                    ),
+                )
+            )
+    return issues
+
+
 def roster_issues(specs, samples, *, main_prompt_name: str) -> list[RosterIssue]:
     """Every check, over rows the caller supplies. Pure."""
     return [
+        *check_names_without_identity(specs, main_prompt_name=main_prompt_name),
         *check_alias_collisions(specs, main_prompt_name=main_prompt_name),
         *check_near_duplicates(specs, main_prompt_name=main_prompt_name),
         *check_misfiled_samples(specs, samples, main_prompt_name=main_prompt_name),

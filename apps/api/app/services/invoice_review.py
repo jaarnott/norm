@@ -2935,15 +2935,16 @@ def review_invoice(
         )
         link_fixes(data, None, data["issues"], data["suggestions"])
     else:
-        # One alias fetch feeds both the sensei's guard and the cache key; the
+        # One alias fetch feeds both the layout lookup and the cache key; the
         # supplier list vets those aliases and is reused by the replica below.
         suppliers = account_suppliers(lh)
         aliases = supplier_aliases(lh, detail, suppliers)
+        # No study before the first read: Loaded's supplier name is its own
+        # scan of the paper and is sometimes a fragment — "PTY LTD", "LTD" and
+        # "PTY." each became a layout's name (16–17 Oct 2026). Loaded's name
+        # only finds an existing layout (the instructions below); a supplier
+        # with none is studied once the copy says who printed it.
         studied = False
-        if allow_sensei and file_id and detail.get("supplierName"):
-            studied = _maybe_sensei(
-                db, config_db, venue_id, invoice_id, detail["supplierName"], *aliases
-            )
         if extraction is None:
             extraction = extract_invoice_copy(
                 db,
@@ -3421,13 +3422,14 @@ def study_printed_supplier(
     """Study the supplier the copy PRINTS when it has no prompt, then read the
     copy again under what the study wrote, before anything is decided.
 
-    The study before the first read keys on Loaded's supplier, so a draft that
-    names none, or names another business, is first read with the main prompt
-    alone. Shelves Central #SC4341 (16 Oct 2026, no Loaded supplier) was
-    studied after that read, its notes were applied a minute later, and it
-    was received on the first reading anyway: nothing read it again. A study
-    that concludes no notes are needed leaves the instructions as they were,
-    so the second read is a cache hit and costs nothing."""
+    This is the only study: a supplier with no layout is read first with the
+    main prompt, because only the copy can say who printed it (Loaded's name
+    for the draft named layouts "PTY LTD" and "LTD", 16–17 Oct 2026).
+    Shelves Central #SC4341 (16 Oct 2026, no Loaded supplier) was studied
+    after that read, its notes were applied a minute later, and it was
+    received on the first reading anyway: nothing read it again. A study that
+    concludes no notes are needed leaves the instructions as they were, so
+    the second read is a cache hit and costs nothing."""
     printed = extraction.get("supplier_name")
     if not printed or not _maybe_sensei(
         db, config_db, venue_id, invoice_id, str(printed)
@@ -3519,10 +3521,11 @@ def _maybe_sensei(
     supplier: str,
     *aliases: object,
 ) -> bool:
-    """Train the sensei for a spec-less supplier BEFORE extraction (the
-    engine's ordering rule) — fail-open, the review continues regardless.
-    Returns whether training was attempted, so callers spend their budget on
-    suppliers that actually needed it rather than on ones already covered.
+    """Train the sensei for a spec-less supplier, named as the copy prints it
+    — fail-open, the review continues regardless. Returns whether training
+    was attempted, so callers spend their budget on suppliers that actually
+    needed it rather than on ones already covered. A name that names no
+    business ('PTY LTD') is never studied: the layout would be named after it.
 
     ``aliases`` are not optional decoration: a global spec is filed under ONE
     canonical name and the account's spellings vary, so the bare feed name
@@ -3531,7 +3534,11 @@ def _maybe_sensei(
     re-staging a dojo sample and re-analysing that spec, auto-apply live, on
     every new invoice. Ask with the same hints extraction uses.
     """
+    from app.services.supplier_identity import identity_name
+
     try:
+        if not identity_name(supplier):
+            return False
         if find_spec_for_supplier(config_db, supplier, *aliases) is not None:
             return False
         from app.services import spec_dojo
@@ -3668,8 +3675,8 @@ def review_invoices(
     # One invoice after another, each exactly as the receive card reviews one
     # (16 Oct 2026, the owner: "simplicity over efficiency"): fetch it, fetch
     # the venue's reference data fresh — what the last invoice created in
-    # Loaded is in it — and review. A supplier with no spec is studied before
-    # its invoice is read, so what Norm learns serves the next invoice.
+    # Loaded is in it — and review. A supplier with no spec is studied as soon
+    # as its first copy is read, so what Norm learns serves the next invoice.
     order = [str(i) for i in invoice_ids]
     for n, iid in enumerate(order):
         if should_stop is not None and should_stop():

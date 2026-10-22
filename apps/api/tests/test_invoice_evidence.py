@@ -683,53 +683,20 @@ class TestItComposesInstructionsExactlyLikeReceiving:
 
         return _spy
 
-    def test_the_sensei_is_asked_with_the_same_aliases_extraction_uses(
-        self, monkeypatch
-    ):
-        """THE bug: asked under the bare feed name, a supplier filed under a
-        different spelling looks spec-less for ever, so the guard never fires
-        and a working spec is re-analysed on every invoice.
-
-        Folded in: a spec-less supplier is trained — sister venue or not —
-        BEFORE the instructions are composed, because a fresh spec is part of
-        this pass's cache key, not the next one's."""
+    def test_the_batch_never_studies_a_supplier_by_loadeds_name(self, monkeypatch):
+        """This pass knows each draft only by Loaded's supplier name — Loaded's
+        own scan of the paper, which read some Somewhere North statements as
+        "PTY LTD", "LTD" and "PTY.". Studied here, each became a layout named
+        after the fragment, and "PTY LTD" later picked Reward Supply Co. for
+        14 invoices from other businesses (16–21 Oct 2026). The review studies
+        a spec-less supplier by the name its copy prints instead."""
         calls = []
         self._run(
             monkeypatch,
             [
-                {
-                    "id": "inv-1",
-                    "fileId": "f-1",
-                    "supplierName": "Kaans Catering",
-                    "supplierId": "s-1",
-                }
+                {"id": f"i{n}", "fileId": "f", "supplierName": name, "supplierId": n}
+                for n, name in enumerate(["PTY LTD", "Kaans Catering", "S3"])
             ],
-            sensei=self._sensei_spy(calls),
-        )
-        assert [c[1] for c in calls] == ["Kaans Catering"]
-        assert calls[0][2] == ["CATERING SUPPLIES LTD", "Kaan's Catering"]
-
-    def test_every_new_supplier_is_studied_once_with_no_limit(self, monkeypatch):
-        """No per-run limit (16 Oct 2026): a supplier left spec-less isn't
-        catalogued, so its products were asked about on every invoice. One
-        study per supplier, however many of its invoices the run holds."""
-        calls = []
-        self._run(
-            monkeypatch,
-            [
-                {"id": f"i{n}", "fileId": "f", "supplierName": f"S{n % 5}", "supplierId": n % 5}
-                for n in range(10)
-            ],
-            sensei=self._sensei_spy(calls, trained=True),
-        )
-        assert sorted(c[1] for c in calls) == ["S0", "S1", "S2", "S3", "S4"]
-
-    def test_an_invoice_with_no_copy_is_never_sent_for_training(self, monkeypatch):
-        """The sensei learns from the PDF; there is nothing to learn from."""
-        calls = []
-        self._run(
-            monkeypatch,
-            [{"id": "inv-1", "supplierName": "Nobody Ltd", "supplierId": "s-1"}],
             sensei=self._sensei_spy(calls),
         )
         assert calls == []

@@ -1190,6 +1190,29 @@ def _preview_missing(key: str, row: dict) -> tuple[str, str] | None:
     return None
 
 
+def check_supplier_layout_names(config_db) -> list[ConfigIssue]:
+    """Every supplier layout's name and aliases name a business — the roster
+    check ``roster_health.check_names_without_identity``, run where the admin
+    config check can see it. Layouts are shared by every venue, and one named
+    "PTY LTD" fitted every 'Pty Ltd' supplier (21 Oct 2026)."""
+    from app.db.config_models import SupplierInvoiceSpec
+    from app.services.invoice_extraction import MAIN_PROMPT_NAME
+    from app.services.roster_health import check_names_without_identity
+
+    return [
+        ConfigIssue(
+            severity="error",
+            where=f"supplier_layouts.{i.where}",
+            problem=i.problem,
+            fix=i.fix,
+        )
+        for i in check_names_without_identity(
+            config_db.query(SupplierInvoiceSpec).all(),
+            main_prompt_name=MAIN_PROMPT_NAME,
+        )
+    ]
+
+
 def validate_config(db=None, config_db=None) -> dict:
     """Run every check against the live databases. Returns a summary dict.
 
@@ -1404,6 +1427,8 @@ def validate_config(db=None, config_db=None) -> dict:
                     MCP_DENYLIST,
                 )
             )
+
+        issues.extend(check_supplier_layout_names(config_db))
 
         return {
             "ok": not issues,
