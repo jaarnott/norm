@@ -246,6 +246,15 @@ class TestUsingWithoutCopying:
             dashboards.shown(db_session, db_session, world.viewer, "reports")["version"]
             == 2
         )
+        # A second template for the page (Group performance) leaves the first
+        # as the one shown to someone who hasn't chosen: no chooser.
+        import datetime as dt
+
+        later = _template(db_session, slug="group-performance")
+        later.created_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)
+        db_session.flush()
+        shown = dashboards.shown(db_session, db_session, world.viewer, "reports")
+        assert shown["ref"] == "template:operations"
 
 
 class TestCopies:

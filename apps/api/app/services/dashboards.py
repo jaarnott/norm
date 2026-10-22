@@ -187,7 +187,7 @@ def available(db: Session, config_db, user, agent: str) -> dict:
 def shown(db: Session, config_db, user, agent: str) -> dict | None:
     """The dashboard this person's ``agent`` Dashboard page shows: their
     choice while they can still use it, else their newest own one, else the
-    template when there is just one. None means: let them pick."""
+    template published first. None means: let them pick."""
     org = _org(db, user)
     if not org:
         return None
@@ -198,8 +198,13 @@ def shown(db: Session, config_db, user, agent: str) -> dict | None:
     if mine:
         return describe_app(db, mine[0], user)
     templates = page_templates.for_agent(config_db, agent)
-    if len(templates) == 1:
-        return describe_template(templates[0])
+    if templates:
+        # Several (Reports: Operations and Group performance): the one
+        # published first is the page's own, so nobody meets a chooser.
+        first = min(
+            templates, key=lambda t: (t.created_at is None, t.created_at, t.slug)
+        )
+        return describe_template(first)
     return None
 
 
