@@ -1098,7 +1098,8 @@ def _open_orders_for_item(venue, call, item_id):
         if po and po not in seen:
             seen.add(po)
             out.append(
-                {"id": po, "number": ln.get("purchaseOrderOrderNumber") or po[:8]}
+                # Loaded sends order numbers as numbers (production, 23 Oct).
+                {"id": po, "number": str(ln.get("purchaseOrderOrderNumber") or po[:8])}
             )
     return out, None
 
@@ -1131,7 +1132,7 @@ def _invoices_for_item(venue, call, item_id):
             out.append(
                 {
                     "id": inv["id"],
-                    "number": inv.get("invoiceNumber") or inv["id"][:8],
+                    "number": str(inv.get("invoiceNumber") or inv["id"][:8]),
                     "date": str(inv.get("receivedAt") or "")[:10],
                     "lines": n,
                     "supplier": inv.get("supplierName"),
@@ -1412,8 +1413,14 @@ def _merge(params, venue, call_api, log):
         )
     if src.get("systemItem") or dst.get("systemItem"):
         problems.append("Loaded's own system items can't be merged")
-    if _shared(src) or _shared(dst):
-        problems.append("an item shared with other companies can't be merged here")
+    if _shared(src):
+        # Merging it away retires it, and retiring a shared item removes its
+        # copies in the other companies (Loaded's StockItemsController). An
+        # item merged INTO may be shared: it is only added to.
+        problems.append(
+            f"{sname} is shared with other companies — merge the other way round, "
+            "or retire it in Loaded"
+        )
     if problems:
         return {"error": "nothing changed — " + "; ".join(problems)}
 
@@ -1968,6 +1975,12 @@ def _merge_units(params, venue, call_api, log):
     if not rec:
         return {"error": f"couldn't read {sname} from Loaded's older API"}
     if rec.get("masterId"):
+        keep = _unit_record(venue, call, dst_id) or {}
+        if keep.get("masterId"):
+            return {
+                "error": f"{sname} and {dname} are both Loaded's standard units, which "
+                "Loaded won't delete — neither can be merged away"
+            }
         return {
             "error": f"{sname} is one of Loaded's standard units, which Loaded won't "
             f"delete — merge {dname} into {sname} instead"

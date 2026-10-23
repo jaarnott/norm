@@ -32,6 +32,9 @@ export interface CatalogueItem {
   /** 1 GST, 0 exempt (Loaded's sales tax sort order). */
   sales_tax?: number | null;
   system_item?: boolean;
+  /** Shared with other Loaded companies: retiring it removes their copies,
+   *  so it is never retired or merged away here (merged INTO is fine). */
+  shared?: boolean;
   deactivated: boolean;
   deactivated_at?: string | null;
   variants: CatalogueVariant[];
@@ -48,6 +51,8 @@ export interface CatalogueUnit {
   deactivated_at?: string | null;
   /** Live in Loaded, but not a measurement — Norm never books invoices in it. */
   hidden_by_norm?: boolean;
+  /** One of Loaded's standard units: Loaded never lets it change. */
+  standard?: boolean;
 }
 
 export interface CatalogueSupplier {

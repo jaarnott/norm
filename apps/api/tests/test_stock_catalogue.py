@@ -88,9 +88,12 @@ class FakeLoaded:
             }
 
         self.items = {
-            LEMON: item(
-                LEMON, "Lemon", 2, [self._v(_id(100), LEMON, FRESH, "LEM", EACH)]
-            ),
+            LEMON: {
+                **item(
+                    LEMON, "Lemon", 2, [self._v(_id(100), LEMON, FRESH, "LEM", EACH)]
+                ),
+                "sharedItemId": _id(99),  # shared with another Loaded company
+            },
             LEMONS: item(
                 LEMONS, "Lemons", 2, [self._v(_id(101), LEMONS, GREEN, "LMS", EACH)]
             ),
@@ -147,6 +150,7 @@ class FakeLoaded:
                 "stockUnitType": "Volume",
                 "ratio": 1.0,
                 "datestampDeleted": None,
+                "masterId": _id(98),  # one of Loaded's standard units
             },
         }
         self.masters = {MASTER}
@@ -390,7 +394,9 @@ class FakeLoaded:
         return [
             {
                 "purchaseOrderId": o["id"],
-                "purchaseOrderOrderNumber": o["orderNumber"],
+                # A number, as Loaded sends it: a join over these failed
+                # in production on 23 Oct 2026.
+                "purchaseOrderOrderNumber": int(o["orderNumber"][2:]),
                 "purchaseOrderDatestampReceived": None,
                 "purchaseOrderDatestampDeleted": None,
             }
@@ -561,6 +567,8 @@ class TestCatalogueRead:
             and units["Box"]["hidden_by_norm"] is True
         )
         assert units["Each"]["items"] == 3
+        assert units["Litre"]["standard"] is True and units["Each"]["standard"] is False
+        assert names["Lemon"]["shared"] is True and names["Lemons"]["shared"] is False
         assert [s["name"] for s in out["suppliers"]] == ["Fresh Co", "Green Grocer"]
         assert out["counts"]["items_deactivated"] == 0
 
@@ -618,6 +626,15 @@ class TestItemMerge:
         )
         assert api.items[LEMONS]["datestampRemoved"]
 
+    def test_a_shared_item_is_never_merged_away_but_may_be_merged_into(self):
+        """Merging away retires, and retiring a shared item removes its copies
+        in the other Loaded companies. The everything-moves test above merges
+        INTO the shared Lemon."""
+        api = FakeLoaded()
+        out = _run(ITEMS, api, op="merge", item_id=LEMON, into_item_id=LEMONS)
+        assert "shared with other companies" in out["error"]
+        assert api.writes == []
+
     def test_items_counted_differently_are_refused_before_anything_is_written(self):
         api = FakeLoaded()
         out = _run(ITEMS, api, op="merge", item_id=JUICE, into_item_id=LEMON)
@@ -628,7 +645,7 @@ class TestItemMerge:
         api = FakeLoaded()
         card = _preview(ITEMS, api, op="merge", item_id=LEMONS, into_item_id=LEMON)
         fields = [c["field"] for c in card["changes"]]
-        assert "Received invoices" in fields and "Open order PO7" in fields
+        assert "Received invoices" in fields and "Open order 7" in fields
         assert "Recipe · Lemon tart" in fields and fields[-1] == "Lemons"
         assert api.writes == []
 
@@ -636,16 +653,17 @@ class TestItemMerge:
 class TestItemRetireRestoreUpdate:
     def test_retire_and_restore_patch_only_the_removed_date(self):
         api = FakeLoaded()
-        out = _run(ITEMS, api, op="retire", item_id=LEMON)
+        out = _run(ITEMS, api, op="retire", item_id=LEMONS)
         assert out["result"] == "retired"
         assert (
             api.writes[0][0] == "patch_item"
             and api.writes[0][2][0][0] == "DatestampRemoved"
         )
-        out = _run(ITEMS, api, op="restore", item_id=LEMON)
-        assert (
-            out["result"] == "restored" and api.items[LEMON]["datestampRemoved"] is None
-        )
+        out = _run(ITEMS, api, op="restore", item_id=LEMONS)
+        assert out["result"] == "restored"
+        assert api.items[LEMONS]["datestampRemoved"] is None
+        # A shared item is refused: its copies in other companies would go too.
+        assert "shared" in _run(ITEMS, api, op="retire", item_id=LEMON)["error"]
 
     def test_retire_warns_about_what_still_uses_the_item(self):
         card = _preview(ITEMS, FakeLoaded(), op="retire", item_id=LEMONS)
@@ -654,6 +672,7 @@ class TestItemRetireRestoreUpdate:
             "1 recipe(s) use it (Lemon tart)" in text
             and "merge it into another item" in text
         )
+        assert "1 open order(s) include it: 7" in text
 
     def test_update_can_remove_a_variant(self):
         api = FakeLoaded()

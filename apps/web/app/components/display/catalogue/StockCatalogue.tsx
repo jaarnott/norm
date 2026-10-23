@@ -195,10 +195,13 @@ export default function StockCatalogue({ props }: DisplayBlockProps) {
   ) : (
     <>
       <Button size="sm" variant="quiet" onClick={() => setDialog({ kind: 'edit-item', item: i })}>Edit</Button>
-      <Button size="sm" variant="quiet" onClick={() => setDialog({ kind: 'merge-item', item: i })}>Merge</Button>
-      <Button size="sm" variant="quiet" onClick={() => run({ tool: 'manage_stock_item', params: { op: 'retire', item_id: i.id }, verb: 'Retire', danger: true })}>Retire</Button>
+      {/* A shared item is only ever merged INTO: retiring it (which merging
+          away does) would remove its copies in the other companies. */}
+      {!i.shared && <Button size="sm" variant="quiet" onClick={() => setDialog({ kind: 'merge-item', item: i })}>Merge</Button>}
+      {!i.shared && <Button size="sm" variant="quiet" onClick={() => run({ tool: 'manage_stock_item', params: { op: 'retire', item_id: i.id }, verb: 'Retire', danger: true })}>Retire</Button>}
     </>
   ));
+  const sharedBadge = <Badge title="Shared with other Loaded companies. Retiring or merging it away would remove their copies too, so do that in Loaded. Other items can be merged into it.">Shared</Badge>;
 
   const itemsTable = () => {
     if (!items.length) return <PageState kind="empty" title={query ? 'No items match' : 'No stock items'} />;
@@ -210,7 +213,12 @@ export default function StockCatalogue({ props }: DisplayBlockProps) {
             <NarrowRow key={i.id} dim={i.deactivated} title={i.name}
               meta={[i.group, i.counting_unit && `counted in ${i.counting_unit}`, i.default_supplier,
                 !i.deactivated && `${i.variants.length} variant${i.variants.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}
-              badges={i.deactivated ? <Badge>Retired {day(i.deactivated_at)}</Badge> : undefined}
+              badges={i.deactivated || i.shared ? (
+                <>
+                  {i.deactivated && <Badge>Retired {day(i.deactivated_at)}</Badge>}
+                  {i.shared && sharedBadge}
+                </>
+              ) : undefined}
               actions={itemActions(i)} />
           ))}
           <MoreRows shown={shown.length} total={items.length} onMore={() => setLimit(l => l + PAGE)} />
@@ -236,7 +244,12 @@ export default function StockCatalogue({ props }: DisplayBlockProps) {
                         {i.variants.length > 0 && <Icon icon={isOpen ? ChevronDown : ChevronRight} size={14} tone="muted" />}
                         <span style={{ fontWeight: 500 }}>{i.name}</span>
                       </button>
-                      {i.deactivated && <div style={{ marginTop: 2 }}><Badge>Retired {day(i.deactivated_at)}</Badge></div>}
+                      {(i.deactivated || i.shared) && (
+                        <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                          {i.deactivated && <Badge>Retired {day(i.deactivated_at)}</Badge>}
+                          {i.shared && sharedBadge}
+                        </div>
+                      )}
                     </td>
                     <td style={muted}>{i.group || '—'}</td>
                     <td style={nowrap}>{i.counting_unit || '—'}</td>
@@ -263,7 +276,7 @@ export default function StockCatalogue({ props }: DisplayBlockProps) {
     );
   };
 
-  const unitActions = (u: CatalogueUnit) => (u.deactivated ? (
+  const unitActions = (u: CatalogueUnit) => (u.standard ? null : u.deactivated ? (
     <Button size="sm" variant="quiet" onClick={() => run({ tool: 'manage_stock_item', params: { op: 'restore_unit', unit_id: u.id }, verb: 'Restore' })}>Restore</Button>
   ) : (
     <>
@@ -272,8 +285,9 @@ export default function StockCatalogue({ props }: DisplayBlockProps) {
       <Button size="sm" variant="quiet" onClick={() => run({ tool: 'manage_stock_item', params: { op: 'delete_unit', unit_id: u.id }, verb: 'Delete', danger: true })}>Delete</Button>
     </>
   ));
-  const unitBadges = (u: CatalogueUnit) => (u.deactivated || u.hidden_by_norm ? (
+  const unitBadges = (u: CatalogueUnit) => (u.deactivated || u.hidden_by_norm || u.standard ? (
     <>
+      {u.standard && <Badge title="One of Loaded's standard units. Loaded doesn't let them be changed, deleted or merged away, but other units can be merged into one.">Loaded standard</Badge>}
       {u.deactivated && <Badge>Deleted {day(u.deactivated_at)}</Badge>}
       {u.hidden_by_norm && <Badge title="Not a measurement, so Norm never books invoices in it">Not used by Norm</Badge>}
     </>

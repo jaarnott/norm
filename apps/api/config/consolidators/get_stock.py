@@ -884,6 +884,13 @@ def _minimums(params, venue, call_api):
 _HIDDEN_UNIT_MARK = "1970-01-01T00:00:00+00:00"
 
 
+def _shared_item(it):
+    shared = it.get("sharedItemId")
+    return bool(it.get("isShared")) or bool(
+        shared and shared != "00000000-0000-0000-0000-000000000000"
+    )
+
+
 def _unit_deleted_at(u):
     at = u.get("datestampDeleted")
     if not at or str(at) == _HIDDEN_UNIT_MARK:
@@ -975,6 +982,9 @@ def _catalogue(params, venue, call_api, call_api_parallel):
                 "default_supplier": supplier_name(it.get("defaultSupplierId")),
                 "sales_tax": it.get("globalSalesTaxSortOrder"),
                 "system_item": bool(it.get("systemItem")),
+                # Shared with other Loaded companies: retiring it removes their
+                # copies too, so the page offers neither retire nor merge-away.
+                "shared": _shared_item(it),
                 "deactivated": False,
                 "variants": variants,
             }
@@ -1006,6 +1016,7 @@ def _catalogue(params, venue, call_api, call_api_parallel):
                         "default_supplier_id": it.get("defaultSupplierId"),
                         "default_supplier": it.get("defaultSupplierName")
                         or supplier_name(it.get("defaultSupplierId")),
+                        "shared": bool(it.get("isShared")),
                         "deactivated": True,
                         "deactivated_at": it.get("datestampRemoved"),
                         "variants": [],
@@ -1024,6 +1035,8 @@ def _catalogue(params, venue, call_api, call_api_parallel):
             "type": u.get("stockUnitType"),
             "ratio": u.get("ratio"),
             "items": len(unit_uses.get(uid) or ()),
+            # One of Loaded's standard units: Loaded never lets it change.
+            "standard": bool(u.get("masterId")),
             "deactivated": bool(gone),
         }
         if gone:
