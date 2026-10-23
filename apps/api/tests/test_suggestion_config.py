@@ -153,7 +153,7 @@ def test_prompts_are_edited_added_turned_off_and_deleted(db_session, org, lz):
         "reports.covers",
         {
             "member": "reports",
-            "app": "loaded-reports",
+            "app": "sales-analysis",
             "text": "How many covers did {venue} do last week?",
             "tools": ["loadedhub.get_sales"],
             "permission": "reports:read",

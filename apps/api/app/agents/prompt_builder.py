@@ -129,28 +129,29 @@ def _collect_tools(
         )
 
     # Apps v3: THE APP MAP is the exposure list — a tool reaches the agent iff
-    # some App owns it and that App is on (its member hired ∧ the App switched
-    # on). No App owning a tool means no tools at all; agent bindings play no
+    # some App gives it (owns or uses it) and that App's AI agent is hired.
+    # An App's own switch takes only its screens away (owner, 23 Oct 2026).
+    # No App giving a tool means no tools at all; agent bindings play no
     # part. The validator and the admin App Map's Unassigned panel
     # (ownership_findings) keep "unowned tools" at zero.
     # project_tools() gates through this same function, so the MCP surface
-    # honors App switches with no second code path. apps_on None (no org, or
+    # follows hires with no second code path. apps_reachable None (no org, or
     # no tier='agent' rows) = gating inactive = every owned tool stays on.
-    from app.services.entitlements import apps_on, org_id_for_user, tool_owners
+    from app.services.entitlements import apps_reachable, org_id_for_user, tool_users
 
-    owners = tool_owners(_cdb)
-    if not owners:
+    users = tool_users(_cdb)
+    if not users:
         return []
     owned_by_conn: dict[str, set[str]] = {}
-    for _key in owners:
+    for _key in users:
         _conn, _, _act = _key.partition(".")
         owned_by_conn.setdefault(_conn, set()).add(_act)
 
     _org = org_id_for_user(user_id, db)
-    _apps_on = apps_on(_org, db, _cdb)
+    _reachable = apps_reachable(_org, db, _cdb)
     _owner_blocked: set[str] = (
-        {k for k, app in owners.items() if app not in _apps_on}
-        if _apps_on is not None
+        {k for k, apps in users.items() if not apps & _reachable}
+        if _reachable is not None
         else set()
     )
 
@@ -1016,21 +1017,25 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
 def blocked_playbook_slugs(
     config_db: Session, user_id: str | None = None, db: Session | None = None
 ) -> set[str] | None:
-    """Skills (playbooks) whose owning App is OFF for the user's org — i.e.
-    the ones to withhold — or None for "no filtering" (no App declares skills
-    yet, or no org to resolve).
-    Apps v3: a skill belongs to exactly one App, so it's never offered while
-    that App — and so its tools — is switched off. Unowned skills stay
-    offered (fail-open; flagged by the validator)."""
-    from app.services.entitlements import apps_on, org_id_for_user, skill_owners
+    """Skills (playbooks) whose owning App's AI agent isn't hired for the
+    user's org — i.e. the ones to withhold — or None for "no filtering" (no
+    App declares skills yet, or no org to resolve).
+    Apps v3: a skill belongs to exactly one App and comes with its agent like
+    the App's tools do (23 Oct 2026: an App's switch governs its screens
+    only). Unowned skills stay offered (fail-open; flagged by the validator)."""
+    from app.services.entitlements import (
+        apps_reachable,
+        org_id_for_user,
+        skill_owners,
+    )
 
     owners = skill_owners(config_db)
     if not owners or db is None:
         return None
-    on = apps_on(org_id_for_user(user_id, db), db, config_db)
-    if on is None:
+    reachable = apps_reachable(org_id_for_user(user_id, db), db, config_db)
+    if reachable is None:
         return None
-    return {slug for slug, app in owners.items() if app not in on}  # blocked
+    return {slug for slug, app in owners.items() if app not in reachable}  # blocked
 
 
 def playbook_guidance(

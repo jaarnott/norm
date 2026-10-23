@@ -74,9 +74,17 @@ from app.services.functions.catalog import (  # noqa: E402 — path set above
     APP as FUNCTIONS_APP,
     MEMBER as FUNCTIONS_MEMBER,
 )
+from app.services.screens import SYSTEMS  # noqa: E402
 
 
-def _c(key, page=None, full_width=False, description="", connections=None):
+def _c(
+    key,
+    page=None,
+    full_width=False,
+    description="",
+    connections=None,
+    connection=None,
+):
     entry = {
         "key": key,
         "page": page,
@@ -85,6 +93,10 @@ def _c(key, page=None, full_width=False, description="", connections=None):
     }
     if connections:
         entry["connections"] = connections
+    if connection:
+        # the system this screen is for (services/screens.py): it shows only
+        # while the organisation has that system
+        entry["connection"] = connection
     return entry
 
 
@@ -110,6 +122,19 @@ RETIRED_SLUGS = [
     # an example App-platform app that was never installed in any org, so
     # its row fronted nothing; the fixture was deleted with it (28 Sep 2026)
     "weekly-venue-performance",
+    # Apps named after the system, replaced by the job apps (owner, 23 Oct
+    # 2026 — docs/plans/agents-and-apps-restructure.md). Bidfood, Brevo and
+    # Metricool had no tools: Brevo and Metricool are "coming soon"
+    # connections now, and Bidfood is gone (scripts/switch_to_job_apps.py).
+    "loaded-stock",
+    "loaded-kitchen",
+    "loaded-time",
+    "loaded-reports",
+    "xero",
+    "bamboohr-app",
+    "bidfood-app",
+    "brevo-app",
+    "metricool-app",
 ]
 
 # Connectors with no spec whose bindings are pure dead weight.
@@ -128,7 +153,6 @@ ENGINE_ONLY = {
     ],
     "brevo": "*",
     "metricool": "*",
-    "bidfood": "*",
 }
 
 
@@ -168,33 +192,51 @@ def _member(
     return row
 
 
+#: Who makes Norm's own apps, on the marketplace (marketplace plan, 20 Oct)
+MAKER = "Hospo Apps"
+
+
+def _listing(blurb, about, asks):
+    """What the App Marketplace says about an App (the public page reads it,
+    GET /api/public/marketplace)."""
+    return {"blurb": blurb, "about": about, "asks": list(asks), "maker": MAKER}
+
+
 def _app(
     slug,
     *,
-    note=None,
     name,
     member,
     description,
     icon,
     tools=(),
+    uses_tools=(),
     components=(),
     skills=(),
     switchable=True,
     bundled=True,
+    works_with=None,
+    listing=None,
     extra=None,
 ):
+    """One App. ``tools`` it owns — each exactly once across the catalog;
+    ``uses_tools`` it shares from the App that owns them (a hired agent gets
+    both, entitlements.app_tools). Its screens are its components with a
+    page; each names the system it's for (``connection``)."""
     comp = {
         "member": member,
         "tools": list(tools),
         "components": list(components),
         "skills": list(skills),
     }
+    if uses_tools:
+        comp["uses_tools"] = list(uses_tools)
     if not switchable:
         comp["switchable"] = False
-    if note:
-        # Standing rule for this App, added to conversations while it's on
-        # (validator caps: 300 chars each, 1,500 total).
-        comp["note"] = note
+    if works_with:
+        comp["works_with"] = list(works_with)
+    if listing:
+        comp["listing"] = listing
     comp.update(extra or {})
     return {
         "slug": slug,
@@ -276,14 +318,17 @@ APPS = [
         tagline="Bills, suppliers, accounts and P&L from Xero.",
         bundled=False,
     ),
-    # ── Apps (tier='app'): one member each (Norm Core: all) ──────────────
+    # ── Apps (tier='app'): one job each, one AI agent each (Norm Core: all) ─
+    # The job apps (owner, 23 Oct 2026 — docs/plans/agents-and-apps-
+    # restructure.md §3): every App has at least one screen; a tool is owned
+    # by one App and shared by others through uses_tools.
     _app(
         "norm-core",
         name="Norm Core",
         member="*",
         switchable=False,
         icon="🧭",
-        description="Norm's own foundations: memory, search, tasks, charts, email and connection setup.",
+        description="Norm's own foundations: memory, search, tasks, charts, dashboards, email and connection setup.",
         tools=[
             "norm.search_tool_result",
             "norm.remember",
@@ -301,6 +346,9 @@ APPS = [
             # what a person says about an insight they clicked on Home
             # (scripts/sync_note_insight_tool.py)
             "norm.note_insight",
+            # reads Norm's own apps' records for dashboards
+            # (scripts/sync_member_dashboards_config.py)
+            "norm.app_records",
             # which dashboard each Dashboard page shows: use, copy, share…
             # (scripts/sync_dashboard_tools.py); building one is save_app
             "norm_reports.get_dashboards",
@@ -308,12 +356,12 @@ APPS = [
         ],
         components=[
             _shared(
-                "dashboard_view", "Dashboard", "Each team member's dashboard page."
+                "dashboard_view", "Dashboard", "Each AI agent's dashboard page."
             ),
             _shared(
                 "automated_task_board",
                 "Tasks",
-                "Each team member's scheduled tasks page.",
+                "Each AI agent's scheduled tasks page.",
             ),
             _c("generic_table", description="Any tabular answer in chat."),
             _c("chart", description="Charts drawn from data in chat."),
@@ -341,29 +389,6 @@ APPS = [
         ],
     ),
     _app(
-        "loaded-reports",
-        name="Loaded Reports",
-        member="reports",
-        icon="📊",
-        description="Sales, labour, budgets and cost of goods from Loaded — the numbers everyone needs.",
-        tools=[
-            "loadedhub.get_sales",
-            "loadedhub.get_labour",
-            "loadedhub.get_budgets",
-            "loadedhub.get_cogs_detail_for_period",
-            # POS items into Food / Beverage / Other — what makes food vs
-            # beverage sales and cost of goods right. get_sales' items breakdown
-            # is the read (sync_revenue_groups_config.py)
-            "loadedhub.set_revenue_group",
-        ],
-        skills=[
-            "product_sales_analysis",
-            "sales_comparison",
-            "staff_sales_performance",
-            "weekly_sales_report",
-        ],
-    ),
-    _app(
         "saved-reports",
         name="Saved Reports",
         member="reports",
@@ -380,34 +405,21 @@ APPS = [
             ),
         ],
     ),
+    # ── Procurement ──────────────────────────────────────────────────────
     _app(
-        "loaded-stock",
-        note=(
-            "Stock-on-hand, received-stock and stocktake questions need item ids from "
-            "get_stock — never guess them. Cost of goods for a venue that doesn't "
-            "stocktake is purchases against sales: get_purchase_cogs."
-        ),
-        name="Loaded Stock",
+        "ordering",
+        name="Ordering",
         member="procurement",
-        icon="📦",
-        description="Stock, ordering, invoices and supplier tenders in Loaded.",
+        icon="🛒",
+        description="Purchase orders drafted from what you sell and hold, and the stock catalogue.",
         tools=[
-            "loadedhub.get_stock",
-            "loadedhub.calculate_template_stock_requirements",
-            # get_stocktakes replaced generate_stocktake_report + Orbit's
-            # stock_find_stocktakes (Sep 2026, sync_last_raw_tools.py).
-            "loadedhub.get_stocktakes",
-            "loadedhub.get_received_items_for_period",
-            # Purchases ÷ POS sales per month / week, food vs beverage — the
-            # cost-of-goods figure for a venue without stocktakes (Oct 2026).
-            "loadedhub.get_purchase_cogs",
             "loadedhub.get_purchase_orders",
             "norm.create_purchase_order",
-            "loadedhub.get_invoices",
-            "loadedhub.review_and_receive_invoices",
-            "loadedhub.reconcile_received_invoices",
-            # Supplier aliases: review them, remove wrong ones (Oct 2026,
-            # sync_manage_supplier_config.py).
+            "loadedhub.calculate_template_stock_requirements",
+        ],
+        uses_tools=[
+            "loadedhub.get_stock",
+            "loadedhub.manage_stock_item",
             "loadedhub.manage_supplier",
         ],
         components=[
@@ -416,23 +428,7 @@ APPS = [
                 page=_p("orders", "Orders", "ShoppingCart"),
                 full_width=True,
                 description="Purchase orders: outstanding, recent, and detail.",
-            ),
-            _c(
-                "invoices_dashboard",
-                page=_p("invoices", "Invoices", "Receipt"),
-                full_width=True,
-                description="Outstanding supplier invoices with review state.",
-                connections=["loadedhub"],
-            ),
-            _c(
-                "supplier_tenders",
-                page=_p("supplier-tenders", "Supplier Tenders", "Gavel"),
-                full_width=True,
-                description="Agreed supplier price lists, with tendered-vs-paid review.",
-                # Loaded's tenders API refuses Norm's OAuth token (TEMPORARY:
-                # app/connectors/loaded_legacy.py; the Cook Brothers App until
-                # 19 Oct 2026).
-                connections=["loaded_legacy"],
+                connection="loaded",
             ),
             _c(
                 "stock_catalogue",
@@ -443,55 +439,162 @@ APPS = [
                 # Unit changes and item merges go through Loaded's older web API
                 # (docs/plans/stock-catalogue-page.md).
                 connections=["loadedhub", "loaded_legacy"],
+                connection="loaded",
             ),
             _c(
                 "purchase_order_editor",
                 description="Editable purchase-order draft; Place Order submits to Loaded.",
+            ),
+            _c("stock_picker", description="Stock item picker used by order flows."),
+        ],
+        skills=["create_stock_order", "stock_requirements"],
+        works_with=["loaded"],
+        listing=_listing(
+            "Orders drafted from what you sell and hold, for you to approve.",
+            "Procurement looks at what you sell and what you hold, works out what you need, and drafts the purchase order. You check it, change it if you like, and approve it.",
+            [
+                "What do we need to order for the weekend?",
+                "Order 20 cartons of Peroni from Coastal Drinks for Friday.",
+                "Show me the orders still waiting on a delivery.",
+            ],
+        ),
+    ),
+    _app(
+        "invoice-receiving",
+        name="Invoice Receiving",
+        member="procurement",
+        icon="🧾",
+        description="Every supplier invoice read, checked against its order and received.",
+        tools=[
+            "loadedhub.get_invoices",
+            "loadedhub.review_and_receive_invoices",
+            "loadedhub.reconcile_received_invoices",
+            # an organisation's own receiving rules (sync_receiving_rules_tools.py)
+            "norm.get_receiving_rules",
+            "norm.set_receiving_rule",
+            # stock items and supplier aliases a received invoice fixes
+            "loadedhub.manage_stock_item",
+            "loadedhub.manage_supplier",
+        ],
+        uses_tools=["loadedhub.get_stock", "loadedhub.get_received_items_for_period"],
+        components=[
+            _c(
+                "invoices_dashboard",
+                page=_p("invoices", "Invoices", "Receipt"),
+                full_width=True,
+                description="Outstanding supplier invoices with review state.",
+                connections=["loadedhub"],
+                connection="loaded",
             ),
             _c(
                 "receive_invoice_editor",
                 description="Receive-invoice card: units, costs, PO link, Accept & Receive.",
                 connections=["loadedhub"],
             ),
-            _c("stock_picker", description="Stock item picker used by order flows."),
         ],
         skills=[
-            "cogs_analysis",
-            "create_stock_order",
             "receive_loadedhub_invoice",
             "receive_loadedhub_invoices",
             "reconcile_received_invoices",
-            "stock_requirements",
-            "stocktake_variance",
         ],
-    ),
-    _app(
-        "bidfood-app",
-        name="Bidfood",
-        member="procurement",
-        icon="🚚",
-        description="Ordering through the Bidfood catalogue (tools to come).",
-        extra={"component_connections": ["bidfood"]},
-    ),
-    _app(
-        "loaded-kitchen",
-        note=(
-            "Recipes, menus and stock items live in Loaded. New recipes: draft_recipe opens each one as a card the chef completes and saves (no approval card); record_recipe writes one directly when asked to skip the card. An edit needs the recipe id from get_recipes."
+        works_with=["loaded"],
+        listing=_listing(
+            "Every supplier invoice read, checked against its order and received.",
+            "Procurement reads each supplier invoice line by line, checks it against the order and receives it. You only look at the lines that don’t add up, and at month end it reconciles the supplier’s statement.",
+            [
+                "Receive this morning’s invoices and show me anything that doesn’t match.",
+                "Why is the Coastal Drinks statement $84 out?",
+                "Which suppliers put their prices up this month?",
+            ],
         ),
-        name="Loaded Kitchen",
+    ),
+    _app(
+        "stocktakes",
+        name="Stocktakes",
+        member="procurement",
+        icon="📋",
+        description="Stock on hand, stocktakes and their variances, and cost of goods.",
+        tools=[
+            "loadedhub.get_stock",
+            # get_stocktakes replaced generate_stocktake_report + Orbit's
+            # stock_find_stocktakes (Sep 2026, sync_last_raw_tools.py).
+            "loadedhub.get_stocktakes",
+            "loadedhub.get_received_items_for_period",
+            # Purchases ÷ POS sales per month / week, food vs beverage — the
+            # cost-of-goods figure for a venue without stocktakes (Oct 2026).
+            "loadedhub.get_purchase_cogs",
+        ],
+        components=[
+            _c(
+                "stocktakes_board",
+                page=_p("stocktakes", "Stocktakes", "ClipboardCheck"),
+                full_width=True,
+                description="Recent stocktakes, their variances, and cost of goods.",
+                connection="loaded",
+            ),
+        ],
+        skills=["stocktake_variance", "cogs_analysis"],
+        works_with=["loaded"],
+        listing=_listing(
+            "Stock on hand, counts by area, and the variance explained.",
+            "See what you hold and what it’s worth, and find out where a stocktake went wrong, by area and by item.",
+            [
+                "What was the variance on last week’s bar stocktake?",
+                "What’s our stock on hand worth today?",
+                "Which items went missing in the kitchen count?",
+            ],
+        ),
+    ),
+    _app(
+        "supplier-tenders",
+        name="Supplier Tenders",
+        member="procurement",
+        icon="⚖️",
+        description="Agreed supplier price lists, with tendered-vs-paid review.",
+        uses_tools=["loadedhub.manage_supplier"],
+        components=[
+            _c(
+                "supplier_tenders",
+                page=_p("supplier-tenders", "Supplier Tenders", "Gavel"),
+                full_width=True,
+                description="Agreed supplier price lists, with tendered-vs-paid review.",
+                # Loaded's tenders API refuses Norm's OAuth token (TEMPORARY:
+                # app/connectors/loaded_legacy.py).
+                connections=["loaded_legacy"],
+                connection="loaded",
+            ),
+        ],
+        works_with=["loaded"],
+        listing=_listing(
+            "Compare suppliers’ prices for the same items before you switch.",
+            "Line up what each supplier charges for the same products, so you can see what you’d save before you move an order.",
+            [
+                "Which supplier is cheapest for limes?",
+                "Compare our dry goods prices across suppliers.",
+                "What would we save moving dairy to another supplier?",
+            ],
+        ),
+    ),
+    # ── Executive Chef ───────────────────────────────────────────────────
+    _app(
+        "recipes-and-costing",
+        name="Recipes & Costing",
         member="executive_chef",
         icon="📗",
-        description="Recipes, menus and menu engineering in Loaded.",
+        description="Recipes written up and costed at today's prices.",
         tools=[
             "loadedhub.get_recipes",
             "loadedhub.draft_recipe",
             "loadedhub.edit_recipe",
-            "loadedhub.get_menus",
-            "loadedhub.manage_menu",
-            "loadedhub.manage_stock_item",
             # the recipe write (config/consolidators/record_recipe.py) — on
-            # Loaded Legacy since 19 Oct 2026, the Cook Brothers App before
+            # Loaded Legacy since 19 Oct 2026
             "loaded_legacy.record_recipe",
+            "loadedhub.get_menu_item_costs",
+        ],
+        uses_tools=[
+            "loadedhub.get_stock",
+            "loadedhub.manage_stock_item",
+            "loadedhub.get_menus",
         ],
         components=[
             _c(
@@ -500,33 +603,87 @@ APPS = [
                 full_width=False,  # in chat: one inline card per recipe (Oct 2026)
                 description="Recipe editor with live Loaded costs; Save writes to Loaded.",
                 # Saves go through Loaded Legacy (TEMPORARY:
-                # app/connectors/loaded_legacy.py; the Cook Brothers App until
-                # 19 Oct 2026).
+                # app/connectors/loaded_legacy.py).
                 connections=["loaded_legacy"],
+                connection="loaded",
             ),
+        ],
+        skills=["create_recipes"],
+        works_with=["loaded"],
+        listing=_listing(
+            "Write recipes and see what every plate costs.",
+            "Describe a dish or upload a recipe and Norm writes it up, costed at today’s prices. When a supplier’s price moves, the plate cost moves with it.",
+            [
+                "What does our margherita cost to make?",
+                "Write up a recipe for the new brunch special.",
+                "Which dishes got dearer this month?",
+            ],
+        ),
+    ),
+    _app(
+        "menu-manager",
+        name="Menu Manager",
+        member="executive_chef",
+        icon="📖",
+        description="Every menu, item and price across the venues.",
+        tools=["loadedhub.get_menus", "loadedhub.manage_menu"],
+        components=[
             _c(
                 "menu_editor",
                 page=_p("menus", "Menus", "LayoutGrid"),
                 full_width=True,
                 description="Menus with sections, dishes and sell prices; saves to Loaded.",
+                connection="loaded",
             ),
+        ],
+        works_with=["loaded"],
+        listing=_listing(
+            "Every menu, item and price, across your venues.",
+            "See every menu across your venues, find the items that are missing a recipe, and keep prices in step.",
+            [
+                "List the items on the lunch menu.",
+                "Which menu items have no recipe?",
+                "Show me the dinner menu at Harbourside Kitchen.",
+            ],
+        ),
+    ),
+    _app(
+        "menu-engineering",
+        name="Menu Engineering",
+        member="executive_chef",
+        icon="🧮",
+        description="Which dishes to push, rework or drop.",
+        uses_tools=["loadedhub.get_menu_item_costs", "loadedhub.get_sales"],
+        components=[
             _c(
                 "menu_engineering",
                 page=_p("menu-engineering", "Menu Engineering", "Grid2x2"),
                 full_width=True,
                 description="Popularity × profitability quadrants from the COGS report.",
+                connection="loaded",
             ),
         ],
-        skills=["create_recipes"],
+        works_with=["loaded"],
+        listing=_listing(
+            "Which dishes to push, rework or drop.",
+            "Norm puts each dish’s sales beside its margin, so you can see your stars, the dishes that need a rethink and the ones to take off.",
+            [
+                "Which dishes should we push, rework or drop?",
+                "What’s the margin on each main?",
+                "How did the new menu do in its first month?",
+            ],
+        ),
     ),
+    # ── Time & Attendance ────────────────────────────────────────────────
     _app(
-        "loaded-time",
-        note="Answer roster questions grouped by day and sorted by start time: staff, role, start–end, hours.",
-        name="Loaded Time",
+        "rosters",
+        name="Rosters",
         member="time_attendance",
         icon="🗓️",
-        description="Rosters built and published in Loaded.",
+        description="The week's roster, built, costed and published.",
         tools=["norm.show_roster"],
+        # labour against sales while the roster is built
+        uses_tools=["loadedhub.get_labour", "loadedhub.get_sales"],
         components=[
             _c(
                 "roster_editor",
@@ -534,105 +691,60 @@ APPS = [
                 full_width=True,
                 description="Week/day roster grid with drag editing and Loaded publish.",
                 connections=["loadedhub"],
+                connection="loaded",
             ),
             _c("roster_table", description="Compact roster table for chat answers."),
         ],
         skills=["roster_viewer"],
+        works_with=["loaded"],
+        listing=_listing(
+            "Build, cost and publish the week’s roster.",
+            "Drag shifts around or ask Norm to make the change, watch labour against sales as you go, and publish when you’re happy.",
+            [
+                "Show me next week’s roster.",
+                "Move Mia to the Friday close.",
+                "How does labour compare to sales this week?",
+            ],
+        ),
     ),
     _app(
-        "hiring",
-        name="Norm Hiring",
-        member="hr",
-        icon="🧑‍💻",
-        description="Roles, candidate pipeline, candidates and talent pool — runs on Norm.",
-        note="To show it, open_app 'Norm Hiring' — at a job or candidate by name (inputs job, candidate) or the talent pool (view).",
-        extra={"app_slug": "hiring"},
-    ),
-    _app(
-        "training",
-        name="Norm Training",
-        member="hr",
-        icon="🎓",
-        description="Training programs, plans, tracker and sign-offs — runs on Norm.",
-        note="To show it, open_app 'Norm Training' — at a program or a person by name (inputs program, person) or a tab (view).",
-        extra={"app_slug": "training"},
-    ),
-    _app(
-        "performance",
-        name="Norm Performance",
-        member="hr",
-        icon="📈",
-        description="Performance reviews, review cycles and capability frameworks — runs on Norm.",
-        note="To show it, open_app 'Norm Performance' — at a review (input review) or a tab (view).",
-        extra={"app_slug": "performance"},
-    ),
-    _app(
-        "bamboohr-app",
-        name="BambooHR",
-        member="hr",
-        icon="🎋",
-        description="Jobs, applications, CVs and employees — BambooHR is the group's hiring system.",
-        tools=[
-            # get_hr replaced six raw reads (Sep 2026, sync_last_raw_tools.py)
-            # and took in the CV reader, get_applicant_resume, as `cv` (2 Oct
-            # 2026, sync_hr_fixes.py).
-            "bamboohr.get_hr",
-        ],
+        "attendance",
+        name="Attendance",
+        member="time_attendance",
+        icon="⏱️",
+        description="Who turned up against the roster, and what it cost.",
+        tools=["loadedhub.get_labour"],
+        uses_tools=["loadedhub.get_daily_performance"],
         components=[
             _c(
-                "hiring_board",
-                page=_p("hiring", "Hiring pipeline", "Users"),
+                "attendance_board",
+                page=_p("attendance", "Attendance", "UserCheck"),
                 full_width=True,
-                description="Hiring pipeline over BambooHR jobs and applications.",
-                connections=["bamboohr"],
-            ),
-            _c(
-                "criteria_editor",
-                description="Screening criteria for job applications.",
+                description="Rostered against clocked hours, flags and labour cost.",
+                connection="loaded",
             ),
         ],
-        skills=["candidate_review"],
-    ),
-    _app(
-        "brevo-app",
-        name="Brevo",
-        member="marketing",
-        icon="✉️",
-        description="Email campaigns and contacts via Brevo (tools to come).",
-        skills=["email_campaign_builder"],
-        extra={"component_connections": ["brevo"]},
-    ),
-    _app(
-        "metricool-app",
-        name="Metricool",
-        member="marketing",
-        icon="📱",
-        description="Social posts and analytics via Metricool (tools to come).",
-        extra={"component_connections": ["metricool"]},
-    ),
-    # A native Norm module, like Loaded Stock's pages: React components gated by
-    # `app: 'functions'`, data in Norm's own fn_* tables.
-    _app(**FUNCTIONS_APP),
-    _app(
-        "xero",
-        note=(
-            "Amounts, due dates and accounts come from the xero tools — never "
-            "quote one you haven't read. A bill lands in Xero as a draft via an "
-            "approval card. If a tool says a venue is not connected to Xero, "
-            "show the connect card (norm.show_connect, connector_name 'xero')."
+        works_with=["loaded"],
+        listing=_listing(
+            "Who turned up against the roster, and what it cost.",
+            "Norm checks clock-ins against the roster, so you can see who was late, who didn’t show and what the week really cost.",
+            [
+                "Who was late this week?",
+                "Did anyone not turn up for a rostered shift?",
+                "What did labour cost yesterday against the roster?",
+            ],
         ),
-        name="Xero",
+    ),
+    # ── Finance ──────────────────────────────────────────────────────────
+    _app(
+        "bills",
+        name="Bills",
         member="finance",
         icon="📒",
-        description=(
-            "Bills, contacts, chart of accounts and profit and loss from Xero; "
-            "creates supplier bills from reviewed invoices."
-        ),
+        description="Supplier bills in Xero, created from checked invoices.",
         tools=[
             "xero.get_bills",
             "xero.get_contacts",
-            "xero.get_accounts",
-            "xero.get_profit_and_loss",
             "xero.create_bill",
             # Loaded Payroll's Xero writes (Oct 2026, docs/plans/finance-
             # migration.md §4, D5): the payroll journal, the intercompany
@@ -643,6 +755,7 @@ APPS = [
             "xero.post_intercompany_documents",
             "xero.void_payroll_document",
         ],
+        uses_tools=["xero.get_accounts"],
         components=[
             _c(
                 "xero_bills",
@@ -653,8 +766,19 @@ APPS = [
                     "with links into Xero."
                 ),
                 connections=["xero"],
+                connection="xero",
             ),
         ],
+        works_with=["xero"],
+        listing=_listing(
+            "Checked supplier invoices become bills, coded to your accounts.",
+            "Once an invoice has been checked, Norm creates the bill in Xero, coded to your accounts, so nobody types it in twice.",
+            [
+                "Turn yesterday’s invoices into bills in Xero.",
+                "What bills are unpaid?",
+                "Which bills are due this week?",
+            ],
+        ),
     ),
     # The two Finance Apps (Oct 2026): native modules under the Finance member
     # — Loaded Payroll (the pay week, leave, intercompany, the reconciliation
@@ -665,16 +789,219 @@ APPS = [
     _app(**FINANCE_APPS[PAYROLL_APP_SLUG]),
     _app(**FINANCE_APPS[FINANCE_APP_SLUG]),
     _app(
-        "app-builder",
-        note=(
-            "To build or change a dashboard, open the build_a_dashboard skill "
-            "first; an app, the build_an_app skill."
+        "profit-and-loss",
+        name="Profit & Loss",
+        member="finance",
+        icon="📈",
+        description="Profit and loss by venue and month from Xero.",
+        tools=["xero.get_profit_and_loss", "xero.get_accounts"],
+        components=[
+            _c(
+                "profit_and_loss",
+                page=_p("profit-and-loss", "Profit & Loss", "TrendingUp"),
+                full_width=True,
+                description="A venue's month in Xero: income, costs and profit, compared.",
+                connections=["xero"],
+                connection="xero",
+            ),
+        ],
+        works_with=["xero"],
+        listing=_listing(
+            "Profit and loss by venue and month, explained in plain words.",
+            "Ask how a venue or a month went and Norm reads your profit and loss and explains what moved.",
+            [
+                "How was last month’s profit?",
+                "Why was September down on August?",
+                "Which venue made the most last quarter?",
+            ],
         ),
+    ),
+    # ── HR ───────────────────────────────────────────────────────────────
+    _app(
+        "hiring",
+        name="Hiring",
+        member="hr",
+        icon="🧑‍💻",
+        description="Roles, candidate pipeline, candidates and talent pool — with Hospo HR or BambooHR.",
+        uses_tools=["bamboohr.get_hr"],
+        components=[
+            _c(
+                "hiring_board",
+                page=_p("hiring", "Hiring (BambooHR)", "Users"),
+                full_width=True,
+                description="Hiring pipeline over BambooHR jobs and applications.",
+                connections=["bamboohr"],
+                connection="bamboohr",
+            ),
+            _c(
+                "criteria_editor",
+                description="Screening criteria for job applications.",
+                connection="bamboohr",
+            ),
+        ],
+        skills=["candidate_review"],
+        works_with=["hospo-hr", "bamboohr"],
+        listing=_listing(
+            "Job posts, a candidate pipeline and a talent pool.",
+            "Post roles, move candidates from applied to hired, keep a pool of the people you’d hire again, and get new starters onboarded.",
+            [
+                "Open the bar manager role.",
+                "Show me this week’s applicants.",
+                "Who’s in our talent pool for the kitchen?",
+            ],
+        ),
+        # Norm Hiring's own pages (services/builtin_apps.py), on Hospo HR
+        extra={"app_slug": "hiring", "app_connection": "hospo-hr"},
+    ),
+    _app(
+        "training",
+        name="Training",
+        member="hr",
+        icon="🎓",
+        description="Training programs, plans, tracker and sign-offs — on Hospo HR.",
+        works_with=["hospo-hr"],
+        listing=_listing(
+            "Programs for each role, a plan for each starter, sign-offs on shift.",
+            "Set up training programs for each role, give every new starter a plan, and have their trainer sign them off on shift.",
+            [
+                "Open Mia’s training plan.",
+                "Who hasn’t finished their RSA training?",
+                "Set up a program for new bartenders.",
+            ],
+        ),
+        extra={"app_slug": "training", "app_connection": "hospo-hr"},
+    ),
+    _app(
+        "performance",
+        name="Reviews",
+        member="hr",
+        icon="📈",
+        description="Performance reviews, review cycles and capability frameworks — on Hospo HR.",
+        works_with=["hospo-hr"],
+        listing=_listing(
+            "Review cycles that run on time.",
+            "Run reviews against a capability framework for each role, with reminders when someone is due.",
+            [
+                "Which reviews are due this month?",
+                "Open Tom’s last review.",
+                "Who hasn’t had a review this year?",
+            ],
+        ),
+        extra={"app_slug": "performance", "app_connection": "hospo-hr"},
+    ),
+    _app(
+        "employee-records",
+        name="Employee Records",
+        member="hr",
+        icon="🪪",
+        description="The BambooHR directory: who works where, since when.",
+        tools=[
+            # get_hr replaced six raw reads (Sep 2026, sync_last_raw_tools.py)
+            # and took in the CV reader as `cv` (2 Oct 2026, sync_hr_fixes.py).
+            "bamboohr.get_hr",
+        ],
+        components=[
+            _c(
+                "employee_records",
+                page=_p("employee-records", "Employees", "IdCard"),
+                full_width=True,
+                description="The BambooHR directory, searchable, with each person's details.",
+                connections=["bamboohr"],
+                connection="bamboohr",
+            ),
+        ],
+        works_with=["bamboohr"],
+        listing=_listing(
+            "Your people’s records, kept in step with your HR system.",
+            "Look people up, see who started when, and keep an eye on open roles in the HR system you already use.",
+            [
+                "Find Tom’s employee record.",
+                "Who started this month?",
+                "Show me the open jobs in BambooHR.",
+            ],
+        ),
+    ),
+    # ── Functions: a native Norm module (services/functions/catalog.py) ──
+    _app(**FUNCTIONS_APP),
+    # ── Reports ──────────────────────────────────────────────────────────
+    _app(
+        "sales-analysis",
+        name="Sales Analysis",
+        member="reports",
+        icon="📊",
+        description="Product, staff and period sales from Loaded, and revenue groups.",
+        tools=[
+            "loadedhub.get_sales",
+            "loadedhub.get_budgets",
+            "loadedhub.get_daily_performance",
+            "loadedhub.get_cogs_detail_for_period",
+            # POS items into Food / Beverage / Other — what makes food vs
+            # beverage sales and cost of goods right (sync_revenue_groups_config.py)
+            "loadedhub.set_revenue_group",
+        ],
+        components=[
+            _c(
+                "sales_analysis",
+                page=_p("sales-analysis", "Sales Analysis", "ChartColumnIncreasing"),
+                full_width=True,
+                description="Top and bottom sellers, staff sales and period comparisons.",
+                connection="loaded",
+            ),
+        ],
+        skills=["product_sales_analysis", "sales_comparison", "staff_sales_performance"],
+        works_with=["loaded"],
+        listing=_listing(
+            "Your best and worst sellers, staff sales and how this week compares.",
+            "See what sold and what didn’t, how each person on the floor sold, and how any week compares with the one before, last year or budget.",
+            [
+                "What were our top sellers last week?",
+                "How did sales compare with the same week last year?",
+                "Who sold the most on Saturday?",
+            ],
+        ),
+    ),
+    _app(
+        "weekly-report",
+        name="Weekly Report",
+        member="reports",
+        icon="📬",
+        description="Last week's numbers in the team's inbox on Monday morning.",
+        uses_tools=[
+            "loadedhub.get_daily_performance",
+            "loadedhub.get_sales",
+            "loadedhub.get_labour",
+            "loadedhub.get_budgets",
+            "loadedhub.get_cogs_detail_for_period",
+        ],
+        components=[
+            _c(
+                "weekly_report",
+                page=_p("weekly-report", "Weekly Report", "CalendarClock"),
+                full_width=True,
+                description="Last week's report as emailed, who gets it and when.",
+                connection="loaded",
+            ),
+        ],
+        skills=["weekly_sales_report"],
+        works_with=["loaded"],
+        listing=_listing(
+            "Last week’s numbers in the team’s inbox on Monday morning.",
+            "Pick the numbers that matter and Norm emails them to the team every Monday, so nobody has to pull them together.",
+            [
+                "Email me last week’s numbers every Monday.",
+                "Send the managers a weekly sales summary.",
+                "Add labour to the Monday report.",
+            ],
+        ),
+    ),
+    # ── Norm itself: App Builder ─────────────────────────────────────────
+    _app(
+        "app-builder",
         name="App Builder",
         member="app_builder",
         switchable=False,
         icon="🧩",
-        description="Build custom Apps for your team by chatting.",
+        description="Build custom Apps and dashboards for your team by chatting.",
         tools=["norm.list_app_capabilities", "norm.save_app", "norm.get_app"],
         # build_a_dashboard: scripts/sync_dashboard_tools.py
         skills=["build_an_app", "build_a_dashboard"],
@@ -806,6 +1133,12 @@ def main() -> None:
                         f"tool '{key}' claimed by both '{tool_claimed[key]}' and '{app['slug']}'"
                     )
                 tool_claimed[key] = app["slug"]
+            for c in comp.get("components", []):
+                sys_ = c.get("connection")
+                if sys_ and sys_ not in SYSTEMS:
+                    errors.append(
+                        f"{app['slug']}/{c['key']}: unknown system '{sys_}'"
+                    )
             for sk in comp.get("skills") or []:
                 if sk not in playbook_slugs:
                     errors.append(f"{app['slug']}: skill '{sk}' does not exist")
@@ -814,6 +1147,11 @@ def main() -> None:
                         f"skill '{sk}' claimed by both '{skill_claimed[sk]}' and '{app['slug']}'"
                     )
                 skill_claimed[sk] = app["slug"]
+        # A shared tool is owned by another App (uses_tools never claims).
+        for app in apps:
+            for key in app["composition"].get("uses_tools") or []:
+                if key not in tool_claimed and selected is None:
+                    errors.append(f"{app['slug']}: uses '{key}', which no App owns")
         if errors:
             for e in errors:
                 print(f"INVALID: {e}")

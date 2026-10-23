@@ -149,8 +149,8 @@ export default function AgentsPanel() {
         <div style={{ marginBottom: 20 }}>
           <div className="n-label">Apps &amp; tools</div>
           <div style={{ ...helpStyle, marginBottom: 8 }}>
-            What this agent can use comes from the Apps bound to it. Change it in the catalog seed;
-            see everything in Settings → App map.
+            Hiring this agent gives Norm every tool of these Apps, whichever are switched on. Change them in
+            the catalog seed; see everything in Settings → App map.
           </div>
           {mapApps === null ? (
             <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>Loading…</div>
@@ -166,15 +166,20 @@ export default function AgentsPanel() {
                         {!a.switchable && <Badge>Always on</Badge>}
                         <span style={{ flex: 1 }} />
                         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
-                          {a.required_connections.length ? `uses ${a.required_connections.map((c) => c.display_name).join(', ')}` : 'runs on Norm'}
+                          {(a.works_with ?? []).length ? `works with ${(a.works_with ?? []).join(', ')}` : 'runs on Norm'}
                         </span>
                       </div>
+                      {(a.screens ?? []).length > 0 && (
+                        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-soft)', marginBottom: 4 }}>
+                          Screens: {(a.screens ?? []).map((sc) => sc.connection_name ? `${sc.label} (${sc.connection_name})` : sc.label).join(', ')}
+                        </div>
+                      )}
                       {a.tools.length > 0 ? (
                         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
                           {a.tools.map((t) => (
                             <li key={t.key} style={{ overflowWrap: 'anywhere' }}>
                               <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text)' }}>{t.key}</span>
-                              <span style={{ color: 'var(--muted)' }}> · {t.type}{t.writes ? ' · writes' : ''}</span>
+                              <span style={{ color: 'var(--muted)' }}> · {t.type}{t.writes ? ' · writes' : ''}{t.owned === false ? ' · shared' : ''}</span>
                             </li>
                           ))}
                         </ul>
@@ -207,7 +212,7 @@ export default function AgentsPanel() {
             onClose={() => setConfirmingClear(false)}
           >
             <p style={{ margin: 0 }}>
-              Every conversation, in every environment, runs without it — only the personality lines and App notes remain.
+              Every conversation, in every environment, runs without it — only the personality lines remain.
             </p>
           </ConfirmDialog>
         )}
@@ -230,7 +235,7 @@ export default function AgentsPanel() {
   return (
     <div style={{ lineHeight: 1.45 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: 10, rowGap: 2, marginBottom: 12 }}>
-        <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>Agents</h3>
+        <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>AI agents and their apps</h3>
         {agents.length > 0 && (
           <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
             {agents.length} {agents.length === 1 ? 'agent' : 'agents'}
@@ -252,10 +257,16 @@ export default function AgentsPanel() {
                 <span style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 2 }}>
                   <span style={{ fontWeight: 600, fontSize: 'var(--fs-base)', color: 'var(--text)' }}>{agent.display_name}</span>
                   <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 400, color: 'var(--muted)' }}>{agent.slug}</span>
-                  {!agent.has_prompt && <Badge tone="error">No prompt</Badge>}
+                  {/* only Norm's shared prompt is a prompt (PROMPT_OWNER) */}
+                  {agent.slug === PROMPT_OWNER && !agent.has_prompt && <Badge tone="error">No prompt</Badge>}
                 </span>
                 {agent.description && (
                   <span style={{ display: 'block', fontSize: 'var(--fs-sm)', fontWeight: 400, color: 'var(--muted)', marginTop: 2 }}>{agent.description}</span>
+                )}
+                {mapApps && appsFor(agent.slug).length > 0 && (
+                  <span style={{ display: 'block', fontSize: 'var(--fs-sm)', fontWeight: 400, color: 'var(--text-soft)', marginTop: 4 }}>
+                    {appsFor(agent.slug).map((a) => a.name).join(' · ')}
+                  </span>
                 )}
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '0 0 auto' }}>

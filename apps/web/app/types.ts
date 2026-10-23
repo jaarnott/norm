@@ -455,6 +455,8 @@ export interface AgentConfig {
 }
 
 export interface AutomatedTask {
+  /** the organisation it works for (a platform admin is sent every organisation's) */
+  organization_id?: string | null;
   id: string;
   title: string;
   description: string | null;

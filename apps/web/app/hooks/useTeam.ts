@@ -20,6 +20,32 @@ export interface TeamTool {
   type: string;
   exists?: boolean;
   engine_only?: boolean;
+  /** false = used from another App (shared); true = this App owns it */
+  owned?: boolean;
+  /** the other Apps that give this tool to their agent too */
+  shared_with?: string[];
+}
+
+/** One of an App's screens and whether this organisation sees it
+ *  (services/screens.py): its system connected, and not switched off. */
+export interface TeamScreen {
+  page_id: string;
+  label: string;
+  component: string;
+  /** the system it's for: loaded, xero, bamboohr, hospo-hr, hospo-functions */
+  connection: string | null;
+  connection_name: string | null;
+  available: boolean;
+  switched_on: boolean;
+  visible: boolean;
+}
+
+/** A system an organisation can have — connected, or (built in) switched on. */
+export interface TeamSystem {
+  key: string;
+  name: string;
+  built_in: boolean;
+  on: boolean;
 }
 
 export interface TeamComponent {
@@ -63,6 +89,10 @@ export interface TeamApp {
   data: string[];
   app_platform: boolean;
   required_connections: TeamConnection[];
+  /** catalog Apps: the screens it has, by system */
+  screens?: TeamScreen[];
+  /** the systems it works with, by name */
+  works_with?: string[];
 }
 
 export interface IncludedMember {
@@ -104,6 +134,10 @@ export interface TeamState {
   /** page id -> the member whose menu it belongs in (from the catalog, the
    *  source of truth for placement; Norm Core pages keep their own member). */
   pageMember: Record<string, string>;
+  /** Page ids the menu hides: their system isn't connected here, or an
+   *  owner switched them off. null = hide nothing. */
+  pagesHidden: Set<string> | null;
+  systems: TeamSystem[];
   refresh: () => void;
 }
 
@@ -133,6 +167,8 @@ export function useTeam(token: string | null): TeamState {
     hired: null,
     appsOn: null,
     pageMember: {},
+    pagesHidden: null,
+    systems: [],
   });
 
   const load = useCallback(() => {
@@ -151,6 +187,8 @@ export function useTeam(token: string | null): TeamState {
             hired: null,
             appsOn: null,
             pageMember: pageMemberOf(d?.apps ?? []),
+            pagesHidden: null,
+            systems: d?.systems ?? [],
           }));
           return;
         }
@@ -159,11 +197,15 @@ export function useTeam(token: string | null): TeamState {
         const hired = new Set<string>(d.always_included ?? []);
         for (const m of members) if (m.hired) hired.add(m.slug);
         // The server's `enabled` already folds in "is its member hired".
-        const appsOn = new Set<string>(apps.filter((a) => a.enabled).map((a) => a.slug));
+        // `apps_on` is the server's whole set, with the job apps that replace
+        // a system-named App before they have catalog rows of their own.
+        const appsOn = new Set<string>(d.apps_on ?? apps.filter((a) => a.enabled).map((a) => a.slug));
         setState({
           loaded: true,
           gatingActive: true,
           pageMember: pageMemberOf(apps),
+          pagesHidden: new Set<string>(d.pages_hidden ?? []),
+          systems: d.systems ?? [],
           members,
           included: d.included ?? [],
           apps,
@@ -172,7 +214,7 @@ export function useTeam(token: string | null): TeamState {
           appsOn,
         });
       })
-      .catch(() => setState((s) => ({ ...s, loaded: true, hired: null, appsOn: null })));
+      .catch(() => setState((s) => ({ ...s, loaded: true, hired: null, appsOn: null, pagesHidden: null })));
   }, []);
 
   useEffect(() => {

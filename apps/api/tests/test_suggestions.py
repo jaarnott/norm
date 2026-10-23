@@ -134,7 +134,8 @@ def test_every_catalog_prompt_is_answered_by_its_apps_real_tools():
     for e in CATALOG:
         assert e.app in apps, e.id
         comp = apps[e.app].get("composition") or {}
-        assert set(e.tools) <= set(comp.get("tools") or []), e.id
+        given = set(comp.get("tools") or []) | set(comp.get("uses_tools") or [])
+        assert set(e.tools) <= given, e.id
         assert e.member in members, e.id
         assert len(e.text) <= 80, e.id
 
@@ -181,7 +182,7 @@ def test_only_hired_members_and_apps_that_are_on(db_session, org, lz, monkeypatc
 
     monkeypatch.setattr(entitlements, "hired_agent_slugs", lambda *a: {"procurement"})
     monkeypatch.setattr(
-        entitlements, "apps_on", lambda *a: {"loaded-stock", "norm-core"}
+        entitlements, "apps_on", lambda *a: {"invoice-receiving", "norm-core"}
     )
     user = person(db_session, org, [lz])
     out = run(db_session, user, lz)

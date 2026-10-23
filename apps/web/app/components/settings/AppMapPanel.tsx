@@ -1,12 +1,13 @@
 'use client';
 
 /**
- * Admin App Map — the platform's App table, live (Apps v3). Every App, the
- * ONE team member it's bound to (Norm Core: all), and the tools, components,
- * skills and connections it owns — derived by the server from the catalog and
- * specs on every load, never a hand-kept copy. The Unassigned panel on top is
- * the validator's ownership findings made visible: anything owned by no App,
- * claimed twice, or bound to a member that doesn't exist.
+ * Admin App Map — the platform's Apps, live. Every App, the ONE AI agent it
+ * belongs to (Norm Core: all), its screens by the system each is for, the
+ * tools it owns and the ones it shares from other Apps, its skills and what it
+ * works with — derived by the server from the catalog and specs on every load,
+ * never a hand-kept copy. The problems box on top is the validator's findings
+ * made visible. The Connections tab lists the systems Apps work with.
+ * docs/plans/agents-and-apps-restructure.md.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -16,6 +17,7 @@ import type { TeamApp } from '../../hooks/useTeam';
 import Badge, { type BadgeTone } from '../ui/Badge';
 import Icon from '../ui/Icon';
 import PageState from '../ui/PageState';
+import Tabs from '../ui/Tabs';
 
 interface MapApp extends TeamApp { member_name?: string }
 interface Findings {
@@ -26,18 +28,26 @@ interface Findings {
   double_claims: { kind: string; key: string; apps: string[] }[];
   unknown_components: string[];
   bad_members: { app: string; member: string | null; problem: string }[];
+  apps_without_screen?: string[];
+  unowned_uses?: string[];
 }
+interface MapSystem { key: string; name: string; status: 'live' | 'built_in' | 'coming_soon'; apps: string[] }
 
-// Sep 2026: an App claims TOOLS — consolidators and built-ins. An endpoint
-// (or a missing row) in a claim is a problem, shown in red.
+// An App claims TOOLS — consolidators and built-ins. An endpoint (or a
+// missing row) in a claim is a problem, shown in red.
 const TYPE_STYLE: Record<string, { tone: BadgeTone; label: string }> = {
   consolidator: { tone: 'ok', label: 'Consolidator' },
   'built-in': { tone: 'info', label: 'Built-in' },
   endpoint: { tone: 'error', label: 'Endpoint' },
   missing: { tone: 'error', label: 'Missing' },
 };
+const SYSTEM_STATUS: Record<MapSystem['status'], { tone: BadgeTone; label: string }> = {
+  live: { tone: 'ok', label: 'Live' },
+  built_in: { tone: 'info', label: 'Built into Norm' },
+  coming_soon: { tone: 'neutral', label: 'Coming soon' },
+};
 
-// The ownership findings box: dormant (not armed), all owned, or problems.
+// The findings box: dormant (not armed), all owned, or problems.
 const CALLOUT = {
   warn: { color: 'var(--warn)', background: 'var(--warn-bg)', icon: TriangleAlert },
   ok: { color: 'var(--ok)', background: 'var(--ok-bg)', icon: CircleCheck },
@@ -57,10 +67,11 @@ const inlineCode: React.CSSProperties = {
 };
 
 export default function AppMapPanel() {
-  const [data, setData] = useState<{ apps: MapApp[]; findings: Findings } | null>(null);
+  const [data, setData] = useState<{ apps: MapApp[]; systems?: MapSystem[]; findings: Findings } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<'apps' | 'connections'>('apps');
   const [member, setMember] = useState('');
-  const [connection, setConnection] = useState('');
+  const [worksWith, setWorksWith] = useState('');
 
   useEffect(() => {
     apiFetch('/api/admin/app-map')
@@ -73,15 +84,15 @@ export default function AppMapPanel() {
 
   const apps = useMemo(() => (data?.apps ?? []).filter((a) =>
     (!member || a.member === member || (a.bound_to_all && member !== '')) &&
-    (!connection || a.required_connections.some((c) => c.connector === connection))), [data, member, connection]);
+    (!worksWith || (a.works_with ?? []).includes(worksWith))), [data, member, worksWith]);
 
   const header = (
     <>
       <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>App map</h3>
       <p style={{ margin: '2px 0 16px', maxWidth: 760, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-        Every App, the AI agent it belongs to, and everything it owns — derived live from the catalog.
-        Each tool, component and skill belongs to exactly one App (Norm Core is the one App shared by every
-        member). Edit through <code style={inlineCode}>scripts/sync_marketplace_catalog.py</code>.
+        Every App, the AI agent it belongs to, its screens by the system each is for, and its tools and skills —
+        derived live from the catalog. Each tool is owned by one App and may be shared by others; a hired agent
+        gets every tool of its Apps. Edit through <code style={inlineCode}>scripts/sync_marketplace_catalog.py</code>.
       </p>
     </>
   );
@@ -92,25 +103,59 @@ export default function AppMapPanel() {
   const f = data.findings;
   const problems = [
     ...f.unowned_tools.map((k) => `Tool ${k} belongs to no App`),
+    ...(f.unowned_uses ?? []).map((k) => `Tool ${k} is shared by an App, but no App owns it`),
     ...f.unowned_components.map((k) => `Component ${k} belongs to no App`),
     ...f.unowned_skills.map((k) => `Skill ${k} belongs to no App`),
-    ...f.double_claims.map((d) => `${d.kind} ${d.key} is claimed by ${d.apps.join(' and ')}`),
+    ...f.double_claims.map((d) => `${d.kind} ${d.key} is owned by ${d.apps.join(' and ')}`),
     ...f.unknown_components.map((k) => `Component ${k} isn't in the web registry`),
     ...f.bad_members.map((b) => `${b.app}: ${b.problem}`),
+    ...(f.apps_without_screen ?? []).map((k) => `${k} has no screen`),
   ];
   const members = Array.from(new Set(data.apps.filter((a) => a.member && a.member !== '*').map((a) => a.member as string)));
-  const connections = Array.from(new Set(data.apps.flatMap((a) => a.required_connections.map((c) => c.connector))));
-  const names: Record<string, string> = {};
-  for (const a of data.apps) for (const c of a.required_connections) names[c.connector] = c.display_name;
-  // The member filter shows names, not slugs (the value stays the slug).
   const memberNames: Record<string, string> = {};
   for (const a of data.apps) if (a.member && a.member_name) memberNames[a.member] = a.member_name;
+  const systems = Array.from(new Set(data.apps.flatMap((a) => a.works_with ?? []))).sort();
+  const appName: Record<string, string> = Object.fromEntries(data.apps.map((a) => [a.slug, a.name]));
 
   const list = (items: React.ReactNode[]) => items.length
     ? <ul style={ul}>{items.map((x, i) => <li key={i}>{x}</li>)}</ul>
     : <span style={{ color: 'var(--muted)' }}>—</span>;
 
   const callout = CALLOUT[!f.armed ? 'warn' : problems.length ? 'error' : 'ok'];
+
+  /** Screens grouped by the system each is for. */
+  const screens = (a: MapApp) => {
+    const all = a.screens ?? [];
+    if (!all.length) {
+      const shared = a.components.filter((c) => c.shared);
+      return list(shared.map((c) => <span key={c.key}>{c.label} <span style={meta}>(every agent)</span></span>));
+    }
+    const groups = new Map<string, string[]>();
+    for (const s of all) {
+      const key = s.connection_name ?? 'Any';
+      groups.set(key, [...(groups.get(key) ?? []), s.label]);
+    }
+    return list([...groups.entries()].map(([system, labels]) => (
+      <span key={system}><span style={meta}>With {system}:</span> {labels.join(', ')}</span>
+    )));
+  };
+
+  const tools = (a: MapApp) => list(a.tools.map((t) => {
+    const st = TYPE_STYLE[t.type];
+    return (
+      <span key={t.key}>
+        <span style={mono}>{t.key}</span>{' '}
+        <Badge tone={st?.tone ?? 'error'}>{st?.label ?? t.type}</Badge>
+        {t.owned === false && <> <Badge tone="info" title="Owned by another App, shared with this one">Shared</Badge></>}
+        {t.owned !== false && (t.shared_with?.length ?? 0) > 0 && (
+          <span style={{ ...flag, color: 'var(--muted)' }}> · also in {(t.shared_with ?? []).map((s) => appName[s] ?? s).join(', ')}</span>
+        )}
+        {t.writes && <span style={{ ...flag, color: 'var(--warn)' }}> · writes</span>}
+        {!t.exists && <span style={{ ...flag, fontWeight: 600, color: 'var(--error)' }}> · missing</span>}
+        {t.engine_only && <span style={{ ...flag, color: 'var(--error)' }}> · engine-only</span>}
+      </span>
+    );
+  }));
 
   return (
     <div style={root}>
@@ -125,93 +170,104 @@ export default function AppMapPanel() {
           {!f.armed ? (
             <span>Tool ownership isn&apos;t armed yet — no App declares its tools, so the ownership checks are dormant.</span>
           ) : problems.length === 0 ? (
-            <span style={{ fontWeight: 600 }}>Everything is owned by exactly one App.</span>
+            <span style={{ fontWeight: 600 }}>Everything has an owner, and every App has a screen.</span>
           ) : (
             <>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>Unassigned or conflicting ({problems.length})</div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Problems ({problems.length})</div>
               <ul style={{ ...ul, color: 'var(--text)' }}>{problems.map((p) => <li key={p}>{p}</li>)}</ul>
             </>
           )}
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-        <label className="n-label" style={filterLabel}>Member
-          <select className="n-select" value={member} onChange={(e) => setMember(e.target.value)}>
-            <option value="">All</option>
-            {members.map((m) => <option key={m} value={m}>{memberNames[m] ?? m}</option>)}
-          </select>
-        </label>
-        <label className="n-label" style={filterLabel}>Needs
-          <select className="n-select" value={connection} onChange={(e) => setConnection(e.target.value)}>
-            <option value="">Anything</option>
-            {connections.map((c) => <option key={c} value={c}>{names[c] ?? c}</option>)}
-          </select>
-        </label>
-        <span style={meta}>{apps.length} Apps</span>
+      <div style={{ marginBottom: 12 }}>
+        <Tabs
+          label="App map"
+          items={[{ id: 'apps', label: 'Apps' }, { id: 'connections', label: 'Connections' }]}
+          value={tab}
+          onChange={(id) => setTab(id as 'apps' | 'connections')}
+        />
       </div>
 
-      <div className="n-card" style={{ overflowX: 'auto' }}>
-        <table className="n-table" style={{ minWidth: 1100 }}>
-          <thead>
-            <tr>
-              {['App', 'Member', 'Tools', 'Menu pages', 'Chat components', 'Skills', 'Needs'].map((h) => (
-                <th key={h}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {apps.map((a) => {
-              const pages = a.components.filter((c) => c.page || c.shared);
-              const appComps = a.components.filter((c) => c.inputs !== undefined);
-              const chat = a.components.filter((c) => !c.page && !c.shared && c.inputs === undefined);
-              return (
-                <tr key={a.slug}>
-                  <td style={cell}>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
-                      <strong style={{ fontWeight: 600 }}>{a.name}</strong>
-                      {!a.switchable && <Badge title="Always on while its member is hired">Always on</Badge>}
-                    </div>
-                    <div style={{ ...mono, fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{a.slug}</div>
-                  </td>
-                  <td style={cell}>{a.member_name ?? a.member ?? <Badge tone="error">None</Badge>}</td>
-                  <td style={cell}>{list(a.tools.map((t) => {
-                    const st = TYPE_STYLE[t.type];
-                    return (
-                      <span key={t.key}>
-                        <span style={mono}>{t.key}</span>{' '}
-                        <Badge tone={st?.tone ?? 'error'}>{st?.label ?? t.type}</Badge>
-                        {t.writes && <span style={{ ...flag, color: 'var(--warn)' }}> · writes</span>}
-                        {!t.exists && <span style={{ ...flag, fontWeight: 600, color: 'var(--error)' }}> · missing</span>}
-                        {t.engine_only && <span style={{ ...flag, color: 'var(--error)' }}> · engine-only</span>}
-                      </span>
-                    );
-                  }))}</td>
-                  <td style={cell}>{list([
-                    ...pages.map((c) => <span key={c.key}>{c.shared ? `${c.label} (every member)` : c.label} <span style={meta}>({c.key})</span></span>),
-                    ...(a.app_platform && !appComps.some((c) => c.app_page)
-                      ? [<span key="screen">{a.name} <span style={meta}>(App-platform screen)</span></span>] : []),
-                    ...appComps.filter((c) => c.app_page).map((c) => <span key={c.key}>{c.label} <span style={meta}>(App-platform, {c.key})</span></span>),
-                  ])}</td>
-                  <td style={cell}>{list([
-                    ...chat.map((c) => <span key={c.key} style={mono}>{c.key}</span>),
-                    ...appComps.map((c) => (
-                      <span key={`open-${c.key}`}>
-                        <span style={mono}>{c.key}</span>{' '}
-                        <span style={meta}>opens at: {(c.inputs ?? []).map((i) => i.name).join(', ') || 'start only'}</span>
-                      </span>
-                    )),
-                  ])}</td>
-                  <td style={cell}>{list(a.skills.map((s) => <span key={s.slug}>{s.label}{s.enabled === false && <> <Badge tone="warn">Disabled</Badge></>}</span>))}</td>
-                  <td style={cell}>{a.required_connections.length
-                    ? list(a.required_connections.map((c) => <span key={c.connector} style={{ whiteSpace: 'nowrap' }}>{c.display_name}</span>))
-                    : <span style={meta}>runs on Norm</span>}</td>
+      {tab === 'connections' ? (
+        <div className="n-card" style={{ overflowX: 'auto' }}>
+          <table className="n-table">
+            <thead><tr>{['Connection', 'Status', 'Apps that work with it'].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+            <tbody>
+              {(data.systems ?? []).map((s) => (
+                <tr key={s.key}>
+                  <td style={cell}><strong style={{ fontWeight: 600 }}>{s.name}</strong></td>
+                  <td style={cell}><Badge tone={SYSTEM_STATUS[s.status].tone}>{SYSTEM_STATUS[s.status].label}</Badge></td>
+                  <td style={cell}>{s.apps.length ? s.apps.join(', ') : <span style={meta}>None yet</span>}</td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+            <label className="n-label" style={filterLabel}>AI agent
+              <select className="n-select" value={member} onChange={(e) => setMember(e.target.value)}>
+                <option value="">All</option>
+                {members.map((m) => <option key={m} value={m}>{memberNames[m] ?? m}</option>)}
+              </select>
+            </label>
+            <label className="n-label" style={filterLabel}>Works with
+              <select className="n-select" value={worksWith} onChange={(e) => setWorksWith(e.target.value)}>
+                <option value="">Anything</option>
+                {systems.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            <span style={meta}>{apps.length} Apps</span>
+          </div>
+
+          <div className="n-card" style={{ overflowX: 'auto' }}>
+            <table className="n-table" style={{ minWidth: 1100 }}>
+              <thead>
+                <tr>
+                  {['App', 'AI agent', 'Screens', 'Tools', 'Chat components', 'Skills', 'Works with'].map((h) => (
+                    <th key={h}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {apps.map((a) => {
+                  const chat = a.components.filter((c) => !c.page && !c.shared && c.inputs === undefined);
+                  const appComps = a.components.filter((c) => c.inputs !== undefined);
+                  return (
+                    <tr key={a.slug}>
+                      <td style={cell}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                          <strong style={{ fontWeight: 600 }}>{a.name}</strong>
+                          {!a.switchable && <Badge title="Always on while its agent is hired">Always on</Badge>}
+                        </div>
+                        <div style={{ ...mono, fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{a.slug}</div>
+                      </td>
+                      <td style={cell}>{a.member_name ?? a.member ?? <Badge tone="error">None</Badge>}</td>
+                      <td style={cell}>{screens(a)}</td>
+                      <td style={cell}>{tools(a)}</td>
+                      <td style={cell}>{list([
+                        ...chat.map((c) => <span key={c.key} style={mono}>{c.key}</span>),
+                        ...appComps.map((c) => (
+                          <span key={`open-${c.key}`}>
+                            <span style={mono}>{c.key}</span>{' '}
+                            <span style={meta}>opens at: {(c.inputs ?? []).map((i) => i.name).join(', ') || 'start only'}</span>
+                          </span>
+                        )),
+                      ])}</td>
+                      <td style={cell}>{list(a.skills.map((s) => <span key={s.slug}>{s.label}{s.enabled === false && <> <Badge tone="warn">Disabled</Badge></>}</span>))}</td>
+                      <td style={cell}>{(a.works_with ?? []).length
+                        ? list((a.works_with ?? []).map((w) => <span key={w} style={{ whiteSpace: 'nowrap' }}>{w}</span>))
+                        : <span style={meta}>runs on Norm</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   );
 }

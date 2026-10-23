@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 CONNECTOR = "loaded_legacy"
 DISPLAY_NAME = "Loaded Legacy"
 #: The App and component that list this connection (Settings → Connections).
-APP_SLUG = "loaded-kitchen"
+APP_SLUG = "recipes-and-costing"
 COMPONENT = "recipe_editor"
 #: The one tool (config/consolidators/record_recipe.py).
 RECORD_RECIPE = "record_recipe"

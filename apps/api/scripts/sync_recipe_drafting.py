@@ -45,7 +45,7 @@ from scripts.tool_row_updates import RowUpdate, apply_row_updates, code_of  # no
 
 CONNECTOR = "loadedhub"
 ACTION = "draft_recipe"
-APP_SLUG = "loaded-kitchen"
+APP_SLUG = "recipes-and-costing"
 PLAYBOOK_SLUG = "create_recipes"
 #: The skill's name until 11 Oct 2026 — it described the old flow (one recipe,
 #: typed in). The row is renamed in place, so its id and history stay.

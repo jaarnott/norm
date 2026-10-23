@@ -41,6 +41,8 @@ def _page(key: str, page_id: str, label: str, icon: str, description: str) -> di
         "page": {"id": page_id, "label": label, "icon": icon},
         "full_width": True,
         "description": description,
+        # the system its screens are for (services/screens.py)
+        "connection": "hospo-functions",
     }
 
 
@@ -83,19 +85,29 @@ SKILLS = (
 #: ids, labels and icons).
 APP = {
     "slug": FUNCTIONS_APP_SLUG,
-    "name": "Norm Functions",
+    "name": "Functions",
     "member": MEMBER_SLUG,
     "icon": "🛎️",
     "description": (
         "Function enquiries, events, proposals, the client portal and venue "
         "inboxes — runs on Norm."
     ),
-    "note": (
-        "Native to Norm: work it with the norm_functions tools (not open_app); "
-        "staff edit on the Functions pages. Never quote a minimum spend, price "
-        "or date you haven't read from Functions. Drafts and proposals are "
-        "free; a customer email or proposal goes only from an approval card."
-    ),
+    "works_with": ["hospo-functions"],
+    # what the App Marketplace says about it (GET /api/public/marketplace)
+    "listing": {
+        "blurb": "Enquiries, proposals, events, a client portal and the venue inboxes.",
+        "about": (
+            "Every function enquiry lands in one place and moves through "
+            "proposal, deposit and run sheet, with a portal where the client "
+            "confirms the details themselves."
+        ),
+        "asks": [
+            "Show me this week’s function enquiries.",
+            "Draft a proposal for Mia’s 30th.",
+            "Which events are still waiting on a deposit?",
+        ],
+        "maker": "Hospo Apps",
+    },
     "tools": list(TOOLS),
     "skills": list(SKILLS),
     "components": [
@@ -190,8 +202,8 @@ def stand_in_rows(missing) -> list:
             "components": [dict(c) for c in APP["components"]],
             "skills": list(APP.get("skills", ())),
         }
-        if APP.get("note"):
-            composition["note"] = APP["note"]
+        composition["works_with"] = list(APP["works_with"])
+        composition["listing"] = dict(APP["listing"])
         rows.append(
             MarketplaceApp(
                 slug=APP["slug"],

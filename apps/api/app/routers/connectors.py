@@ -592,7 +592,7 @@ def _writes(tool_def: dict) -> bool:
 
 
 @router.post("/connectors/{name}/execute/{action}")
-async def execute_connector_action(
+def execute_connector_action(
     name: str,
     action: str,
     body: ExecuteBody,

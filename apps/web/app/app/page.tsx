@@ -190,7 +190,9 @@ export default function Home() {
       if (cfg?.app && !team.appsOn.has(cfg.app)) setActivePage(null);
       else if (cfg && !pageAllowed(cfg, viewerPermissions)) setActivePage(null);
     }
-  }, [team.hired, team.appsOn, activeAgent, activePage, viewerPermissions]);
+    // A screen switched off, or for a system this organisation doesn't have.
+    if (activePage && team.pagesHidden?.has(activePage)) setActivePage(null);
+  }, [team.hired, team.appsOn, team.pagesHidden, activeAgent, activePage, viewerPermissions]);
 
   // Check for existing auth on mount
   useEffect(() => {
@@ -1412,6 +1414,7 @@ export default function Home() {
               onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
               extraPages={effectiveAppPages}
               appsOn={team.appsOn}
+              pagesHidden={team.pagesHidden}
               pageMember={team.pageMember}
               permissions={viewerPermissions}
               activePage={activePage}
@@ -1503,6 +1506,7 @@ export default function Home() {
           extraPages={effectiveAppPages}
           onSelectPage={(pageId) => { handleSelectPage(pageId); closeDrawer(); }}
           appsOn={team.appsOn}
+          pagesHidden={team.pagesHidden}
           pageMember={team.pageMember}
           permissions={viewerPermissions}
           activePage={activePage}

@@ -24,6 +24,12 @@ import MenuEngineering from './MenuEngineering';
 import SupplierTenders from './SupplierTenders';
 import StockCatalogue from './catalogue/StockCatalogue';
 import XeroBills from './XeroBills';
+import StocktakesBoard from './StocktakesBoard';
+import AttendanceBoard from './AttendanceBoard';
+import ProfitAndLoss from './ProfitAndLoss';
+import EmployeeRecords from './EmployeeRecords';
+import SalesAnalysis from './SalesAnalysis';
+import WeeklyReport from './WeeklyReport';
 import DashboardView from './DashboardView';
 import VenuePicker from './VenuePicker';
 import StockPicker from './StockPicker';
@@ -72,7 +78,7 @@ export interface DisplayBlockProps {
 // block (the latest), and a draft_recipe call opens one card per recipe —
 // they need to sit inline, each its own card. The Recipes page is unaffected
 // (it is a functional page, not a block).
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'menu_engineering', 'supplier_tenders', 'stock_catalogue', 'dashboard_view', 'apps_dashboard', 'app_runner', 'functions_dashboard', 'functions_enquiries', 'functions_events', 'functions_inbox', 'functions_contacts', 'functions_reports', 'functions_settings', 'xero_bills', 'finance_weekly', 'payroll_payrun', 'payroll_leave', 'payroll_intercompany', 'payroll_reconciliation', 'payroll_settings', 'payroll_shadow', 'entertainers_register', 'entertainers_roster', 'entertainers_payments', 'entertainers_emails', 'finance_summary', 'finance_budgets', 'finance_budget_vs_loaded', 'finance_forecasting']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'menu_engineering', 'supplier_tenders', 'stock_catalogue', 'dashboard_view', 'apps_dashboard', 'app_runner', 'functions_dashboard', 'functions_enquiries', 'functions_events', 'functions_inbox', 'functions_contacts', 'functions_reports', 'functions_settings', 'xero_bills', 'finance_weekly', 'payroll_payrun', 'payroll_leave', 'payroll_intercompany', 'payroll_reconciliation', 'payroll_settings', 'payroll_shadow', 'entertainers_register', 'entertainers_roster', 'entertainers_payments', 'entertainers_emails', 'finance_summary', 'finance_budgets', 'finance_budget_vs_loaded', 'finance_forecasting', 'stocktakes_board', 'attendance_board', 'profit_and_loss', 'employee_records', 'sales_analysis', 'weekly_report']);
 
 // The single source of truth for which display components EXIST. The admin
 // Settings → Components panel derives its catalogue from these keys (with a
@@ -107,6 +113,12 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   functions_reports: FunctionsReports,
   functions_settings: FunctionsSettings,
   xero_bills: XeroBills,
+  stocktakes_board: StocktakesBoard,
+  attendance_board: AttendanceBoard,
+  profit_and_loss: ProfitAndLoss,
+  employee_records: EmployeeRecords,
+  sales_analysis: SalesAnalysis,
+  weekly_report: WeeklyReport,
   // Finance (Norm Finance App): the Weekly Summary block, chat + page
   finance_weekly: FinanceWeekly,
   // Finance member pages (Loaded Payroll + Norm Finance Apps), each loading its own data

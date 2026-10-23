@@ -128,6 +128,9 @@ def _automated_task_to_dict(
         "title": t.title,
         "description": t.description,
         "agent_slug": t.agent_slug,
+        # which organisation it works for: a platform admin sees every
+        # organisation's tasks, and a page filters to the one being acted in
+        "organization_id": t.organization_id,
         "prompt": t.prompt,
         "schedule_type": t.schedule_type,
         "schedule_config": t.schedule_config,

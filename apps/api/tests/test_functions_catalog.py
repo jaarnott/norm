@@ -95,7 +95,7 @@ class TestOneDeclaration:
         assert member["tier"] == "agent"
         assert member["composition"]["owns_agents"] == ["functions"]
         assert app["tier"] == "app" and app["composition"]["member"] == "functions"
-        assert app["name"] == "Norm Functions"
+        assert app["name"] == "Functions"
 
     def test_the_stand_ins_are_the_rows_the_seed_writes(self):
         """No drift between what the fallback shows and what the seed will

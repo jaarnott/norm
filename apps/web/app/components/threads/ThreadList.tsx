@@ -27,6 +27,9 @@ interface ThreadListProps {
    *  `app` shows iff its App is on; switching one App off removes exactly
    *  its pages. */
   appsOn?: Set<string> | null;
+  /** Page ids hidden for this organisation: their system isn't connected,
+   *  or an owner switched the screen off (useTeam). */
+  pagesHidden?: Set<string> | null;
   /** page id -> the member whose menu it belongs in (catalog placement). An
    *  App's pages show only in its member's menu; Norm Core pages (shared)
    *  keep their own per-member placement. */
@@ -49,7 +52,7 @@ export function pageAllowed(page: FunctionalPageConfig, permissions?: string[] |
   return !page.permission || !permissions || permissions.includes(page.permission);
 }
 
-export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pageMember, permissions, activePage, showBrand = true }: ThreadListProps) {
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pagesHidden, pageMember, permissions, activePage, showBrand = true }: ThreadListProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const searchBtnRef = useRef<HTMLButtonElement>(null);
@@ -67,6 +70,7 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
   const pages = [...FUNCTIONAL_PAGES, ...(extraPages ?? [])]
     .filter(p => (pageMember?.[p.id] ?? p.agent) === activeAgent)
     .filter(p => !p.app || !appsOn || appsOn.has(p.app))
+    .filter(p => !pagesHidden?.has(p.id))
     .filter(p => pageAllowed(p, permissions));
 
   return (

@@ -41,7 +41,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "reports.last_week_budget",
         "reports",
-        "loaded-reports",
+        "sales-analysis",
         "How did last week go at {venue} against budget?",
         SALES + ("loadedhub.get_budgets",),
         permission="reports:read",
@@ -51,7 +51,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "reports.yesterday",
         "reports",
-        "loaded-reports",
+        "sales-analysis",
         "How did yesterday go at {venue}?",
         SALES,
         permission="reports:read",
@@ -60,7 +60,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "reports.weekend_vs_last_year",
         "reports",
-        "loaded-reports",
+        "sales-analysis",
         "How did the weekend compare with last year at {venue}?",
         SALES,
         permission="reports:read",
@@ -69,7 +69,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "reports.wages_last_week",
         "reports",
-        "loaded-reports",
+        "weekly-report",
         "What were wages as a percentage of sales at {venue} last week?",
         SALES + LABOUR,
         permission="reports:read",
@@ -79,7 +79,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "reports.top_products",
         "reports",
-        "loaded-reports",
+        "sales-analysis",
         "What sold best at {venue} last week?",
         SALES,
         kind="discover",
@@ -89,7 +89,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "reports.staff_sales",
         "reports",
-        "loaded-reports",
+        "sales-analysis",
         "Who sold the most at {venue} last week?",
         SALES,
         kind="discover",
@@ -99,7 +99,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "reports.day_parts",
         "reports",
-        "loaded-reports",
+        "sales-analysis",
         "How do lunch and dinner compare at {venue} this month?",
         SALES,
         kind="discover",
@@ -108,7 +108,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "reports.group_last_week",
         "reports",
-        "loaded-reports",
+        "sales-analysis",
         "Compare last week's sales across my venues",
         SALES,
         permission="reports:read",
@@ -119,7 +119,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "reports.cogs_last_month",
         "reports",
-        "loaded-reports",
+        "sales-analysis",
         "What was cost of goods at {venue} last month?",
         ("loadedhub.get_cogs_detail_for_period",),
         permission="reports:read",
@@ -129,7 +129,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "procurement.receive_invoices",
         "procurement",
-        "loaded-stock",
+        "invoice-receiving",
         "Review this week's supplier invoices at {venue}",
         ("loadedhub.review_and_receive_invoices",),
         permission="orders:read",
@@ -137,7 +137,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "procurement.what_to_order",
         "procurement",
-        "loaded-stock",
+        "ordering",
         "What do I need to order for {venue} this week?",
         ("loadedhub.get_stock", "loadedhub.calculate_template_stock_requirements"),
         permission="orders:read",
@@ -147,7 +147,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "procurement.price_rises",
         "procurement",
-        "loaded-stock",
+        "invoice-receiving",
         "Which supplier prices have gone up at {venue} lately?",
         ("loadedhub.get_received_items_for_period",),
         kind="discover",
@@ -157,7 +157,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "procurement.supplier_spend",
         "procurement",
-        "loaded-stock",
+        "invoice-receiving",
         "What did we spend with each supplier last month at {venue}?",
         ("loadedhub.get_received_items_for_period",),
         permission="orders:read",
@@ -166,7 +166,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "procurement.cogs_trend",
         "procurement",
-        "loaded-stock",
+        "stocktakes",
         "What's our cost of goods at {venue} over the last 4 weeks?",
         ("loadedhub.get_purchase_cogs",),
         permission="orders:read",
@@ -174,7 +174,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "procurement.reconcile",
         "procurement",
-        "loaded-stock",
+        "invoice-receiving",
         "Check last week's invoices at {venue} against the orders",
         ("loadedhub.reconcile_received_invoices",),
         permission="orders:read",
@@ -183,7 +183,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "procurement.stocktake_variance",
         "procurement",
-        "loaded-stock",
+        "stocktakes",
         "Where did the last stocktake variance come from at {venue}?",
         ("loadedhub.get_stocktakes",),
         kind="discover",
@@ -193,7 +193,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "time.next_week_roster",
         "time_attendance",
-        "loaded-reports",
+        "rosters",
         "What does next week's roster at {venue} cost against usual sales?",
         LABOUR + SALES,
         permission="roster:read",
@@ -203,7 +203,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "time.on_tonight",
         "time_attendance",
-        "loaded-time",
+        "rosters",
         "Who's working at {venue} tonight?",
         ("norm.show_roster",),
         permission="roster:read",
@@ -212,7 +212,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "time.over_roster",
         "time_attendance",
-        "loaded-reports",
+        "attendance",
         "Who worked over their rostered hours at {venue} last week?",
         LABOUR,
         permission="roster:read",
@@ -221,7 +221,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "time.no_shows",
         "time_attendance",
-        "loaded-reports",
+        "attendance",
         "Did anyone miss a shift at {venue} this week?",
         LABOUR,
         kind="discover",
@@ -231,14 +231,14 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "chef.margins",
         "executive_chef",
-        "loaded-kitchen",
+        "recipes-and-costing",
         "Which dishes at {venue} make the least margin?",
         ("loadedhub.get_recipes", "loadedhub.get_menus"),
     ),
     Entry(
         "chef.recipe_from_photo",
         "executive_chef",
-        "loaded-kitchen",
+        "recipes-and-costing",
         "Turn a recipe card or photo into a costed recipe",
         ("loadedhub.draft_recipe",),
         kind="discover",
@@ -246,7 +246,7 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "chef.menu_costs",
         "executive_chef",
-        "loaded-kitchen",
+        "menu-manager",
         "What does each dish on the {venue} menu cost to make?",
         ("loadedhub.get_menus",),
         kind="discover",
@@ -255,23 +255,13 @@ CATALOG: tuple[Entry, ...] = (
     Entry(
         "hr.candidates",
         "hr",
-        "bamboohr-app",
+        "hiring",
         "Which candidates are waiting to hear back from us?",
         ("bamboohr.get_hr",),
         permission="hr:read",
         connection="bamboohr",
     ),
     # -------------------------------------------------------------- Marketing
-    Entry(
-        "marketing.weekend_email",
-        "marketing",
-        "brevo-app",
-        "Draft an email to our customers about this weekend at {venue}",
-        (),
-        kind="discover",
-        connection="brevo",
-        days=(2, 3, 4),
-    ),
     # ------------------------------------------------------------ App Builder
     Entry(
         "apps.closing_checklist",

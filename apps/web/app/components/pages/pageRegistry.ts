@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, LayoutGrid, Grid2x2, Gavel, ClipboardList, CalendarDays, Inbox, Contact, Settings, Package, Banknote, CalendarOff, ArrowLeftRight, Scale, Eye, Music, Wallet, Mail, Table, GitCompare, TrendingUp, type LucideIcon } from 'lucide-react';
+import { ArrowLeftRight, Banknote, BarChart3, BookOpen, Calendar, CalendarClock, CalendarDays, CalendarOff, ChartColumnIncreasing, ChefHat, ClipboardCheck, ClipboardList, Contact, Eye, Gavel, GitCompare, Grid2x2, IdCard, Inbox, LayoutDashboard, LayoutGrid, Mail, Music, Package, Receipt, Scale, Settings, ShoppingCart, Table, Timer, TrendingUp, UserCheck, Users, Wallet, type LucideIcon } from 'lucide-react';
 import { resolveAppIcon } from '../ui/appIcons';
 import { tradingMonday, tradingWeekRange } from '../../lib/rosterTime';
 
@@ -47,12 +47,23 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // the component calls /connectors/xero/execute/get_bills itself. Declared
     // in the Xero App's marketplace composition (sync_marketplace_catalog.py).
     id: 'xero-bills',
-    app: 'xero',
+    app: 'bills',
     connections: ['xero'],
     label: 'Bills',
     icon: Receipt,
     agent: 'finance',
     component: 'xero_bills',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    // Finance → Profit & Loss: a venue's P&L from Xero by month (get_profit_and_loss). Self-loading.
+    id: 'profit-and-loss',
+    app: 'profit-and-loss',
+    connections: ['xero'],
+    label: 'Profit & Loss',
+    icon: TrendingUp,
+    agent: 'finance',
+    component: 'profit_and_loss',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   // Dashboards (one per agent)
@@ -123,7 +134,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'roster',
-    app: 'loaded-time',
+    app: 'rosters',
     connections: ['loadedhub'],
     label: 'Roster',
     icon: Calendar,
@@ -134,6 +145,17 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
       action: 'get_roster',
       defaultParams: getCurrentWeekRange,
     },
+  },
+  {
+    // Time & Attendance → Attendance: rostered against clocked hours (get_labour). Self-loading.
+    id: 'attendance',
+    app: 'attendance',
+    connections: ['loadedhub'],
+    label: 'Attendance',
+    icon: UserCheck,
+    agent: 'time_attendance',
+    component: 'attendance_board',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {
     id: 'tasks-time_attendance',
@@ -151,7 +173,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   // HR (Hiring & Onboarding)
   {
     id: 'hiring',
-    app: 'bamboohr-app',
+    app: 'hiring',
     connections: ['bamboohr'],
     // Disambiguated from the Hiring APP, which now sits in this same menu and
     // supersedes this page. Two entries both reading 'Hiring' is a coin toss.
@@ -165,6 +187,17 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
       defaultParams: () => ({}),
     },
     componentProps: { connector_name: 'bamboohr' },
+  },
+  {
+    // HR → Employee Records: the BambooHR directory (get_hr). Shown only with BambooHR connected.
+    id: 'employee-records',
+    app: 'employee-records',
+    connections: ['bamboohr'],
+    label: 'Employees',
+    icon: IdCard,
+    agent: 'hr',
+    component: 'employee_records',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {
     // Functions and Finance run scheduled tasks like every other member
@@ -209,7 +242,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'orders',
-    app: 'loaded-stock',
+    app: 'ordering',
     connections: ['loadedhub'],
     label: 'Orders',
     icon: ShoppingCart,
@@ -223,7 +256,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     id: 'invoices',
-    app: 'loaded-stock',
+    app: 'invoice-receiving',
     connections: ['loadedhub'],
     label: 'Invoices',
     icon: Receipt,
@@ -237,7 +270,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // Self-loading via the supplier_tenders component-api rows. Declared in the
     // Loaded app's marketplace composition (sync_marketplace_catalog.py).
     id: 'supplier-tenders',
-    app: 'loaded-stock',
+    app: 'supplier-tenders',
     connections: ['loaded_legacy'],
     label: 'Supplier Tenders',
     icon: Gavel,
@@ -252,12 +285,23 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // runs get_stock / manage_stock_item / manage_supplier. Unit changes and
     // item merges also need the venue's Loaded Legacy login.
     id: 'stock-catalogue',
-    app: 'loaded-stock',
+    app: 'ordering',
     connections: ['loadedhub', 'loaded_legacy'],
     label: 'Catalogue',
     icon: Package,
     agent: 'procurement',
     component: 'stock_catalogue',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    // Procurement → Stocktakes: counts, variances and cost of goods (get_stocktakes, get_stock, get_purchase_cogs). Self-loading.
+    id: 'stocktakes',
+    app: 'stocktakes',
+    connections: ['loadedhub'],
+    label: 'Stocktakes',
+    icon: ClipboardCheck,
+    agent: 'procurement',
+    component: 'stocktakes_board',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   // Norm Functions (native module — app 'functions', member 'functions'). Each page loads its own
@@ -339,6 +383,28 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     },
   },
   {
+    // Reports → Sales Analysis: products, staff and period comparisons (get_sales; set_revenue_group). Self-loading.
+    id: 'sales-analysis',
+    app: 'sales-analysis',
+    connections: ['loadedhub'],
+    label: 'Sales Analysis',
+    icon: ChartColumnIncreasing,
+    agent: 'reports',
+    component: 'sales_analysis',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    // Reports → Weekly Report: last week's report as emailed, who gets it and when. Self-loading.
+    id: 'weekly-report',
+    app: 'weekly-report',
+    connections: ['loadedhub'],
+    label: 'Weekly Report',
+    icon: CalendarClock,
+    agent: 'reports',
+    component: 'weekly_report',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
     id: 'saved-reports',
     app: 'saved-reports',
     label: 'Reports',
@@ -392,7 +458,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // Self-loading: MenuEditor fetches the menu list + recipe options itself via
     // callComponentApi('menu_editor', ...), so no connector loadAction.
     id: 'menus',
-    app: 'loaded-kitchen',
+    app: 'menu-manager',
     connections: ['loadedhub'],
     label: 'Menus',
     icon: BookOpen,
@@ -404,7 +470,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     // Self-loading: RecipeEditor fetches the recipe list + units + stock items
     // itself via callComponentApi('recipe_editor', ...).
     id: 'recipes',
-    app: 'loaded-kitchen',
+    app: 'recipes-and-costing',
     connections: ['loadedhub'],
     label: 'Recipes',
     icon: ChefHat,
@@ -415,7 +481,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   {
     // Self-loading: MenuEngineering fetches the COGS-products report + menus itself.
     id: 'menu-engineering',
-    app: 'loaded-kitchen',
+    app: 'menu-engineering',
     connections: ['loadedhub'],
     label: 'Menu Engineering',
     icon: Grid2x2,

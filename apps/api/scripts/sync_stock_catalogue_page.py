@@ -28,7 +28,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-APP = "loaded-stock"
+APP = "ordering"
 KEY = "stock_catalogue"
 #: It sits after this one, as the catalogue script lists it.
 AFTER = "supplier_tenders"

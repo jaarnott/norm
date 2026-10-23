@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { AGENTS, ALL_APPS, CONNECTIONS } from '../_components/apps';
+import { CONNECTIONS } from '../_components/apps';
 import { AppCard, ConnectionMark } from '../_components/AppParts';
-import { publishedApps } from '../_components/published';
+import { marketplace } from '../_components/catalog';
 import { SIGNUP_HREF } from '../_components/links';
 
 export const metadata: Metadata = {
@@ -25,12 +25,10 @@ const TRUST: [string, string][] = [
 
 export default async function MarketplacePage() {
   const connections = Object.values(CONNECTIONS).filter(c => c.listed);
-  // Norm's own apps, then the ones venues built and published, under each agent.
-  const published = await publishedApps();
-  const shelves = AGENTS.map(agent => {
-    const byVenues = published.filter(p => p.agent.slug === agent.slug).map(p => p.app);
-    return { ...agent, own: agent.apps.length, byVenues: byVenues.length, apps: [...agent.apps, ...byVenues] };
-  });
+  // Each agent's apps from Norm's live catalog, then the ones venues built
+  // and published (catalog.ts).
+  const { agents: shelves } = await marketplace();
+  const appCount = shelves.reduce((n, a) => n + a.apps.length, 0);
   return (
     <>
       <section className="mkt-section mkt-section--cream" style={{ paddingTop: 56, paddingBottom: 72 }}>
@@ -66,7 +64,7 @@ export default async function MarketplacePage() {
         <div className="mkt-wrap mkt-stack mkt-stack--xl">
           <div className="mkt-head">
             <h2 className="mkt-h2">Apps by AI agent</h2>
-            <p className="mkt-body">{ALL_APPS.length + published.length} apps. Hire an agent and its apps switch on.</p>
+            <p className="mkt-body">{appCount} apps. Hire an agent and its apps switch on.</p>
           </div>
           {shelves.map(agent => (
             <div key={agent.slug} id={agent.slug} className="mkt-agent-apps">

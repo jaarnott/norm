@@ -687,7 +687,20 @@ def check_app_ownership(findings: dict) -> list[ConfigIssue]:
         add(
             f"app_map.{d['kind']}.{d['key']}",
             f"{d['kind']} claimed by several Apps: {', '.join(d['apps'])}",
-            "Each tool, component and skill belongs to exactly one App.",
+            "Each tool, component and skill is owned by exactly one App; "
+            "another App shares a tool through composition.uses_tools.",
+        )
+    for slug in findings.get("apps_without_screen") or []:
+        add(
+            f"catalog.{slug}",
+            "App has no screen (every App has at least one, 23 Oct 2026)",
+            "Give one of its components a page, or point it at an App-platform app.",
+        )
+    for key in findings.get("unowned_uses") or []:
+        add(
+            f"app_map.tool.{key}",
+            "an App shares a tool no App owns",
+            "Add it to one App's composition.tools.",
         )
     for key in findings.get("unknown_components") or []:
         add(

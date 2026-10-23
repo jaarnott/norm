@@ -131,15 +131,50 @@ class TestToolOwnership:
             db_session, user
         )
 
-    def test_switching_an_app_off_removes_exactly_its_tools(self, db_session):
+    def test_switching_an_app_off_keeps_its_tools(self, db_session):
+        """An App's switch takes its screens out of the menus; a hired agent
+        keeps every tool of its Apps (owner, 23 Oct 2026)."""
         user, org = _world(db_session)
         db_session.add(
             OrgAppEntitlement(organization_id=org.id, app_slug="stock", enabled=False)
         )
         db_session.flush()
-        tools = _tools(db_session, user)
-        assert "lh.get_stock" not in tools
-        assert {"lh.get_sales", "nm.remember"} <= tools
+        assert {"lh.get_stock", "lh.get_sales", "nm.remember"} <= _tools(
+            db_session, user
+        )
+
+    def test_an_opt_in_app_gives_its_tools_only_once_switched_on(self, db_session):
+        """bundled=False (the Finance Apps): hiring the agent isn't enough —
+        the organisation switches the App on (23 Oct 2026)."""
+        user, org = _world(db_session)
+        _tool_spec(db_session, "pay", ["run_payroll"])
+        _row(
+            db_session,
+            "payroll",
+            "app",
+            {"member": "procurement", "tools": ["pay.run_payroll"]},
+            bundled=False,
+        )
+        assert "pay.run_payroll" not in _tools(db_session, user)
+        db_session.add(
+            OrgAppEntitlement(organization_id=org.id, app_slug="payroll", enabled=True)
+        )
+        db_session.flush()
+        assert "pay.run_payroll" in _tools(db_session, user)
+
+    def test_a_shared_tool_comes_with_any_app_that_uses_it(self, db_session):
+        """Stock levels are owned by one App and used by others; Norm has the
+        tool while any App giving it belongs to a hired agent."""
+        user, org = _world(db_session)
+        db_session.add(
+            OrgAppEntitlement(
+                organization_id=org.id, app_slug="procurement-agent", enabled=False
+            )
+        )
+        db_session.flush()
+        assert "lh.get_stock" not in _tools(db_session, user)
+        _row(db_session, "costs", "app", {"member": "reports", "uses_tools": ["lh.get_stock"]})
+        assert "lh.get_stock" in _tools(db_session, user)
 
     def test_retiring_the_member_removes_its_apps_tools(self, db_session):
         user, org = _world(db_session)
@@ -189,13 +224,22 @@ class TestToolOwnership:
 
 
 class TestSkillsFollowTheirApp:
-    def test_skill_withheld_while_its_app_is_off(self, db_session):
+    def test_skill_comes_with_its_apps_agent(self, db_session):
+        """Like its tools: the App's switch leaves it, retiring its agent
+        withholds it (23 Oct 2026)."""
         from app.agents.prompt_builder import blocked_playbook_slugs
 
         user, org = _world(db_session)
         assert not blocked_playbook_slugs(db_session, user_id=user.id, db=db_session)
         db_session.add(
             OrgAppEntitlement(organization_id=org.id, app_slug="stock", enabled=False)
+        )
+        db_session.flush()
+        assert not blocked_playbook_slugs(db_session, user_id=user.id, db=db_session)
+        db_session.add(
+            OrgAppEntitlement(
+                organization_id=org.id, app_slug="procurement-agent", enabled=False
+            )
         )
         db_session.flush()
         assert blocked_playbook_slugs(db_session, user_id=user.id, db=db_session) == {

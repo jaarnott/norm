@@ -505,3 +505,14 @@ class TestNothingBlocksTheServer:
             and r.endpoint.__name__ not in awaits_the_upload
         ]
         assert blocking == []
+
+    def test_the_screens_tool_route_runs_on_its_own_thread(self):
+        """Every page that reads a tool goes through it (the new Stocktakes,
+        Attendance, Sales Analysis… screens, the Bills page); a stocktake report
+        takes ~50 s, and as `async def` it froze the worker's event loop, chat
+        streams included (23 Oct 2026)."""
+        import inspect
+
+        from app.routers.connectors import execute_connector_action
+
+        assert not inspect.iscoroutinefunction(execute_connector_action)

@@ -43,7 +43,7 @@ from scripts.tool_row_updates import (  # noqa: E402 — path set above
 
 OLD = "get_applicant_resume"
 KEYS = ("description", "optional_fields", "field_descriptions", "field_schema")
-APP = "bamboohr-app"
+APP = "employee-records"
 
 
 def updates() -> list[RowUpdate]:

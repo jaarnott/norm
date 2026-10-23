@@ -58,10 +58,10 @@ CB_PASSTHROUGHS = (
     "stock_loadedhub_tender",
     "kitchen_get_product_sales",
 )
-CLAIMS = {"loaded-kitchen": (f"{CB}.record_recipe", f"{LL}.record_recipe")}
+CLAIMS = {"recipes-and-costing": (f"{CB}.record_recipe", f"{LL}.record_recipe")}
 CONNECTIONS = {
-    ("loaded-kitchen", "recipe_editor"): [LL],
-    ("loaded-stock", "supplier_tenders"): [LL],
+    ("recipes-and-costing", "recipe_editor"): [LL],
+    ("supplier-tenders", "supplier_tenders"): [LL],
 }
 #: (agent, Cook Brothers App capability) → the Loaded Legacy one, or None to drop.
 BINDINGS = {

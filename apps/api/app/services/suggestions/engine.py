@@ -351,7 +351,7 @@ def pending_candidates(ctx: Context, log: list | None = None) -> list[dict]:
         return []
     if not ctx.venue or "orders:read" not in ctx.permissions:
         return []
-    if not (ctx.has_member("procurement") and ctx.has_app("loaded-stock")):
+    if not (ctx.has_member("procurement") and ctx.has_app("invoice-receiving")):
         return []
     if ctx.member and ctx.member != "procurement":
         return []

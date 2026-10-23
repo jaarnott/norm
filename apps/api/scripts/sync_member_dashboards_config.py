@@ -43,8 +43,8 @@ TEMPLATE_SLUGS = (
 
 #: App slug -> tools it claims (added to the composition's tools list).
 APP_CLAIMS = {
-    "loaded-reports": ["loadedhub.get_daily_performance"],
-    "loaded-kitchen": ["loadedhub.get_menu_item_costs"],
+    "sales-analysis": ["loadedhub.get_daily_performance"],
+    "recipes-and-costing": ["loadedhub.get_menu_item_costs"],
     # A tool belongs to exactly one App. The records read lives on Norm's core
     # App (always on) rather than on Hiring, Training or Performance, so the HR
     # member has it whichever of the three an organisation runs; the tool

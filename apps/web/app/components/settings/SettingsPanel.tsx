@@ -9,6 +9,7 @@ import type { VenueDetail, Organization, OrgMember } from '../../types';
 import ConnectorSpecsPanel from './ConnectorSpecsPanel';
 import BillingTab from './BillingTab';
 import ConnectionsMatrix from './ConnectionsMatrix';
+import BuiltInConnections from './BuiltInConnections';
 import AppMapPanel from './AppMapPanel';
 import EmailTab from './EmailTab';
 import DeploymentsPanel from './DeploymentsPanel';
@@ -1828,6 +1829,7 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
           {tab === 'connections' && (
             <div style={{ width: '100%' }}>
               <SectionHeader title="Connections" />
+              <BuiltInConnections />
               <ConnectionsMatrix />
             </div>
           )}

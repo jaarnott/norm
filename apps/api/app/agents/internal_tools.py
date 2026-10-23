@@ -1620,13 +1620,17 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
     if not candidates:
         return refuse("There are no apps you can open here.")
 
-    # "Norm Hiring" is the catalog's name for the app whose slug is `hiring`.
+    # "Hiring" is the catalog's name for the app whose slug is `hiring`.
     fronted_by = {
         (c.composition or {}).get("app_slug"): c.name
         for c in catalog
         if c.tier == "app" and (c.composition or {}).get("app_slug")
     }
     want = str(params.get("app") or "").strip().lower()
+    # "Norm Hiring" was the name until the job apps (23 Oct 2026); a request
+    # that still says it means Hiring.
+    if want.startswith("norm "):
+        want = want[len("norm ") :]
 
     def names(a) -> set[str]:
         return {

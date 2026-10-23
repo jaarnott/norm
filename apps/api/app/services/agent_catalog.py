@@ -225,6 +225,13 @@ REGISTERED_COMPONENTS = frozenset(
         "functions_settings",
         # Xero App (Finance member): bills in Xero, chat block + Bills page
         "xero_bills",
+        # The job apps' own screens (docs/plans/agents-and-apps-restructure.md §5)
+        "stocktakes_board",
+        "attendance_board",
+        "profit_and_loss",
+        "employee_records",
+        "sales_analysis",
+        "weekly_report",
         # Norm Finance App: the Weekly Summary block (chat + the Summary page)
         "finance_weekly",
         # Finance member pages (Loaded Payroll + Norm Finance Apps)
@@ -429,9 +436,39 @@ def _custom_required_connections(app, db: Session, config_db: Session) -> set[st
     return {c for c in conns if not _is_internal(c, internal) or c in INTERNAL_BRANDS}
 
 
-def _catalog_app_entry(row, ctx, config_db, db=None, organization_id=None) -> dict:
-    """One catalog App, described: who it's bound to and what it unlocks."""
+def _works_with(row, required: set[str]) -> list[str]:
+    """The systems an App works with, by name: its own list when it declares
+    one, else its screens' systems and its tools' (Loaded is two connectors)."""
+    from app.services.screens import SYSTEMS, app_screens, system_name
+
+    comp = row.composition or {}
+    if comp.get("works_with"):
+        return [system_name(s) for s in comp["works_with"]]
+    systems = {s["connection"] for s in app_screens(row) if s.get("connection")}
+    for conn in required:
+        systems |= {k for k, (_, conns) in SYSTEMS.items() if conn in conns}
+    return sorted(system_name(s) for s in systems)
+
+
+def _catalog_app_entry(
+    row,
+    ctx,
+    config_db,
+    db=None,
+    organization_id=None,
+    *,
+    users: dict[str, set[str]] | None = None,
+    systems: set[str] | None = None,
+    screens_off: set[str] | None = None,
+) -> dict:
+    """One catalog App, described: who it's bound to, what it unlocks, and
+    which of its screens this organisation sees (services/screens.py).
+
+    ``users`` (tool -> every App giving it) marks the tools it shares with
+    other Apps; ``systems`` and ``screens_off`` are the organisation's — None
+    for the admin App Map, which shows every screen as available."""
     from app.services.entitlements import ALL_MEMBERS, app_member, is_switchable
+    from app.services.screens import app_screens, screen_state
 
     comp = row.composition or {}
     member = app_member(row)
@@ -440,6 +477,13 @@ def _catalog_app_entry(row, ctx, config_db, db=None, organization_id=None) -> di
         _component_entry(e) for e in comp.get("components") or [] if isinstance(e, dict)
     ]
     platform = _app_platform_info(comp.get("app_slug"), db, organization_id)
+    users = users or {}
+
+    def _tool(key: str, owned: bool) -> dict:
+        others = sorted(users.get(key, set()) - {row.slug})
+        return {**ctx.tool(key), "owned": owned, "shared_with": others}
+
+    owned_tools = list(comp.get("tools") or [])
     return {
         "slug": row.slug,
         "name": row.name,
@@ -454,11 +498,20 @@ def _catalog_app_entry(row, ctx, config_db, db=None, organization_id=None) -> di
         "status": row.status,
         "pages": [c["page"] for c in components if c["page"]],
         "components": components + platform["components"],
-        "tools": [ctx.tool(k) for k in comp.get("tools") or []],
+        "tools": [_tool(k, True) for k in owned_tools]
+        + [
+            _tool(k, False)
+            for k in comp.get("uses_tools") or []
+            if k not in owned_tools
+        ],
         "skills": [ctx.skill(sl) for sl in comp.get("skills") or []],
         "data": platform["data"],
         "app_platform": bool(comp.get("app_slug")),
         "app_slug": comp.get("app_slug"),
+        "screens": [
+            screen_state(sc, systems, screens_off or set()) for sc in app_screens(row)
+        ],
+        "works_with": _works_with(row, required),
         "required_connections": [
             {"connector": c, "display_name": connection_display_name(c, config_db)}
             for c in sorted(required)
@@ -533,6 +586,12 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
     )
     gating_active = hired is not None
     ctx = _CapabilityContext(config_db)
+    from app.services import screens as _screens
+    from app.services.entitlements import tool_users
+
+    users = tool_users(config_db)
+    systems = _screens.systems_on(organization_id, db)
+    off = _screens.screens_off(organization_id, db)
 
     def is_on(slug: str) -> bool:
         return (not gating_active) or (on is not None and slug in on)
@@ -541,7 +600,16 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
     for row in rows:
         if row.tier not in ("app", "user"):
             continue
-        entry = _catalog_app_entry(row, ctx, config_db, db, organization_id)
+        entry = _catalog_app_entry(
+            row,
+            ctx,
+            config_db,
+            db,
+            organization_id,
+            users=users,
+            systems=systems,
+            screens_off=off,
+        )
         entry["enabled"] = is_on(row.slug)
         if row.slug in stand_ins:
             entry["switchable"] = False  # no catalog row to switch yet
@@ -638,6 +706,23 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
 
     return {
         "gating_active": gating_active,
+        # Every App that's on, by slug — including names no row carries yet
+        # (entitlements.SUCCESSORS), which the menu's pages are gated by.
+        "apps_on": sorted(on) if on is not None else None,
+        # The menu hides these pages: their system isn't connected here, or
+        # an owner switched them off (services/screens.py).
+        "pages_hidden": sorted(
+            _screens.pages_hidden(organization_id, db, config_db) or set()
+        ),
+        "systems": [
+            {
+                "key": k,
+                "name": name,
+                "built_in": k in _screens.BUILT_IN,
+                "on": systems is None or k in systems,
+            }
+            for k, (name, _) in _screens.SYSTEMS.items()
+        ],
         "always_included": sorted(ALWAYS_INCLUDED_AGENTS - {"base"}),
         "included": included,
         "members": members,
@@ -745,8 +830,29 @@ def ownership_findings(config_db: Session) -> dict:
                 }
             )
 
+    # Every App has at least one screen (owner, 23 Oct 2026) — Norm Core's
+    # are every agent's shared pages; a community App's live in its own org.
+    from app.services.screens import app_screens
+
+    no_screen = sorted(
+        a.slug
+        for a in app_rows
+        if a.tier == "app" and app_member(a) != ALL_MEMBERS and not app_screens(a)
+    )
+    # A shared tool must be owned by some App (uses_tools never claims one).
+    unowned_uses = sorted(
+        {
+            k
+            for a in app_rows
+            for k in (a.composition or {}).get("uses_tools") or []
+            if k not in tool_claims
+        }
+    )
+
     return {
         "armed": armed,
+        "apps_without_screen": no_screen,
+        "unowned_uses": unowned_uses,
         "unowned_tools": sorted(visible - set(tool_claims)) if armed else [],
         "unowned_components": sorted(REGISTERED_COMPONENTS - set(comp_claims))
         if comp_claims
@@ -791,12 +897,17 @@ def app_map_payload(
         for a in agent_rows
     }
     member_names.update({m["slug"]: m["name"] for m in INCLUDED_MEMBERS})
-    member_names["*"] = "All members"
+    member_names["*"] = "All agents"
+    from app.services.entitlements import tool_users
+
+    users = tool_users(config_db)
     apps = []
     for row in rows:
         if row.tier not in ("app", "user"):
             continue
-        entry = _catalog_app_entry(row, ctx, config_db, db, organization_id)
+        entry = _catalog_app_entry(
+            row, ctx, config_db, db, organization_id, users=users
+        )
         entry["member_name"] = member_names.get(app_member(row) or "", app_member(row))
         apps.append(entry)
     order = {
@@ -811,4 +922,48 @@ def app_map_payload(
         "app_builder": 8,
     }
     apps.sort(key=lambda a: (order.get(a["member"] or "", 9), a["name"]))
-    return {"apps": apps, "findings": ownership_findings(config_db)}
+    return {
+        "apps": apps,
+        "systems": _systems_view(apps, config_db),
+        "findings": ownership_findings(config_db),
+    }
+
+
+def _systems_view(apps: list[dict], config_db: Session) -> list[dict]:
+    """Every system an App works with or could: Norm's own (built in), the
+    connected kind, and connectors with no tools yet ("coming soon")."""
+    from app.services.screens import BUILT_IN, SYSTEMS
+
+    out = []
+    for key, (name, _) in SYSTEMS.items():
+        out.append(
+            {
+                "key": key,
+                "name": name,
+                "status": "built_in" if key in BUILT_IN else "live",
+                "apps": [
+                    a["name"] for a in apps if name in (a.get("works_with") or [])
+                ],
+            }
+        )
+    from app.db.config_models import ConnectionSpec
+
+    known = {c for _, conns in SYSTEMS.values() for c in conns}
+    for spec in config_db.query(ConnectionSpec).order_by(ConnectionSpec.display_name):
+        if spec.connector_name in known or spec.auth_type == "none":
+            continue
+        if spec.connector_name.startswith("norm") or spec.connector_name in (
+            "gmail",
+            "cook_brothers_app",
+        ):
+            continue
+        if not spec_rows.tools(spec):
+            out.append(
+                {
+                    "key": spec.connector_name,
+                    "name": spec.display_name,
+                    "status": "coming_soon",
+                    "apps": [],
+                }
+            )
+    return out

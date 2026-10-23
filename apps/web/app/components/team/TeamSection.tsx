@@ -132,6 +132,22 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
     }
   };
 
+  /** Switch one of an App's screens on or off (owners): an organisation can
+   *  take hiring from BambooHR and reviews from Hospo HR (services/screens.py). */
+  const setScreen = async (pageId: string, enabled: boolean, label: string) => {
+    if (busy) return;
+    setBusy(`screen:${pageId}`);
+    setNotice(null);
+    try {
+      const r = await apiFetch(`/api/marketplace/screens/${encodeURIComponent(pageId)}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' });
+      if (r.ok) changed();
+      else if (r.status === 403) setNotice('Only organisation owners can change the team.');
+      else setNotice((await r.json().catch(() => ({}))).detail || `Couldn't update ${label}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   /** "uses LoadedHub" — plus, when not every venue is connected, how many
    *  are (amber when one needs reconnecting). Per-venue detail on hover. */
   const connectionLine = (a: TeamApp): ReactNode =>
@@ -164,21 +180,26 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
   const appSwitch = (a: TeamApp, live: boolean) => {
     if (!a.switchable) return <Badge>Always on</Badge>;
     if (!live) return <Badge>{a.bundled ? 'Included' : 'Optional'}</Badge>;
-    const locked = !isOwner || busy === a.slug;
+    return toggle(a.enabled, a.name, busy === a.slug, () => setEntitled(a.slug, !a.enabled, a.name));
+  };
+
+  /** The team page's switch: owners only. */
+  const toggle = (on: boolean, label: string, isBusy: boolean, onClick: () => void) => {
+    const locked = !isOwner || isBusy;
     return (
       <button
         type="button"
         role="switch"
-        aria-checked={a.enabled}
-        aria-label={a.name}
-        disabled={!isOwner || busy === a.slug}
-        onClick={() => setEntitled(a.slug, !a.enabled, a.name)}
-        title={isOwner ? (a.enabled ? `Switch ${a.name} off` : `Switch ${a.name} on`) : 'Only organisation owners can change the team.'}
+        aria-checked={on}
+        aria-label={label}
+        disabled={locked}
+        onClick={onClick}
+        title={isOwner ? (on ? `Switch ${label} off` : `Switch ${label} on`) : 'Only organisation owners can change the team.'}
         style={{
           position: 'relative', flex: '0 0 auto', width: 36, height: 20, padding: 0,
           border: 'none', borderRadius: 999, cursor: locked ? 'default' : 'pointer',
-          background: a.enabled ? 'var(--primary)' : 'var(--bg)',
-          boxShadow: a.enabled ? 'none' : 'inset 0 0 0 1px var(--field)',
+          background: on ? 'var(--primary)' : 'var(--bg)',
+          boxShadow: on ? 'none' : 'inset 0 0 0 1px var(--field)',
           opacity: locked ? 0.45 : 1,
           transition: 'background-color 0.15s',
         }}
@@ -187,7 +208,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
           aria-hidden
           style={{
             position: 'absolute', borderRadius: '50%',
-            ...(a.enabled
+            ...(on
               ? { top: 2, left: 18, width: 16, height: 16, background: 'var(--on-primary)' }
               : { top: 4, left: 4, width: 12, height: 12, background: 'var(--field)' }),
             transition: 'left 0.15s, top 0.15s, width 0.15s, height 0.15s',
@@ -222,6 +243,43 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
     )
   );
 
+  /** An App's screens, grouped by the system each is for, with a switch per
+   *  screen. A screen for a system this organisation hasn't connected says so. */
+  const screenList = (a: TeamApp) => {
+    const screens = a.screens ?? [];
+    const groups = new Map<string, typeof screens>();
+    for (const sc of screens) {
+      const key = sc.connection_name ?? '';
+      groups.set(key, [...(groups.get(key) ?? []), sc]);
+    }
+    return (
+      <div style={{ display: 'grid', gap: 8 }}>
+        {[...groups.entries()].map(([system, items]) => (
+          <div key={system || 'none'}>
+            {groups.size > 1 && system && (
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 2 }}>With {system}</div>
+            )}
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+              {items.map((sc) => (
+                <li key={sc.page_id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                  <span style={{ ...ELLIPSIS, flex: '1 1 auto' }}>
+                    {sc.label}
+                    {!sc.available && sc.connection_name && (
+                      <span style={{ color: 'var(--muted)' }}> — needs {sc.connection_name}</span>
+                    )}
+                  </span>
+                  <span style={{ flex: '0 0 auto', display: 'inline-flex' }}>
+                    {toggle(sc.switched_on, sc.label, busy === `screen:${sc.page_id}`, () => setScreen(sc.page_id, !sc.switched_on, sc.label))}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   /** What an App unlocks: its menu pages, what it can do in chat, the skills
    *  it knows, the data it keeps, and what it needs connected. */
   const capabilityPanel = (a: TeamApp) => {
@@ -248,7 +306,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
     return (
       <div style={{ borderTop: '1px solid var(--line-soft)', marginTop: 10, width: '100%' }}>
         {a.description && <p style={{ margin: '10px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{a.description}</p>}
-        {section('Menu pages', pages.length || a.app_platform ? list(
+        {a.screens && a.screens.length > 0 ? section('Screens', screenList(a)) : section('Menu pages', pages.length || a.app_platform ? list(
           <>
             {pages.map((c) => li(
               <>{c.shared ? `${c.label} — in every AI agent's menu` : `${c.label} — in the ${memberName(a.member ?? '')} menu`}</>,
@@ -270,6 +328,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
             <>
               {strong(t.label)}
               {t.writes && <span style={{ marginLeft: 6 }}><Badge>Can make changes</Badge></span>}
+              {t.owned === false && <span style={{ marginLeft: 6 }}><Badge>Shared</Badge></span>}
               {t.description ? <span style={{ color: 'var(--muted)' }}> — {t.description}</span> : null}
             </>,
             t.key,
@@ -281,7 +340,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
         {a.data.length > 0 && section('Keeps its own data', (
           <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{a.data.map((d) => d.replace(/_/g, ' ')).join(' · ')}</div>
         ))}
-        {section('Works with', <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{connectionLine(a)}</div>)}
+        {section('Works with', <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{a.works_with?.length ? a.works_with.join(' · ') : connectionLine(a)}</div>)}
       </div>
     );
   };

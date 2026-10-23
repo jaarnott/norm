@@ -147,6 +147,78 @@ def _set_enabled(
     return {"slug": slug, "enabled": enabled}
 
 
+def _switch(db: Session, org_id: str, key: str, enabled: bool) -> None:
+    row = (
+        db.query(OrgAppEntitlement)
+        .filter(
+            OrgAppEntitlement.organization_id == org_id,
+            OrgAppEntitlement.app_slug == key,
+        )
+        .first()
+    )
+    if row is None:
+        db.add(OrgAppEntitlement(organization_id=org_id, app_slug=key, enabled=enabled))
+    else:
+        row.enabled = enabled
+    db.commit()
+
+
+@router.post("/marketplace/screens/{page_id}/{action}")
+def set_screen(
+    page_id: str,
+    action: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(require_permission("billing:manage")),
+):
+    """Switch one of an App's screens on or off for the organisation — so it
+    can take hiring from BambooHR and reviews from Hospo HR (owner, 23 Oct
+    2026; services/screens.py). Only a catalog App's own screen."""
+    from app.services.entitlements import _catalog
+    from app.services.screens import SCREEN_PREFIX, app_screens
+
+    if action not in ("enable", "disable"):
+        raise HTTPException(404, "enable or disable")
+    org_id = org_id_for_user(user.id, db)
+    if not org_id:
+        raise HTTPException(400, "You are not a member of an organization.")
+    known = {
+        sc["page_id"]
+        for row in _catalog(config_db)
+        if row.tier == "app"
+        for sc in app_screens(row)
+    }
+    if page_id not in known:
+        raise HTTPException(404, f"No screen '{page_id}'")
+    _switch(db, org_id, f"{SCREEN_PREFIX}{page_id}", action == "enable")
+    return {"page_id": page_id, "enabled": action == "enable"}
+
+
+@router.post("/connections/built-in/{system}/{action}")
+def set_built_in_connection(
+    system: str,
+    action: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("settings:connectors")),
+):
+    """Turn Hospo HR on or off for the organisation: connected like BambooHR,
+    but with nothing to enter (services/screens.py). Hospo Functions follows
+    the organisation's Functions setting instead, so it isn't switched here."""
+    from app.services.screens import CONNECTION_PREFIX
+
+    if system != "hospo-hr":
+        raise HTTPException(
+            404, "Only Hospo HR is switched here; Hospo Functions follows Functions."
+        )
+    if action not in ("enable", "disable"):
+        raise HTTPException(404, "enable or disable")
+    org_id = org_id_for_user(user.id, db)
+    if not org_id:
+        raise HTTPException(400, "You are not a member of an organization.")
+    _switch(db, org_id, f"{CONNECTION_PREFIX}{system}", action == "enable")
+    return {"system": system, "enabled": action == "enable"}
+
+
 @router.post("/marketplace/{slug}/enable")
 async def enable_app(
     slug: str,
@@ -269,6 +341,61 @@ async def submit_app(
     config_db.commit()
     logger.info("marketplace_submit", extra={"org_id": org_id, "app": req.app_slug})
     return {"slug": slug, "status": "pending"}
+
+
+@router.get("/public/marketplace")
+def public_marketplace(config_db: Session = Depends(get_config_db)):
+    """The App Marketplace, from the live catalog (owner, 23 Oct 2026): the AI
+    agents, each with the Apps the marketplace lists (those with a
+    ``listing``), and the systems they work with. No login, so only what the
+    public page shows. Venues' published Apps come from
+    /public/marketplace/apps."""
+    from app.services.agent_catalog import INCLUDED_MEMBERS
+    from app.services.entitlements import _catalog
+    from app.services.screens import BUILT_IN, SYSTEMS, system_name
+
+    rows = _catalog(config_db)
+    agents = [
+        {
+            "slug": (r.composition or {}).get("owns_agents", [r.slug])[0],
+            "name": r.name,
+            "tagline": (r.composition or {}).get("tagline") or r.description,
+            "price_cents": r.price_cents or 0,
+        }
+        for r in rows
+        if r.tier == "agent" and (r.composition or {}).get("owns_agents")
+    ] + [
+        {
+            "slug": m["slug"],
+            "name": m["name"],
+            "tagline": m["tagline"],
+            "price_cents": 0,
+        }
+        for m in INCLUDED_MEMBERS
+    ]
+    apps = []
+    for r in rows:
+        comp = r.composition or {}
+        if r.tier != "app" or not comp.get("listing"):
+            continue
+        apps.append(
+            {
+                "slug": r.slug,
+                "name": r.name,
+                "agent": comp.get("member"),
+                "description": r.description or "",
+                "listing": comp["listing"],
+                "works_with": [system_name(s) for s in comp.get("works_with") or []],
+                "price_cents": r.price_cents or 0,
+            }
+        )
+    used = {s for a in apps for s in a["works_with"]}
+    connections = [
+        {"key": k, "name": name, "built_in": k in BUILT_IN}
+        for k, (name, _) in SYSTEMS.items()
+        if name in used
+    ]
+    return {"agents": agents, "apps": apps, "connections": connections}
 
 
 @router.get("/public/marketplace/apps")

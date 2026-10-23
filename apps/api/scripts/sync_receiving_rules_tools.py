@@ -39,7 +39,7 @@ from app.services.receiving_rules import (  # noqa: E402
 )
 
 CONNECTOR = "norm"
-APP = "loaded-stock"
+APP = "invoice-receiving"
 
 ROWS = [
     {

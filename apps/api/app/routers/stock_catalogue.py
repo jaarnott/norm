@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 #: The App the page belongs to.
-APP = "loaded-stock"
+APP = "ordering"
 
 #: What the page may ask each tool to do. Anything else is refused here, so
 #: the page can never become a door to the rest of a tool.
@@ -67,7 +67,7 @@ class WriteRequest(BaseModel):
 
 
 def _venue(db: Session, config_db: Session, user: User, venue_id: str) -> Venue:
-    """The venue, if this person may open it and Loaded Stock is on there."""
+    """The venue, if this person may open it and Ordering is on there."""
     from app.services.entitlements import apps_on
 
     venue_id = card_actions.venue_for(db, user, venue_id)
@@ -77,7 +77,7 @@ def _venue(db: Session, config_db: Session, user: User, venue_id: str) -> Venue:
     on = apps_on(venue.organization_id, db, config_db)
     if on is not None and APP not in on:
         raise HTTPException(
-            403, "Loaded Stock isn't on for this organisation — turn it on first"
+            403, "Ordering isn't on for this organisation — turn it on first"
         )
     return venue
 

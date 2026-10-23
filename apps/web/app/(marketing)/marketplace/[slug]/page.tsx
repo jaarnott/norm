@@ -2,10 +2,10 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import Photo from '../../_components/Photo';
-import { CONNECTIONS, findApp } from '../../_components/apps';
+import { CONNECTIONS } from '../../_components/apps';
 import { ConnectionMark } from '../../_components/AppParts';
 import { LOGIN_HREF, SIGNUP_HREF } from '../../_components/links';
-import { findPublished } from '../../_components/published';
+import { findMarketplaceApp } from '../../_components/catalog';
 
 type Params = { params: Promise<{ slug: string }> };
 
@@ -14,7 +14,7 @@ type Params = { params: Promise<{ slug: string }> };
 // switch to that at run time (it failed with a 500 in production).
 export const dynamic = 'force-dynamic';
 
-const find = async (slug: string) => findApp(slug) ?? (await findPublished(slug));
+const find = (slug: string) => findMarketplaceApp(slug);
 
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const found = await find((await params).slug);

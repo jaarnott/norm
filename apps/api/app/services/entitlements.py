@@ -14,8 +14,10 @@ and a marketplace hiccup must never take tools away from a venue mid-service.
 The enforcement points all resolve through here:
 
     1. agent entry            -> agent_entitled()
-    2. prompt_builder tools   -> tool_owners() + apps_on(): a tool reaches the
-                                 agent iff the App that owns it is on
+    2. prompt_builder tools   -> tool_users() + apps_reachable(): a tool
+                                 reaches the agent iff some App that gives it
+                                 belongs to a hired agent (23 Oct 2026: an
+                                 App's own switch governs only its screens)
     3. mcp projection         -> inherits (2): project_tools gates through
                                  _collect_tools, so no third code path exists.
 
@@ -178,6 +180,27 @@ def _with_functions_stand_in(
 
 CUSTOM_PREFIX = "custom:"
 
+#: The job apps that replace each system-named App (owner, 23 Oct 2026 —
+#: docs/plans/agents-and-apps-restructure.md). The code that names the new
+#: apps ships before the catalog switches to them, so until a new App has a
+#: catalog row of its own it counts as on exactly when the App it comes from
+#: is (apps_on). Remove once the switch has run everywhere.
+SUCCESSORS: dict[str, tuple[str, ...]] = {
+    "loaded-stock": ("ordering", "invoice-receiving", "stocktakes", "supplier-tenders"),
+    "loaded-kitchen": ("recipes-and-costing", "menu-manager", "menu-engineering"),
+    "loaded-time": ("rosters", "attendance"),
+    "loaded-reports": ("sales-analysis", "weekly-report"),
+    "xero": ("bills", "profit-and-loss"),
+    "bamboohr-app": ("employee-records",),
+}
+
+
+def _with_successors(on: set[str], catalog_slugs: set[str]) -> set[str]:
+    for old, new in SUCCESSORS.items():
+        if old in on:
+            on.update(n for n in new if n not in catalog_slugs)
+    return on
+
 
 def custom_app_owner(app) -> str:
     """The team member a custom (App-platform) app is bound to. NULL agent =
@@ -210,10 +233,32 @@ def is_switchable(app_row) -> bool:
     return (app_row.composition or {}).get("switchable", True) is not False
 
 
+def app_tools(app_row) -> list[str]:
+    """Every tool an App gives its agent: the ones it owns (``tools``) and the
+    ones it uses from other Apps (``uses_tools``) — stock levels are owned by
+    Stocktakes and used by Ordering and Recipes & Costing (owner, 23 Oct 2026:
+    a tool can belong to more than one App)."""
+    comp = app_row.composition or {}
+    owned = list(comp.get("tools") or [])
+    return owned + [k for k in comp.get("uses_tools") or [] if k not in owned]
+
+
+def tool_users(config_db: Session) -> dict[str, set[str]]:
+    """``connector.action`` -> every App slug that gives the tool to its
+    agent, owner and users alike. Exposure reads this; labels, approvals and
+    coverage read the one owner (tool_owners)."""
+    users: dict[str, set[str]] = {}
+    for a in _catalog(config_db):
+        if a.tier in ("app", "user"):
+            for key in app_tools(a):
+                users.setdefault(key, set()).add(a.slug)
+    return users
+
+
 def tool_owners(config_db: Session) -> dict[str, str]:
-    """``connector.action`` -> the ONE App slug that owns the tool. This is
-    the App Map, the only tool-exposure list: a tool no App owns never
-    reaches the agent or MCP."""
+    """``connector.action`` -> the ONE App slug that owns the tool (lists it
+    in ``tools``; others may use it too, tool_users). This is the App Map: a
+    tool no App owns never reaches the agent or MCP."""
     owners: dict[str, str] = {}
     for a in _catalog(config_db):
         if a.tier in ("app", "user"):
@@ -230,6 +275,43 @@ def skill_owners(config_db: Session) -> dict[str, str]:
             for slug in (a.composition or {}).get("skills") or []:
                 owners.setdefault(slug, a.slug)
     return owners
+
+
+def apps_reachable(
+    organization_id: str | None, db: Session, config_db: Session
+) -> set[str] | None:
+    """The Apps whose tools and skills Norm may use for this org, or None when
+    gating is inactive: every App whose AI agent is hired — an App that's on
+    by default whether or not an owner switched it off (its switch takes its
+    screens out of the menus; a hired agent keeps every tool of its Apps,
+    owner 23 Oct 2026), and an opt-in App (bundled=False: the Finance Apps)
+    once the organisation has switched it on. A module's mode still wins:
+    Functions, Payroll and Finance off take their Apps' tools away. A
+    published community App counts while the org has it."""
+    apps = _catalog(config_db)
+    if not _agent_rows(apps) or not organization_id:
+        return None
+    hired = hired_agent_slugs(organization_id, db, config_db) or set()
+    entitled = entitled_slugs(organization_id, db, config_db)  # modes applied
+    # On-by-default Apps a module's mode doesn't veto, switched off or not.
+    bundled = _mode_off_wins(
+        {a.slug for a in apps if a.tier == "app" and a.bundled},
+        organization_id,
+        db,
+    )
+    out: set[str] = set()
+    for a in apps:
+        if a.tier == "app" and _catalog_app_members(a) & hired:
+            if a.slug in entitled or a.slug in bundled or not is_switchable(a):
+                out.add(a.slug)
+        elif a.tier == "user" and a.slug in entitled:
+            out.add(a.slug)
+    out = _with_successors(out, {a.slug for a in apps})
+    from app.services.finance_core.catalog import adjust_apps_on as finance_apps_on
+    from app.services.functions.entitlement import adjust_apps_on
+
+    out = adjust_apps_on(out, organization_id, db, apps)
+    return finance_apps_on(out, organization_id, db, apps, hired=hired)
 
 
 def apps_on(
@@ -267,6 +349,7 @@ def apps_on(
                 on.add(a.slug)
         elif a.tier == "user" and a.slug in entitled:
             on.add(a.slug)
+    on = _with_successors(on, {a.slug for a in apps})
     # A custom app fronted by a catalog row (Norm HR -> `hiring`) is ONE App:
     # the catalog row's switch governs it, so its pinned page follows too.
     custom_on = _custom_apps_on(organization_id, db, hired)

@@ -47,7 +47,7 @@ from scripts.tool_row_updates import (  # noqa: E402
 OLD = ("norm", "set_workflow_mode")
 NEW_ACTION = "set_approval_preference"
 NEW_KEY = f"norm.{NEW_ACTION}"
-FROM_APP, TO_APP = "loaded-stock", "norm-core"
+FROM_APP, TO_APP = "invoice-receiving", "norm-core"
 
 NEW_ROW = {
     "action": NEW_ACTION,

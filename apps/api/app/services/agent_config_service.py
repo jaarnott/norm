@@ -129,7 +129,7 @@ def default_tool_filter(agent_slug: str, config_db: Session) -> list[str] | None
     # a time_attendance or chef task that could read them before must still be
     # able to. Retire the union with the bindings, not before.
     from app.agents.registry import MEMBERS
-    from app.services.entitlements import ALL_MEMBERS, _catalog, app_member
+    from app.services.entitlements import ALL_MEMBERS, _catalog, app_member, app_tools
 
     apps = _catalog(config_db)
     if agent_slug not in MEMBERS:
@@ -139,10 +139,8 @@ def default_tool_filter(agent_slug: str, config_db: Session) -> list[str] | None
         if a.tier not in ("app", "user"):
             continue
         if app_member(a) in (agent_slug, ALL_MEMBERS):
-            scoped.update(
-                key.split(".", 1)[-1]
-                for key in (a.composition or {}).get("tools") or []
-            )
+            # every tool its Apps give it, shared ones included (app_tools)
+            scoped.update(key.split(".", 1)[-1] for key in app_tools(a))
     scoped |= _binding_actions(agent_slug, config_db)
     return sorted(scoped) if scoped else None
 

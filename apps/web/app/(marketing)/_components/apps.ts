@@ -1,4 +1,6 @@
-// The apps on the marketplace page (/marketplace) and each app's own page.
+// How the marketplace looks: each agent's colour and photo, each system's
+// logo — and a copy of the catalog's apps, shown only if Norm's live catalog
+// can't be reached (catalog.ts reads it; the catalog is the source).
 //
 // Every app is named after its job and filed under the AI agent that uses it.
 // Only apps that work in Norm today are listed: an app whose tools aren't
@@ -188,10 +190,10 @@ export const AGENTS: Agent[] = [
     slug: 'reports', name: 'Reports', tone: 'mkt-c-reports', image: 'team-reports',
     apps: [
       {
-        slug: 'dashboards', name: 'Dashboards', maker: MAKER, works: ['loaded', 'xero'],
-        blurb: 'Sales, labour, stock and costs on dashboards you build by asking.',
-        about: 'Ask for the numbers you check every week and Norm builds the dashboard: sales, labour, stock and cost of goods, by venue.',
-        asks: ['Build a dashboard of sales and labour by venue.', 'Chart cost of goods by month.', 'How were sales last week against budget?'],
+        slug: 'sales-analysis', name: 'Sales Analysis', maker: MAKER, works: ['loaded'],
+        blurb: 'Your best and worst sellers, staff sales and how this week compares.',
+        about: 'See what sold and what didn’t, how each person on the floor sold, and how any week compares with the one before, last year or budget.',
+        asks: ['What were our top sellers last week?', 'How did sales compare with the same week last year?', 'Who sold the most on Saturday?'],
       },
       {
         slug: 'weekly-report', name: 'Weekly Report', maker: MAKER, works: ['loaded'],
