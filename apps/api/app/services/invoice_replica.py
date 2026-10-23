@@ -186,24 +186,32 @@ def _credit_normalise(extraction: dict) -> dict:
 def sales_tax_rates(lh) -> dict[int, float]:
     """The venue's tax table from ``loadedhub.com/api/sales-tax`` (same auth
     headers as the api host — verified live 09 Aug 2026):
-    ``{sortOrder: rate}``, e.g. {0: 0.0, 1: 0.15}. Empty on failure."""
-    try:
-        r = httpx.get(
-            f"{_APP_HOST}/api/sales-tax",
-            headers=lh._headers,
-            auth=lh._auth,
-            timeout=30.0,
-        )
-        if r.status_code >= 400:
+    ``{sortOrder: rate}``, e.g. {0: 0.0, 1: 0.15}. Empty on failure.
+
+    A dropped connection is asked again once: a new item's tax setting comes
+    from this table, and one dropped request made a GST-free item GST (Grange
+    Gully Bistro breadcrumbs, 23 Oct 2026)."""
+    for attempt in (1, 2):
+        try:
+            r = httpx.get(
+                f"{_APP_HOST}/api/sales-tax",
+                headers=lh._headers,
+                auth=lh._auth,
+                timeout=30.0,
+            )
+            if r.status_code >= 400:
+                return {}
+            return {
+                int(row["sortOrder"]): float(row["rate"])
+                for row in r.json()
+                if isinstance(row, dict) and row.get("sortOrder") is not None
+            }
+        except httpx.TransportError as exc:
+            logger.warning("sales-tax fetch failed (attempt %d): %s", attempt, exc)
+        except Exception as exc:  # noqa: BLE001 — tax table is an enhancement
+            logger.warning("sales-tax fetch failed: %s", exc)
             return {}
-        return {
-            int(row["sortOrder"]): float(row["rate"])
-            for row in r.json()
-            if isinstance(row, dict) and row.get("sortOrder") is not None
-        }
-    except Exception as exc:  # noqa: BLE001 — tax table is an enhancement
-        logger.warning("sales-tax fetch failed: %s", exc)
-        return {}
+    return {}
 
 
 def _received_feed(lh) -> list:

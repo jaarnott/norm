@@ -291,6 +291,48 @@ class TestCreateItem:
         [(_, _, body)] = _post_items(lh)
         assert body["globalSalesTaxSortOrder"] == expected
 
+    def test_a_dropped_tax_table_read_is_asked_again(
+        self, db_session, vid, no_catalogue, monkeypatch
+    ):
+        """Grange Gully Bistro, 23 Oct 2026: the tax table read dropped ('Server
+        disconnected without sending a response') as Norm created 'Breadcrumbs
+        Fine Gluten Free', so its GST-free line made a GST item."""
+        import httpx
+
+        from app.services import invoice_replica
+
+        calls = []
+
+        def get(url, **kw):
+            calls.append(url)
+            if len(calls) == 1:
+                raise httpx.RemoteProtocolError("Server disconnected")
+            rows = [{"sortOrder": 0, "rate": 0.0}, {"sortOrder": 1, "rate": 0.1}]
+            return httpx.Response(200, json=rows)
+
+        monkeypatch.setattr(invoice_replica.httpx, "get", get)
+        held = {
+            "linked_supplier_id": "sup-1",
+            "lines": [{"id": "rep-3", "unit_cost": 73.0, "sale_tax_rate": 0.0}],
+        }
+        lh = FakeLoaded()
+        lh._headers, lh._auth = {}, None
+        CAT.create_item(
+            lh,
+            db_session,
+            None,
+            venue_id=vid,
+            invoice_id="inv-1",
+            line_id="rep-3",
+            name="Breadcrumbs Fine Gluten Free",
+            group_id="g-1",
+            unit_id="u-each",
+            doc_data=held,
+        )
+        [(_, _, body)] = _post_items(lh)
+        assert len(calls) == 2
+        assert body["globalSalesTaxSortOrder"] == 0
+
     def test_loadeds_own_line_rate_never_sets_the_tax(
         self, db_session, vid, no_catalogue, monkeypatch
     ):
