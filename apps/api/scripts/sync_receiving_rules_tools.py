@@ -31,7 +31,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from scripts.tool_row_updates import apply_row_updates  # noqa: E402
 
-from app.services.receiving_rules import DUE_BASES, DUE_WHEN, WEEKDAYS  # noqa: E402
+from app.services.receiving_rules import (  # noqa: E402
+    DUE_BASES,
+    DUE_WHEN,
+    KINDS,
+    WEEKDAYS,
+)
 
 CONNECTOR = "norm"
 APP = "loaded-stock"
@@ -43,7 +48,8 @@ ROWS = [
         "read_only": True,
         "description": (
             "The organisation's receiving rules — how Norm fills in what an "
-            "invoice leaves to the venue (the due date) whenever it reviews "
+            "invoice leaves to the venue (the due date; the unit a venue books "
+            "bunches in) whenever it reviews "
             "one, on the card and under Autopilot alike — each venue's own "
             "overrides and what is in force there, and whether this person "
             "can change them (can_edit: owners and managers)."
@@ -70,7 +76,10 @@ ROWS = [
             "instead changes nothing about receiving. Ask anything the rule "
             "leaves open (which Sunday: on or after the invoice date, or the "
             "first after it?); the card shows what it does to invoices dated "
-            "across a week. Owners and managers only."
+            "across a week. kind bunch_unit: a venue that counts herbs and "
+            "greens by the bunch books every line sold by the bunch in its own "
+            "unit ('unit', e.g. Bunch) instead of a weight. Owners and managers "
+            "only."
         ),
         "required_fields": ["scope"],
         "optional_fields": [
@@ -81,11 +90,12 @@ ROWS = [
             "weekday",
             "days",
             "day",
+            "unit",
             "remove",
             "note",
         ],
         "field_descriptions": {
-            "kind": "The rule: due_date (the only one so far).",
+            "kind": "The rule: due_date (default), or bunch_unit.",
             "scope": "organisation (every venue) or venue (one venue's override).",
             "venue": "The venue's name, when scope is venue.",
             "basis": "How the due date is worked out from the invoice's date: "
@@ -96,17 +106,19 @@ ROWS = [
             "when": "Which invoices it covers: "
             + "; ".join(f"{k} = {v}" for k, v in DUE_WHEN.items())
             + ". Default always.",
+            "unit": "For bunch_unit: the venue's unit, as Loaded spells it.",
             "remove": "true to remove the rule at this scope instead.",
             "note": "The person's own words for the rule, short.",
         },
         "field_schema": {
-            "kind": {"type": "string", "enum": ["due_date"]},
+            "kind": {"type": "string", "enum": list(KINDS)},
             "scope": {"type": "string", "enum": ["organisation", "venue"]},
             "venue": {"type": "string"},
             "basis": {"type": "string", "enum": list(DUE_BASES)},
             "weekday": {"type": "string", "enum": WEEKDAYS},
             "days": {"type": "integer"},
             "day": {"type": "integer"},
+            "unit": {"type": "string"},
             "when": {"type": "string", "enum": list(DUE_WHEN)},
             "remove": {"type": "boolean"},
             "note": {"type": "string"},

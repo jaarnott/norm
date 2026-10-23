@@ -505,3 +505,290 @@ def test_a_review_carries_the_rule(db_session):
     rule = next(s for s in data["suggestions"] if s["id"] == "rule:due_date")
     assert rule["apply"] == {"due_at": "2026-08-09"}  # invoice dated Fri 7 Aug
     assert data["suggestion_states"]["rule:due_date"]["open"] is True
+
+
+#: The Lott's units (23 Oct 2026): 'Bunch' is a count Norm hides from its own
+#: choices, since a bundling word is no measurement.
+BUNCH = {
+    "id": "u-bunch",
+    "name": "Bunch",
+    "ratio": 1,
+    "stockUnitType": "Count",
+    "datestampDeleted": "1970-01-01T00:00:00+00:00",
+    "hiddenByNorm": "not a measurement",
+}
+LOTT_UNITS = [
+    {"id": "u-kilo", "name": "Kilo", "ratio": 1, "stockUnitType": "Weight"},
+    {"id": "u-100g", "name": "100 Grams", "ratio": 0.1, "stockUnitType": "Weight"},
+    {"id": "u-each", "name": "Each", "ratio": 1, "stockUnitType": "Count"},
+    BUNCH,
+]
+
+
+class TestBunches:
+    """The Lott counts herbs, shallots and kale by the bunch and its recipes
+    use bunches. Norm booking Sydney Direct's bunches by weight (20–22 Oct
+    2026) multiplied its recipe costs: Loaded read each 'Bunch' in a recipe as
+    a kilo of a 100 g price (Coriander Prepped 25.88 → 322.35). Everywhere
+    else a bunch is a weight (owner, 23 Oct); this is the venue's rule."""
+
+    def test_settings_are_checked_and_said_in_words(self):
+        assert RR.clean("bunch_unit", {"unit": "  Bunch ", "basis": "x"}) == {
+            "unit": "Bunch"
+        }
+        assert (
+            RR.describe("bunch_unit", {"unit": "Bunch"})
+            == "anything sold by the bunch is booked as one 'Bunch'"
+        )
+        assert RR.examples("bunch_unit", {"unit": "Bunch"}) == []
+        with pytest.raises(RR.RuleError):
+            RR.clean("bunch_unit", {"unit": " "})
+
+    def test_what_the_invoice_sells_by_the_bunch(self):
+        for texts in (
+            ("CORIANDER bunch",),
+            ("Basil", "Bunch"),
+            ("HERB BASIL BCH", None),
+            ("SHALLOT bunch", "bunch"),
+        ):
+            assert RR.sold_by_the_bunch(*texts), texts
+        # A market bunch is several bunches; a box is no bunch at all.
+        for texts in (
+            ("HERB CORIANDER 5-6 M/B", "BUNCH"),
+            ("Coriander", "Market"),
+            ("MUSHROOM M/B box", None),
+            ("CORIANDER kg", "Kilo"),
+        ):
+            assert not RR.sold_by_the_bunch(*texts), texts
+
+    def _invoice(self):
+        return {
+            "lines": [
+                {
+                    "id": "ld-1",
+                    "description": "Coriander",
+                    "unit": "100 Grams",
+                    "linked_unit_id": "u-100g",
+                },
+                {
+                    "id": "ld-2",
+                    "description": "Coriander",
+                    "unit": "Kilo",
+                    "linked_unit_id": "u-kilo",
+                },
+            ],
+            "extracted_snapshot": {
+                "lines": [
+                    {"description": "CORIANDER bunch", "unit": "bunch"},
+                    {"description": "CORIANDER kg", "unit": "kg"},
+                ]
+            },
+        }
+
+    def _norms_own(self):
+        suggestions = [
+            {
+                "id": "line_value:unit:ld-1",
+                "kind": "line_value",
+                "field": "unit",
+                "line_id": "ld-1",
+                "apply": {"linked_unit_id": "u-100g"},
+            },
+            {
+                "id": "line_value:quantity_received:ld-1",
+                "kind": "line_value",
+                "field": "quantity_received",
+                "line_id": "ld-1",
+            },
+        ]
+        issues = [
+            {
+                "id": "unit_unconfirmed:ld-1",
+                "code": "unit_unconfirmed",
+                "line_id": "ld-1",
+            },
+            {
+                "id": "unit_unconfirmed:ld-2",
+                "code": "unit_unconfirmed",
+                "line_id": "ld-2",
+            },
+        ]
+        return suggestions, issues
+
+    def _apply(self, db, venue_id, data, suggestions, issues, units=LOTT_UNITS):
+        RR.apply(
+            db,
+            venue_id,
+            data,
+            {"lines": [{"id": "rep-0"}, {"id": "rep-1"}]},
+            suggestions,
+            issues=issues,
+            units=units,
+            pairs={"rep-0": "ld-1", "rep-1": "ld-2"},
+        )
+
+    def test_the_venue_books_every_bunch_in_its_own_unit(self, db_session):
+        org, lott, other, manager, _ = _world(db_session)
+        RR.set_rule(
+            db_session,
+            org_id=org.id,
+            venue_id=lott.id,
+            kind="bunch_unit",
+            params={"unit": "Bunch"},
+            note=None,
+            user=manager,
+        )
+        data, (suggestions, issues) = self._invoice(), self._norms_own()
+        self._apply(db_session, lott.id, data, suggestions, issues)
+        rule = next(s for s in suggestions if s["id"] == "rule:bunch_unit:ld-1")
+        assert (rule["kind"], rule["field"], rule["line_id"], rule["sure"]) == (
+            "line_value",
+            "unit",
+            "ld-1",
+            True,
+        )
+        assert rule["apply"] == {
+            "linked_unit_id": "u-bunch",
+            "unit": "Bunch",
+            "unit_ratio": 1,
+        }
+        assert rule["explanation"] == (
+            "The Lott Cafe's rule: anything sold by the bunch is booked as one 'Bunch'"
+        )
+        # Norm's own unit answer and the unit blocker on the bunch stand down;
+        # the per-kilo line and the quantity are untouched.
+        ids = {s["id"] for s in suggestions}
+        assert "line_value:unit:ld-1" not in ids
+        assert "line_value:quantity_received:ld-1" in ids
+        assert [i["id"] for i in issues] == ["unit_unconfirmed:ld-2"]
+        # Booked in Bunch already: nothing to change, nothing to override it.
+        data["lines"][0]["linked_unit_id"] = "u-bunch"
+        suggestions, issues = self._norms_own()
+        self._apply(db_session, lott.id, data, suggestions, issues)
+        assert not [s for s in suggestions if s.get("field") == "unit"]
+        # Another venue keeps weights.
+        suggestions, issues = self._norms_own()
+        self._apply(db_session, other.id, self._invoice(), suggestions, issues)
+        assert "line_value:unit:ld-1" in {s["id"] for s in suggestions}
+
+    def test_a_unit_the_venue_lacks_leaves_norms_answer(self, db_session):
+        org, lott, _, manager, _ = _world(db_session)
+        RR.set_rule(
+            db_session,
+            org_id=org.id,
+            venue_id=lott.id,
+            kind="bunch_unit",
+            params={"unit": "Bunch"},
+            note=None,
+            user=manager,
+        )
+        deleted = dict(BUNCH, hiddenByNorm=None)  # Loaded's own delete
+        for units in (LOTT_UNITS[:3], LOTT_UNITS[:3] + [deleted]):
+            suggestions, issues = self._norms_own()
+            self._apply(
+                db_session, lott.id, self._invoice(), suggestions, issues, units
+            )
+            assert "line_value:unit:ld-1" in {s["id"] for s in suggestions}
+            assert len(issues) == 2
+
+
+def test_a_review_books_the_lotts_bunches_its_way(db_session):
+    """The whole review: the bunch takes the venue's unit, no unit-kind
+    blocker (Bunch and the item's Each are both counts), and Autopilot
+    accepts it like any answer it is sure of."""
+    from app.services.invoice_review import autopilot_accept, review_invoice
+    from tests.test_invoice_review import CATALOGUE, DETAIL, EXTRACTION, REFERENCE
+
+    org, lott, _, manager, _ = _world(db_session)
+    RR.set_rule(
+        db_session,
+        org_id=org.id,
+        venue_id=lott.id,
+        kind="bunch_unit",
+        params={"unit": "Bunch"},
+        note=None,
+        user=manager,
+    )
+    coriander = {
+        "id": "item-coriander",
+        "name": "Coriander",
+        "globalSalesTaxSortOrder": 0,
+        "countingUnitId": "u-each",
+        "suppliers": [
+            {
+                "supplierId": "sup-akaroa",
+                "stockCode": "HERCO1BH",
+                "unitId": "u-each",
+                "unitCost": 2.2,
+                "defaultForSupplier": True,
+            }
+        ],
+    }
+    detail = DETAIL(subtotal=221.98, total=254.95)
+    detail["lines"].append(
+        {
+            "id": "ld-2",
+            "code": "HERCO1BH",
+            "description": "CORIANDER bunch",
+            "unit": "Each",
+            "linkedUnitId": "u-each",
+            "linkedUnitRatio": 1,
+            "quantityReceived": 1,
+            "unitCostExclTax": 2.2,
+            "totalCostExclTax": 2.2,
+            "saleTaxRate": 0.0,
+            "linkedItemId": "item-coriander",
+            "itemType": "Default",
+        }
+    )
+    extraction = EXTRACTION(subtotal_ex_tax=221.98, total_incl_tax=254.95)
+    extraction["lines"].append(
+        {
+            "code": "HERCO1BH",
+            "description": "CORIANDER bunch",
+            "quantity": 1,
+            "unit": "bunch",
+            "unit_of_measure": None,
+            "unit_price_ex_tax": 2.2,
+            "line_total_ex_tax": 2.2,
+            "gst": "free",
+        }
+    )
+    data = review_invoice(
+        db_session,
+        None,
+        lott.id,
+        "inv-1",
+        lh=object(),
+        detail=detail,
+        extraction=extraction,
+        reference=REFERENCE(
+            catalogue=CATALOGUE + [coriander],
+            units=LOTT_UNITS,
+            unit_resolver_ask=lambda p: {
+                "size": "100 g",
+                "confidence": "high",
+                "why": "a bunch of coriander",
+            },
+        ),
+    )
+    rule = next(s for s in data["suggestions"] if s["id"] == "rule:bunch_unit:ld-2")
+    assert rule["apply"]["linked_unit_id"] == "u-bunch"
+    assert not [
+        s
+        for s in data["suggestions"]
+        if s.get("line_id") == "ld-2"
+        and s.get("field") == "unit"
+        and s["id"] != rule["id"]
+    ]
+    assert not [
+        i
+        for i in data["issues"]
+        if i.get("line_id") == "ld-2"
+        and i["code"] in ("unit_kind_mismatch", "unit_unconfirmed")
+    ]
+    autopilot_accept(
+        None, None, lott.id, "inv-1", data, VA.settings_from({"mode": "autopilot"})
+    )
+    line = next(ln for ln in data["lines"] if ln["id"] == "ld-2")
+    assert (line["linked_unit_id"], line["unit"]) == ("u-bunch", "Bunch")

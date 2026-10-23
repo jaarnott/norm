@@ -47,7 +47,7 @@ def _org_for(db: Session, thread_id: str | None, user) -> str | None:
 def _params(p: dict) -> dict:
     return {
         k: p.get(k)
-        for k in ("basis", "weekday", "days", "day", "when")
+        for k in ("basis", "weekday", "days", "day", "when", "unit")
         if p.get(k) is not None
     }
 
@@ -159,7 +159,7 @@ def _preview_set_receiving_rule(
         return {"done": {"result": "already set", "rule": plan["after"]}}
     label = RR.KINDS[plan["kind"]]["label"]
     note = "Changes take effect the next time Norm reviews an invoice."
-    if not plan["remove"]:
+    if not plan["remove"] and plan["kind"] == "due_date":
         shown = RR.examples(plan["kind"], plan["params"])
         note = (
             "For invoices dated across a week: "

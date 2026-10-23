@@ -256,11 +256,16 @@ def check_venue(db, config_db, run, venue, invoice_ids: list[str], lh=None) -> d
         "to_confirm": 0,
         "errors": [],
     }
+    from app.services import receiving_rules
+
     lh = lh or LoadedInvoiceClient(db, config_db, venue.id)
     units = [
         u for u in (lh.get("/1.0/stock/internal/units") or []) if isinstance(u, dict)
     ]
     by_id = {u.get("id"): u for u in units}
+    # A venue that books bunches in its own unit (The Lott, by a receiving
+    # rule): those lines are its choice, not a unit to correct.
+    bunch_unit = receiving_rules.bunch_unit_at(db, venue.id, units)
     for invoice_id in invoice_ids:
         try:
             detail = lh.invoice(invoice_id)
@@ -289,6 +294,15 @@ def check_venue(db, config_db, run, venue, invoice_ids: list[str], lh=None) -> d
             printed = (
                 match_printed(line, printed_lines, used) if printed_lines else None
             )
+            if (
+                bunch_unit
+                and line.get("linkedUnitId") == bunch_unit.get("id")
+                and receiving_rules.sold_by_the_bunch(
+                    (printed or {}).get("description") or line.get("description"),
+                    (printed or {}).get("unit"),
+                )
+            ):
+                continue
             answer, key, estimate = None, None, None
             if supplier_key:
                 key = supplier_catalog.product_key(

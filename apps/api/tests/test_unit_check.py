@@ -563,3 +563,36 @@ class TestTheDojoEndpoints:
             headers=admin_headers,
         )
         assert r.status_code == 200 and r.json()["status"] == "dismissed"
+
+
+def test_a_venues_bunch_rule_is_its_choice_not_a_correction(db_session, world):
+    """The Lott books bunches in its own 'Bunch' unit (a receiving rule, 23 Oct
+    2026). Such a line isn't a unit to correct, though Norm's catalogue says
+    100 Grams; a venue without the rule still gets the correction."""
+    from app.db.models import User
+    from app.services import receiving_rules as RR
+
+    bunch = {
+        "id": "u-bunch",
+        "name": "Bunch",
+        "ratio": 1,
+        "stockUnitType": "Count",
+        "datestampDeleted": "1970-01-01T00:00:00+00:00",
+        "hiddenByNorm": "not a measurement",
+    }
+    lh = world["lh"]
+    lh.units = UNITS + [bunch]
+    detail = lh.details["inv-1"]
+    detail["lines"][0].update(unit="Bunch", linkedUnitId="u-bunch")
+    RR.set_rule(
+        db_session,
+        org_id=world["venue"].organization_id,
+        venue_id=world["venue"].id,
+        kind="bunch_unit",
+        params={"unit": "Bunch"},
+        note=None,
+        user=db_session.get(User, "u-owner"),
+    )
+    _run(db_session, world)
+    lines = {p.line_id for p in db_session.query(UnitCheckProposal).all()}
+    assert "l1" not in lines and "l2" in lines

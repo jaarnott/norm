@@ -192,6 +192,21 @@ export default function ReceivingRulesPanel({ orgName }: { orgName?: string | nu
     }
   };
 
+  // Rules other than the due date (a venue's unit for bunches, set with Norm
+  // in chat): what each does and whose it is, and Remove for the editors.
+  const otherRules = (rules: Rule[]) =>
+    rules
+      .filter((r) => r.kind !== kind?.kind)
+      .map((r) => (
+        <div key={r.id} style={{ ...muted, marginTop: 4 }} data-testid="receiving-rule-other">
+          {r.label}: {r.description}.{' '}
+          {r.scope === 'venue' ? <Badge tone="info">This venue’s own rule</Badge> : <Badge>From the organisation</Badge>}{' '}
+          {editable && (r.scope === 'venue' || rules === view.organisation) && (
+            <Button size="sm" variant="quiet" onClick={() => remove(r)}>Remove</Button>
+          )}
+        </div>
+      ));
+
   const editor = editing && (
     <div style={{ margin: '0 0 10px', padding: 12, borderRadius: 'var(--radius)', border: '1px solid var(--line)', background: 'var(--bg)' }}
       data-testid="receiving-rule-editor">
@@ -258,7 +273,8 @@ export default function ReceivingRulesPanel({ orgName }: { orgName?: string | nu
     <div className="n-card" style={{ ...card, lineHeight: 1.45 }} data-testid="receiving-rules">
       {title}
       <p style={intro}>
-        How Norm fills in the due date whenever it receives an invoice — on the invoice card and on Autopilot. Unlike
+        How Norm fills in the due date — and, at a venue that counts by the bunch, the unit for bunches — whenever it
+        receives an invoice, on the invoice card and on Autopilot. Unlike
         the choices above, these rules belong to {orgName ? <strong>{orgName}</strong> : 'your organisation'} and are
         the same for everyone. Where a rule applies it wins over what the invoice says.
         {editable ? '' : ' Only owners and managers can change them.'}
@@ -272,6 +288,7 @@ export default function ReceivingRulesPanel({ orgName }: { orgName?: string | nu
               <div style={{ fontWeight: 500 }}>The whole organisation</div>
               <div style={muted}>{orgRule ? `Due date: ${orgRule.description}.` : 'No rule — the due date is what the invoice and Loaded give it.'}</div>
               {orgRule?.note && <div style={{ ...muted, fontStyle: 'italic' }}>“{orgRule.note}”</div>}
+              {otherRules(view.organisation)}
             </div>
             {editable && (
               <div style={{ display: 'flex', gap: 8 }}>
@@ -302,6 +319,7 @@ export default function ReceivingRulesPanel({ orgName }: { orgName?: string | nu
                       {inForce ? `Due date: ${inForce.description}.` : 'Due date: no rule.'}{' '}
                       {own ? <Badge tone="info">This venue’s own rule</Badge> : inForce ? <Badge>From the organisation</Badge> : null}
                     </div>
+                    {otherRules(v.in_force)}
                   </div>
                   {editable && kind && (
                     <div style={{ display: 'flex', gap: 8 }}>

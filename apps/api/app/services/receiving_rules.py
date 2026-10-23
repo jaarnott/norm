@@ -23,6 +23,7 @@ from __future__ import annotations
 import calendar
 import datetime as _dt
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,32 @@ KINDS = {
         "what": "the invoice's due date",
         "bases": DUE_BASES,
     },
+    # The Lott counts herbs, shallots and kale by the bunch, and its recipes
+    # use bunches; Norm booking them by weight multiplied their recipe costs
+    # (Coriander Prepped 25.88 → 322.35, 20 Oct 2026). Everywhere else a bunch
+    # is a weight (owner, 23 Oct 2026); this rule is the venue's exception.
+    "bunch_unit": {
+        "label": "Bunches",
+        "what": "the unit anything sold by the bunch is booked in",
+    },
 }
+
+#: A line the invoice sells by the bunch: 'CORIANDER bunch', 'HERB BASIL BCH',
+#: or 'bunch' in its unit column. A market bunch ('5-6 M/B', 'Market') is
+#: several bunches, so it is not one.
+_BUNCH = re.compile(r"\b(bunch(?:es)?|bch|bnch)\b", re.IGNORECASE)
+_SEVERAL = re.compile(r"\bm/b\b|\bmarket\b", re.IGNORECASE)
+
+#: The blockers a venue's bunch rule answers: the unit is the venue's choice.
+_UNIT_ISSUE_CODES = frozenset(
+    {
+        "unit_missing",
+        "unit_unconfirmed",
+        "unit_unknown",
+        "unit_would_be_created",
+        "unit_answer_missing",
+    }
+)
 
 
 class RuleError(ValueError):
@@ -96,6 +122,14 @@ def clean(kind: str, params: dict | None) -> dict:
             f"there's no rule for {kind!r}; the rules are: {', '.join(KINDS)}"
         )
     params = dict(params or {})
+    if kind == "bunch_unit":
+        unit = " ".join(str(params.get("unit") or "").split())
+        if not unit or len(unit) > 40:
+            raise RuleError(
+                "name the venue's unit a bunch is booked in, as Loaded spells it "
+                "(e.g. 'Bunch')"
+            )
+        return {"unit": unit}
     basis = params.get("basis")
     if basis not in DUE_BASES:
         raise RuleError("the due date is worked out as one of: " + ", ".join(DUE_BASES))
@@ -146,6 +180,8 @@ def date_words(kind: str, params: dict) -> str:
 def describe(kind: str, params: dict) -> str:
     """The rule in plain words, with which invoices it covers: 'the Sunday on
     or after the invoice date, when the invoice has no due date'."""
+    if kind == "bunch_unit":
+        return f"anything sold by the bunch is booked as one '{(params or {}).get('unit')}'"
     when = (params or {}).get("when") or "always"
     return f"{date_words(kind, params)}, {DUE_WHEN.get(when, DUE_WHEN['always'])}"
 
@@ -174,6 +210,8 @@ def due_date_for(issued: _dt.date, params: dict) -> _dt.date:
 def examples(kind: str, params: dict, today: _dt.date | None = None) -> list[dict]:
     """What the rule does to invoices dated across one week, from Monday —
     shown before it is saved, so 'which Sunday?' is settled by looking."""
+    if kind != "due_date":
+        return []
     today = today or _dt.date.today()
     monday = today - _dt.timedelta(days=today.weekday())
     out = []
@@ -363,12 +401,14 @@ def view(db, user, org_id: str) -> dict:
                 "what": d["what"],
                 "bases": [
                     {"id": b, "words": w, "label": DUE_BASIS_LABELS.get(b, b)}
-                    for b, w in d["bases"].items()
+                    for b, w in d.get("bases", {}).items()
                 ],
                 "whens": [
                     {"id": w, "words": words, "label": DUE_WHEN_LABELS[w]}
                     for w, words in DUE_WHEN.items()
-                ],
+                ]
+                if k == "due_date"
+                else [],
             }
             for k, d in KINDS.items()
         ],
@@ -395,12 +435,149 @@ def _as_date(value: object) -> _dt.date | None:
         return None
 
 
+def _whose(db, rule) -> str:
+    venue = _venue(db, rule.venue_id) if rule.venue_id else None
+    if venue is None:
+        return "Your organisation's rule"
+    name = venue.name or "This venue"
+    return f"{name}' rule" if name.endswith("s") else f"{name}'s rule"
+
+
+def sold_by_the_bunch(*texts: object) -> bool:
+    """Does the invoice sell this line by the bunch (its printed name or its
+    unit column)? A market bunch is several bunches, never one."""
+    words = " ".join(str(t or "") for t in texts)
+    return bool(_BUNCH.search(words)) and not _SEVERAL.search(words)
+
+
+def bunch_unit(units: list | None, name: object) -> dict | None:
+    """The venue's own unit the rule names. Norm hides bundling units such as
+    'Bunch' from its own choices (invoice_units.hide_non_measurement_units),
+    so a unit only Norm hid counts; one Loaded deleted doesn't."""
+    want = " ".join(str(name or "").lower().split())
+    for u in units or []:
+        if not isinstance(u, dict):
+            continue
+        if u.get("datestampDeleted") and not u.get("hiddenByNorm"):
+            continue
+        if " ".join(str(u.get("name") or "").lower().split()) == want:
+            return u
+    return None
+
+
+def bunch_unit_at(db, venue_id: str | None, units: list | None) -> dict | None:
+    """The unit a venue's bunch rule books bunches in, or None (no rule, or the
+    venue has no such unit)."""
+    if db is None or not venue_id:
+        return None
+    try:
+        rule = effective(db, venue_id).get("bunch_unit")
+    except Exception:  # noqa: BLE001
+        logger.info("receiving rules unavailable for %s", venue_id, exc_info=True)
+        return None
+    return bunch_unit(units, (rule.params or {}).get("unit")) if rule else None
+
+
+def _apply_bunch_unit(
+    db, rule, data: dict, replica: dict | None, suggestions: list, issues, units, pairs
+) -> None:
+    """Every line sold by the bunch takes the venue's bunch unit: Norm's own
+    unit answer and the unit blockers for that line stand down."""
+    unit = bunch_unit(units, (rule.params or {}).get("unit"))
+    if unit is None:
+        logger.info(
+            "bunch rule: no unit %r at venue %s",
+            (rule.params or {}).get("unit"),
+            rule.venue_id,
+        )
+        return
+    # What the invoice prints for each working line: Norm's reading of the
+    # copy (its name and unit column), through the review's line pairs.
+    read = (data.get("extracted_snapshot") or {}).get("lines") or []
+    rep_lines = {
+        str(ln.get("id")): ln
+        for ln in (replica or {}).get("lines") or []
+        if isinstance(ln, dict)
+    }
+    printed: dict[str, tuple[str, list]] = {}
+    for rid, wid in (pairs or {}).items():
+        texts = [(rep_lines.get(str(rid)) or {}).get("description")]
+        m = re.fullmatch(r"rep-(\d+)", str(rid))
+        if (
+            m
+            and int(m.group(1)) < len(read)
+            and isinstance(read[int(m.group(1))], dict)
+        ):
+            el = read[int(m.group(1))]
+            texts += [el.get("description"), el.get("unit")]
+        printed[str(wid)] = (str(rid), texts)
+    whose = _whose(db, rule)
+    for line in data.get("lines") or []:
+        if not isinstance(line, dict) or line.get("struck"):
+            continue
+        wid = str(line.get("id"))
+        rid, texts = printed.get(wid, (None, [line.get("description")]))
+        if not sold_by_the_bunch(*texts):
+            continue
+        ids = {wid, rid}
+        suggestions[:] = [
+            s
+            for s in suggestions
+            if not (str(s.get("line_id")) in ids and s.get("field") == "unit")
+        ]
+        if issues is not None:
+            issues[:] = [
+                i
+                for i in issues
+                if not (
+                    str(i.get("line_id")) in ids and i.get("code") in _UNIT_ISSUE_CODES
+                )
+            ]
+        if str(line.get("linked_unit_id")) == str(unit.get("id")):
+            continue
+        suggestions.append(
+            {
+                "id": f"rule:bunch_unit:{wid}",
+                "kind": "line_value",
+                "field": "unit",
+                "line_id": line.get("id"),
+                "current": line.get("unit"),
+                "proposed": unit.get("name"),
+                "explanation": (
+                    f"{whose}: anything sold by the bunch is booked as one "
+                    f"'{unit.get('name')}'"
+                ),
+                "sure": True,
+                "apply": {
+                    "linked_unit_id": unit.get("id"),
+                    "unit": unit.get("name"),
+                    "unit_ratio": unit.get("ratio"),
+                },
+                "rule": {
+                    "kind": "bunch_unit",
+                    "id": rule.id,
+                    "scope": "venue" if rule.venue_id else "organisation",
+                },
+            }
+        )
+
+
 def apply(
-    db, venue_id: str | None, data: dict, replica: dict | None, suggestions: list
+    db,
+    venue_id: str | None,
+    data: dict,
+    replica: dict | None,
+    suggestions: list,
+    *,
+    issues: list | None = None,
+    units: list | None = None,
+    pairs: dict | None = None,
 ) -> None:
     """The venue's rules, as suggestions on the invoice: what the rule gives,
     where the draft differs. A rule wins over what the invoice says (owner,
-    22 Oct 2026). Best-effort: a rule that can't be read never fails a review."""
+    22 Oct 2026). Best-effort: a rule that can't be read never fails a review.
+    ``units`` (the venue's) and ``pairs`` (Norm's line → working line) let a
+    bunch rule find the lines the invoice sells by the bunch."""
     if db is None or not venue_id:
         return
     try:
@@ -408,6 +585,20 @@ def apply(
     except Exception:  # noqa: BLE001 — the review stands on its own
         logger.info("receiving rules unavailable for %s", venue_id, exc_info=True)
         return
+    if "bunch_unit" in rules:
+        try:
+            _apply_bunch_unit(
+                db,
+                rules["bunch_unit"],
+                data,
+                replica,
+                suggestions,
+                issues,
+                units,
+                pairs,
+            )
+        except Exception:  # noqa: BLE001
+            logger.info("bunch rule failed at %s", venue_id, exc_info=True)
     rule = rules.get("due_date")
     if rule is None:
         return
@@ -436,12 +627,7 @@ def apply(
     current = _date_part(data.get("due_at")) or None
     if current == due.isoformat():
         return
-    venue = _venue(db, venue_id) if rule.venue_id else None
-    if venue is not None:
-        name = venue.name or "This venue"
-        whose = f"{name}' rule" if name.endswith("s") else f"{name}'s rule"
-    else:
-        whose = "Your organisation's rule"
+    whose = _whose(db, rule)
     suggestions.append(
         {
             "id": "rule:due_date",
