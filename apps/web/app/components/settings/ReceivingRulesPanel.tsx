@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import Badge from '../ui/Badge';
@@ -56,6 +56,8 @@ interface Editing {
   weekday: number;
   days: number;
   day: number;
+  /** bunch_unit: the venue's unit a bunch is booked in */
+  unit: string;
 }
 
 /** A white .n-card block, like the Preferences cards around it. */
@@ -64,9 +66,12 @@ const cardTitle: CSSProperties = { margin: 0, fontSize: 'var(--fs-base)', fontWe
 const intro: CSSProperties = { margin: '2px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
 const muted: CSSProperties = { fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
 const groupTitle: CSSProperties = { fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' };
-const row: CSSProperties = {
-  display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px 16px',
-  flexWrap: 'wrap', padding: '10px 0', borderTop: '1px solid var(--line-soft)',
+/** One place the rules apply: the organisation, or one venue. */
+const scopeBlock: CSSProperties = { padding: '10px 0', borderTop: '1px solid var(--line-soft)' };
+/** One rule at that place: what it does on the left, its buttons on the right. */
+const ruleRow: CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px 16px',
+  flexWrap: 'wrap', padding: '4px 0',
 };
 const rowText: CSSProperties = { flex: '1 1 220px', minWidth: 0 };
 const alertBox: CSSProperties = {
@@ -79,8 +84,15 @@ async function reason(res: Response, fallback: string): Promise<string> {
   return typeof body?.detail === 'string' ? body.detail : `${fallback} (error ${res.status})`;
 }
 
+/** What a place does with no rule of this type. */
+const NO_RULE: Record<string, string> = {
+  due_date: 'no rule — the due date is what the invoice and Loaded give it',
+  bunch_unit: 'no rule — Norm books bunches by weight',
+};
+
 /** The form's settings as the API takes them. */
 function paramsOf(e: Editing): Record<string, unknown> {
+  if (e.kind === 'bunch_unit') return { unit: e.unit };
   const base = { basis: e.basis, when: e.when };
   if (e.basis === 'weekday_on_or_after' || e.basis === 'weekday_after') return { ...base, weekday: e.weekday };
   if (e.basis === 'days_after') return { ...base, days: e.days };
@@ -99,14 +111,16 @@ function editingFrom(kind: string, venueId: string | null, where: string, rule?:
     weekday: typeof p.weekday === 'number' ? p.weekday : 6,
     days: typeof p.days === 'number' ? p.days : 14,
     day: typeof p.day === 'number' ? p.day : 20,
+    unit: typeof p.unit === 'string' ? p.unit : 'Bunch',
   };
 }
 
 /**
  * Settings → Preferences, under "Receive supplier invoices": how Norm fills in
- * what an invoice leaves to the organisation (the due date, first) every time
- * it reviews one — on the card and under Autopilot alike. The organisation's
- * rules, and each venue's own overrides beside what is in force there.
+ * what an invoice leaves to the organisation (the due date; the unit for
+ * anything sold by the bunch) every time it reviews one — on the card and
+ * under Autopilot alike. Every rule type is shown the same way, once for the
+ * organisation and once per venue: its own rule, else what is in force there.
  * Everyone in the organisation can read them; owners and managers
  * (`can_edit`) change them. Unlike the preferences around it, they are shared.
  */
@@ -157,8 +171,9 @@ export default function ReceivingRulesPanel({ orgName }: { orgName?: string | nu
     );
   }
 
-  const kind = view.kinds[0];
   const editable = view.can_edit;
+  const editingKind = editing ? view.kinds.find((k) => k.kind === editing.kind) : undefined;
+  const orgHas = (k: string) => view.organisation.some((r) => r.kind === k);
 
   const save = async () => {
     if (!editing) return;
@@ -192,38 +207,33 @@ export default function ReceivingRulesPanel({ orgName }: { orgName?: string | nu
     }
   };
 
-  // Rules other than the due date (a venue's unit for bunches, set with Norm
-  // in chat): what each does and whose it is, and Remove for the editors.
-  const otherRules = (rules: Rule[]) =>
-    rules
-      .filter((r) => r.kind !== kind?.kind)
-      .map((r) => (
-        <div key={r.id} style={{ ...muted, marginTop: 4 }} data-testid="receiving-rule-other">
-          {r.label}: {r.description}.{' '}
-          {r.scope === 'venue' ? <Badge tone="info">This venue’s own rule</Badge> : <Badge>From the organisation</Badge>}{' '}
-          {editable && (r.scope === 'venue' || rules === view.organisation) && (
-            <Button size="sm" variant="quiet" onClick={() => remove(r)}>Remove</Button>
-          )}
-        </div>
-      ));
-
   const editor = editing && (
     <div style={{ margin: '0 0 10px', padding: 12, borderRadius: 'var(--radius)', border: '1px solid var(--line)', background: 'var(--bg)' }}
       data-testid="receiving-rule-editor">
-      <div style={{ fontWeight: 600, marginBottom: 8 }}>{kind?.label} — {editing.where}</div>
+      <div style={{ fontWeight: 600, marginBottom: 8 }}>{editingKind?.label} — {editing.where}</div>
+      {editing.kind === 'bunch_unit' ? (
+        <label style={{ display: 'block', maxWidth: 320 }}>
+          <span className="n-label">Book anything sold by the bunch as one</span>
+          <input className="n-input" value={editing.unit} style={{ width: '100%' }}
+            onChange={(e) => setEditing({ ...editing, unit: e.target.value })} />
+          <span style={{ ...muted, display: 'block', marginTop: 4 }}>
+            The unit as Loaded spells it at the venue, for example Bunch. A market bunch (M/B) keeps Norm’s weight.
+          </span>
+        </label>
+      ) : (
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
         <label style={{ minWidth: 0, flex: '1 1 100%' }}>
           <span className="n-label">Which invoices</span>
           <select className="n-select" value={editing.when} style={{ width: '100%' }}
             onChange={(e) => setEditing({ ...editing, when: e.target.value })}>
-            {kind?.whens.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
+            {editingKind?.whens.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
           </select>
         </label>
         <label style={{ minWidth: 0, flex: '1 1 260px' }}>
           <span className="n-label">The due date is</span>
           <select className="n-select" value={editing.basis} style={{ width: '100%' }}
             onChange={(e) => setEditing({ ...editing, basis: e.target.value })}>
-            {kind?.bases.map((b) => (
+            {editingKind?.bases.map((b) => (
               <option key={b.id} value={b.id}>{b.label}</option>
             ))}
           </select>
@@ -252,12 +262,19 @@ export default function ReceivingRulesPanel({ orgName }: { orgName?: string | nu
           </label>
         )}
       </div>
+      )}
       {preview && (
         <div style={{ ...muted, marginTop: 12 }}>
-          <div>The due date will be {preview.description}. For invoices dated across a week:</div>
-          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
-            {preview.examples.map((x) => <li key={x.words}>{x.words}</li>)}
-          </ul>
+          {editing.kind === 'due_date' ? (
+            <div>The due date will be {preview.description}. For invoices dated across a week:</div>
+          ) : (
+            <div>From the next invoice Norm reviews: {preview.description}.</div>
+          )}
+          {preview.examples.length > 0 && (
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {preview.examples.map((x) => <li key={x.words}>{x.words}</li>)}
+            </ul>
+          )}
         </div>
       )}
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -267,7 +284,38 @@ export default function ReceivingRulesPanel({ orgName }: { orgName?: string | nu
     </div>
   );
 
-  const orgRule = view.organisation.find((r) => r.kind === kind?.kind);
+  /** One rule type at one place: the place's own rule, else what it gets from
+   *  the organisation, with the same buttons for every type. */
+  const ruleLine = (k: Kind, venueId: string | null, where: string, own?: Rule, inherited?: Rule) => {
+    const shown = own ?? inherited;
+    return (
+      <Fragment key={k.kind}>
+        <div style={ruleRow} data-testid={`receiving-rule-${k.kind}`}>
+          <div style={rowText}>
+            <div style={muted}>
+              {k.label}: {shown ? `${shown.description}.` : `${NO_RULE[k.kind] ?? 'no rule'}.`}
+              {venueId && (own || inherited) && ' '}
+              {venueId && (own ? <Badge tone="info">This venue’s own rule</Badge> : inherited ? <Badge>From the organisation</Badge> : null)}
+            </div>
+            {own?.note && <div style={{ ...muted, fontStyle: 'italic' }}>“{own.note}”</div>}
+          </div>
+          {editable && (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button size="sm" onClick={() => setEditing(editingFrom(k.kind, venueId, where, shown))}>
+                {own ? 'Edit' : venueId ? 'Set for this venue' : 'Add rule'}
+              </Button>
+              {own && (
+                <Button size="sm" variant="quiet" onClick={() => remove(own)}>
+                  {venueId && orgHas(k.kind) ? 'Use the organisation’s' : 'Remove'}
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+        {editing && editing.venueId === venueId && editing.kind === k.kind && editor}
+      </Fragment>
+    );
+  };
 
   return (
     <div className="n-card" style={{ ...card, lineHeight: 1.45 }} data-testid="receiving-rules">
@@ -281,63 +329,26 @@ export default function ReceivingRulesPanel({ orgName }: { orgName?: string | nu
       </p>
       {error && <div style={alertBox} role="alert">{error}</div>}
 
-      <div data-testid="receiving-rules-organisation">
-        {kind && (
-          <div style={row}>
-            <div style={rowText}>
-              <div style={{ fontWeight: 500 }}>The whole organisation</div>
-              <div style={muted}>{orgRule ? `Due date: ${orgRule.description}.` : 'No rule — the due date is what the invoice and Loaded give it.'}</div>
-              {orgRule?.note && <div style={{ ...muted, fontStyle: 'italic' }}>“{orgRule.note}”</div>}
-              {otherRules(view.organisation)}
-            </div>
-            {editable && (
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Button size="sm" onClick={() => setEditing(editingFrom(kind.kind, null, 'the whole organisation', orgRule))}>
-                  {orgRule ? 'Edit' : 'Add rule'}
-                </Button>
-                {orgRule && <Button size="sm" variant="quiet" onClick={() => remove(orgRule)}>Remove</Button>}
-              </div>
-            )}
-          </div>
+      <div data-testid="receiving-rules-organisation" style={scopeBlock}>
+        <div style={{ fontWeight: 500 }}>The whole organisation</div>
+        {view.kinds.map((k) =>
+          ruleLine(k, null, 'the whole organisation', view.organisation.find((r) => r.kind === k.kind)),
         )}
-        {editing && editing.venueId === null && editor}
       </div>
 
       {view.venues.length > 0 && (
         <div style={{ marginTop: 12, paddingTop: 14, borderTop: '1px solid var(--line)' }} data-testid="receiving-rules-venues">
           <div style={groupTitle}>Venues</div>
           <p style={intro}>A venue&rsquo;s own rule replaces the organisation&rsquo;s there.</p>
-          {view.venues.map((v) => {
-            const own = v.rules.find((r) => r.kind === kind?.kind);
-            const inForce = v.in_force.find((r) => r.kind === kind?.kind);
-            return (
-              <div key={v.id}>
-                <div style={row}>
-                  <div style={rowText}>
-                    <div style={{ fontWeight: 500 }}>{v.name}</div>
-                    <div style={muted}>
-                      {inForce ? `Due date: ${inForce.description}.` : 'Due date: no rule.'}{' '}
-                      {own ? <Badge tone="info">This venue’s own rule</Badge> : inForce ? <Badge>From the organisation</Badge> : null}
-                    </div>
-                    {otherRules(v.in_force)}
-                  </div>
-                  {editable && kind && (
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <Button size="sm" onClick={() => setEditing(editingFrom(kind.kind, v.id, v.name, own ?? inForce))}>
-                        {own ? 'Edit' : 'Set for this venue'}
-                      </Button>
-                      {own && (
-                        <Button size="sm" variant="quiet" onClick={() => remove(own)}>
-                          {orgRule ? 'Use the organisation’s' : 'Remove'}
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {editing && editing.venueId === v.id && editor}
-              </div>
-            );
-          })}
+          {view.venues.map((v) => (
+            <div key={v.id} style={scopeBlock}>
+              <div style={{ fontWeight: 500 }}>{v.name}</div>
+              {view.kinds.map((k) => {
+                const own = v.rules.find((r) => r.kind === k.kind);
+                return ruleLine(k, v.id, v.name, own, own ? undefined : v.in_force.find((r) => r.kind === k.kind));
+              })}
+            </div>
+          ))}
         </div>
       )}
     </div>

@@ -78,11 +78,12 @@ def delete_receiving_rule(
 @router.get("/receiving-rules/examples")
 def receiving_rule_examples(
     kind: str,
-    basis: str,
+    basis: str | None = None,
     weekday: int | None = None,
     days: int | None = None,
     day: int | None = None,
     when: str | None = None,
+    unit: str | None = None,
     user: User = Depends(get_current_user),
 ):
     """What a rule would do, before it is saved."""
@@ -95,6 +96,7 @@ def receiving_rule_examples(
                 "days": days,
                 "day": day,
                 "when": when,
+                "unit": unit,
             },
         )
     except RR.RuleError as exc:

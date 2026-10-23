@@ -413,6 +413,15 @@ class TestSettings:
             headers=auth_headers(manager),
         )
         assert r.status_code == 200 and len(r.json()["examples"]) == 4
+        r = client.get(
+            "/api/receiving-rules/examples?kind=bunch_unit&unit=Bunch",
+            headers=auth_headers(manager),
+        )
+        assert r.status_code == 200
+        assert r.json() == {
+            "description": "anything sold by the bunch is booked as one 'Bunch'",
+            "examples": [],
+        }
 
     def test_the_role_migration_gives_what_the_code_defines(self):
         from app.auth.permissions import STANDARD_ROLES
