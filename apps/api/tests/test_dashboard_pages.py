@@ -483,3 +483,25 @@ class TestRoutes:
         ).json()["shared"]
         versions = client.get("/api/apps/lott/versions", headers=h).json()["versions"]
         assert [v["version"] for v in versions] == [1]
+
+
+class TestNothingBlocksTheServer:
+    def test_app_and_dashboard_routes_run_on_their_own_threads(self):
+        """Their work blocks (the database, a connector call to Loaded that can
+        take many seconds). As `async def` it ran on the process's event loop,
+        so a dashboard fanning out twelve calls froze every other request: the
+        Change dashboard list took 14 s, then failed with 503s (22 Oct 2026)."""
+        import inspect
+
+        from app.routers import apps as apps_router
+        from app.routers import dashboards as dashboards_router
+
+        awaits_the_upload = {"app_file_upload"}
+        blocking = [
+            r.endpoint.__name__
+            for module in (apps_router, dashboards_router)
+            for r in module.router.routes
+            if inspect.iscoroutinefunction(r.endpoint)
+            and r.endpoint.__name__ not in awaits_the_upload
+        ]
+        assert blocking == []

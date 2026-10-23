@@ -461,6 +461,9 @@ def call_action(
         venue_id=venue_id,
         # No silent fall back to another venue's credentials.
         strict_venue=True,
+        # An app only reads the config DB, so its connection can go back to the
+        # pool for the slow part — a dashboard fires a dozen of these at once.
+        release_config_db=True,
     )
     ms = int((time.time() - t0) * 1000)
 

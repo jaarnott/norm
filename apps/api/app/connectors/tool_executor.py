@@ -41,6 +41,7 @@ def execute_connector_tool(
     thread_id: str | None = None,
     strict_venue: bool = False,
     user=None,
+    release_config_db: bool = False,
 ) -> ToolResult:
     """Run under the caller's organisation (caller_scope): the venue this call
     was authorised for — MCP, charts and apps check it before calling — or
@@ -65,6 +66,7 @@ def execute_connector_tool(
             venue_id=venue_id,
             thread_id=thread_id,
             strict_venue=strict_venue,
+            release_config_db=release_config_db,
         )
 
 
@@ -77,6 +79,7 @@ def _execute_connector_tool(
     venue_id: str | None = None,
     thread_id: str | None = None,
     strict_venue: bool = False,
+    release_config_db: bool = False,
 ) -> ToolResult:
     """Execute a connector tool end-to-end, matching the LLM tool loop path.
 
@@ -95,6 +98,13 @@ def _execute_connector_tool(
     serving an authenticated, venue-scoped request must pass True: the loose
     fallback would otherwise answer a question about venue A using venue B's
     credentials.
+
+    ``release_config_db`` closes ``config_db`` once the spec is read, so its
+    connection goes back to the pool before the slow part (nothing after step 1
+    reads the config DB). Pass it ONLY when the caller has nothing unsaved in
+    that session. An app's data calls do: twelve at once from one dashboard held
+    a process's whole config pool (12) for the length of their Loaded calls, and
+    everything else needing the config DB there timed out (22 Oct 2026).
     """
     from app.db.config_models import ConnectionSpec
     from app.db.models import Venue
@@ -130,6 +140,10 @@ def _execute_connector_tool(
             payload=None,
             error=f"Action not found: {action}. Available: {', '.join(str(a) for a in available_actions)}",
         )
+
+    if release_config_db:
+        # Detaches ``spec`` with its columns loaded, so it still reads below.
+        config_db.close()
 
     # 3. Dispatch to an in-process handler if one applies. Order mirrors
     #    tool_loop._execute_tool_call: a registered internal handler shadows a

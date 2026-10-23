@@ -28,7 +28,7 @@ def _agent(agent: str) -> str:
 
 
 @router.get("/dashboards/{agent}")
-async def dashboard_shown(
+def dashboard_shown(
     agent: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -47,7 +47,7 @@ async def dashboard_shown(
 
 
 @router.get("/dashboards/{agent}/available")
-async def dashboard_choices(
+def dashboard_choices(
     agent: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -62,7 +62,7 @@ class UseRequest(BaseModel):
 
 
 @router.post("/dashboards/{agent}/use")
-async def use_dashboard(
+def use_dashboard(
     agent: str,
     body: UseRequest,
     db: Session = Depends(get_db),
@@ -81,7 +81,7 @@ class CopyRequest(BaseModel):
 
 
 @router.post("/dashboards/copy")
-async def copy_dashboard(
+def copy_dashboard(
     body: CopyRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -100,7 +100,7 @@ class ShareRequest(BaseModel):
 
 
 @router.post("/dashboards/share")
-async def share_dashboard(
+def share_dashboard(
     body: ShareRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -112,7 +112,7 @@ async def share_dashboard(
 
 
 @router.delete("/dashboards/{slug}")
-async def remove_dashboard(
+def remove_dashboard(
     slug: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -127,7 +127,7 @@ class TemplateRequest(BaseModel):
 
 
 @router.post("/dashboards/make-template")
-async def make_template(
+def make_template(
     body: TemplateRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),

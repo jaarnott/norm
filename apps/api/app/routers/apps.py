@@ -123,8 +123,14 @@ class CallRequest(BaseModel):
     venue_id: str | None = None
 
 
+# These routes are plain `def`, not `async def`: their work blocks (database,
+# and a connector call to Loaded that can take many seconds). FastAPI runs a
+# `def` route on its own thread; an `async def` one runs on the process's event
+# loop, so one slow call froze every other request on that process. A dashboard
+# fanning out twelve such calls left the Change dashboard list waiting, then
+# failing with 503s (22 Oct 2026). Same lesson as the dojo endpoints (Aug 2026).
 @router.post("/apps/{slug}/call")
-async def app_call(
+def app_call(
     slug: str,
     body: CallRequest,
     db: Session = Depends(get_db),
@@ -153,7 +159,7 @@ class RunRequest(BaseModel):
 
 
 @router.post("/apps/{slug}/run")
-async def app_run(
+def app_run(
     slug: str,
     body: RunRequest,
     db: Session = Depends(get_db),
@@ -184,7 +190,7 @@ async def app_run(
 
 
 @router.get("/apps")
-async def list_apps(
+def list_apps(
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
@@ -256,7 +262,7 @@ async def list_apps(
 
 
 @router.get("/apps/{slug}")
-async def get_app(
+def get_app(
     slug: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -332,7 +338,7 @@ class SaveRequest(BaseModel):
 
 
 @router.post("/apps")
-async def save_app_endpoint(
+def save_app_endpoint(
     body: SaveRequest,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("apps:build")),
@@ -355,7 +361,7 @@ class HandEditRequest(BaseModel):
 
 
 @router.post("/apps/{slug}/edit")
-async def save_hand_edit(
+def save_hand_edit(
     slug: str,
     body: HandEditRequest,
     db: Session = Depends(get_db),
@@ -418,7 +424,7 @@ class ShareRequest(BaseModel):
 
 
 @router.post("/apps/{slug}/share")
-async def share_app(
+def share_app(
     slug: str,
     body: ShareRequest,
     db: Session = Depends(get_db),
@@ -501,7 +507,7 @@ def _principal_label(db: Session, share) -> str:
 
 
 @router.get("/apps/{slug}/shares")
-async def list_shares(
+def list_shares(
     slug: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -542,7 +548,7 @@ async def list_shares(
 
 
 @router.get("/apps/{slug}/share-candidates")
-async def share_candidates(
+def share_candidates(
     slug: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -591,7 +597,7 @@ async def share_candidates(
 
 
 @router.delete("/apps/{slug}/share/{share_id}")
-async def revoke_share(
+def revoke_share(
     slug: str,
     share_id: str,
     db: Session = Depends(get_db),
@@ -633,7 +639,7 @@ class PinRequest(BaseModel):
 
 
 @router.get("/apps/{slug}/versions")
-async def app_versions(
+def app_versions(
     slug: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -652,7 +658,7 @@ async def app_versions(
 
 
 @router.post("/apps/{slug}/versions/{number}/restore")
-async def restore_app_version(
+def restore_app_version(
     slug: str,
     number: int,
     db: Session = Depends(get_db),
@@ -673,7 +679,7 @@ class MineRequest(BaseModel):
 
 
 @router.get("/apps/{slug}/mine")
-async def get_mine(
+def get_mine(
     slug: str,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
@@ -689,7 +695,7 @@ async def get_mine(
 
 
 @router.put("/apps/{slug}/mine")
-async def put_mine(
+def put_mine(
     slug: str,
     body: MineRequest,
     db: Session = Depends(get_db),
@@ -709,7 +715,7 @@ async def put_mine(
 
 
 @router.post("/apps/{slug}/pin")
-async def pin_app(
+def pin_app(
     slug: str,
     body: PinRequest,
     db: Session = Depends(get_db),
@@ -777,7 +783,7 @@ class RecordBody(BaseModel):
 
 
 @router.post("/apps/{slug}/records/{collection}/query")
-async def app_records_query(
+def app_records_query(
     slug: str,
     collection: str,
     body: RecordQuery,
@@ -822,7 +828,7 @@ async def app_records_query(
 
 
 @router.get("/apps/{slug}/records/{collection}/{record_id}")
-async def app_record_get(
+def app_record_get(
     slug: str,
     collection: str,
     record_id: str,
@@ -844,7 +850,7 @@ async def app_record_get(
 
 
 @router.post("/apps/{slug}/records/{collection}")
-async def app_record_create(
+def app_record_create(
     slug: str,
     collection: str,
     body: RecordBody,
@@ -869,7 +875,7 @@ async def app_record_create(
 
 
 @router.put("/apps/{slug}/records/{collection}/{record_id}")
-async def app_record_update(
+def app_record_update(
     slug: str,
     collection: str,
     record_id: str,
@@ -896,7 +902,7 @@ async def app_record_update(
 
 
 @router.delete("/apps/{slug}/records/{collection}/{record_id}")
-async def app_record_delete(
+def app_record_delete(
     slug: str,
     collection: str,
     record_id: str,
@@ -959,7 +965,7 @@ async def app_file_upload(
 
 
 @router.get("/apps/{slug}/files/{collection}")
-async def app_file_list(
+def app_file_list(
     slug: str,
     collection: str,
     record_id: str | None = None,
@@ -983,7 +989,7 @@ async def app_file_list(
 
 
 @router.get("/apps/{slug}/file/{file_id}")
-async def app_file_download(
+def app_file_download(
     slug: str,
     file_id: str,
     db: Session = Depends(get_db),
@@ -1010,7 +1016,7 @@ async def app_file_download(
 
 
 @router.delete("/apps/{slug}/file/{file_id}")
-async def app_file_delete(
+def app_file_delete(
     slug: str,
     file_id: str,
     db: Session = Depends(get_db),

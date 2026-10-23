@@ -155,6 +155,8 @@ class TestAllowlist:
         assert _call(db_session, None, app, v, author) == [1, 2]
         # No silent fall back to another venue's credentials.
         assert seen["strict_venue"] is True
+        # Its config connection goes back to the pool for the slow part.
+        assert seen["release_config_db"] is True
 
 
 class TestIntersection:

@@ -200,6 +200,39 @@ class TestInternalHandlerDispatch:
         )
         assert seen["venue"] == "La Zeppa"
 
+    def test_release_config_db_frees_the_connection_before_the_slow_part(
+        self, db_session, monkeypatch, connector
+    ):
+        """Twelve app calls at once from one dashboard each held a config
+        connection for the length of their Loaded calls, filling the process's
+        config pool, so the Change dashboard list timed out (22 Oct 2026)."""
+        _spec(db_session, connector, [{"action": "slow", "method": "GET"}])
+
+        class ConfigSession:
+            closed = False
+
+            def query(self, *a, **k):
+                return db_session.query(*a, **k)
+
+            def close(self):
+                self.closed = True
+
+        seen = []
+        config = ConfigSession()
+        monkeypatch.setattr(
+            "app.agents.internal_tools.get_handler",
+            lambda c, a: (
+                lambda p, d, t: seen.append(config.closed)
+                or {"success": True, "data": None}
+            ),
+        )
+        execute_connector_tool(connector, "slow", {}, db_session, config)
+        execute_connector_tool(
+            connector, "slow", {}, db_session, config, release_config_db=True
+        )
+        # Kept by default: a caller may have unsaved work in that session.
+        assert seen == [False, True]
+
     def test_unknown_action_reports_available(self, db_session, connector):
         _spec(db_session, connector, [{"action": "known", "method": "GET"}])
         res = execute_connector_tool(connector, "nope", {}, db_session, db_session)
