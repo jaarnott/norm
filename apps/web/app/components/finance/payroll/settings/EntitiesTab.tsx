@@ -3,8 +3,8 @@
 /**
  * The pay entities — one per venue that runs its own pay run — and each
  * one's settings: the Ace codes, the uniform bond, the intercompany leave
- * uplift, the sick-leave approver, the payroll contact, and whether the
- * Monday jobs run for it. Settings edits are allowed in shadow (they are
+ * uplift and the tax rule on its line, the sick-leave approver, the payroll
+ * contact, and whether the Monday jobs run for it. Settings edits are allowed in shadow (they are
  * Norm's own, not a Loaded or Xero write).
  */
 import { useId, useState } from 'react';
@@ -17,7 +17,7 @@ import MoneyInput from '../../shared/MoneyInput';
 import { Field, FormGrid, Note, Stack } from '../../shared/PageShell';
 import { bpLabel } from '../../shared/format';
 import type { FinanceApi } from '../../shared/useFinanceApi';
-import type { Entity } from '../types';
+import { ICO_LEAVE_TAX_LABELS, type Entity, type IcoLeaveTax } from '../types';
 
 function EntityDialog({ api, entity, onClose, onSaved }: { api: FinanceApi; entity: Entity; onClose: () => void; onSaved: () => void }) {
   const ids = useId();
@@ -28,6 +28,7 @@ function EntityDialog({ api, entity, onClose, onSaved }: { api: FinanceApi; enti
     security_pay_code: entity.security_pay_code ?? '',
     uniform_bond_cents: entity.uniform_bond_cents as number | null,
     ico_leave_uplift_pct: String(entity.ico_leave_uplift_bp / 100),
+    ico_leave_tax: entity.ico_leave_tax,
     sick_approver_name: entity.sick_approver_name ?? '',
     payroll_contact_email: entity.payroll_contact_email ?? '',
   });
@@ -42,6 +43,7 @@ function EntityDialog({ api, entity, onClose, onSaved }: { api: FinanceApi; enti
         security_pay_code: f.security_pay_code.trim(),
         uniform_bond_cents: f.uniform_bond_cents ?? 0,
         ico_leave_uplift_bp: Math.round(Number(f.ico_leave_uplift_pct || 0) * 100),
+        ico_leave_tax: f.ico_leave_tax,
         sick_approver_name: f.sick_approver_name.trim() || null,
         payroll_contact_email: f.payroll_contact_email.trim() || null,
       });
@@ -56,6 +58,11 @@ function EntityDialog({ api, entity, onClose, onSaved }: { api: FinanceApi; enti
         <Field id={`${ids}-sc`} label="Security contractors' pay code" hint="Staff with this code are paid separately and left out of the wages export"><input id={`${ids}-sc`} className="n-input" value={f.security_pay_code} onChange={(e) => set('security_pay_code', e.target.value)} style={{ width: '100%' }} required /></Field>
         <Field id={`${ids}-ub`} label="Uniform bond" hint="Deducted from holiday pay only with consent"><MoneyInput id={`${ids}-ub`} value={f.uniform_bond_cents} onChange={(v) => set('uniform_bond_cents', v)} /></Field>
         <Field id={`${ids}-up`} label="Intercompany leave & entitlements uplift (%)" hint="Added to recharged wages on the ICO documents"><input id={`${ids}-up`} className="n-input" type="number" step="0.01" min="0" max="100" value={f.ico_leave_uplift_pct} onChange={(e) => set('ico_leave_uplift_pct', e.target.value)} style={{ width: '100%' }} /></Field>
+        <Field id={`${ids}-lt`} label="Tax on the intercompany leave line" hint="On an invoice the standard rate is GST on Income, on a bill GST on Expenses. Set it the same on every entity: each side of a recharge is built from its own entity's rule">
+          <select id={`${ids}-lt`} className="n-select" value={f.ico_leave_tax} onChange={(e) => set('ico_leave_tax', e.target.value as IcoLeaveTax)} style={{ width: '100%' }}>
+            {(Object.keys(ICO_LEAVE_TAX_LABELS) as IcoLeaveTax[]).map((k) => <option key={k} value={k}>{ICO_LEAVE_TAX_LABELS[k]}</option>)}
+          </select>
+        </Field>
         <Field id={`${ids}-ap`} label="Sick-leave approver" hint="Named in the special-approval line and the approver email"><input id={`${ids}-ap`} className="n-input" value={f.sick_approver_name} onChange={(e) => set('sick_approver_name', e.target.value)} style={{ width: '100%' }} /></Field>
         <Field id={`${ids}-pc`} label="Payroll contact email" hint="Gets this entity's hygiene and parity emails; blank uses the organisation's"><input id={`${ids}-pc`} className="n-input" type="email" value={f.payroll_contact_email} onChange={(e) => set('payroll_contact_email', e.target.value)} style={{ width: '100%' }} /></Field>
       </FormGrid>
@@ -75,6 +82,7 @@ export default function EntitiesTab({ api, entities, canWrite, onChanged }: { ap
     { key: 'security_pay_code', label: 'Security code', hideOnPhone: true },
     { key: 'uniform_bond_cents', label: 'Bond', align: 'right', hideOnPhone: true, render: (r) => <Money cents={r.uniform_bond_cents} dp={0} />, csv: (r) => r.uniform_bond_cents / 100 },
     { key: 'ico_leave_uplift_bp', label: 'Leave uplift', align: 'right', hideOnPhone: true, render: (r) => bpLabel(r.ico_leave_uplift_bp) },
+    { key: 'ico_leave_tax', label: 'Leave line tax', hideOnPhone: true, render: (r) => ICO_LEAVE_TAX_LABELS[r.ico_leave_tax] ?? r.ico_leave_tax, csv: (r) => r.ico_leave_tax },
     { key: 'sick_approver_name', label: 'Sick approver', hideOnPhone: true },
     { key: 'payroll_contact_email', label: 'Payroll contact', hideOnPhone: true },
     { key: 'actions', label: '', sortable: false, align: 'right', render: (r) => (canWrite ? <Button size="xs" onClick={() => setEditing(r)}>Change</Button> : null) },

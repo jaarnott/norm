@@ -3,18 +3,22 @@ spec — plan docs/plans/finance-migration.md §7 (F2 of the build).
 
 What this puts in the shared config DB, idempotently:
 
-  endpoint rows   nine engine-only Loaded calls (raw payloads, no transform —
+  endpoint rows   ten engine-only Loaded calls (raw payloads, no transform —
                   a consolidator shapes what it reads): the payroll clock-in
                   feed, the pay summary, wages by role, cash-up variance, POS
-                  voids, the two budget WRITES, the filtered leave-request read
-                  and the one-person staff detail. The live
+                  voids, the two budget WRITES, the filtered leave-request read,
+                  the one-person staff detail and the pay adjustment packages
+                  (public holidays, 23 Oct 2026). The live
                   ``get_timeclock_entries`` and ``get_leave_requests`` rows are
                   untouched: a shared row's change goes live in every
                   environment on sync.
   tool rows       get_payrun (payroll:read), get_weekly_financials
                   (finance:read, the finance_weekly display component),
                   set_budgets (asks every time), its engine-only twin
-                  set_budgets_typed (always-allowable), and the engine-only
+                  set_budgets_typed (always-allowable), get_pay_adjustments
+                  (Loaded's pay adjustments and public holidays — no
+                  `requires`: it carries no dollar rates, and the nightly
+                  finance job reads it with no person), and the engine-only
                   get_closing_manager — code from config/consolidators/, the
                   budget twins with set_budgets_common.py prepended (the sandbox
                   allows no imports), each with the shapes it applies to the
@@ -22,8 +26,8 @@ What this puts in the shared config DB, idempotently:
 
 Nothing here claims a tool for an App: exposure is the App Map
 (scripts/sync_marketplace_catalog.py — Norm Finance claims
-get_weekly_financials and set_budgets; Loaded Payroll claims get_payrun in
-Phase 8). An unclaimed tool is an engine-side building block.
+get_weekly_financials and set_budgets; Loaded Payroll claims get_payrun and
+get_pay_adjustments). An unclaimed tool is an engine-side building block.
 
 The config DB is SHARED WITH PRODUCTION. validate_config runs over the
 pending state before anything is committed; ``--dry-run`` prints the diff and
@@ -232,6 +236,21 @@ ENDPOINTS = [
         fields={"staff_member_id": "Loaded staff member id"},
         timeout=30,
     ),
+    _ep(
+        "get_pay_adjustment_packages_raw",
+        "GET",
+        "/pay-rules/packages?includeActivatedPackagesOnly=true&detail=Full",
+        "The pay adjustment packages the company has activated, with their pay "
+        "adjustments (rules) in full: name, payCode (the pay adjustment type — "
+        "PublicHoliday, Award, Allowance, Overtime, OnCost, Other, NoExport), "
+        "type + rate (Multiple 1.5 = time and a half), override (switched off "
+        "for the company), and conditions[] — a public holiday's dates are its "
+        "ScheduleMatch conditions, one per year, venue-local wall clock with no "
+        "offset (payload.datestampStart / datestampEnd). activation.validFrom / "
+        "validTo bound when Loaded applies the package. Loaded scope "
+        "core:pay-packages:r. Read by get_pay_adjustments.",
+        timeout=30,
+    ),
 ]
 
 
@@ -260,6 +279,11 @@ _BUDGET_FIELDS = dict(
     days='The days to set: [{"date": "YYYY-MM-DD", "amount": 2100}] — GST-inclusive, as Loaded stores budgets',
     allow_zero="'true' to send $0 days (default: $0 days are skipped and listed)",
     vintage_id="The forecast vintage the amounts came from (recorded on the ledger)",
+)
+_ADJUSTMENT_FIELDS = dict(
+    venue="The venue (Norm name, exact) — pay adjustments belong to its company",
+    start="First date to list, YYYY-MM-DD (default: today's UTC date)",
+    end="Last date to list, YYYY-MM-DD (default: a year after start; at most five years)",
 )
 _CLOSING_FIELDS = dict(
     venue="The venue's name",
@@ -477,6 +501,35 @@ TOOLS = [
             ],
             "function_file": "set_budgets_typed.py",
             "prepend": "set_budgets_common.py",
+        },
+    },
+    {
+        "action": "get_pay_adjustments",
+        "method": "GET",
+        "read_only": True,
+        "effect": "read",
+        "description": (
+            "Loaded's pay adjustments for one venue's company, in Loaded's words: "
+            "each activated pay adjustment package (New Zealand Public Holidays, a "
+            "regional anniversary day, the venue's own) with its pay adjustments, "
+            "each adjustment's pay adjustment type (Public Holiday, Award, "
+            "Allowance, Overtime, On Cost, Other) and its dates between start and "
+            "end — plus the public holidays on their own, each flagged `priced` "
+            "when Loaded will apply the adjustment that day. Use it for 'when is "
+            "the next public holiday', 'does Loaded pay time and a half on …'. "
+            "Dollar rates are left out. dates_until is the last public holiday "
+            "Loaded holds."
+        ),
+        "required_fields": ["venue"],
+        "optional_fields": ["start", "end"],
+        "field_descriptions": _ADJUSTMENT_FIELDS,
+        "field_schema": _str_schema(_ADJUSTMENT_FIELDS),
+        "max_result_chars": 20_000,
+        "consolidator_config": {
+            # The one packages read; the second call is headroom.
+            "max_api_calls": 2,
+            "allowed_write_actions": [],
+            "function_file": "get_pay_adjustments.py",
         },
     },
     {

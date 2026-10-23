@@ -396,7 +396,7 @@ class TestPostWageJournal:
             and out["xero_id"] == "mj-1"
             and out["push_id"] == "push-1"
         )
-        key = f"norm:payroll-journal:{ORG}:{VENUE}:2026-10-12:{BASIS[:16]}"
+        key = f"norm:payroll-journal:{VENUE}:2026-10-12:{BASIS[:16]}"
         assert out["idempotency_key"] == key and out["ledger_error"] is None
         sent = api.sent("create_manual_journal")[0]
         assert (
@@ -468,7 +468,7 @@ class TestPostWageJournal:
         out = run("post_wage_journal", api, week_ending="2026-10-18")
         assert (
             out["idempotency_key"]
-            == f"norm:payroll-journal:{ORG}:{VENUE}:2026-10-12:{BASIS[:16]}:r2"
+            == f"norm:payroll-journal:{VENUE}:2026-10-12:{BASIS[:16]}:r2"
         )
         docs = ico_docs()
         docs["documents"][0]["pushes_before"] = 1
@@ -620,14 +620,17 @@ class TestPostIntercompanyDocuments:
         ) == {"stopped_at_preview": True}
         card, basis = cards[0]
         fields = {c["field"]: c["after"] for c in card["changes"]}
-        # The leave line takes its account's default (NONE here), so GST is on the wages only.
+        # The entity's rule is account_default (Orbit's): the leave line has
+        # its own account, so it takes that account's default (NONE here) on
+        # BOTH sides — GST is on the wages only, and the bill claims no GST
+        # the invoice never charged.
         assert (
             fields["Invoice to Glass Goose"]
-            == "Cook Brothers Bars Federal Street Limited · 1 people · wages $400.00 · leave $48.00 · GST $60.00 · total $508.00"
+            == "Cook Brothers Bars Federal Street Limited · 1 person · wages $400.00 · leave $48.00 · GST $60.00 · total $508.00"
         )
         assert (
             fields["Bill from Glass Goose"]
-            == "Cook Brothers Bars Federal Street Limited · 2 people · wages $240.00 · leave $28.80 · GST $40.32 · total $309.12"
+            == "Cook Brothers Bars Federal Street Limited · 2 people · wages $240.00 · leave $28.80 · GST $36.00 · total $304.80"
         )
         assert (
             fields["↳ Dana — 10.00h"] == "$400.00 → 21280 Intercompany Wages (OUTPUT2)"
@@ -637,8 +640,6 @@ class TestPostIntercompanyDocuments:
             fields["↳ Eli — Gratuities — 0.00h"]
             == "$40.00 → 21280 Intercompany Wages (INPUT2)"
         )
-        # The leave line goes to an EXPENSE account: on the invoice it carries
-        # no tax type (Xero applies the account's default), on the bill INPUT2.
         leave = [
             c["after"]
             for c in card["changes"]
@@ -646,9 +647,10 @@ class TestPostIntercompanyDocuments:
         ]
         assert leave == [
             "$48.00 → 55300 Leave & Entitlements (account default NONE)",
-            "$28.80 → 55300 Leave & Entitlements (INPUT2)",
+            "$28.80 → 55300 Leave & Entitlements (account default NONE)",
         ]
         assert any("account's default rate" in x for x in card["warnings"])
+        assert not any("won't agree" in x for x in card["warnings"])
         invoices = {d["invoice"]["Type"]: d["invoice"] for d in basis["documents"]}
         assert invoices["ACCREC"]["LineItems"][0] == {
             "Description": "Dana — 10.00h",
@@ -659,7 +661,8 @@ class TestPostIntercompanyDocuments:
         }
         assert (
             "TaxType" not in invoices["ACCREC"]["LineItems"][1]
-            and invoices["ACCPAY"]["LineItems"][2]["TaxType"] == "INPUT2"
+            and "TaxType" not in invoices["ACCPAY"]["LineItems"][2]
+            and invoices["ACCPAY"]["LineItems"][0]["TaxType"] == "INPUT2"
         )
         assert (
             invoices["ACCREC"]["Reference"] == "ICO Wages WE 18.10.2026"
@@ -679,6 +682,76 @@ class TestPostIntercompanyDocuments:
             and invoices["ACCREC"]["LineAmountTypes"] == "Exclusive"
         )
         assert api.sent("create_invoice") == []
+
+    def _leave_lines(self, docs, **responses):
+        """The leave line of each document the card would push, by type."""
+        cards: list = []
+        api = self._api(docs, **responses)
+        run("post_intercompany_documents", api, capture=cards, week_ending="2026-10-18")
+        card, basis = cards[0]
+        out = {
+            d["invoice"]["Type"]: d["invoice"]["LineItems"][-1]
+            for d in basis["documents"]
+        }
+        return card, out
+
+    def test_the_leave_line_follows_the_entitys_tax_rule(self):
+        # Without its own leave account the line rides the wages account and
+        # takes the side's rate, as Orbit did.
+        _card, leave = self._leave_lines({**ico_docs(), "leave_account": None})
+        assert leave["ACCREC"]["TaxType"] == "OUTPUT2"
+        assert leave["ACCPAY"]["TaxType"] == "INPUT2"
+        # no_gst: the tenant's no-GST type on both sides.
+        card, leave = self._leave_lines({**ico_docs(), "leave_tax": "no_gst"})
+        assert leave["ACCREC"]["TaxType"] == leave["ACCPAY"]["TaxType"] == "NONE"
+        assert not any("account's default rate" in x for x in card["warnings"])
+        # standard_gst to a liability account: GST on Income / on Expenses.
+        accounts = {
+            "Accounts": ACCOUNTS["Accounts"]
+            + [
+                {
+                    "Code": "21290",
+                    "Name": "Intercompany Leave",
+                    "Class": "LIABILITY",
+                    "Status": "ACTIVE",
+                }
+            ]
+        }
+        card, leave = self._leave_lines(
+            {**ico_docs(), "leave_tax": "standard_gst", "leave_account": "21290"},
+            list_accounts=accounts,
+        )
+        assert leave["ACCREC"]["TaxType"] == "OUTPUT2"
+        assert leave["ACCPAY"]["TaxType"] == "INPUT2"
+        assert (
+            "GST $67.20"
+            in {c["field"]: c["after"] for c in card["changes"]}[
+                "Invoice to Glass Goose"
+            ]
+        )
+
+    def test_standard_gst_to_an_expense_account_refuses_the_invoice_by_name(self):
+        """An invoice's leave line to an expense account can't carry GST on
+        Income (Xero refuses it — Orbit's 67 errors); the rule is the
+        accountant's, so it is refused by name, never quietly dropped."""
+        api = self._api({**ico_docs(), "leave_tax": "standard_gst"})
+        out = run("post_intercompany_documents", api, week_ending="2026-10-18")
+        assert [p["kind"] for p in out["pushed"]] == ["ico_bill"]
+        assert out["refused"][0]["kind"] == "ico_invoice"
+        assert "55300 is an expense account" in out["refused"][0]["reason"]
+        sent = api.sent("create_invoice")
+        assert [s["invoice"]["Type"] for s in sent] == ["ACCPAY"]
+        assert sent[0]["invoice"]["LineItems"][-1]["TaxType"] == "INPUT2"
+
+    def test_a_counterparty_on_another_rule_is_a_warning_on_the_card(self):
+        docs = ico_docs()
+        docs["documents"][0]["counterparty_leave_tax"] = "no_gst"
+        card, _leave = self._leave_lines(docs)
+        assert any(
+            "Glass Goose builds its side of this recharge with no GST" in x
+            and "won't agree" in x
+            for x in card["warnings"]
+        )
 
     def test_an_australian_tenant_gets_its_own_ten_percent(self):
         api = self._api(rates=AU_RATES)
@@ -702,8 +775,8 @@ class TestPostIntercompanyDocuments:
         )
         keys = [s["idempotency_key"] for s in api.sent("create_invoice")]
         assert keys == [
-            f"norm:ico:{ORG}:{VENUE}:2026-10-12:invoice:{CP}",
-            f"norm:ico:{ORG}:{VENUE}:2026-10-12:bill:{CP}",
+            f"norm:ico:{VENUE}:2026-10-12:invoice:{CP}",
+            f"norm:ico:{VENUE}:2026-10-12:bill:{CP}",
         ]
         assert len([c for c in api.calls if c[1] == "record_push"]) == 1
         assert [d["xero_id"] for d in api.recorded] == ["inv-1", "inv-2"]
@@ -897,6 +970,8 @@ class TestVoidPayrollDocument:
             fields["Status now"] == "DRAFT"
             and fields["What happens"] == "set DELETED in Xero (it is DRAFT)"
         )
+        # The week ENDING, as the push card said it (it read "WE 2026-10-12").
+        assert card["target"] == "payroll journal — WE 18.10.2026"
         assert basis == {
             "push_id": "push-1",
             "xero_id": "mj-1",
@@ -941,6 +1016,18 @@ class TestVoidPayrollDocument:
             run("void_payroll_document", api, push_id="push-1")["xero_status_after"]
             == "DELETED"
         )
+        # A bill has no pay week: no dangling "WE" on its card.
+        bill = push_view("entertainer_bill", "inv-1")
+        bill["push"]["week_start"] = None
+        cards: list = []
+        run(
+            "void_payroll_document",
+            self._api(bill, "DRAFT"),
+            capture=cards,
+            push_id="push-1",
+        )
+        assert cards[0][0]["target"] == "entertainer bill INV-9"
+        assert "billed again" in cards[0][0]["note"]
 
     def test_a_paid_bill_refuses_and_a_gone_document_is_recorded_only(self):
         out = run(

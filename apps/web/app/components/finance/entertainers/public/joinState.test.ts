@@ -88,24 +88,26 @@ describe('onboarding checks mirror the server', () => {
     expect(errors.declaration_confirmed).toBeTruthy();
     expect(errors.date_of_birth).toBeUndefined(); // optional, as on the server
 
-    const ok = { ...form, bank_account: '12 3456 7890123 00', ird_number: '49091850', confirmations: ALL_TICKED, nz_tax_resident: 'yes' as const, signature: 'sam  smith', declaration_confirmed: true };
+    // The right shape with a wrong digit: refused in plain words.
+    expect(validateStep('bank_tax', { ...form, bank_account: '12-3456-7890123-00' }, p).bank_account).toBe('That bank account number doesn’t check out — please re-check it.');
+    const ok = { ...form, bank_account: '12 3456 7890138 00', ird_number: '49091850', confirmations: ALL_TICKED, nz_tax_resident: 'yes' as const, signature: 'sam  smith', declaration_confirmed: true };
     expect(validateStep('bank_tax', ok, p)).toEqual({});
     expect(needsDeclaration('individual', LANES)).toBe(true);
     expect(needsDeclaration('company', LANES)).toBe(false);
   });
 
   it('the signature must be the legal name; the IRD number is optional off the withholding-tax lane', () => {
-    const wt = { ...emptyForm(p), paid_as: 'sole_trader' as const, legal_name: 'Sam Smith', bank_account: '12-3456-7890123-00', ird_number: '', confirmations: ALL_TICKED, nz_tax_resident: 'yes' as const, signature: 'S. Smith', declaration_confirmed: true };
+    const wt = { ...emptyForm(p), paid_as: 'sole_trader' as const, legal_name: 'Sam Smith', bank_account: '12-3456-7890138-00', ird_number: '', confirmations: ALL_TICKED, nz_tax_resident: 'yes' as const, signature: 'S. Smith', declaration_confirmed: true };
     const errors = validateStep('bank_tax', wt, p);
     expect(errors.signature).toMatch(/legal name/);
     expect(errors.ird_number).toMatch(/needed/);
-    const company = { ...emptyForm(p), paid_as: 'company' as const, legal_name: 'Sam Smith', company_name: 'Smith Ltd', bank_account: '12-3456-7890123-00', confirmations: ALL_TICKED };
+    const company = { ...emptyForm(p), paid_as: 'company' as const, legal_name: 'Sam Smith', company_name: 'Smith Ltd', bank_account: '12-3456-7890138-00', confirmations: ALL_TICKED };
     expect(validateStep('bank_tax', company, p)).toEqual({});
     expect(validateStep('bank_tax', { ...company, ird_number: '123' }, p).ird_number).toBeTruthy();
   });
 
   it('stops a non-resident and an out-of-range self-selected rate', () => {
-    const form = { ...emptyForm(p), paid_as: 'sole_trader' as const, legal_name: 'Sam', bank_account: '12-3456-7890123-00', ird_number: '49091850', confirmations: ALL_TICKED, nz_tax_resident: 'no' as const, wt_rate_type: 'self_selected' as const, wt_rate_percent: '5', signature: 'Sam', declaration_confirmed: true };
+    const form = { ...emptyForm(p), paid_as: 'sole_trader' as const, legal_name: 'Sam', bank_account: '12-3456-7890138-00', ird_number: '49091850', confirmations: ALL_TICKED, nz_tax_resident: 'no' as const, wt_rate_type: 'self_selected' as const, wt_rate_percent: '5', signature: 'Sam', declaration_confirmed: true };
     const errors = validateStep('bank_tax', form, p);
     expect(errors.nz_tax_resident).toMatch(/non-residents/);
     expect(errors.wt_rate_percent).toBeTruthy();
@@ -132,9 +134,9 @@ describe('what is sent', () => {
   const p = page();
 
   it('normalises the bank account and IRD number and sends the lane answer', () => {
-    const form = { ...emptyForm(p), performer_type: 'solo' as const, paid_as: 'sole_trader' as const, legal_name: 'Sam Smith', gst_registered: true, gst_number: '123-456-789', bank_account: '123456789012300', ird_number: '49-091-850', date_of_birth: '1990-01-02', nz_tax_resident: 'yes' as const, signature: 'Sam Smith', declaration_confirmed: true, confirmations: ALL_TICKED, documents: { exemption_certificate: 'f1' } };
+    const form = { ...emptyForm(p), performer_type: 'solo' as const, paid_as: 'sole_trader' as const, legal_name: 'Sam Smith', gst_registered: true, gst_number: '123-456-789', bank_account: '123456789013800', ird_number: '49-091-850', date_of_birth: '1990-01-02', nz_tax_resident: 'yes' as const, signature: 'Sam Smith', declaration_confirmed: true, confirmations: ALL_TICKED, documents: { exemption_certificate: 'f1' } };
     const body = submitBody(form, p);
-    expect(body.bank_account).toBe('12-3456-7890123-00');
+    expect(body.bank_account).toBe('12-3456-7890138-00');
     expect(body.ird_number).toBe('49091850');
     expect(body.paid_as).toBe('sole_trader');
     expect(body.gst_registered).toBe(true);
@@ -148,13 +150,13 @@ describe('what is sent', () => {
     const bank = stepBody('bank_tax', form, p)!;
     expect(bank.paid_as).toBe('sole_trader');
     expect(bank.performer_type).toBe('solo');
-    expect(bank.bank_account).toBe('12-3456-7890123-00');
+    expect(bank.bank_account).toBe('12-3456-7890138-00');
     expect((bank.declaration as { signature: string }).signature).toBe('Sam Smith');
     expect(stepBody('bank_tax', { ...form, paid_as: 'company' }, p)!.declaration).toBeUndefined();
   });
 
   it('a company sends no declaration and no IRD number', () => {
-    const form = { ...emptyForm(p), performer_type: 'solo' as const, paid_as: 'company' as const, legal_name: 'Sam Smith', company_name: 'Smith Ltd', bank_account: '12-3456-7890123-00' };
+    const form = { ...emptyForm(p), performer_type: 'solo' as const, paid_as: 'company' as const, legal_name: 'Sam Smith', company_name: 'Smith Ltd', bank_account: '12-3456-7890138-00' };
     const body = submitBody(form, p);
     expect(body.declaration).toBeUndefined();
     expect(body.ird_number).toBeUndefined();

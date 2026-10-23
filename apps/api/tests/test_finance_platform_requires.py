@@ -360,7 +360,8 @@ class TestDoors:
         tc = self._tool_call(db_session, thread, "set_payrun")
         out = _execute_tool_call(tc, db_session, db_session)
         assert out["success"] is True and tc.status == "executed"
-        assert out["data"] == {"written": True}
+        # The loop stamps the venue a result belongs to (main, Oct 2026).
+        assert out["data"]["written"] is True
 
     def test_a_manager_in_chat_still_runs_a_plain_tool(self, db_session, world):
         thread = _make_thread(db_session, world.manager, domain="norm")

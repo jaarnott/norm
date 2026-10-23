@@ -2,7 +2,9 @@
 
 /**
  * Loaded Payroll — Payroll settings. Four sections: the pay entities and
- * their Ace codes; the leave styles each entity signs off; the dated
+ * their Ace codes; the leave types Loaded holds for each entity and the Ace
+ * style each goes out as (from Loaded, or set here for a company's own
+ * type); the dated
  * statutory rules this module applies (read-only here — a new rule is a
  * dated row the owner's accountant signs off); and the Xero account
  * mapping for the journal and the intercompany documents.
@@ -21,7 +23,7 @@ import { dateLabel } from '../shared/format';
 import { useFinQuery, useFinanceApi } from '../shared/useFinanceApi';
 import { MetaGate } from './PayrollPayrun';
 import EntitiesTab from './settings/EntitiesTab';
-import LeaveStylesTab from './settings/LeaveStylesTab';
+import LeaveTypesTab from './settings/LeaveTypesTab';
 import MappingTab from './settings/MappingTab';
 import type { Rule } from './types';
 import { usePayrollPage } from './usePayrollMeta';
@@ -29,7 +31,7 @@ import { usePayrollPage } from './usePayrollMeta';
 type TabId = 'entities' | 'leave' | 'rules' | 'xero';
 const TABS: { id: TabId; label: string }[] = [
   { id: 'entities', label: 'Entities' },
-  { id: 'leave', label: 'Leave styles' },
+  { id: 'leave', label: 'Leave types' },
   { id: 'rules', label: 'Rules' },
   { id: 'xero', label: 'Xero mapping' },
 ];
@@ -76,14 +78,14 @@ export default function PayrollSettings({ props }: DisplayBlockProps) {
   if (tab === 'entities') body = <EntitiesTab api={api} entities={entities} canWrite={canWrite} onChanged={page.reload} />;
   else if (tab === 'rules') body = <RulesTab />;
   else if (!page.entity) body = <PageState kind="empty" title="No entities." />;
-  else if (tab === 'leave') body = <LeaveStylesTab key={page.entity.venue_id} api={api} entity={page.entity} canWrite={canWrite} />;
+  else if (tab === 'leave') body = <LeaveTypesTab key={page.entity.venue_id} api={api} entity={page.entity} canWrite={canWrite} />;
   else body = <MappingTab key={page.entity.venue_id} api={api} entity={page.entity} entities={entities} canWrite={canWrite} />;
 
   return (
     <PageShell
       isPage={page.isPage}
       title="Payroll settings"
-      meta="Entities, Ace codes, leave styles, the rules, and the Xero mapping"
+      meta="Entities, Ace codes, leave types, the rules, and the Xero mapping"
       mode={page.meta?.mode}
       venues={VENUE_TABS.has(tab) ? page.venues : undefined}
       venueId={page.venueId}

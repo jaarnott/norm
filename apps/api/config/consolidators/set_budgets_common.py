@@ -64,6 +64,16 @@ def _money(value):
     return "$" + "{:,.2f}".format(float(value))
 
 
+def _wire_number(value, places=2):
+    """A number as text for the endpoint rows, which render it bare into the
+    JSON body (`"amount": {{ amount }}` → `"amount": 0.00`). As a float, a
+    $0 day never left Norm: spec_executor's required-field check is falsy,
+    so `amount: 0.0` was refused as "Missing required fields: amount" and an
+    allow_zero push failed every zero day (found on Loaded's test
+    environment, 23 Oct 2026)."""
+    return ("{:." + str(places) + "f}").format(float(value))
+
+
 def _day_label(d):
     return _DOW[d.weekday()] + " " + str(d.day) + " " + _MONTHS[d.month - 1]
 
@@ -497,15 +507,21 @@ def _push_budgets(params, call_api, log, row):
                     "venue": venue,
                     "budget_id": e["loaded_id"],
                     "loaded_date": e["loaded_date"],
-                    "amount": e["after"],
-                    "sales_tax": e["sales_tax"],
+                    "amount": _wire_number(e["after"]),
+                    # Loaded re-stamps the rate from the company setting;
+                    # echoed as text so a 0 rate is not "missing" either.
+                    "sales_tax": _wire_number(e["sales_tax"], 4),
                 },
             )
         elif e["action"] == "create":
             result = call_api(
                 "loadedhub",
                 "create_budget_raw",
-                {"venue": venue, "loaded_date": e["loaded_date"], "amount": e["after"]},
+                {
+                    "venue": venue,
+                    "loaded_date": e["loaded_date"],
+                    "amount": _wire_number(e["after"]),
+                },
             )
         else:
             e["ok"] = True

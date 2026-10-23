@@ -45,7 +45,7 @@ def w(db_session):
 def mail(monkeypatch):
     sent = []
 
-    def fake_send(template, to, context, db, organization_id=None, thread_id=None):
+    def fake_send(template, to, context, db, organization_id=None, **_sender):
         log = EmailLog(
             organization_id=organization_id,
             sender_type="system",

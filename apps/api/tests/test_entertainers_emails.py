@@ -121,9 +121,22 @@ class TestSender:
         seen = {}
 
         def fake_send(
-            template_name, to, context, db, organization_id=None, thread_id=None
+            template_name,
+            to,
+            context,
+            db,
+            organization_id=None,
+            thread_id=None,
+            from_name=None,
+            reply_to=None,
         ):
-            seen.update(template=template_name, to=to, org=organization_id)
+            seen.update(
+                template=template_name,
+                to=to,
+                org=organization_id,
+                from_name=from_name,
+                reply_to=reply_to,
+            )
             log = EmailLog(
                 organization_id=organization_id,
                 sender_type="system",
@@ -147,10 +160,14 @@ class TestSender:
         link = _deliver(
             w.db, w.org, performer, kind="ent_code", code="123456", minutes=10
         )
+        # From Norm's address in the organisation's name (D26), and a reply
+        # reaches the payroll contact rather than the no-reply box.
         assert seen == {
             "template": "ent_code",
             "to": ["sam@example.test"],
             "org": w.org.id,
+            "from_name": "Cook Bros",
+            "reply_to": "payroll@cookbros.test",
         }
         log = w.db.query(EmailLog).filter(EmailLog.id == link.email_log_id).one()
         assert (
@@ -158,6 +175,37 @@ class TestSender:
             and log.app_slug == "entertainers"
             and log.status == "sent"
         )
+
+    def test_resend_gets_norms_address_the_orgs_name_and_reply_to(
+        self, db_session, monkeypatch
+    ):
+        """D26: no sender of its own — Norm's address, the organisation's
+        name (quoted when it holds a comma), replies to the payroll contact;
+        with no contact, no Reply-To."""
+        import sys
+        from types import SimpleNamespace
+
+        w = make_world(db_session)
+        w.org.name = "Cook Bros, Ltd"
+        w.org.entertainers_mode = "live"
+        performer = add_performer(w.db, w.org)
+        payloads = []
+        fake = SimpleNamespace(
+            api_key=None,
+            Emails=SimpleNamespace(send=lambda p: payloads.append(p) or {"id": "re_9"}),
+        )
+        monkeypatch.setitem(sys.modules, "resend", fake)
+        monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
+        monkeypatch.setattr(emails, "suppressed", lambda: False)
+        _deliver(w.db, w.org, performer)
+        assert payloads[0]["from"] == (
+            f'"Cook Bros, Ltd" <{settings.EMAIL_FROM_ADDRESS}>'
+        )
+        assert payloads[0]["reply_to"] == "payroll@cookbros.test"
+        assert payloads[0]["to"] == ["sam@example.test"]
+        w.org.payroll_contact_email = None
+        _deliver(w.db, w.org, performer, kind="ent_confirm_reminder")
+        assert "reply_to" not in payloads[1]
 
     def test_an_unknown_kind_is_a_programming_error(self, db_session):
         w = make_world(db_session)

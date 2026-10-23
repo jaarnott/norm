@@ -3,7 +3,8 @@ run, created on first use with the plan's defaults (plan §6.1, §9).
 
 The row holds the settings a client token cannot read from Loaded and every
 literal Orbit's payroll report hard-coded (the Ace pay-type code, the
-SECURITY pay code, the $150 uniform bond, the 12% leave uplift). The
+SECURITY pay code, the $150 uniform bond, the 12% leave uplift and the tax
+rule on its intercompany line). The
 statutory literals are NOT here: they are dated rows in ``pay_rules``
 (``rules.py``). ``payroll_on`` is the per-entity switch (AU venues stay off
 until asked, D12) and ``payroll_contact_email`` overrides the organisation's
@@ -17,10 +18,12 @@ venue without name matching.
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy.orm import Session
 
 from app.db.models import Connection, Venue
-from app.db.payroll_models import PayEntity
+from app.db.payroll_models import ICO_LEAVE_TAX_RULES, PayEntity
 from app.services.business_calendar import day_start_for, timezone_name
 from app.services.finance_core.ctx import FinanceCtx, require_venue
 from app.services.finance_core.errors import Invalid, NotFound, flush
@@ -34,10 +37,13 @@ DEFAULTS = {
     "security_pay_code": "SECURITY",
     "uniform_bond_cents": 15000,
     "ico_leave_uplift_bp": 1200,
+    "ico_leave_tax": "account_default",
     "sick_approver_name": None,
     "payroll_contact_email": None,
     "payroll_on": False,
 }
+
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 #: What a payroll person may change on the settings page.
 EDITABLE = (
@@ -48,6 +54,7 @@ EDITABLE = (
     "security_pay_code",
     "uniform_bond_cents",
     "ico_leave_uplift_bp",
+    "ico_leave_tax",
     "sick_approver_name",
     "payroll_contact_email",
     "payroll_on",
@@ -165,6 +172,15 @@ def _validate(name: str, value) -> None:
             raise Invalid(f"{name} cannot be blank.")
     if name == "payroll_on" and not isinstance(value, bool):
         raise Invalid("payroll_on must be true or false.")
+    if name == "payroll_contact_email" and value is not None:
+        if not isinstance(value, str) or not _EMAIL.match(value.strip()):
+            raise Invalid("The payroll contact must be an email address.")
+    if name == "ico_leave_tax" and value not in ICO_LEAVE_TAX_RULES:
+        raise Invalid(
+            "The leave line's tax rule is one of "
+            + ", ".join(ICO_LEAVE_TAX_RULES)
+            + "."
+        )
 
 
 def contact_email(org, entity: PayEntity | None) -> str | None:

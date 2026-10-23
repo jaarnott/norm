@@ -8,9 +8,13 @@ What differs from Orbit, on purpose:
 * **Nothing is skipped silently.** Orbit dropped a person without a pay
   code with a toast; here a missing pay code REFUSES the file and lists who
   (an unpaid person is a payroll error, not a warning).
-* **The leave style comes from ``pay_leave_styles``**, not from a word in the
-  type's name, and an unmapped type refuses the file (Orbit sent unpaid and
-  every unrecognised type to #70, the annual-leave style — parity class
+* **The leave type comes from Loaded** (owner, 23 Oct 2026), read when the
+  file is built: whether it is paid, and — for Loaded's own NZ annual, sick
+  and bereavement types, keyed by Loaded's id — its Ace style. A type Loaded
+  marks unpaid is left out (nothing to pay); a company's own type, which
+  Loaded gives no payroll meaning, takes the style set for it on Payroll
+  settings, else refuses the file by name. Orbit sent unpaid and every
+  unrecognised type to #70, the annual-leave style (parity class
   ``leave_style_default``).
 * The Ace pay-type code (``50001``), the security pay code and the gratuity
   allowance code are entity settings, not literals.
@@ -33,7 +37,6 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.orm import Session
 
-from app.db.models import _now
 from app.db.payroll_models import (
     EXPORT_KINDS,
     PayAccrual,
@@ -61,20 +64,28 @@ FILENAMES = {
     "gratuities": "GRATUITIES.TXT",
     "entertainers": "IMPORT_ENTERTAINERS.TXT",
 }
-#: Orbit's style numbers for the leave types it recognised.
-DEFAULT_STYLES = {"annual": "70", "sick": "60", "bereavement": "63"}
-#: The line shape per (style, remuneration) — Orbit's branches, named.
-METHODS = (
-    "days_daily_rate",  # #70 salaried: days + daily rate
-    "days_hours_rate",  # #70 hourly: days + hours + hourly rate (amount blank — Ace rejects it)
-    "days_only",  # #60/#63 salaried: entitlement reduction only
-    "hours_rate_days",  # #60/#63 hourly: hours × rate, days taken
-    "hours_rate",  # any other style
-)
+#: Loaded's own managed leave types — the same id in every company (live, 23
+#: Oct 2026: La Zeppa, Bessie & Royals, Mr Murdochs) — and the Ace style each
+#: is paid under. A Loaded leave type carries no payroll code (id, name,
+#: isPaid, percentage, salaryReduceNormalCost, type Managed | Custom,
+#: activation), and nothing in Loaded links a leave type to a payroll pay
+#: type: its Ace catalogue (``GET /payroll/pay-type`` — #70 Holiday Pay, #60
+#: Sick & Special Leave, #63 Bereavement Leave) hangs off pay adjustments
+#: only, and its own payroll exports skip leave. So for Loaded's statutory
+#: types the identity is the setup, and the link lives here, keyed by id —
+#: never by a word in the name.
+LOADED_LEAVE_STYLES = {
+    "M:8298b9d2-98df-4b30-b735-1d604809d1c8": "70",  # New Zealand Annual Leave
+    "M:e55019cd-5b2f-4fc5-98fb-6f9d89fc8481": "60",  # New Zealand Sick Leave
+    "M:5afee836-7aa8-4cc1-b0ac-640a015bddbe": "63",  # New Zealand Bereavement Leave
+}
 
 
 def default_methods(style: str | None) -> tuple[str | None, str | None]:
-    """(salaried, hourly) methods Orbit used for a style."""
+    """(salaried, hourly) line shapes Orbit used for a style: #70 salaried
+    days × daily rate, hourly days + hours × rate (amount blank — Ace rejects
+    it); #60/#63 salaried days only (an entitlement reduction), hourly hours
+    × rate + days; any other style hours × rate."""
     if style == "70":
         return "days_daily_rate", "days_hours_rate"
     if style in ("60", "63"):
@@ -112,67 +123,28 @@ def _sha(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-# ============================================================ leave styles ==
+# ============================================================= leave types ==
 
 
-def seed_leave_styles(
-    db: Session, ctx: FinanceCtx, venue_id: str, *, config_db=None
-) -> dict:
-    """One ``pay_leave_styles`` row per Loaded leave type at the venue
-    (``get_leave_types``), prefilled as Orbit mapped them and left unsigned.
-    Existing rows are kept."""
-    ctx.require("payroll:write")
-    venue = weeks_svc.venue_of(db, ctx, venue_id)
+def loaded_leave_types(
+    db: Session, ctx: FinanceCtx, venue, *, config_db=None
+) -> list[dict]:
+    """The venue's leave types as Loaded holds them (``get_leave_types``, a
+    top-level array of the non-deleted types)."""
     payload = snapshot_svc.loaded(
         db, ctx, venue, "get_leave_types", {}, config_db=config_db
     )
     rows = payload if isinstance(payload, list) else None
     if rows is None:
-        rows = next(
-            (v for v in payload.values() if isinstance(v, list)),
-            [],
-        )
-    existing = {
-        s.loaded_leave_type_id: s
-        for s in db.query(PayLeaveStyle).filter(
-            PayLeaveStyle.organization_id == ctx.org_id,
-            PayLeaveStyle.venue_id == venue.id,
-        )
-    }
-    created = 0
-    for r in rows:
-        if not isinstance(r, dict) or r.get("id") is None or r.get("deletedAt"):
-            continue
-        type_id = str(r["id"])
-        if type_id in existing:
-            continue
-        name = str(r.get("name") or "").strip() or type_id
-        style = None
-        lowered = name.lower()
-        for word, number in DEFAULT_STYLES.items():
-            if word in lowered:
-                style = number
-                break
-        salaried, hourly = default_methods(style)
-        db.add(
-            PayLeaveStyle(
-                organization_id=ctx.org_id,
-                venue_id=venue.id,
-                loaded_leave_type_id=type_id,
-                name=name,
-                ace_style=style,
-                salaried_method=salaried,
-                hourly_method=hourly,
-            )
-        )
-        created += 1
-    flush(db)
-    return {"created": created, "styles": list_leave_styles(db, ctx, venue.id)}
+        rows = next((v for v in payload.values() if isinstance(v, list)), [])
+    return [
+        r
+        for r in rows
+        if isinstance(r, dict) and r.get("id") is not None and not r.get("deletedAt")
+    ]
 
 
-def list_leave_styles(
-    db: Session, ctx: FinanceCtx, venue_id: str
-) -> list[PayLeaveStyle]:
+def list_overrides(db: Session, ctx: FinanceCtx, venue_id: str) -> list[PayLeaveStyle]:
     require_venue(ctx, venue_id)
     return (
         db.query(PayLeaveStyle)
@@ -185,102 +157,173 @@ def list_leave_styles(
     )
 
 
-def get_leave_style(db: Session, ctx: FinanceCtx, style_id: str) -> PayLeaveStyle:
-    row = (
-        db.query(PayLeaveStyle)
-        .filter(
-            PayLeaveStyle.organization_id == ctx.org_id, PayLeaveStyle.id == style_id
-        )
-        .first()
-    )
-    if row is None or not ctx.can_see_venue(row.venue_id):
-        raise NotFound("Leave style not found.")
-    return row
-
-
-def update_leave_style(
-    db: Session,
-    ctx: FinanceCtx,
-    style_id: str,
-    *,
-    version: int,
-    ace_style=None,
-    salaried_method=None,
-    hourly_method=None,
-    sign_off: bool = False,
-) -> PayLeaveStyle:
-    ctx.require("payroll:write")
-    row = get_leave_style(db, ctx, style_id)
-    if row.version != version:
-        raise Conflict(
-            "This leave style was changed by someone else — reload and try again."
-        )
-    if ace_style is not None:
-        text = str(ace_style).strip().lstrip("#")
-        if text and not text.isdigit():
-            raise Invalid("ace_style is the Ace style number (70, 60, 63…) or blank.")
-        changed = (text or None) != row.ace_style
-        row.ace_style = text or None
-        if changed or not row.salaried_method or not row.hourly_method:
-            # The line shapes belong to the style: a new number takes its shapes
-            # (a method given in the same call still wins, below).
-            row.salaried_method, row.hourly_method = default_methods(row.ace_style)
-    for name, value in (
-        ("salaried_method", salaried_method),
-        ("hourly_method", hourly_method),
-    ):
-        if value is not None:
-            if value not in METHODS:
-                raise Invalid(f"{name} is one of {', '.join(METHODS)}.")
-            setattr(row, name, value)
-    if sign_off:
-        row.signed_off_by = ctx.user_id
-        row.signed_off_at = _now()
-    else:
-        # Any change to the mapping needs a fresh sign-off.
-        row.signed_off_by, row.signed_off_at = None, None
-    row.version = version + 1
-    flush(db)
-    return row
-
-
-def style_dict(row: PayLeaveStyle) -> dict:
+def _override_dict(row: PayLeaveStyle) -> dict:
     return {
         "id": row.id,
-        "venue_id": row.venue_id,
-        "loaded_leave_type_id": row.loaded_leave_type_id,
-        "name": row.name,
         "ace_style": row.ace_style,
-        "salaried_method": row.salaried_method,
-        "hourly_method": row.hourly_method,
-        "signed_off_by": row.signed_off_by,
-        "signed_off_at": row.signed_off_at.isoformat() if row.signed_off_at else None,
+        "set_by": row.set_by,
+        "set_at": row.updated_at.isoformat() if row.updated_at else None,
         "version": row.version,
     }
 
 
-def _type_key(name: str | None) -> str:
-    text = (name or "").strip().casefold()
-    for prefix in ("new zealand ", "nz "):
-        if text.startswith(prefix):
-            text = text[len(prefix) :]
-    return text
+def leave_setup(types: list[dict], overrides: list[PayLeaveStyle]) -> dict[str, dict]:
+    """Each leave type's payroll setup, keyed by its name case-blind — a
+    snapshot's leave rows carry Loaded's name, not its id. Unpaid in Loaded:
+    no style (nothing to pay). One of Loaded's own NZ types: its style. Else
+    the venue's override, if one is set. A managed type wins a name it
+    shares with a custom one; an override for a type Loaded no longer lists
+    still answers for rows that carry its name."""
+    by_id = {o.loaded_leave_type_id: o for o in overrides}
+    by_name = {o.name.strip().casefold(): o for o in overrides}
+    out: dict[str, dict] = {}
+    for t in types:
+        type_id = str(t["id"])
+        name = str(t.get("name") or "").strip() or type_id
+        key = name.casefold()
+        managed = str(t.get("type") or "").lower() == "managed"
+        if key in out and out[key]["kind"] == "managed" and not managed:
+            continue
+        override = by_id.get(type_id) or by_name.get(key)
+        is_paid = t.get("isPaid") is not False
+        style, source = None, None
+        if is_paid and type_id in LOADED_LEAVE_STYLES:
+            style, source = LOADED_LEAVE_STYLES[type_id], "loaded"
+        elif is_paid and override is not None:
+            style, source = override.ace_style, "override"
+        out[key] = {
+            "loaded_leave_type_id": type_id,
+            "name": name,
+            "kind": "managed" if managed else "custom",
+            "is_paid": is_paid,
+            "active": isinstance(t.get("activation"), dict),
+            "ace_style": style,
+            "ace_style_from": source,
+            "override": _override_dict(override) if override is not None else None,
+        }
+    for o in overrides:
+        key = o.name.strip().casefold()
+        if key not in out:
+            out[key] = {
+                "loaded_leave_type_id": o.loaded_leave_type_id,
+                "name": o.name,
+                "kind": None,
+                "is_paid": None,
+                "active": False,
+                "ace_style": o.ace_style,
+                "ace_style_from": "override",
+                "override": _override_dict(o),
+            }
+    return out
 
 
-def style_for(
-    styles: list[PayLeaveStyle], leave_type_name: str | None
-) -> PayLeaveStyle | None:
-    """The style row for a leave fact's type name (exact, then with the
-    'NZ' / 'New Zealand' prefix ignored)."""
-    wanted = (leave_type_name or "").strip().casefold()
-    for s in styles:
-        if s.name.strip().casefold() == wanted:
-            return s
-    loose = _type_key(leave_type_name)
-    for s in styles:
-        if _type_key(s.name) == loose:
-            return s
-    return None
+def setup_for(
+    db: Session, ctx: FinanceCtx, venue, *, config_db=None
+) -> dict[str, dict]:
+    """``leave_setup`` for a venue: Loaded's leave types read now, plus the
+    venue's overrides. Raises ``Invalid`` when Loaded can't be read."""
+    types = loaded_leave_types(db, ctx, venue, config_db=config_db)
+    return leave_setup(types, list_overrides(db, ctx, venue.id))
+
+
+def leave_types(
+    db: Session, ctx: FinanceCtx, venue_id: str, *, config_db=None
+) -> list[dict]:
+    """The Payroll settings view: every leave type Loaded holds for the venue
+    with the Ace style the export would use and where it came from — the
+    company's switched-on types first (Loaded lists every managed type,
+    Australia's included, for an NZ company too), Loaded's own before the
+    company's, then by name."""
+    venue = weeks_svc.venue_of(db, ctx, venue_id)
+    setup = setup_for(db, ctx, venue, config_db=config_db)
+    return sorted(
+        setup.values(),
+        key=lambda e: (not e["active"], e["kind"] != "managed", e["name"].casefold()),
+    )
+
+
+def set_leave_style(
+    db: Session,
+    ctx: FinanceCtx,
+    venue_id: str,
+    loaded_leave_type_id: str,
+    *,
+    ace_style: str | None,
+    version: int | None = None,
+    config_db=None,
+) -> dict:
+    """Set (or, with a blank style, clear) the Ace style for a leave type
+    Loaded gives no payroll meaning. Refused for Loaded's own NZ types and
+    for a type Loaded marks unpaid — those answers are Loaded's."""
+    ctx.require("payroll:write")
+    venue = weeks_svc.venue_of(db, ctx, venue_id)
+    types = loaded_leave_types(db, ctx, venue, config_db=config_db)
+    found = next((t for t in types if str(t["id"]) == str(loaded_leave_type_id)), None)
+    if found is None:
+        raise NotFound(f"That leave type isn't one of {venue.name}'s in Loaded.")
+    name = str(found.get("name") or "").strip() or str(found["id"])
+    if found.get("isPaid") is False:
+        raise Invalid(f"Loaded marks {name} unpaid, so it never goes to Ace.")
+    if str(found["id"]) in LOADED_LEAVE_STYLES:
+        raise Invalid(
+            f"{name} is one of Loaded's own leave types: its Ace style "
+            f"(#{LOADED_LEAVE_STYLES[str(found['id'])]}) comes from Loaded."
+        )
+    text = str(ace_style or "").strip().lstrip("#")
+    if text and not text.isdigit():
+        raise Invalid("ace_style is the Ace style number (62, 70…) or blank.")
+    row = next(
+        (
+            o
+            for o in list_overrides(db, ctx, venue.id)
+            if o.loaded_leave_type_id == str(found["id"])
+        ),
+        None,
+    )
+    if row is not None and version is not None and row.version != int(version):
+        raise Conflict(
+            "This leave type was changed by someone else — reload and try again."
+        )
+    if not text:
+        if row is not None:
+            db.delete(row)
+    elif row is None:
+        db.add(
+            PayLeaveStyle(
+                organization_id=ctx.org_id,
+                venue_id=venue.id,
+                loaded_leave_type_id=str(found["id"]),
+                name=name,
+                ace_style=text,
+                set_by=ctx.user_id,
+            )
+        )
+    else:
+        row.name, row.ace_style, row.set_by = name, text, ctx.user_id
+    flush(db)
+    return leave_setup(types, list_overrides(db, ctx, venue.id))[name.casefold()]
+
+
+def annotate_leave_rows(
+    db: Session, ctx: FinanceCtx, venue, rows: list[dict], *, config_db=None
+) -> str | None:
+    """Put each Payrun leave row's Ace style (and where it came from, and
+    whether Loaded marks the type unpaid) on the row. Returns the error when
+    Loaded's leave types can't be read — the rows then say nothing."""
+    if not rows:
+        return None
+    try:
+        setup = setup_for(db, ctx, venue, config_db=config_db)
+    except Invalid as exc:
+        setup, error = {}, exc.message
+    else:
+        error = None
+    for row in rows:
+        entry = setup.get(str(row.get("leave_type_name") or "").strip().casefold())
+        row["ace_style"] = entry["ace_style"] if entry else None
+        row["ace_style_from"] = entry["ace_style_from"] if entry else None
+        row["unpaid"] = bool(entry) and entry["is_paid"] is False
+    return error
 
 
 # ================================================================ writers ==
@@ -323,15 +366,18 @@ def import_lines(entity: PayEntity, facts) -> tuple[list[str], dict, list[str]]:
 
 
 def leave_lines(
-    entity: PayEntity, facts, styles: list[PayLeaveStyle], venue
+    entity: PayEntity, facts, setup: dict[str, dict], venue
 ) -> tuple[list[str], dict, list[str], list[str]]:
     """``IMPORT_LEAVE.TXT``: one line per (pay code, style), salaried and
-    hourly variants, ``daysTaken`` = distinct local dates (3 dp). Returns
-    (lines, totals, names without a pay code, unmapped type names)."""
+    hourly variants, ``daysTaken`` = distinct local dates (3 dp). ``setup``
+    is ``leave_setup``'s answer. Returns (lines, totals, names without a pay
+    code, unmapped type names)."""
     groups: "OrderedDict[tuple, dict]" = OrderedDict()
     missing: list[str] = []
     unmapped: list[str] = []
     skipped_zero: list[str] = []
+    unpaid: list[str] = []
+    overridden: list[str] = []
     for f in facts:
         if f.shift_type != "Leave":
             continue
@@ -343,13 +389,20 @@ def leave_lines(
             if f.staff_name not in skipped_zero:
                 skipped_zero.append(f.staff_name or "?")
             continue
-        style = style_for(styles, f.leave_type_name)
-        if style is None or not style.ace_style:
-            label = f.leave_type_name or "(no type)"
+        label = f.leave_type_name or "(no type)"
+        entry = setup.get(str(f.leave_type_name or "").strip().casefold())
+        if entry is not None and entry["is_paid"] is False:
+            if label not in unpaid:
+                unpaid.append(label)
+            continue
+        if entry is None or not entry["ace_style"]:
             if label not in unmapped:
                 unmapped.append(label)
             continue
-        key = (f.pay_code, style.ace_style)
+        if entry["ace_style_from"] == "override" and label not in overridden:
+            overridden.append(label)
+        number = entry["ace_style"]
+        key = (f.pay_code, number)
         g = groups.get(key)
         day = leave_svc.local_date(f.clockin_at, venue) or (
             f.trading_date.isoformat() if f.trading_date else None
@@ -359,7 +412,7 @@ def leave_lines(
                 "code": f.pay_code,
                 "name": f.staff_name,
                 "remuneration_type": f.remuneration_type,
-                "style": style,
+                "style": number,
                 "dates": set(),
                 "hours": Decimal("0"),
                 "cost_cents": 0,
@@ -373,21 +426,17 @@ def leave_lines(
             g["types"].append(f.leave_type_name)
     lines = []
     by_style: dict[str, int] = {}
-    unsigned: list[str] = []
     for g in sorted(
-        groups.values(), key=lambda g: (_name_key(g["name"]), int(g["style"].ace_style))
+        groups.values(), key=lambda g: (_name_key(g["name"]), int(g["style"]))
     ):
-        style: PayLeaveStyle = g["style"]
-        number = style.ace_style
+        number = g["style"]
         code = g["code"]
         days_n = len(g["dates"])
         days = to_fixed(days_n, 3)
         hours = float(g["hours"])
         cost = g["cost_cents"] / 100.0
         salaried = (g["remuneration_type"] or "").strip().lower() == "salary"
-        method = (style.salaried_method if salaried else style.hourly_method) or (
-            default_methods(number)[0 if salaried else 1]
-        )
+        method = default_methods(number)[0 if salaried else 1]
         hourly_rate = to_fixed(cost / hours) if hours > 0 else ""
         if method == "days_daily_rate":
             daily = to_fixed(cost / days_n) if days_n > 0 else ""
@@ -404,13 +453,12 @@ def leave_lines(
             rate = cost / hours if hours > 0 else 0.0
             lines.append(f"#{number},{code},0,{to_fixed(hours)},{to_fixed(rate)}")
         by_style[number] = by_style.get(number, 0) + 1
-        if style.signed_off_at is None and style.name not in unsigned:
-            unsigned.append(style.name)
     totals = {
         "lines": len(lines),
         "by_style": by_style,
         "skipped_zero_hours": skipped_zero,
-        "unsigned_styles": unsigned,
+        "unpaid_skipped": unpaid,
+        "styles_set_in_norm": overridden,
         "hours": float(sum((g["hours"] for g in groups.values()), Decimal("0"))),
         "cost_cents": sum(g["cost_cents"] for g in groups.values()),
     }
@@ -527,15 +575,26 @@ def build(
         if missing:
             refusals.append("Staff without a pay code in Loaded: " + ", ".join(missing))
     elif kind == "leave":
-        styles = list_leave_styles(db, ctx, venue.id)
-        lines, totals, missing, unmapped = leave_lines(entity, facts, styles, venue)
+        # Loaded's leave types are read only when the week has leave to write.
+        setup: dict[str, dict] = {}
+        unread = False
+        if any(f.shift_type == "Leave" for f in facts):
+            try:
+                setup = setup_for(db, ctx, venue)
+            except Invalid as exc:
+                unread = True
+                refusals.append(
+                    f"Could not read the leave types from Loaded: {exc.message}"
+                )
+        lines, totals, missing, unmapped = leave_lines(entity, facts, setup, venue)
         if missing:
             refusals.append(
                 "Leave for staff without a pay code in Loaded: " + ", ".join(missing)
             )
-        if unmapped:
+        if unmapped and not unread:
             refusals.append(
-                "Leave types with no Ace style on the Payroll settings page: "
+                "Leave types with no Ace style — Loaded gives these no payroll "
+                "meaning; set one under Payroll settings → Leave types: "
                 + ", ".join(unmapped)
             )
     elif kind == "gratuities":

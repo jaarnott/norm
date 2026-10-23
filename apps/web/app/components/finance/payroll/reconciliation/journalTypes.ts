@@ -3,7 +3,7 @@
  * the stored journal draft and ICO drafts with their push state, what the
  * inputs would build NOW (`proposed`), and the blockers as they stand.
  */
-import type { IcoLine, JournalLine, PushBrief } from '../types';
+import type { IcoLeaveTax, IcoLine, JournalLine, PushBrief } from '../types';
 
 export interface StoredJournal {
   id: string;
@@ -61,7 +61,7 @@ export interface JournalDocument {
   };
   blockers: string[];
   warnings: string[];
-  intercompany: { wages_account: string | null; leave_account: string | null; uplift_bp: number };
+  intercompany: { wages_account: string | null; leave_account: string | null; uplift_bp: number; leave_tax?: IcoLeaveTax };
   live_pushes: PushBrief[];
 }
 

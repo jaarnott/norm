@@ -96,70 +96,6 @@ _INCLUDE = {
     "roster": "rostered",
 }
 
-#: Pay detail only a payroll:read holder sees (owner decision D8, Oct 2026):
-#: a rate, a rate breakdown, one person's cost for one shift. Totals stay —
-#: a venue's wage bill is a manager's number; what one person earns is not.
-_PAY_SHIFT_KEYS = ("hourlyRate", "payRateBreakdown", "totalCost", "cost")
-_PAY_STAFF_KEYS = ("hourly_rate", "salary_rate")
-
-
-def _caller_holds(call_api, scope):
-    """Does the person this run is for hold ``scope``? False when the engine
-    can't say (no person — a job, a script) — pay detail never leaves on
-    nobody's authority."""
-    try:
-        out = call_api("norm", "caller_holds", {"scope": scope})
-    except Exception:
-        return False
-    return bool(isinstance(out, dict) and out.get("holds"))
-
-
-def _strip_pay(rows, keys):
-    """``rows`` without the pay keys — rosteredShifts in a roster, clock-ins,
-    the attendance detail rows, staff rows. Everything else is untouched."""
-    if isinstance(rows, dict):
-        return {k: v for k, v in rows.items() if k not in keys}
-    if isinstance(rows, list):
-        return [
-            {k: v for k, v in r.items() if k not in keys} if isinstance(r, dict) else r
-            for r in rows
-        ]
-    return rows
-
-
-def _strip_roster_pay(data):
-    """A roster's rosteredShifts without rates, breakdowns and per-shift cost;
-    roster-level fields (id, venueId) and every other shift field survive."""
-    out = []
-    for roster in data if isinstance(data, list) else [data]:
-        if not isinstance(roster, dict):
-            out.append(roster)
-            continue
-        r = dict(roster)
-        if isinstance(r.get("rosteredShifts"), list):
-            r["rosteredShifts"] = _strip_pay(r["rosteredShifts"], _PAY_SHIFT_KEYS)
-        out.append(r)
-    return out if isinstance(data, list) else out[0]
-
-
-def _strip_result_pay(result, view):
-    """Apply the strip to one view's finished answer."""
-    if not isinstance(result, dict) or result.get("error"):
-        return result
-    if view == "roster":
-        result["data"] = _strip_roster_pay(result.get("data"))
-    elif view == "timeclock":
-        result["data"] = _strip_pay(result.get("data"), _PAY_SHIFT_KEYS)
-    elif view == "staff":
-        result["rows"] = _strip_pay(result.get("rows"), _PAY_STAFF_KEYS)
-    elif view == "attendance":
-        for key in ("rostered", "clockins", "leave"):
-            if key in result:
-                result[key] = _strip_pay(result[key], _PAY_SHIFT_KEYS)
-    result["pay_detail"] = "hidden — needs payroll:read"
-    return result
-
-
 _ROSTERED_KEYS = ("rostered_hours", "rostered_cost")
 _ACTUAL_KEYS = ("actual_hours", "actual_cost", "leave_hours", "leave_cost")
 #: Only meaningful with both sides.
@@ -1279,13 +1215,6 @@ def run(params, call_api, log, call_api_parallel=None):
                 "vs_actual, timeclock, or staff"
             )
         }
-    result = _run_view(view, params, call_api, log, call_api_parallel)
-    if view != "vs_actual" and not _caller_holds(call_api, "payroll:read"):
-        result = _strip_result_pay(result, view)
-    return result
-
-
-def _run_view(view, params, call_api, log, call_api_parallel=None):
 
     if view == "staff":
         # A reference list — no window needed.

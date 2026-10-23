@@ -7,6 +7,15 @@
 
 export type PayrollMode = 'off' | 'shadow' | 'live';
 
+export type IcoLeaveTax = 'account_default' | 'no_gst' | 'standard_gst';
+
+/** The leave line's tax rule, in the words the accountant decides in. */
+export const ICO_LEAVE_TAX_LABELS: Record<IcoLeaveTax, string> = {
+  account_default: 'The leave account’s own tax rate in Xero',
+  no_gst: 'No GST',
+  standard_gst: 'GST at the standard rate',
+};
+
 export interface Entity {
   id: string;
   venue_id: string;
@@ -20,6 +29,8 @@ export interface Entity {
   security_pay_code: string;
   uniform_bond_cents: number;
   ico_leave_uplift_bp: number;
+  /** The tax rule on the leave line of an intercompany invoice or bill. */
+  ico_leave_tax: IcoLeaveTax;
   sick_approver_name: string | null;
   payroll_contact_email: string | null;
   payroll_on: boolean;
@@ -186,7 +197,11 @@ export interface LeaveRow {
   dates: string[];
   hours: number | string;
   cost_cents: number;
+  /** The Ace style from Loaded's leave type (or set in Norm for a company's own type); null when none. */
   ace_style: string | null;
+  ace_style_from?: 'loaded' | 'override' | null;
+  /** Loaded marks the type unpaid: left out of the leave file. */
+  unpaid?: boolean;
 }
 
 export interface SalariedRow {
@@ -267,7 +282,8 @@ export interface PayrunDoc {
   entity: Entity;
   staff: { rows: StaffRow[]; totals: Record<string, number> };
   security: { pay_code: string; rows: StaffRow[]; totals: Record<string, number> };
-  leave: { rows: LeaveRow[]; totals: Record<string, number> };
+  /** `setup_error`: Loaded's leave types couldn't be read, so the rows carry no Ace style. */
+  leave: { rows: LeaveRow[]; totals: Record<string, number>; setup_error?: string | null };
   salaried: { rows: SalariedRow[] };
   intercompany: { counterparties: Counterparty[]; rows: Fact[] };
   gratuities: { batches: Batch[]; payable_here: PayableShare[]; paid_elsewhere?: Allocation[] };
@@ -374,17 +390,17 @@ export interface SickEligibility {
   rule: Record<string, unknown>;
 }
 
-export interface LeaveStyle {
-  id: string;
-  venue_id: string;
+/** A leave type as Loaded holds it (`GET /api/payroll/leave-types`), with the Ace style the leave export uses. */
+export interface LeaveType {
   loaded_leave_type_id: string;
   name: string;
+  /** Loaded's own (managed) type, the company's own (custom), or null for a set style whose type Loaded no longer lists. */
+  kind: 'managed' | 'custom' | null;
+  is_paid: boolean | null;
+  active: boolean;
   ace_style: string | null;
-  salaried_method: string | null;
-  hourly_method: string | null;
-  signed_off_by: string | null;
-  signed_off_at: string | null;
-  version: number;
+  ace_style_from: 'loaded' | 'override' | null;
+  override: { id: string; ace_style: string; set_by: string | null; set_at: string | null; version: number } | null;
 }
 
 export interface AceInputs {

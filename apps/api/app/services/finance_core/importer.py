@@ -50,6 +50,15 @@ the check waived (paid history, never re-read). Everything the transform could
 not carry is counted with its reason — a silent drop reads as "there was
 nothing there", which parity must never let anyone believe.
 
+**Settings are not facts.** ``pay_entities`` carries every setting on Payroll
+settings → Entities as Orbit applies it today (``pay_entity_settings``: the
+gratuities allowance code is Orbit data, the rest literals in Orbit's code).
+A row a person has changed in Norm (``version`` > 1) is never touched; an
+untouched row — Norm's defaults made on first use, or the importer's own —
+is filled in place, keeping a sick-leave approver or contact Orbit doesn't
+hold. ``run_settings_import`` (the script's ``--settings-only``) writes only
+these rows, so production can carry the settings before the full import.
+
 Orbit is only ever read: GET and HEAD through PostgREST with the service key
 (``ORBIT_SUPABASE_CREDS`` or ``.local/orbit-supabase.json``, D31), files only
 from Orbit's own storage through the signed URLs Orbit stored, without the
@@ -92,6 +101,30 @@ MAX_FILE_BYTES = 10 * 1024 * 1024  # the portal's own cap (plan §11.4)
 _LOCK_KEY = "norm-finance-import:{org_id}"
 
 MODULES = ("payroll", "entertainers", "finance")
+
+#: Orbit's payroll settings, as Orbit applies them today. Only the gratuities
+#: allowance code is data in Orbit (``venues.allowance_codes.gratuities``, per
+#: venue); everything else is a literal in Orbit's code, the same for every
+#: venue (01-payroll-screens §4), and is carried as that literal:
+ORBIT_PAYROLL_SETTINGS = {
+    "pay_week_start_weekday": 1,  # Monday weeks (business_calendar)
+    "payroll_system": "ace",
+    "ace_pay_type_code": "50001",  # PayrunReport.tsx — every #52 line
+    "security_pay_code": "SECURITY",  # PayrunReport.tsx, wageReconciliation.ts
+    # AnnualLeavePayoutBody.tsx's default; every bond Orbit's 277 annual
+    # payouts recorded was $150, bar 9 with none — Orbit data, 23 Oct 2026.
+    "uniform_bond_cents": 15000,
+    "ico_leave_uplift_bp": 1200,  # xero-push-intercompany LEAVE_ENTITLEMENTS_RATE
+    # xero-push-intercompany: no TaxType on the leave line when it posts to
+    # its own leave account, so Xero applies that account's default.
+    "ico_leave_tax": "account_default",
+    "payroll_on": True,  # Orbit runs the pay run for every venue it maps
+}
+#: Settings Orbit does not hold as data: the sick-leave approver is named
+#: only inside Orbit's email wording (SickLeavePayoutBody.tsx), and Orbit
+#: has no per-venue payroll contact. The importer never blanks what a row
+#: already holds for these; the approver can be given (``sick_approver``).
+PAY_SETTINGS_NOT_IN_ORBIT = ("sick_approver_name", "payroll_contact_email")
 
 CREDS_ENV = "ORBIT_SUPABASE_CREDS"
 CREDS_NAME = "orbit-supabase.json"
@@ -885,6 +918,11 @@ PAYROLL_MAPPING_KEYS = {
     "pnl_gratuities_reclass": "gratuities_reclass",
 }
 NORM_PAYROLL_KEYS = tuple(PAYROLL_MAPPING_KEYS.values()) + ("rounding",)
+#: Keys the owner decides in Norm (23 Oct 2026): Orbit's account is reported
+#: beside the block (``left_for_a_person``) but never written, so the journal
+#: keeps refusing a gratuity week by name until someone chooses it on the
+#: Mapping tab. Orbit's "Reclass Gratuities" mapping was never used.
+LEFT_FOR_A_PERSON = ("gratuities_reclass",)
 
 
 def xero_mapping_blocks(
@@ -915,10 +953,11 @@ def xero_mapping_blocks(
         block = blocks.setdefault(
             venue, {"payroll": {}, "intercompany": {"contacts": {}}}
         )
-        block["payroll"][key] = {
-            "code": code,
-            "name": _clean(m.get("xero_account_name")),
-        }
+        account = {"code": code, "name": _clean(m.get("xero_account_name"))}
+        if key in LEFT_FOR_A_PERSON:
+            block.setdefault("left_for_a_person", {})[key] = account
+            continue
+        block["payroll"][key] = account
     for venue, block in blocks.items():
         wages = block["payroll"].get("intercompany_wages")
         leave = block["payroll"].get("leave_entitlements")
@@ -1082,6 +1121,13 @@ PLAN_BASELINE = {
 }
 
 
+def _account_text(account) -> str:
+    """``814 Wages Payable - Payroll`` from a mapping value (dict or code)."""
+    if isinstance(account, dict):
+        return " ".join(str(v) for v in (account.get("code"), account.get("name")) if v)
+    return str(account)
+
+
 @dataclass
 class ImportReport:
     """What a run read, wrote, dropped and decided — printed every run and
@@ -1101,6 +1147,11 @@ class ImportReport:
     collisions: list = field(default_factory=list)
     decisions: dict = field(default_factory=dict)
     xero_mapping: dict = field(default_factory=dict)
+    #: venue name -> the pay_entities settings planned for it and what the
+    #: run does with them (no person's name: the approver is "set"/"blank").
+    pay_settings: dict = field(default_factory=dict)
+    #: Print every account code of the xero_mapping blocks, not just counts.
+    mapping_detail: bool = False
     gate: dict = field(default_factory=dict)
     outcome: str = ""
 
@@ -1148,11 +1199,15 @@ class ImportReport:
                     "examples": dict(self.examples),
                     "decisions": self.decisions,
                     "xero_mapping": self.xero_mapping,
+                    "pay_settings": self.pay_settings,
                     "gate": self.gate,
                 },
                 default=str,
             )
         )
+
+    def _venue_name(self, venue_id: str) -> str:
+        return (self.org.get("venue_names") or {}).get(venue_id, venue_id[:8])
 
     def lines(self, *, people: bool = True) -> list[str]:
         out = [
@@ -1207,6 +1262,21 @@ class ImportReport:
             out += ["", f"{section}:"]
             for key, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
                 out.append(f"  {n:>6}  {key}")
+        if self.pay_settings:
+            out += ["", "payroll settings (pay_entities) per venue:"]
+            for venue, row in self.pay_settings.items():
+                out.append(f"  {venue}: {row.get('status')}")
+                out.append(
+                    f"    pay run {'on' if row.get('payroll_on') else 'off'}"
+                    f" · Ace pay type {row.get('ace_pay_type_code')}"
+                    f" · gratuities allowance {row.get('ace_gratuity_allowance_code') or 'blank'}"
+                    f" · security code {row.get('security_pay_code')}"
+                    f" · bond {_money(row.get('uniform_bond_cents'))}"
+                    f" · uplift {(row.get('ico_leave_uplift_bp') or 0) / 100:g}%"
+                    f" · leave-line tax {row.get('ico_leave_tax')}"
+                    f" · sick approver {row.get('sick_approver')}"
+                    f" · contact override {row.get('payroll_contact')}"
+                )
         if self.xero_mapping:
             out += [
                 "",
@@ -1221,6 +1291,29 @@ class ImportReport:
                     + (f"; missing {', '.join(missing)}" if missing else "")
                     + f"; {block.get('status', 'reported only')}"
                 )
+                for key, acct in (block.get("left_for_a_person") or {}).items():
+                    out.append(
+                        f"    {key}: Orbit has {_account_text(acct)} — NOT written; "
+                        "chosen on the Mapping tab"
+                    )
+                if self.mapping_detail:
+                    ico = block.get("intercompany", {})
+                    out.append(
+                        "    "
+                        + " · ".join(
+                            f"{k} {_account_text(pay[k])}"
+                            for k in NORM_PAYROLL_KEYS
+                            if k in pay
+                        )
+                    )
+                    out.append(
+                        f"    intercompany wages {ico.get('wages_account') or '—'}"
+                        f" · leave {ico.get('leave_account') or '—'}"
+                        + "".join(
+                            f" · contact for {self._venue_name(v)}: {c.get('name') or c.get('contact_id')}"
+                            for v, c in contacts.items()
+                        )
+                    )
         if self.decisions:
             out += ["", "for a person to decide:"]
             for key, items in self.decisions.items():
@@ -1321,8 +1414,8 @@ _NEVER_DELETED = frozenset({"ent_files", "pay_files"})
 
 #: Natural keys a Norm-authored row may already hold. A planned Orbit row on
 #: one of these is a collision: left out, reported.
+#: (``pay_entities`` has its own rule: ``_pay_entity_settings``.)
 NATURAL_KEYS: dict[str, tuple[str, ...]] = {
-    "pay_entities": ("venue_id",),
     "pay_weeks": ("venue_id", "week_start"),
     "pay_ace_inputs": ("week_id",),
     "pay_accruals": ("week_id",),
@@ -1338,6 +1431,9 @@ class _Plan:
     def __init__(self, org_id: str):
         self.org_id = org_id
         self.rows: dict[str, dict[str, dict]] = defaultdict(dict)
+        #: Importer-authored ids left as they are this run (a setting changed
+        #: in Norm): never deleted as "gone from Orbit".
+        self.kept: dict[str, set[str]] = defaultdict(set)
 
     def add(self, table: str, row: dict) -> dict:
         if row["id"] in self.rows[table]:
@@ -1394,6 +1490,35 @@ class _Plan:
             )
 
 
+def pay_entity_settings(venue: dict, *, sick_approver: str | None = None) -> dict:
+    """Every ``pay_entities`` setting for one Orbit venue, as Orbit applies
+    it today: its gratuities allowance code, Orbit's literals for the rest
+    (``ORBIT_PAYROLL_SETTINGS``), the approver when one is given, and no
+    contact override (Orbit has none)."""
+    codes = venue.get("allowance_codes") or {}
+    return {
+        **ORBIT_PAYROLL_SETTINGS,
+        "ace_gratuity_allowance_code": _clean(
+            codes.get("gratuities") if isinstance(codes, dict) else None
+        ),
+        "sick_approver_name": _clean(sick_approver),
+        "payroll_contact_email": None,
+    }
+
+
+def settings_summary(row: dict) -> dict:
+    """A settings row for the printed report — never a person's name."""
+    out = {
+        k: row.get(k)
+        for k in ORBIT_PAYROLL_SETTINGS
+        if k not in ("pay_week_start_weekday", "payroll_system")
+    }
+    out["ace_gratuity_allowance_code"] = row.get("ace_gratuity_allowance_code")
+    out["sick_approver"] = "set" if row.get("sick_approver_name") else "blank"
+    out["payroll_contact"] = "set" if row.get("payroll_contact_email") else "blank"
+    return out
+
+
 _SKIP = object()
 
 
@@ -1417,8 +1542,10 @@ class _Transform:
         now: dt.datetime,
         legacy_weeks: dict[str, dt.date] | None = None,
         file_ids: dict[str, str] | None = None,
+        sick_approver: str | None = None,
     ):
         self.org = org
+        self.sick_approver = sick_approver
         self.org_id = org.id
         self.modes = modes
         self.modules = list(modules)
@@ -1610,25 +1737,27 @@ class _Transform:
     # ---- payroll -------------------------------------------------------------
 
     def pay_entities(self) -> None:
+        """One settings row per mapped Orbit venue, with every setting the
+        Entities tab edits (``pay_entity_settings``)."""
         for v in self.data.get("venues", []):
             norm = self.venue_map.get(v["id"])
             if not norm:
                 continue
-            codes = v.get("allowance_codes") or {}
             row = self.plan.add(
                 "pay_entities",
                 {
                     "id": self.id("pay_entities", norm),
                     "venue_id": norm,
                     "loaded_company_id": _clean(v.get("loadedhub_company_id")),
-                    "ace_gratuity_allowance_code": _clean(
-                        codes.get("gratuities") if isinstance(codes, dict) else None
-                    ),
-                    "payroll_on": True,
+                    **pay_entity_settings(v, sick_approver=self.sick_approver),
                 },
             )
             self.stamp(row, v.get("created_at"), v.get("updated_at"))
             self.report.imported("venues")
+            self.report.pay_settings[self.norm_venues[norm].name] = {
+                **settings_summary(row),
+                "status": "new row",
+            }
 
     def pay_weeks_and_inputs(self) -> None:
         for w in self.data.get("wage_recon_weeks", []):
@@ -3162,6 +3291,83 @@ def _import_id_clause(t):
     return (func.length(t.c.id) == 36) & (func.substr(t.c.id, 15, 1) == "5")
 
 
+def _pay_entity_settings(
+    db: Session, models: dict, plan: _Plan, report: ImportReport
+) -> None:
+    """``pay_entities`` are settings, not Orbit facts, so they get their own
+    rule against the row a venue already has (any id):
+
+    * changed in Norm (``version`` > 1 — every save on the Entities tab bumps
+      it) → left exactly as it is; Orbit's row is dropped from the plan;
+    * untouched (version 1: Norm's defaults made on first use, or the
+      importer's own last write) → filled in place, under its own id, keeping
+      the approver and contact override Orbit doesn't hold when the plan has
+      none (``PAY_SETTINGS_NOT_IN_ORBIT``).
+
+    Runs inside the transaction, before the writes."""
+    rows = plan.rows.get("pay_entities")
+    if not rows or "pay_entities" not in models:
+        return
+    t = models["pay_entities"].__table__
+    existing = {
+        r["venue_id"]: r
+        for r in db.execute(
+            select(t).where(t.c.organization_id == plan.org_id)
+        ).mappings()
+    }
+    names = dict(
+        db.query(Venue.id, Venue.name).filter(Venue.organization_id == plan.org_id)
+    )
+    for rid, row in list(rows.items()):
+        found = existing.get(row["venue_id"])
+        name = names.get(row["venue_id"], row["venue_id"])
+        summary = report.pay_settings.setdefault(name, settings_summary(row))
+        if found is None:
+            continue
+        if int(found["version"] or 1) > 1:
+            del rows[rid]
+            plan.kept["pay_entities"].add(found["id"])
+            summary.update(settings_summary(dict(found)))
+            summary["status"] = (
+                f"KEPT — changed in Norm (version {found['version']}); Orbit's values not applied"
+            )
+            continue
+        for key in PAY_SETTINGS_NOT_IN_ORBIT:
+            if row.get(key) is None:
+                row[key] = found[key]
+        if found["id"] != rid:
+            del rows[rid]
+            row["id"] = found["id"]
+            row["created_at"] = found["created_at"]
+            rows[found["id"]] = row
+            summary["status"] = (
+                "fills Norm's untouched row (defaults made on first use)"
+            )
+        else:
+            summary["status"] = "updates the imported row"
+        summary.update(settings_summary(row))
+
+
+def _upsert(db: Session, t, table: str, rows: dict, report: ImportReport) -> None:
+    """Insert the planned rows whose id is new, update the rest, by id."""
+    ids = list(rows)
+    present: set[str] = set()
+    for i in range(0, len(ids), 5000):
+        present |= {
+            r[0]
+            for r in db.execute(select(t.c.id).where(t.c.id.in_(ids[i : i + 5000])))
+        }
+    new = [r for r in rows.values() if r["id"] not in present]
+    old = [r for r in rows.values() if r["id"] in present]
+    for i in range(0, len(new), 1000):
+        db.execute(insert(t), new[i : i + 1000])
+    for r in old:
+        db.execute(update(t).where(t.c.id == r["id"]).values(**r))
+    report.written.setdefault(table, {})
+    report.written[table]["insert"] = len(new)
+    report.written[table]["update"] = len(old)
+
+
 def _collisions(db: Session, models: dict, plan: _Plan, report: ImportReport) -> None:
     """Planned rows whose natural key a Norm-authored row already holds are
     left out and reported; children of a Norm-authored pay week are pointed
@@ -3246,31 +3452,13 @@ def _write(
     touched = {t for m in modules for t in MODULE_TABLES[m]}
     org_id = plan.org_id
     for table in order:
-        rows = list(plan.rows.get(table, {}).values())
-        if not rows:
-            continue
-        t = models[table].__table__
-        ids = list(plan.rows[table])
-        present: set[str] = set()
-        for i in range(0, len(ids), 5000):
-            present |= {
-                r[0]
-                for r in db.execute(select(t.c.id).where(t.c.id.in_(ids[i : i + 5000])))
-            }
-        new = [r for r in rows if r["id"] not in present]
-        old = [r for r in rows if r["id"] in present]
-        for i in range(0, len(new), 1000):
-            db.execute(insert(t), new[i : i + 1000])
-        for r in old:
-            db.execute(update(t).where(t.c.id == r["id"]).values(**r))
-        report.written.setdefault(table, {})
-        report.written[table]["insert"] = len(new)
-        report.written[table]["update"] = len(old)
+        if plan.rows.get(table):
+            _upsert(db, models[table].__table__, table, plan.rows[table], report)
     for table in reversed(order):
         if table not in touched or table in _NEVER_DELETED:
             continue
         t = models[table].__table__
-        keep_ids = set(plan.rows.get(table, {}))
+        keep_ids = set(plan.rows.get(table, {})) | plan.kept.get(table, set())
         where = [t.c.organization_id == org_id, _import_id_clause(t)]
         if table == "pay_xero_pushes" and "kind" in t.c:
             kinds = []
@@ -3682,6 +3870,7 @@ def run_import(
     commit: bool = True,
     now: dt.datetime | None = None,
     legacy_weeks: dict[str, dt.date] | None = None,
+    sick_approver: str | None = None,
     log=print,
 ) -> ImportResult:
     """Import Orbit into one organisation: read → transform → (one
@@ -3735,6 +3924,7 @@ def run_import(
         now=now,
         legacy_weeks=legacy_weeks,
         file_ids=files_by_ref,
+        sick_approver=sick_approver,
     )
     log("transforming…")
     plan = transform.run()
@@ -3751,6 +3941,7 @@ def run_import(
         ).scalar()
         if not locked:
             raise ImportRefused("another import is running for this organisation")
+        _pay_entity_settings(db, models, plan, report)
         _collisions(db, models, plan, report)
         _write(db, models, plan, modules, report)
         db.flush()
@@ -3796,6 +3987,139 @@ def run_import(
         raise
 
 
+#: What ``run_settings_import`` reads: the venues, and what the Xero mapping
+#: report needs. No payroll inputs, no people.
+SETTINGS_READS = (
+    "venues",
+    "xero_connections",
+    "xero_account_mappings",
+    "xero_intercompany_contacts",
+)
+
+
+def run_settings_import(
+    db: Session,
+    source: OrbitSource,
+    *,
+    org: str,
+    dry_run: bool = False,
+    skip_venues=(),
+    sick_approver: str | None = None,
+    commit: bool = True,
+    now: dt.datetime | None = None,
+    log=print,
+) -> ImportResult:
+    """``--settings-only``: write ONLY ``pay_entities`` — every setting on
+    Payroll settings → Entities, from Orbit — so production can carry them
+    before the full import, and report the ``xero_mapping`` blocks the full
+    import would set (never written here). The same settings rule as the
+    full run (``_pay_entity_settings``); no stale-row deletes, no other
+    table touched. An Orbit venue Norm doesn't have yet (CBI before 9 Nov)
+    is listed, not a failure. Refuses while payroll is live."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    report = ImportReport(
+        dry_run=dry_run, modules=["payroll (settings only)"], mapping_detail=True
+    )
+    target = resolve_org(db, org)
+    modes = org_modes(target)
+    venues = db.query(Venue).filter(Venue.organization_id == target.id).all()
+    report.org = {
+        "id": target.id,
+        "name": target.name,
+        "slug": target.slug,
+        "modes": modes,
+        "venue_names": {v.id: v.name for v in venues},
+    }
+    if modes["payroll"] == "live":
+        raise ImportRefused(
+            f"{target.name}: payroll is live — its settings are Norm's own now."
+        )
+    models = _models()
+    log("reading Orbit (venues and Xero mappings)…")
+    data: dict[str, list] = {}
+    for table in SETTINGS_READS:
+        _module, sel, filters, key = _READS[table]
+        data[table] = source.rows(table, select=sel, filters=filters, key=key)
+        report.read(table, len(data[table]), None)
+        log(f"  {table}: {len(data[table])} rows")
+    company_venues, xero_venues = _connections(db, venues)
+    transform = _Transform(
+        org=target,
+        modes=modes,
+        modules=["payroll"],
+        venues=venues,
+        company_venues=company_venues,
+        xero_venues=xero_venues,
+        members={},
+        data=data,
+        report=report,
+        skip_venues=skip_venues,
+        now=now,
+        sick_approver=sick_approver,
+    )
+    transform.pay_entities()
+    transform.mappings()
+    plan = transform.plan
+    plan.complete({"pay_entities": models["pay_entities"]})
+
+    nested = db.begin_nested()
+    try:
+        locked = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(hashtext(:k))"),
+            {"k": _LOCK_KEY.format(org_id=target.id)},
+        ).scalar()
+        if not locked:
+            raise ImportRefused("another import is running for this organisation")
+        _pay_entity_settings(db, models, plan, report)
+        t = models["pay_entities"].__table__
+        if plan.rows.get("pay_entities"):
+            _upsert(db, t, "pay_entities", plan.rows["pay_entities"], report)
+        report.written.setdefault("pay_entities", {})["kept"] = len(
+            plan.kept.get("pay_entities", ())
+        )
+        db.flush()
+        counts = _db_counts(db, models, plan)
+        short = {k: v for k, v in counts.items() if v[0] != v[1]}
+        report.gate = {
+            "passed": not short,
+            "checks": [
+                {
+                    "check": "rows written",
+                    "ok": not short,
+                    "detail": "all planned rows present"
+                    if not short
+                    else f"missing: {short}",
+                }
+            ],
+        }
+        fresh = db.execute(
+            select(Organization)
+            .where(Organization.id == target.id)
+            .with_for_update(read=True)
+        ).scalar_one()
+        if org_modes(fresh)["payroll"] == "live":
+            raise ImportRefused(
+                f"{target.name} went live during the import — nothing written."
+            )
+        if dry_run or short:
+            nested.rollback()
+            report.outcome = (
+                "dry run: rolled back — nothing written"
+                if not short
+                else "SANITY GATE FAILED: rolled back — nothing written"
+            )
+            return ImportResult(ok=not short, committed=False, report=report, plan=plan)
+        nested.commit()
+        if commit:
+            db.commit()
+        report.outcome = "payroll settings written and committed"
+        return ImportResult(ok=True, committed=True, report=report, plan=plan)
+    except BaseException:
+        if nested.is_active:
+            nested.rollback()
+        raise
+
+
 __all__ = [
     "ACTOR",
     "BUDGET_LINE_ITEMS",
@@ -3821,8 +4145,10 @@ __all__ = [
     "normalise_tax_code",
     "orbit_client",
     "org_modes",
+    "pay_entity_settings",
     "post_freeze_rows",
     "run_import",
+    "run_settings_import",
     "series_rule",
     "split_payout_key",
     "to_cents",

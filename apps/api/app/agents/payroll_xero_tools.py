@@ -229,6 +229,7 @@ def _get_journal_draft(params: dict, db: Session, thread_id: str | None) -> dict
                     "uplift_bp": row["uplift_bp"],
                     "uplift_cents": row["uplift_cents"],
                     "subtotal_cents": row["subtotal_cents"],
+                    "counterparty_leave_tax": row["counterparty_leave_tax"],
                     "live_push": row["live_push"],
                     "pushes_before": xero_pushes.count_for_slot(
                         db,
@@ -245,6 +246,7 @@ def _get_journal_draft(params: dict, db: Session, thread_id: str | None) -> dict
             "wages_account": current["intercompany"]["wages_account"],
             "leave_account": current["intercompany"]["leave_account"],
             "uplift_bp": current["intercompany"]["uplift_bp"],
+            "leave_tax": current["intercompany"]["leave_tax"],
             "documents": docs,
         }
     raise Refused("kind is 'journal' or 'ico'")

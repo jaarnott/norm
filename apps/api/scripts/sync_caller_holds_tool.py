@@ -1,16 +1,15 @@
 """Publish the norm.caller_holds spec row — the engine's permission question.
 
 A consolidator asks ``norm.caller_holds`` whether the person a run is for
-holds an org scope, so one tool can answer differently by person: get_labour
-keeps rates and per-shift costs for ``payroll:read`` holders and strips them
-for everyone else (owner decision D8, Oct 2026). Engine-only: the model never
-sees it.
+holds an org scope, so one tool can answer differently by person:
+``xero.create_bill`` attaches a file Norm holds (a performer's invoice) only
+for a ``payroll:write`` holder (Oct 2026). Engine-only: the model never sees it.
 
 Every engine-called norm.* action needs a publishing script (the
 match_supplier lesson — a handler with no spec row dies with "Tool not
-found" at runtime). Here that failure is silent and wide: without this row
-``get_labour`` fails closed and strips pay detail for EVERY caller, owners
-included — run this in the same deploy as the code.
+found" at runtime). Here the failure is quiet: without this row the check
+answers "no", so no bill can carry an attachment — run this in the same
+deploy as the code.
 
 Usage:
     uv run python scripts/sync_caller_holds_tool.py [--dry-run]
@@ -28,8 +27,8 @@ TOOL = {
     "description": (
         "[engine-only] Does the person this run is for hold an org permission "
         'scope ({"holds": true|false}; false when nobody is known)? Called '
-        "by consolidators that answer differently by person (get_labour's "
-        "pay detail); never bind this to an agent."
+        "by consolidators that answer differently by person (create_bill's "
+        "attachments); never bind this to an agent."
     ),
     "engine_only": True,
     "required_fields": ["scope"],

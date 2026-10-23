@@ -61,8 +61,8 @@ always-allowable typed push); `norm.caller_holds`. MCP exposes three reads only 
   `owner` and `payroll_admin` hold all four; `manager` holds `finance:read` + `budgets:write`
   and is excluded from `payroll:*`; `team_member` none. A tool row's `requires` is enforced at
   every door (chat, page execute, charts, self-built apps, MCP, page writes); menus omit rows
-  the person lacks; nobody known (a job, a script) is refused. `get_labour` strips rates and
-  per-shift costs for callers without `payroll:read` (`norm.caller_holds`).
+  the person lacks; nobody known (a job, a script) is refused. `get_labour` is unchanged:
+  managers keep seeing rates and per-shift costs in chat (owner, 23 Oct — D8's strip not taken).
 - **Money is integer cents** in the tables and the Norm APIs; dollar floats only where a
   Loaded consolidator's own result passes through. Plans (dates, times) are venue-local;
   facts are UTC instants. Pay weeks run Monday at the venue's `day_start_time` to the next
@@ -96,14 +96,33 @@ always-allowable typed push); `norm.caller_holds`. MCP exposes three reads only 
   These routes are covered by blocking CI tests.
 - **Statutory rules are dated rows** (`pay_rules`: sick-leave eligibility, the sick day's
   hours; the Holidays Act replacement is a new row, not a code change); the $150 uniform bond
-  is deducted from holiday pay only with a consent file or "held in Ace"; an unmapped leave
-  type refuses `IMPORT_LEAVE.TXT`; a `payroll_contractor` with no IR330C declaration gets no
+  is deducted from holiday pay only with a consent file or "held in Ace"; **leave types come
+  from Loaded** (owner, 23 Oct): Loaded's own NZ annual, sick and bereavement leave go out as
+  #70, #60, #63 (keyed by Loaded's id — Loaded's leave types carry no payroll code), unpaid
+  leave is left out, and a company's own type with no Ace style set under Payroll settings →
+  Leave types refuses `IMPORT_LEAVE.TXT` by name; **public holidays come from Loaded's pay
+  adjustments** (the Public Holiday adjustments in each venue's activated packages — no
+  region setting); a `payroll_contractor` with no IR330C declaration gets no
   Payrun line; an exemption certificate past its expiry is not billable as exempt.
 - **Entertainer bookings and approvals are venue-access work** (D15): anyone with access to
   the venue books and approves (as Orbit allowed); only `payroll:write` opens Payments, marks
   paid and sees bank/IRD details. The closing Sales Manager is read from Loaded's clock-ins
   (else the roster) each morning and emailed a link that opens the approval; one with no Norm
-  login goes on the venue digest instead.
+  login goes on the venue digest instead. **Which roles count is a setting**
+  (`ent_settings.closing_manager_roles`, default `["Sales Manager"]`, D22): a payroll writer or an
+  owner picks them on the Register's **Settings** dialog from the venue's live Loaded roles
+  (`GET /api/entertainers/settings/loaded-roles`), or types one.
+- **Bank accounts pass Inland Revenue's validation** (Payroll Calculations and Business Rules
+  Specification 2026–27 §7: a listed bank, a branch in its Payments NZ ranges, the check digits
+  by algorithm A–G or X) on the onboarding form and server side
+  (`performers.nz_bank_account_valid`, mirrored in `entertainers/logic.ts`); a wrong digit reads
+  "That bank account number doesn't check out — please re-check it." The branch ranges cover
+  every branch in Payments NZ's register as downloaded 23 Oct 2026 — a bank that opens a branch
+  outside them needs both copies widened.
+- **Emails come from Norm, in the organisation's name** (D26 settled 23 Oct): entertainer and
+  payroll emails leave from Norm's platform address (`EMAIL_FROM_ADDRESS`) with the
+  organisation's name as the display name — as app and Functions emails already do — and
+  `Reply-To` the payroll contact, so a reply reaches a person.
 
 ## Modes (`organizations.payroll_mode`, `entertainers_mode`, `finance_mode`)
 
@@ -141,7 +160,7 @@ weekly parity email.
 | `xero.status_refresh` | Wednesday 03:00 NZ, per org-week | refreshes the Xero status of every live push; a document voided in Xero marks the ledger row voided |
 | `ent.morning` | 08:00 org-local | closing-manager lookup → approval emails → performer, band and onboarding reminders → the venue digest |
 | `ent.invoice_checks` | every tick, ≤ 100 per org per day | the uploaded-invoice check (one LLM read per file, Norm's cost) |
-| `finance.nightly` | trading-day close + 30 min, per venue-day, `shadow` or `live` | refresh 14 days of actuals (`get_sales`), log Loaded's budget for the next 10 weeks when it changed, build the 70-day vintage, score the vintages made 1/7/28 days earlier and the Loaded budget as it stood 28 days earlier. Never a Loaded write |
+| `finance.nightly` | trading-day close + 30 min, per venue-day, `shadow` or `live` | refresh 14 days of actuals (`get_sales`), refresh the next 12 months of public holidays from Loaded's pay adjustments (`get_pay_adjustments`), log Loaded's budget for the next 10 weeks when it changed, build the 70-day vintage, score the vintages made 1/7/28 days earlier and the Loaded budget as it stood 28 days earlier. Never a Loaded write |
 | `importer.nightly` | 02:30 NZ per org-day, until a module is live | shadow import from Orbit (`ORBIT_SUPABASE_CREDS`) |
 | `importer.post_freeze_watch` | daily inside the freeze window (19 Jan – 3 Feb) | emails the payroll contact any Orbit payroll-input row created after the freeze |
 
@@ -172,8 +191,8 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
 2. **Deploy** (push to main → production). The pipeline runs the migrations before switching
    traffic. The intended split is Phase 0 first — `kb6e8g0i2k4m` (the four scopes, the role
    backfill, the mode columns, `venues.is_trading`) with `scripts/sync_caller_holds_tool.py`
-   applied **in the same deploy** (without the `norm.caller_holds` row, `get_labour` fails closed
-   and strips pay detail for everyone, owners included) — then the three model migrations when
+   applied **in the same deploy** (without the `norm.caller_holds` row no Xero bill can carry a
+   performer's invoice — the check answers "no") — then the three model migrations when
    the venues are quiet (they add foreign keys to hot tables; migrations give up on a busy lock
    after 5 s rather than block, so a failed migrate step is re-run, not waited out). In this
    tree the four migrations chain under one head, so a single push runs all four: pick a quiet
@@ -189,9 +208,10 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
    # a. the two internal specs, their 12 rows (labelled), the four skills (off) and the
    #    MCP row for norm_finance.get_forecast; the two loadedhub MCP rows are skipped until (b)
    uv run python scripts/sync_norm_finance.py --dry-run && uv run python scripts/sync_norm_finance.py
-   # b. loadedhub: nine engine-only endpoint rows + get_payrun, get_weekly_financials,
-   #    set_budgets, set_budgets_typed, get_closing_manager (refuses before (a): the budget
-   #    rows call norm_finance.get_mode / record_budget_push)
+   # b. loadedhub: ten engine-only endpoint rows (incl. get_pay_adjustment_packages_raw) +
+   #    get_payrun, get_weekly_financials, set_budgets, set_budgets_typed,
+   #    get_pay_adjustments, get_closing_manager (refuses before (a): the budget rows call
+   #    norm_finance.get_mode / record_budget_push)
    uv run python scripts/sync_payroll_config.py --dry-run && uv run python scripts/sync_payroll_config.py
    # c. xero: `requires` on the five existing tools, four endpoint rows, the three payroll
    #    write tools, attachment_file_id on create_bill, the Finance agent row
@@ -232,15 +252,31 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
      shadow is suppressed and logged, nothing is sent.
    - Per NZ entity on Payroll settings: `payroll_on`, the Ace pay type code (`50001`), the
      gratuity allowance code, the security pay code, the $150 bond and 12 % uplift (D19,
-     confirmed with the accountant); seed the leave styles
-     (`POST /api/payroll/leave-styles/seed {"venue_id"}` — the Settings button) and sign each
-     off (D28) before the first leave export. The AU venues keep `payroll_on = false`.
+     confirmed with the accountant), the intercompany leave line's tax rule, the sick-leave
+     approver. Fill them from Orbit first, on their own, before the full import:
+     `uv run python scripts/migrate_orbit_finance.py --org default --settings-only --dry-run`
+     (then without `--dry-run`; add `--sick-approver NAME` — Orbit names the approver only in its
+     email wording). It writes ONLY `pay_entities` and prints each venue's values and the Xero
+     mapping the full import would set; a setting someone already changed in Norm is kept.
+     Dry-run against the local copy on 23 Oct: the six mapped venues get pay run on, `50001`,
+     `SECURITY`, $150, 12 %, `account_default`; gratuities allowance codes Bessie 13, Freeman &
+     Grey 26, Glass Goose 25, La Zeppa 10, Mr Murdochs 25, Dunedin Social Club blank (Orbit
+     has none); CBI (14) waits for its venue. Leave types need no seeding or sign-off — they are read
+     from Loaded when the leave file is built. Open Payroll settings → Leave types per entity:
+     any **company's own** type (live: "Paid Public Holiday" at Bessie & Royals and Mr Murdochs)
+     needs its Ace style chosen with the accountant, or that week's leave export refuses it by
+     name. The AU venues keep `payroll_on = false`.
    - Every NZ venue's `day_start_time` before the first Monday snapshot (D11: DSC and The
      Glass Goose 06:00 if Loaded agrees, 07:00 elsewhere) — it also moves those venues'
      trading day in every other Norm read.
-   - Holidays: `POST /api/finance/holidays/seed {"year": 2027, "country": "NZ"}` (each January;
-     `AU` for the AU org), then each venue's `holiday_region` and closed weekdays
-     (`PUT /api/finance/settings`).
+   - Public holidays come from Loaded's pay adjustments: nothing to seed. The nightly job
+     fills the next 12 months per venue once `finance_mode` is on; for history press
+     **Sync from Loaded** in each venue's Forecasting settings
+     (`POST /api/finance/holidays/sync {"venue_id"}`). Check each venue's regional anniversary
+     day is activated in Loaded (Compliance › Pay Rules) — live 23 Oct, only Bessie & Royals
+     has one (Canterbury, activated for 14 Nov 2025 only, so 13 Nov 2026 is not priced), and
+     Loaded's managed dates run to 31 Dec 2026: 2027's appear when Loaded publishes them.
+     Each venue's closed weekdays: `PUT /api/finance/settings`.
    - Load history once per venue: `POST /api/finance/forecast/load-history {"venue_id", "months": 24}`
      (reads only) — the first thing to press at a new venue; `POST /api/finance/forecast/backtest`
      populates the accuracy strip before anyone trusts a number.
@@ -251,8 +287,14 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
      after each one: `uv run python scripts/migrate_orbit_finance.py --org default --module payroll
      --write-xero-mapping` once (fills the `xero_mapping.payroll` / `.intercompany` keys nobody
      set; never overwrites a key a person set), then the mapping panel validated per entity
-     (`rounding` is new and comes from the panel). Two journal decisions for the accountant:
-     the "Reclass Gratuities" debit and its account; the leave-line tax rule on ICO documents.
+     (`rounding` is new and comes from the panel). Two journal decisions for the accountant,
+     both settings now: the **"Reclass Gratuities" account** (`xero_mapping.payroll.gratuities_reclass`
+     on the Mapping tab — the importer reports Orbit's 41100 Bar Sales but never writes it; until
+     it is chosen a week that pays gratuities through payroll is refused by name, never journalled
+     without the line), and the **leave line's tax rule** on intercompany invoices and bills
+     (Payroll settings → Entities, `pay_entities.ico_leave_tax`: `account_default` — Orbit's, the
+     default — `no_gst` or `standard_gst`; set it the same on every entity, the push card warns
+     when two differ).
    - `ORBIT_SUPABASE_CREDS` (D31): a dedicated SELECT-only Orbit Postgres role for the finance,
      forecasting and entertainer tables, in Secret Manager, mounted as a file whose path the
      env var names (rotated, deleted 31 Mar); else the import runs by hand from the dev box.
@@ -265,7 +307,6 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
    - `RESEND_WEBHOOK_SECRET` (D32) — a new secret per environment; Resend's webhook pointed at
      `https://<env>/api/public/email-events/resend` (delivered / bounced / complained land on
      the Emails page). Without the secret the webhook answers 503 and nothing else changes.
-   - The performer sender address and display name (D26) on the entertainer emails.
    - **The Xero Demo Company test** (F4's list, owner go-ahead): connect a local venue to the
      Demo Company (NZ), map accounts, build a week's draft, journal preview → confirm, confirm
      again ("already in Xero"), void preview → confirm on the DRAFT (confirm Xero accepts
@@ -281,7 +322,10 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
    - **The freeze** (Mon 18 Jan 18:00): `finance_core.importer_jobs.set_freeze_window(db, org_id,
      freeze_at=<tz-aware instant>, until=date(2027, 2, 3))` — the daily post-freeze watch then
      emails any Orbit payroll-input row created after it.
-   - The Loaded scope request (D13) and the Orbit-side actions (D27: RLS SELECT-only, the push
+   - The Loaded scope request (D13: plan §7's list **plus `core:pay-packages:r`** — the pay
+     adjustment packages behind the public holidays, `GET /pay-rules/packages`,
+     `RequireOneOf("Time,Payroll", core:pay-packages:r)`; the leave types need `core:leave:r`,
+     already listed) and the Orbit-side actions (D27: RLS SELECT-only, the push
      functions undeployed on each date, the "this link has moved" banners via Lovable) — owner
      actions with named people, verified the day after each date.
 5. **Golden files** (D18): head office keeps every week's four Ace files from now; parity
@@ -321,7 +365,7 @@ intercompany tools on the Xero App; **D6** always-allow only on the day grid's t
 never in chat, never for the forecast push (a card every time, hidden until four weeks of
 scores, 92-day cap); **D7** Ace Payroll (if Xero Payroll comes, only the export layer dies);
 **D8** `payroll:*` for owner and payroll_admin only, `finance:read` + `budgets:write` for owner,
-manager and payroll_admin, never team_member; `get_labour` strips rates without `payroll:read`;
+manager and payroll_admin, never team_member; `get_labour` NOT stripped (owner, 23 Oct: managers keep rates);
 the Xero App's five tools gated the same way; **D9** IRD, bank and DOB encrypted; **D10** Xero
 DRAFT only; **D12** NZ payroll only, AU `payroll_mode = off`; **D14 a–g** personal onboarding
 links only, the email code before bank/tax, finance accepts before payable, the IR330C signed on
@@ -330,7 +374,9 @@ unknown-lane performers decided from the importer's list; **D15** register, rost
 on venue access, payments and bank/IRD on `payroll:write`; **D16 / D29** cut-over in January,
 entertainers with payroll (the modes allow earlier, with the D29 bridge); **D21** text Ace
 files and CSV of any grid; XLSX and PDF deferred; **D22** closing-manager roles default
-`["Sales Manager"]` (an `ent_settings` list); **D23** purchases-based COGS, cash variance and
+`["Sales Manager"]` (an `ent_settings` list, editable on the Register's Settings dialog);
+**D26** settled (23 Oct): no performer sender of its own — Norm's address in the
+organisation's name, `Reply-To` the payroll contact; **D23** purchases-based COGS, cash variance and
 voids kept; **D24** the close runs on a snapshot; **D32** the Emails page with Resend delivery
 status and Orbit's send dates imported; **D33** the four monthly lines (intercompany fees,
 finance costs, income tax, leave %) not carried; **D34** total-only forecast; **D35** the
@@ -341,8 +387,8 @@ Owner actions, not build (dated in §15 and the runbook above): **D1** CBI venue
 Xero consents, the eighth Xero organisation named; **D11** every venue's day start and the AU
 org's currency; **D13** the Loaded scope request; **D17** go-ahead on each production write;
 **D18** Ace golden files kept from now; **D19** the bond and uplift confirmed; **D20** the Orbit
-forecast crons stay until Norm Functions is live; **D25** the payroll contact; **D26** the
-performer sender; **D27** the three Orbit-side actions with names; **D28** the statutory
+forecast crons stay until Norm Functions is live; **D25** the payroll contact; **D27** the
+three Orbit-side actions with names; **D28** the statutory
 sign-off; **D30** people and roles by 4 Jan; **D31** the Orbit credential.
 
 Design notes the owner should know: the Monday snapshot job has no person, and `requires`

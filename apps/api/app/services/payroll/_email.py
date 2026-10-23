@@ -9,6 +9,9 @@ recipient rule (D25, DESIGN-CONTRACT §5).
 * No address at all → nothing is sent and an ``email_logs`` row with status
   ``suppressed`` records that it would have been, so the Shadow tab can show
   it.
+* From Norm's address in the organisation's name, ``Reply-To`` the payroll
+  contact (the entertainers' rule, ``entertainers.emails.sender``) — a
+  manager answering a sick-leave note reaches payroll.
 """
 
 from __future__ import annotations
@@ -72,8 +75,18 @@ def send(
     context = dict(context)
     if recipient != intended and intended:
         context["redirected_from"] = intended
+    from app.services.entertainers.emails import sender
+
+    org = db.query(Organization).filter(Organization.id == ctx.org_id).first()
+    from_name, _org_reply = sender(org)
     log_id = send_system_email(
-        template, [recipient], context, db, organization_id=ctx.org_id
+        template,
+        [recipient],
+        context,
+        db,
+        organization_id=ctx.org_id,
+        from_name=from_name,
+        reply_to=payroll_contact(db, ctx, venue_id),
     )
     log = db.query(EmailLog).filter(EmailLog.id == log_id).first() if log_id else None
     if log is not None and venue_id and not log.venue_id:

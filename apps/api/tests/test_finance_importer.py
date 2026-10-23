@@ -1448,8 +1448,11 @@ def test_xero_mapping_blocks_collapse_to_the_live_keys():
     assert set(payroll) == {
         "wages_payable", "payroll_taxes_payable", "unpaid_wages", "security_owed", "intercompany_wages",
         "bar_floor", "kitchen", "other_team", "salaries", "site_manager_bonus", "leave_entitlements",
-        "entertainers", "entertainment_expense", "gratuities_reclass",
+        "entertainers", "entertainment_expense",
     }  # fmt: skip
+    # The Reclass Gratuities account is the owner's to choose in Norm:
+    # Orbit's is reported beside the block, never written.
+    assert set(blocks["norm-1"]["left_for_a_person"]) == {"gratuities_reclass"}
     assert payroll["wages_payable"] == {"code": "800", "name": "wages payable"}
     assert (
         blocks["norm-1"]["intercompany"]["wages_account"]
@@ -1625,6 +1628,18 @@ def test_full_import_lands_every_table(w):
     ]
     entity = _one(w, pm.PayEntity, _id(w, "pay_entities", w.venue.id))
     assert entity.loaded_company_id == C1 and entity.ace_gratuity_allowance_code == "13"
+    # Every Entities-tab setting as Orbit applies it (its literals for the
+    # rest); nothing Orbit doesn't hold is invented.
+    assert (
+        entity.ace_pay_type_code,
+        entity.security_pay_code,
+        entity.uniform_bond_cents,
+        entity.ico_leave_uplift_bp,
+        entity.ico_leave_tax,
+        entity.payroll_on,
+        entity.sick_approver_name,
+        entity.payroll_contact_email,
+    ) == ("50001", "SECURITY", 15000, 1200, "account_default", True, None, None)
     assert (
         _one(
             w, pm.PayEntity, _id(w, "pay_entities", w.venue2.id)
@@ -2238,6 +2253,92 @@ def test_post_freeze_watch_emails_the_payroll_contact_inside_the_window(w):
         w.db, dt.datetime(2026, 10, 21, 9, 0, tzinfo=NZ), source=source, send=fake_send
     )
     assert out["ran"][0]["result"]["email"].startswith("suppressed") and len(sent) == 1
+
+
+def test_settings_only_writes_only_the_payroll_settings(w):
+    """``--settings-only``: pay_entities from Orbit and nothing else; a row
+    someone changed in Norm is kept, an untouched one (Norm's defaults made
+    on first use) is filled in place; the Xero mapping is reported, never
+    written; the full import afterwards never blanks the approver."""
+    from app.services.finance_core.importer import run_settings_import
+
+    untouched = pm.PayEntity(organization_id=w.org.id, venue_id=w.venue.id)
+    changed = pm.PayEntity(
+        organization_id=w.org.id,
+        venue_id=w.venue2.id,
+        ace_gratuity_allowance_code="GG",
+        payroll_on=False,
+    )
+    w.db.add_all([untouched, changed])
+    w.db.flush()
+    changed.uniform_bond_cents = 0  # a person's edit on the Entities tab
+    w.db.flush()
+    assert untouched.version == 1 and changed.version == 2
+    xero = w.db.query(Connection).filter(Connection.connector_name == "xero").one()
+    xero_before = dict(xero.config)
+    fake = _fake(w)
+
+    def settings_run(**kw):
+        return run_settings_import(
+            w.db,
+            fake.client(),
+            org=w.org.id,
+            commit=False,
+            now=NOW,
+            log=lambda *a: None,
+            skip_venues=["Head Office"],
+            **kw,
+        )
+
+    dry = settings_run(dry_run=True)
+    assert dry.ok and not dry.committed
+    w.db.refresh(untouched)
+    assert untouched.ace_gratuity_allowance_code is None  # rolled back
+    report = dry.report.pay_settings
+    assert report["Brew Bar"]["status"].startswith("fills Norm's untouched row")
+    assert report["Brew Bar"]["ace_gratuity_allowance_code"] == "13"
+    assert report["Garden Bar"]["status"].startswith("KEPT")
+    assert report["Garden Bar"]["ace_gratuity_allowance_code"] == "GG"
+    printed = "\n".join(dry.report.lines(people=False))
+    assert "gratuities allowance 13" in printed and "sick approver blank" in printed
+    assert "gratuities_reclass: Orbit has" in printed and "NOT written" in printed
+
+    result = settings_run(sick_approver="Sam Approver")
+    assert result.ok and result.committed
+    w.db.refresh(untouched)
+    w.db.refresh(changed)
+    assert untouched.ace_gratuity_allowance_code == "13" and untouched.payroll_on
+    assert untouched.sick_approver_name == "Sam Approver"
+    assert (changed.ace_gratuity_allowance_code, changed.payroll_on) == ("GG", False)
+    assert changed.uniform_bond_cents == 0
+    assert "Sam Approver" not in "\n".join(result.report.lines(people=True))
+    # Only pay_entities: no week, performer, budget; the mapping not written.
+    assert _rows(w, pm.PayWeek) == [] and _rows(w, em.EntPerformer) == []
+    w.db.refresh(xero)
+    assert xero.config == xero_before
+    assert result.report.xero_mapping["Brew Bar"]["payroll"]
+
+    # The nightly full import keeps the approver and the changed row.
+    full, _ = _run(w)
+    assert full.ok, full.report.gate
+    w.db.refresh(untouched)
+    w.db.refresh(changed)
+    assert untouched.sick_approver_name == "Sam Approver"
+    assert w.db.get(pm.PayEntity, changed.id) is not None
+    assert changed.ace_gratuity_allowance_code == "GG"
+
+
+def test_script_settings_only(w, capsys):
+    from scripts.migrate_orbit_finance import main
+
+    fake = _fake(w)
+    args = ["--org", w.org.slug, "--settings-only", "--skip-venue", "Head Office"]
+    assert main([*args, "--dry-run"], orbit=fake.client(), db=w.db) == 0
+    out = capsys.readouterr().out
+    assert "payroll settings (pay_entities) per venue:" in out and "rolled back" in out
+    assert _rows(w, pm.PayEntity) == []
+    assert main([*args, "--module", "payroll"], orbit=fake.client(), db=w.db) == 1
+    assert "only the payroll settings" in capsys.readouterr().out
 
 
 def test_script_dry_run_against_the_fake(w, capsys):

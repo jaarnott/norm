@@ -12,7 +12,13 @@ Orbit's journal, line for line, with two things Orbit left to a person:
 * **A "Reclass Gratuities" line** for the gratuity shares paid through
   payroll this week. The reconciliation counts them (they are in Ace gross),
   so without a debit the journal cannot balance in a gratuity week; Orbit
-  only had the never-used tagged version.
+  only had the never-used tagged version. Its account is the accountant's
+  choice (``xero_mapping.payroll.gratuities_reclass``, the Mapping tab).
+  Until it is chosen a gratuity week's journal is REFUSED by name rather
+  than built without the line: leaving the debit out would either fail the
+  balance check with a less useful message or — for shares under the $1
+  rounding limit — quietly post the gratuities to another line's account.
+  A week with no gratuities never needs the key.
 
 Everything is computed from the stored reconciliation (``reconciliation.compute``)
 and the venue's mapping; the draft row carries ``basis_sha256`` over all of
@@ -29,7 +35,7 @@ import json
 from sqlalchemy.orm import Session
 
 from app.db.models import Venue
-from app.db.payroll_models import PayJournalDraft, PayXeroPush
+from app.db.payroll_models import PayEntity, PayJournalDraft, PayXeroPush
 from app.services.finance_core.ctx import FinanceCtx, require_venue
 from app.services.finance_core.errors import Invalid, NotFound
 from app.services.payroll import reconciliation as recon_svc
@@ -265,7 +271,16 @@ def build_lines(recon: dict, payroll_map: dict, names: dict) -> dict:
                 f"a {abs(residual)}c residual needs the Rounding account, which is not mapped"
             )
     missing = xero_mapping.missing_for_journal(payroll_map, needed)
-    blockers.extend(f"Xero mapping missing: {k}" for k in missing)
+    for k in missing:
+        if k == "gratuities_reclass":
+            blockers.append(
+                f"Xero mapping missing: gratuities_reclass — this week pays "
+                f"${t['gratuities']['cents'] / 100:,.2f} of gratuities through payroll and "
+                "the account for the 'Reclass Gratuities' line isn't chosen yet "
+                "(Payroll settings → Xero mapping)"
+            )
+        else:
+            blockers.append(f"Xero mapping missing: {k}")
     debit = sum(ln["amount_cents"] for ln in lines if ln["side"] == "DR")
     credit = sum(ln["amount_cents"] for ln in lines if ln["side"] == "CR")
     return {
@@ -575,6 +590,7 @@ def current(
     names = dict(
         db.query(Venue.id, Venue.name).filter(Venue.organization_id == ctx.org_id).all()
     )
+    leave_taxes = leave_tax_rules(db, ctx.org_id)
     contacts = xero_mapping.contacts_of(db, venue_id)
     monday = dt.date.fromisoformat(recon["week_start"])
     live = {
@@ -614,6 +630,9 @@ def current(
                 "uplift_bp": uplift.get("bp"),
                 "uplift_cents": int(uplift.get("amount_cents") or 0),
                 "subtotal_cents": wages + int(uplift.get("amount_cents") or 0),
+                # The other side of this recharge is built from ITS entity's
+                # rule: the push card says when the two would disagree.
+                "counterparty_leave_tax": leave_taxes.get(cp, "account_default"),
                 "stale": row.basis_sha256 != out["basis_sha256"],
                 "live_push": xero_pushes.brief(live[(kind, cp)])
                 if (kind, cp) in live
@@ -648,9 +667,21 @@ def current(
                 "leave_account"
             ),
             "uplift_bp": recon["entity"]["ico_leave_uplift_bp"],
+            "leave_tax": recon["entity"]["ico_leave_tax"],
         },
         "live_pushes": [xero_pushes.brief(p) for p in live.values()],
     }
+
+
+def leave_tax_rules(db: Session, org_id: str) -> dict[str, str]:
+    """Every entity's tax rule for the intercompany leave line, by venue —
+    read organisation-wide like the intercompany picture: a counterparty's
+    rule is needed whether or not the caller can see its venue."""
+    return dict(
+        db.query(PayEntity.venue_id, PayEntity.ico_leave_tax)
+        .filter(PayEntity.organization_id == org_id)
+        .all()
+    )
 
 
 def get_draft(db: Session, ctx: FinanceCtx, draft_id: str) -> PayJournalDraft:

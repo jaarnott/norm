@@ -147,7 +147,28 @@ def findings(
         total = _cents(extracted.get("subtotal"))
         gst_amount = _cents(extracted.get("gst")) or 0
         total = (total + gst_amount) if total is not None else None
-    if total is None:
+    # An approved performance with no amount comes from Orbit (an approved
+    # shift whose actual amount was never set); Norm's own approve always sets
+    # one. Comparing it as $0 told finance "differs from the approved $0.00"
+    # on a correct invoice (10-invoice trial, 23 Oct 2026) — say what is
+    # actually wrong instead.
+    unpriced = sorted(
+        p.performance_date for p in performances if p.actual_cents is None
+    )
+    if unpriced:
+        out.append(
+            {
+                "code": "total",
+                "message": (
+                    "No approved amount is recorded for "
+                    + ", ".join(d.isoformat() for d in unpriced)
+                    + ", so the invoice total can't be checked."
+                ),
+                "expected": None,
+                "found": total,
+            }
+        )
+    elif total is None:
         out.append(
             {
                 "code": "total",

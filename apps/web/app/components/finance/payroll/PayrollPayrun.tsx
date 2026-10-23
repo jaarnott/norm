@@ -57,17 +57,18 @@ function LeaveTab({ doc, venueId, weekStart }: { doc: PayrunDoc; venueId: string
     { key: 'dates', label: 'Days', sortable: false, value: (r) => r.dates.join(', '), render: (r) => r.dates.map((d) => dateLabel(d, { year: false })).join(', ') },
     { key: 'hours', label: 'Hours', align: 'right', value: (r) => Number(r.hours), render: (r) => formatHours(r.hours) },
     { key: 'cost_cents', label: 'Cost (Loaded)', align: 'right', render: (r) => <Money cents={r.cost_cents} />, csv: (r) => r.cost_cents / 100 },
-    { key: 'ace_style', label: 'Ace style', render: (r) => (r.ace_style ? `#${r.ace_style}` : <Badge tone="error">Not mapped</Badge>) },
+    { key: 'ace_style', label: 'Ace style', value: (r) => r.ace_style ?? '', render: (r) => (r.unpaid ? <span style={{ color: 'var(--text-soft)' }}>Unpaid — left out</span> : r.ace_style ? `#${r.ace_style}${r.ace_style_from === 'override' ? ' (set in Norm)' : ''}` : <Badge tone="error">{doc.leave.setup_error ? 'Unknown' : 'No style'}</Badge>) },
   ];
   const total = rows.reduce((s, r) => s + (r.cost_cents || 0), 0);
   const hours = rows.reduce((s, r) => s + Number(r.hours || 0), 0);
   return (
     <Stack>
       <Note tone="plain">
-        What Loaded holds as leave in the snapshot. What is actually paid is decided on the Leave page — annual, sick and other leave each have their own rules.{' '}
+        What Loaded holds as leave in the snapshot, and the Ace style each leave type goes out as (Loaded&rsquo;s own types from Loaded; a company&rsquo;s own type from Payroll settings → Leave types). What is actually paid is decided on the Leave page — annual, sick and other leave each have their own rules.{' '}
         <Button size="xs" variant="link" onClick={() => openPayrollPage('payroll-leave', { venue: venueId, week: weekStart })}>Open the Leave page</Button>
       </Note>
-      <DataTable columns={columns} rows={rows} rowKey={(r) => `${r.leave_request_id}:${r.staff_member_id}`} csvName={`Leave ${doc.entity.venue_name} ${weLabel(weekStart)}`} emptyTitle="No leave in this snapshot." footer={[plural(rows.length, 'request'), null, null, null, formatHours(hours), money(total), null]} rowTone={(r) => (r.ace_style ? undefined : 'error')} />
+      {doc.leave.setup_error && <Note tone="warn">Could not read the leave types from Loaded: {doc.leave.setup_error}</Note>}
+      <DataTable columns={columns} rows={rows} rowKey={(r) => `${r.leave_request_id}:${r.staff_member_id}`} csvName={`Leave ${doc.entity.venue_name} ${weLabel(weekStart)}`} emptyTitle="No leave in this snapshot." footer={[plural(rows.length, 'request'), null, null, null, formatHours(hours), money(total), null]} rowTone={(r) => (r.ace_style || r.unpaid ? undefined : 'error')} />
     </Stack>
   );
 }

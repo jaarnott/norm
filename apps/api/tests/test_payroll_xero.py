@@ -83,12 +83,15 @@ CHART = [
     ("41100", "Bar Sales", "REVENUE", "REVENUE"),
     ("52100", "Salaries & Wages", "EXPENSE", "EXPENSE"),
     ("63400", "Security", "EXPENSE", "EXPENSE"),
+    ("860", "Rounding", "CURRLIAB", "LIABILITY"),
 ]
 NAMES = {code: name for code, name, _, _ in CHART}
 ACCOUNTS = [
     {"code": c, "name": n, "type": t, "class": k, "tax_type": "NONE"}
     for c, n, t, k in CHART
 ]
+# The real chart read, before the fixture swaps in the fake chart.
+REAL_CHART = xero_mapping.chart
 PAYROLL_MAP = {
     "wages_payable": "814",
     "payroll_taxes_payable": "21305",
@@ -476,7 +479,7 @@ def w(db_session, monkeypatch):
 
     monkeypatch.setattr(recon_svc, "entertainer_rows", fake_rows)
     monkeypatch.setattr(
-        xero_mapping, "chart", lambda db, config_db, venue_id: list(ACCOUNTS)
+        xero_mapping, "chart", lambda db, config_db, venue_id, **_: list(ACCOUNTS)
     )
     return world
 
@@ -871,7 +874,26 @@ class TestJournal:
         w.db.flush()
         out = journal_svc.assemble(w.db, w.ctx(), w.a.id, MONDAY)
         assert "Xero mapping missing: kitchen" in out["blockers"]
-        assert "Xero mapping missing: gratuities_reclass" in out["blockers"]
+        # The Reclass Gratuities account is the accountant's call: until it
+        # is chosen a gratuity week is refused by name — the line is never
+        # dropped (the journal would no longer match Ace gross).
+        grat = [b for b in out["blockers"] if "gratuities_reclass" in b]
+        assert len(grat) == 1 and "'Reclass Gratuities' line" in grat[0]
+        assert "$" in grat[0] and "Payroll settings → Xero mapping" in grat[0]
+        assert any(ln["key"] == "gratuities_reclass" for ln in out["lines"])
+        with pytest.raises(Invalid, match="Reclass Gratuities"):
+            journal_svc.build(w.db, w.ctx(), w.a.id, MONDAY)
+        # A week with no gratuities never asks for the account.
+        recon = out["recon"]
+        recon["terms"]["gratuities"] = {
+            **recon["terms"]["gratuities"],
+            "cents": 0,
+            "rows": [],
+        }
+        quiet = journal_svc.build_lines(
+            recon, xero_mapping.payroll_of(w.db, w.a.id), {}
+        )
+        assert not any("gratuities_reclass" in b for b in quiet["blockers"])
         kitchen = next(ln for ln in out["lines"] if ln["key"] == "kitchen")
         assert kitchen["account_code"] is None
 
@@ -1120,6 +1142,28 @@ class TestPushLedger:
 
 
 class TestMapping:
+    def test_the_chart_is_read_as_the_signed_in_person(self, w, monkeypatch):
+        """get_accounts carries requires: [finance:read], so a chart read that
+        names nobody is refused — the live Federal Street panel showed no
+        accounts and "couldn't tell who is asking" (23 Oct 2026)."""
+        from app.connectors import tool_executor
+
+        seen = []
+
+        def fake_execute(**kw):
+            seen.append(kw.get("user"))
+            return ToolResult(success=True, payload={"accounts": list(ACCOUNTS)})
+
+        monkeypatch.setattr(xero_mapping, "chart", REAL_CHART)
+        monkeypatch.setattr(tool_executor, "execute_connector_tool", fake_execute)
+        ctx = w.ctx()
+        out = xero_mapping.read(w.db, ctx, w.a.id, config_db=w.db)
+        assert out["chart_error"] is None and out["accounts"]
+        xero_mapping.save(
+            w.db, ctx, w.a.id, PAYROLL_MAP, None, config_db=w.db, validate_only=True
+        )
+        assert seen == [ctx.user, ctx.user] and ctx.user is not None
+
     def test_read_gives_bare_codes_whichever_shape_is_stored(self, w):
         out = xero_mapping.read(w.db, w.ctx(), w.a.id, config_db=w.db)
         assert out["connected"] and out["payroll"]["wages_payable"] == "814"
@@ -1138,6 +1182,7 @@ class TestMapping:
             "intercompany_wages": "52100",
             "security_owed": "63400",
             "kitchen": "99999",
+            "rounding": "860",  # Xero's standard Rounding account, a liability
         }
         out = xero_mapping.save(
             w.db,
@@ -1152,6 +1197,7 @@ class TestMapping:
         assert "CBI" in by[("error", "intercompany_wages")]
         assert "security" in by[("warning", "security_owed")].lower()
         assert "not an active account" in by[("error", "kitchen")]
+        assert not any(i["key"] == "rounding" for i in out["issues"])
         assert out["saved"] is False
 
     def test_save_writes_the_importers_shape_and_refuses_on_an_error(self, w):
@@ -1428,6 +1474,11 @@ class TestBuiltIns:
             "ico_invoice",
             "ico_bill",
         } and ico["wages_account"] == "21280"
+        # The leave line's tax rule: this entity's, and each counterparty's.
+        assert ico["leave_tax"] == "account_default"
+        assert {d["counterparty_leave_tax"] for d in ico["documents"]} == {
+            "account_default"
+        }
 
     def test_the_refusals(self, w):
         journal_svc.build(w.db, w.ctx(), w.a.id, MONDAY)
@@ -1931,8 +1982,10 @@ class TestRoutes:
             and data["ledger_error"] is None
         )
         assert data["idempotency_key"].startswith(
-            f"norm:payroll-journal:{w.org.id}:{w.a.id}:2026-10-12:"
+            f"norm:payroll-journal:{w.a.id}:2026-10-12:"
         )
+        # Xero refuses an Idempotency-Key over 128 characters (HTTP 400).
+        assert len(data["idempotency_key"] + ":r99") <= 128
         sent = [s for s in xero.sent if s[0] == "create_manual_journal"]
         assert (
             len(sent) == 1
@@ -2075,27 +2128,27 @@ class TestRoutes:
         heads = [c["field"] for c in card["changes"] if not c["field"].startswith("↳")]
         assert heads == ["Invoice to Glass Goose", "Bill from Glass Goose"]
         fields = {c["field"]: c["after"] for c in card["changes"]}
-        # The leave line takes its account's default rate (NONE in the fake chart), so GST is on the wages.
+        # The entity's leave-line rule is account_default (Orbit's): its own
+        # leave account's default rate (NONE in the fake chart) on both
+        # sides, so GST is on the wages only.
         assert (
             "wages $400.00 · leave $48.00 · GST $60.00 · total $508.00"
             in fields["Invoice to Glass Goose"]
         )
         assert (
-            "wages $240.00 · leave $28.80 · GST $40.32 · total $309.12"
+            "wages $240.00 · leave $28.80 · GST $36.00 · total $304.80"
             in fields["Bill from Glass Goose"]
         )
         assert fields["↳ Dana — 10.00h"].endswith("(OUTPUT2)") and fields[
             "↳ Eli — Gratuities — 0.00h"
         ].endswith("(INPUT2)")
-        # Leave to an EXPENSE account: on the invoice no tax type (the account's
-        # default), on the bill the expense type.
         leave = [
             c["after"]
             for c in card["changes"]
             if c["field"] == "↳ Leave & Entitlements (12%)"
         ]
         assert leave[0].endswith("(account default NONE)") and leave[1].endswith(
-            "(INPUT2)"
+            "(account default NONE)"
         )
         done = client.post(
             "/api/payroll/xero/intercompany/confirm",
@@ -2114,8 +2167,12 @@ class TestRoutes:
         }
         assert (
             sent["ACCREC"]["idempotency_key"]
-            == f"norm:ico:{w.org.id}:{w.a.id}:2026-10-12:invoice:{w.b.id}"
+            == f"norm:ico:{w.a.id}:2026-10-12:invoice:{w.b.id}"
         )
+        # Xero refuses an Idempotency-Key over 128 characters with a 400: with
+        # the org id it was 138, and the live Federal Street push failed
+        # (23 Oct 2026). Real uuids here, unlike the consolidator unit tests.
+        assert all(len(s["idempotency_key"] + ":r99") <= 128 for s in sent.values())
         assert (
             sent["ACCPAY"]["invoice"]["InvoiceNumber"]
             == "ICO Wages WE 18.10.2026 — La Zeppa"
@@ -2137,6 +2194,38 @@ class TestRoutes:
             headers=auth_headers(w.owner),
         )
         assert again.status_code == 400 and "already pushed" in again.json()["detail"]
+
+    def test_the_entitys_leave_line_tax_rule_reaches_the_card(self, live):
+        """Payroll settings → Entities decides the leave line's tax: the
+        rule rides get_journal_draft into the push, and a counterparty on
+        another rule is said on the card."""
+        w, client = live, live.client
+        entity = w.db.query(PayEntity).filter(PayEntity.venue_id == w.a.id).one()
+        entity.ico_leave_tax = "no_gst"
+        w.db.flush()
+        client.post(
+            "/api/payroll/xero/journal/build",
+            json={"venue_id": w.a.id, "week_ending": "2026-10-18"},
+            headers=auth_headers(w.owner),
+        )
+        shown = client.post(
+            "/api/payroll/xero/intercompany/preview",
+            json={"venue_id": w.a.id, "week_ending": "2026-10-18"},
+            headers=auth_headers(w.owner),
+        )
+        assert shown.status_code == 200, shown.text
+        card = shown.json()["card"]
+        leave = [
+            c["after"]
+            for c in card["changes"]
+            if c["field"] == "↳ Leave & Entitlements (12%)"
+        ]
+        assert leave and all(x.endswith("(NONE)") for x in leave)
+        assert any(
+            "Glass Goose builds its side of this recharge with the leave account's own rate"
+            in x
+            for x in card["warnings"]
+        )
 
         # Glass Goose's own pair from its own screen — with no contact for La Zeppa it is refused by name.
         row = xero_mapping.connection(w.db, w.b.id)

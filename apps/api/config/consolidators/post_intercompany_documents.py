@@ -13,14 +13,25 @@
 # "Leave & Entitlements (12%)" line at the entity's uplift to the leave
 # account. The tax types come from THIS tenant's rates (never OUTPUT2/INPUT2
 # constants — AU is 10%): the highest active revenue rate for an invoice,
-# expense rate for a bill; the leave line carries the same type unless its
-# account's class cannot take it, in which case the line has none and Xero
-# applies the account's default (Orbit's behaviour, now said on the card).
+# expense rate for a bill. The leave line follows the entity's rule
+# (pay_entities.ico_leave_tax, the accountant's call — get_journal_draft
+# passes it as leave_tax):
+#   account_default  no tax type when the line has its own leave account, so
+#                    Xero applies that account's default rate; the side's
+#                    rate when it falls back to the wages account (Orbit's rule)
+#   no_gst           the tenant's no-GST type for the side (NONE in NZ)
+#   standard_gst     the side's rate, as the wages lines; a leave account
+#                    whose class can't take it refuses that document by name
+# Each side of a recharge is built from its own entity's rule, so the card
+# warns when the counterparty's differs (the invoice and bill won't agree).
 #
 # A missing counterparty contact refuses THAT group by name; the rest still
 # post. A group already pushed is skipped unless replace='true', which voids
 # the old document and creates a new one — never an update in place. Keys:
-#   norm:ico:<org>:<venue>:<week_start>:<invoice|bill>:<counterparty venue id>
+#   norm:ico:<venue>:<week_start>:<invoice|bill>:<counterparty venue id>
+# (no organisation id: the venue's uuid already names it, and with it the key
+# was 138 characters — Xero refuses an Idempotency-Key over 128 with a 400,
+# live Federal Street test, 23 Oct 2026)
 #
 # Requires consolidator_config: {"max_api_calls": 60,
 #   "allowed_write_actions": ["create_invoice", "update_invoice",
@@ -55,6 +66,28 @@ def _best_rate(rates, flag):
         if best is None or pct > best[1]:
             best = (t.get("TaxType"), pct)
     return best or (None, 0.0)
+
+
+def _zero_rate(rates, flag):
+    """The tenant's no-GST type for the side: NONE (NZ "No GST") or
+    BASEXCLUDED (AU) when active, else any active 0% rate that applies."""
+    found = None
+    for t in rates:
+        if str(t.get("Status") or "ACTIVE") != "ACTIVE" or not t.get(flag):
+            continue
+        if float(t.get("EffectiveRate") or 0) != 0:
+            continue
+        if t.get("TaxType") in ("NONE", "BASEXCLUDED"):
+            return t.get("TaxType")
+        found = found or t.get("TaxType")
+    return found
+
+
+LEAVE_TAX_WORDS = {
+    "account_default": "the leave account's own rate",
+    "no_gst": "no GST",
+    "standard_gst": "GST at the standard rate",
+}
 
 
 def _xero_messages(row):
@@ -113,9 +146,12 @@ def run(params, call_api, log):
         return {
             "error": "no intercompany wages account is mapped for "
             + str(venue)
-            + " — set it on the Bills settings panel"
+            + " — set it under Payroll settings → Xero mapping"
         }
     replace = _flag(params.get("replace"))
+    leave_rule = str(data.get("leave_tax") or "account_default")
+    if leave_rule not in LEAVE_TAX_WORDS:
+        return {"error": "unknown leave-line tax rule " + leave_rule}
 
     # ── the tenant's own tax types and chart ───────────────────────────
     tax_payload = call_api("xero", "list_tax_rates", dict(vp))
@@ -169,7 +205,7 @@ def run(params, call_api, log):
                     "kind": kind,
                     "reason": "no Xero contact mapped for "
                     + cp
-                    + " — set it on the Bills settings panel",
+                    + " — set it under Payroll settings → Xero mapping",
                 }
             )
             continue
@@ -190,11 +226,45 @@ def run(params, call_api, log):
         )
         leave_account = str(data.get("leave_account") or wages_account)
         leave_class = classes.get(leave_account, "")
-        leave_tax = tax_type
-        if (is_invoice and leave_class == "EXPENSE") or (
-            not is_invoice and leave_class == "REVENUE"
-        ):
-            leave_tax = None  # the account's default applies (Orbit's rule)
+        if leave_rule == "no_gst":
+            leave_tax = _zero_rate(
+                tax_rows, "CanApplyToRevenue" if is_invoice else "CanApplyToExpenses"
+            )
+            if not leave_tax and int(doc.get("uplift_cents") or 0):
+                refused.append(
+                    {
+                        "counterparty": cp,
+                        "kind": kind,
+                        "reason": "this Xero organisation has no no-GST tax rate for "
+                        + ("sales" if is_invoice else "purchases")
+                        + " — the leave line can't go out with no GST",
+                    }
+                )
+                continue
+        elif leave_rule == "standard_gst":
+            leave_tax = tax_type
+            if int(doc.get("uplift_cents") or 0) and (
+                (is_invoice and leave_class == "EXPENSE")
+                or (not is_invoice and leave_class == "REVENUE")
+            ):
+                refused.append(
+                    {
+                        "counterparty": cp,
+                        "kind": kind,
+                        "reason": "the leave line's account "
+                        + leave_account
+                        + " is "
+                        + ("an expense" if leave_class == "EXPENSE" else "a revenue")
+                        + " account, which can't carry GST on "
+                        + ("an invoice" if is_invoice else "a bill")
+                        + " — map another leave account or change the leave line's "
+                        "tax rule on Payroll settings → Entities",
+                    }
+                )
+                continue
+        else:
+            # Orbit's rule: its own account takes its own default rate.
+            leave_tax = tax_type if leave_account == wages_account else None
         items = []
         wages = 0
         for ln in doc.get("lines") or []:
@@ -264,8 +334,6 @@ def run(params, call_api, log):
                 "total_cents": subtotal + gst,
                 "people": len(items) - (1 if uplift else 0),
                 "key": "norm:ico:"
-                + str(data.get("organization_id"))
-                + ":"
                 + str(data.get("venue_id"))
                 + ":"
                 + week_start
@@ -281,6 +349,9 @@ def run(params, call_api, log):
                 ),
                 "live": live,
                 "leave_tax_default": uplift and not leave_tax,
+                "rules_differ": uplift
+                and str(doc.get("counterparty_leave_tax") or "account_default")
+                != leave_rule,
             }
         )
 
@@ -303,7 +374,8 @@ def run(params, call_api, log):
                 "after": str(p["contact"].get("name") or p["contact"]["contact_id"])
                 + " · "
                 + str(p["people"])
-                + " people · wages "
+                + (" person" if p["people"] == 1 else " people")
+                + " · wages "
                 + _money(p["wages_cents"])
                 + " · leave "
                 + _money(p["uplift_cents"])
@@ -343,8 +415,21 @@ def run(params, call_api, log):
         )
     if any(p["leave_tax_default"] for p in plan):
         warnings.append(
-            "the leave line's account cannot take this side's tax type, so Xero applies the account's default rate"
+            "the leave & entitlements line carries no tax type, so Xero applies its "
+            "account's default rate (the entity's leave-line tax rule)"
         )
+    for p in plan:
+        if p["rules_differ"]:
+            theirs = str(p["doc"].get("counterparty_leave_tax") or "account_default")
+            warnings.append(
+                p["counterparty"]
+                + " builds its side of this recharge with "
+                + LEAVE_TAX_WORDS.get(theirs, theirs)
+                + " on the leave line, this entity with "
+                + LEAVE_TAX_WORDS[leave_rule]
+                + " — the invoice and the bill won't agree until both entities "
+                "use the same rule (Payroll settings → Entities)"
+            )
     preview(
         {
             "title": "Post intercompany documents to Xero",

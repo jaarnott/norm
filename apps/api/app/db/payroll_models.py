@@ -85,6 +85,11 @@ JOURNAL_DRAFT_KINDS = ("journal", "ico_invoice", "ico_bill")
 PUSH_KINDS = ("journal", "ico_invoice", "ico_bill", "entertainer_bill")
 #: pay_files.kind.
 PAY_FILE_KINDS = ("bond_consent",)
+#: The tax rule on the leave & entitlements line of an intercompany invoice
+#: or bill: the leave account's own default rate in Xero (Orbit's rule), no
+#: GST, or GST at the standard rate (GST on Income on an invoice, GST on
+#: Expenses on a bill). The accountant's call, per entity.
+ICO_LEAVE_TAX_RULES = ("account_default", "no_gst", "standard_gst")
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +113,10 @@ class PayEntity(NativeRow, _Versioned, Base):
     __table_args__ = _tenancy(
         "pay_entities",
         _Ref("venue_id", "venues", "NO ACTION", index=False),
-        extra=(UniqueConstraint("venue_id", name="uq_pay_entities_venue"),),
+        extra=(
+            UniqueConstraint("venue_id", name="uq_pay_entities_venue"),
+            _check("pay_entities", "ico_leave_tax", ICO_LEAVE_TAX_RULES),
+        ),
     )
 
     venue_id = Column(String, nullable=False)
@@ -131,6 +139,13 @@ class PayEntity(NativeRow, _Versioned, Base):
     #: Basis points added to leave recharged between entities (1200 = 12%).
     ico_leave_uplift_bp = Column(
         Integer, nullable=False, default=1200, server_default=text("1200")
+    )
+    #: The tax rule on that uplift's line (``ICO_LEAVE_TAX_RULES``).
+    ico_leave_tax = Column(
+        String,
+        nullable=False,
+        default="account_default",
+        server_default="account_default",
     )
     sick_approver_name = Column(String, nullable=True)
     payroll_contact_email = Column(String, nullable=True)
@@ -378,10 +393,13 @@ class PayLeavePayout(NativeRow, _Versioned, Base):
 
 
 class PayLeaveStyle(NativeRow, _Versioned, Base):
-    """How a Loaded leave type is written to the Ace leave file: its style
-    (#70, #60, #63) and the method per remuneration type. Seeded from
-    ``get_leave_types`` and signed off with the payroll provider (D28); the
-    leave export refuses an unmapped type."""
+    """The Ace style for a leave type Loaded holds no payroll meaning for — a
+    company's own (custom) type such as "Paid Public Holiday", or a managed
+    type Norm does not know. An override only (owner, 23 Oct 2026: "leave
+    types should come from Loaded"): the type, whether it is paid, and the
+    style of Loaded's own NZ types come from Loaded at export time
+    (``services/payroll/exports.py``). The line shapes follow the style; the
+    leave export refuses a type with neither."""
 
     __tablename__ = "pay_leave_styles"
     __table_args__ = _tenancy(
@@ -398,12 +416,11 @@ class PayLeaveStyle(NativeRow, _Versioned, Base):
 
     venue_id = Column(String, nullable=False)
     loaded_leave_type_id = Column(String, nullable=False)
+    #: Loaded's name for the type when the override was set — a leave row
+    #: in a snapshot carries the name, not the id.
     name = Column(String, nullable=False)
-    ace_style = Column(String, nullable=True)
-    salaried_method = Column(String, nullable=True)
-    hourly_method = Column(String, nullable=True)
-    signed_off_by = _user_fk("pay_leave_styles", "signed_off_by")
-    signed_off_at = Column(DateTime(timezone=True), nullable=True)
+    ace_style = Column(String, nullable=False)
+    set_by = _user_fk("pay_leave_styles", "set_by")
 
 
 # ---------------------------------------------------------------------------

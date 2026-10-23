@@ -11,7 +11,7 @@
  */
 
 import { toCsv, type CsvValue } from '../shared/csv';
-import type { BudgetPlanPeriod, Figures, ImportLayout, VenueSummary } from './types';
+import type { BudgetPlanPeriod, Figures, HolidaySync, ImportLayout, VenueSummary } from './types';
 
 // ---------------------------------------------------------------------------
 // Calendar
@@ -81,6 +81,13 @@ export function dayCell(iso: string, weekday?: number): string {
 export function longDate(iso: string): string {
   const ym = yearMonthOf(iso);
   return `${weekdayShort(isoWeekday(iso))} ${Number(iso.slice(8, 10))} ${shortMonth(ym.month)} ${ym.year}`;
+}
+
+/** The toast after "Sync from Loaded": what changed, and how far Loaded's public holiday dates run. */
+export function holidaySyncText(r: Pick<HolidaySync, 'inserted' | 'updated' | 'removed' | 'dates_until'>): string {
+  const parts = [r.inserted && `${r.inserted} added`, r.updated && `${r.updated} updated`, r.removed && `${r.removed} removed`].filter(Boolean);
+  const until = r.dates_until ? `Loaded holds public holidays up to ${longDate(r.dates_until)}.` : 'Loaded holds no public holidays for this venue.';
+  return `Public holidays from Loaded: ${parts.length ? parts.join(', ') : 'nothing new'}. ${until}`;
 }
 
 /** "12 – 18 Oct 2026" / "28 Sep – 4 Oct 2026". */

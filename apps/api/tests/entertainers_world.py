@@ -124,7 +124,7 @@ def add_performer(
     lane="payroll_contractor",
     status="accepted",
     email="sam@example.test",
-    bank="12-3456-7890123-00",
+    bank="12-3456-7890138-00",
     ird="049091850",
     declaration=True,
     **fields,
@@ -259,7 +259,7 @@ def verified(db, token: str) -> None:
 
 
 SENSITIVE_KEYS = ("bank_account", "ird_number", "date_of_birth")
-SECRET_VALUES = ("12-3456-7890123-00", "049091850", "49091850", "1990-01-02")
+SECRET_VALUES = ("12-3456-7890138-00", "049091850", "49091850", "1990-01-02")
 
 
 def walk(value, found: list, path: str = "") -> list:

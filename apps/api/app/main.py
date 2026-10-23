@@ -189,6 +189,9 @@ def _load_system_secrets() -> None:
         "STRIPE_SECRET_KEY",
         "STRIPE_WEBHOOK_SECRET",
         "RESEND_API_KEY",
+        # Resend's signing secret for its delivery webhook (Loaded Payroll's
+        # Emails page) — kept beside the API key it belongs to.
+        "RESEND_WEBHOOK_SECRET",
         "GOOGLE_CLIENT_ID",
         "GOOGLE_CLIENT_SECRET",
         "MICROSOFT_CLIENT_ID",

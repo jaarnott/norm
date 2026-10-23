@@ -194,6 +194,7 @@ class EntityBody(_Body):
     security_pay_code: str | None = None
     uniform_bond_cents: int | None = None
     ico_leave_uplift_bp: int | None = None
+    ico_leave_tax: str | None = None
     sick_approver_name: str | None = None
     payroll_contact_email: str | None = None
     payroll_on: bool | None = None
@@ -512,10 +513,12 @@ def payrun(
             }
         else:
             out = snapshot_svc.sections(db, snap, entity)
-        styles = exports_svc.list_leave_styles(db, ctx, venue.id)
-        for row in out["leave"]["rows"]:
-            style = exports_svc.style_for(styles, row.get("leave_type_name"))
-            row["ace_style"] = style.ace_style if style else None
+        # Each leave row's Ace style comes from Loaded's leave types (read
+        # only when the snapshot holds leave); a failed read leaves the rows
+        # unmarked and says why.
+        out["leave"]["setup_error"] = exports_svc.annotate_leave_rows(
+            db, ctx, venue, out["leave"]["rows"]
+        )
         names = _names(db, ctx)
         batches = gratuities_svc.list_batches(
             db, ctx, venue_id=venue.id, week_start=week.week_start
@@ -926,69 +929,46 @@ def fallback_file(
     )
 
 
-@router.get("/leave-styles")
-def leave_styles(
-    venue_id: str, ctx: FinanceCtx = Depends(read_ctx), db: Session = Depends(get_db)
+@router.get("/leave-types")
+def leave_types(
+    venue_id: str,
+    ctx: FinanceCtx = Depends(read_ctx),
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
 ):
+    """Loaded's leave types for the venue, read now, with the Ace style the
+    leave export uses for each and where it comes from."""
     with _reading():
-        rows = exports_svc.list_leave_styles(db, ctx, venue_id)
-    return {"styles": [exports_svc.style_dict(r) for r in rows]}
+        rows = exports_svc.leave_types(db, ctx, venue_id, config_db=config_db)
+    return {"leave_types": rows}
 
 
-class SeedBody(_Body):
+class LeaveStyleBody(_Body):
     venue_id: str
+    ace_style: str | None = None
+    version: int | None = None
 
 
-@router.post("/leave-styles/seed")
-def seed_leave_styles(
-    body: SeedBody,
+@router.put("/leave-types/{loaded_leave_type_id}/ace-style")
+def set_leave_style(
+    loaded_leave_type_id: str,
+    body: LeaveStyleBody,
     ctx: FinanceCtx = Depends(write_ctx),
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
 ):
+    """The Ace style for a leave type Loaded gives no payroll meaning (a
+    company's own type); a blank style clears it."""
     with _writing(db):
-        out = exports_svc.seed_leave_styles(db, ctx, body.venue_id, config_db=config_db)
-    return {
-        "created": out["created"],
-        "styles": [exports_svc.style_dict(r) for r in out["styles"]],
-    }
-
-
-class StyleBody(_Body):
-    version: int
-    ace_style: str | None = None
-    salaried_method: str | None = None
-    hourly_method: str | None = None
-
-
-@router.put("/leave-styles/{style_id}")
-def update_leave_style(
-    style_id: str,
-    body: StyleBody,
-    ctx: FinanceCtx = Depends(write_ctx),
-    db: Session = Depends(get_db),
-):
-    fields = body.model_dump(exclude_unset=True)
-    version = fields.pop("version")
-    with _writing(db):
-        row = exports_svc.update_leave_style(
-            db, ctx, style_id, version=version, **fields
+        return exports_svc.set_leave_style(
+            db,
+            ctx,
+            body.venue_id,
+            loaded_leave_type_id,
+            ace_style=body.ace_style,
+            version=body.version,
+            config_db=config_db,
         )
-    return exports_svc.style_dict(row)
-
-
-@router.post("/leave-styles/{style_id}/sign-off")
-def sign_off_leave_style(
-    style_id: str,
-    body: VersionBody,
-    ctx: FinanceCtx = Depends(write_ctx),
-    db: Session = Depends(get_db),
-):
-    with _writing(db):
-        row = exports_svc.update_leave_style(
-            db, ctx, style_id, version=body.version, sign_off=True
-        )
-    return exports_svc.style_dict(row)
 
 
 # ===========================================================================

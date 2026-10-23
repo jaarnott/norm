@@ -50,9 +50,10 @@ def upgrade() -> None:
         "fin_holidays",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("organization_id", sa.String(), nullable=False),
-        sa.Column("region", sa.String(), nullable=False),
+        sa.Column("venue_id", sa.String(), nullable=False),
         sa.Column("date", sa.Date(), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
+        sa.Column("package", sa.String(), nullable=True),
         sa.Column("source", sa.String(), nullable=True),
         sa.Column(
             "created_at",
@@ -67,6 +68,12 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.ForeignKeyConstraint(
+            ["organization_id", "venue_id"],
+            ["venues.organization_id", "venues.id"],
+            name="fk_fin_holidays_venue_id",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
             ["organization_id"],
             ["organizations.id"],
             name="fk_fin_holidays_organization_id",
@@ -75,11 +82,10 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("organization_id", "id", name="uq_fin_holidays_org_id"),
         sa.UniqueConstraint(
-            "organization_id",
-            "region",
+            "venue_id",
             "date",
             "name",
-            name="uq_fin_holidays_region_date",
+            name="uq_fin_holidays_venue_date",
         ),
         if_not_exists=True,
     )
@@ -633,7 +639,6 @@ def upgrade() -> None:
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("organization_id", sa.String(), nullable=False),
         sa.Column("venue_id", sa.String(), nullable=False),
-        sa.Column("holiday_region", sa.String(), nullable=True),
         sa.Column("closed_weekdays", sa.JSON(), nullable=False),
         sa.Column(
             "level_correction_on",

@@ -148,27 +148,175 @@ def normalise_ird(value: str | None) -> str:
     return digits
 
 
-#: Lazy on the account part: a 7-digit account with a 3-digit suffix is
-#: the common shape, so unseparated digits split that way.
-_BANK = re.compile(r"^(\d{2})[- ]?(\d{4})[- ]?(\d{7,8}?)[- ]?(\d{2,4})$")
+# ---------------------------------------------------------------------------
+# NZ bank account numbers — Inland Revenue's validation (Payroll Calculations
+# and Business Rules Specification 2026–27, §7 "Bank account number
+# validation"). Mirrored in apps/web/.../entertainers/logic.ts: change both.
+# ---------------------------------------------------------------------------
+
+#: Step 1: the banks IR lists today and their algorithm. Every bank not named
+#: here uses A, or B when the account base is 00990000 or more.
+_BANK_ALGORITHM = {"08": "D", "25": "F", "31": "X"}
+#: The branch numbers each listed bank uses. IR points at Payments NZ's Bank
+#: Branch Register for these; the ranges are that register's, widened to the
+#: blocks each bank holds — they covered all 3,295 branches in the register
+#: downloaded on 23 Oct 2026. A bank that opens a branch outside them needs
+#: the range here (and in logic.ts) widened.
+_BANK_BRANCHES: dict[str, tuple[tuple[int, int], ...]] = {
+    "01": ((1, 999), (1100, 1199), (1800, 1899), (6150, 6150)),
+    "02": ((1, 999), (1200, 1299), (2025, 2055)),
+    "03": (
+        (1, 999),
+        (1300, 1399),
+        (1500, 1599),
+        (1700, 1799),
+        (1900, 1999),
+        (5000, 5099),
+        (7350, 7399),
+    ),
+    "04": ((2014, 2024),),
+    "05": ((8884, 8889),),
+    "06": ((1, 999), (1400, 1499)),
+    "08": ((6500, 6599),),
+    "10": ((5165, 5169),),
+    "11": ((5000, 6499), (6600, 8999)),
+    "12": ((3000, 3299), (3400, 3499), (3600, 3699)),
+    "13": ((4900, 4999),),
+    "14": ((4700, 4799),),
+    "15": ((3900, 3999),),
+    "16": ((4400, 4499),),
+    "17": ((3300, 3399),),
+    "18": ((3500, 3599),),
+    "19": ((4600, 4649),),
+    "20": ((4100, 4199),),
+    "21": ((4800, 4899),),
+    "22": ((4000, 4049),),
+    "23": ((3700, 3799),),
+    "24": ((4300, 4349),),
+    "25": ((2500, 2599),),
+    "27": ((3800, 3849),),
+    "30": ((2900, 2949),),
+    "31": ((2800, 2849),),
+    "38": ((9000, 9499),),
+    "88": ((8800, 8805),),
+}
+#: Step 2: weights over the 18 digits bank(2) branch(4) base(8) suffix(4),
+#: and the modulus the weighted sum must divide by. C is in IR's table but
+#: no bank uses it; X (bank 31) always passes.
+_BANK_WEIGHTS: dict[str, tuple[tuple[int, ...], int]] = {
+    "A": ((0, 0, 6, 3, 7, 9, 0, 0, 10, 5, 8, 4, 2, 1, 0, 0, 0, 0), 11),
+    "B": ((0, 0, 0, 0, 0, 0, 0, 0, 10, 5, 8, 4, 2, 1, 0, 0, 0, 0), 11),
+    "C": ((3, 7, 0, 0, 0, 0, 9, 1, 10, 5, 3, 4, 2, 1, 0, 0, 0, 0), 11),
+    "D": ((0, 0, 0, 0, 0, 0, 0, 7, 6, 5, 4, 3, 2, 1, 0, 0, 0, 0), 11),
+    "E": ((0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 4, 3, 2, 0, 0, 0, 1), 11),
+    "F": ((0, 0, 0, 0, 0, 0, 0, 1, 7, 3, 1, 7, 3, 1, 0, 0, 0, 0), 10),
+    "G": ((0, 0, 0, 0, 0, 0, 0, 1, 3, 7, 1, 3, 7, 1, 0, 3, 7, 1), 10),
+    "X": ((0,) * 18, 1),
+}
+#: E and G add a product's digits together, twice ("49 → 13 → 4").
+_DIGIT_SUM = frozenset({"E", "G"})
+#: How an unseparated run of digits can split — bank, branch, base, suffix —
+#: in the order tried (a 7-digit base is the common one).
+_BANK_LAYOUTS = {
+    15: ((2, 4, 7, 2),),
+    16: ((2, 4, 7, 3), (2, 4, 8, 2)),
+    17: ((2, 4, 7, 4), (2, 4, 8, 3)),
+    18: ((2, 4, 8, 4),),
+}
+BANK_SHAPE_MESSAGE = (
+    "A bank account looks like 12-3456-7890123-00 (bank, branch, account, suffix)."
+)
+BANK_CHECK_MESSAGE = "That bank account number doesn't check out — please re-check it."
+
+
+def bank_algorithm(bank: str, base: str) -> str | None:
+    """IR's step 1: the algorithm for a bank, or None for a bank IR doesn't list."""
+    bank = bank.zfill(2)
+    if bank not in _BANK_BRANCHES:
+        return None
+    if bank in _BANK_ALGORITHM:
+        return _BANK_ALGORITHM[bank]
+    return "A" if int(base) < 990000 else "B"
+
+
+def bank_checksum_ok(
+    algorithm: str, bank: str, branch: str, base: str, suffix: str
+) -> bool:
+    """IR's step 2 for one algorithm: the weighted sum of the 18 padded
+    digits divides by the algorithm's modulus."""
+    weights, modulus = _BANK_WEIGHTS[algorithm]
+    digits = bank.zfill(2) + branch.zfill(4) + base.zfill(8) + suffix.zfill(4)
+    total = 0
+    for digit, weight in zip(digits, weights):
+        product = int(digit) * weight
+        if algorithm in _DIGIT_SUM:
+            for _ in range(2):
+                product = sum(int(d) for d in str(product))
+        total += product
+    return total % modulus == 0
+
+
+def nz_bank_account_valid(bank: str, branch: str, base: str, suffix: str) -> bool:
+    """A New Zealand bank account passes Inland Revenue's validation: a bank
+    IR lists, a branch that bank uses, and the bank's check digits."""
+    if not all(p.isdigit() for p in (bank, branch, base, suffix)):
+        return False
+    if len(bank) > 2 or len(branch) > 4 or len(base) > 8 or len(suffix) > 4:
+        return False
+    algorithm = bank_algorithm(bank, base)
+    if algorithm is None:
+        return False
+    if not any(lo <= int(branch) <= hi for lo, hi in _BANK_BRANCHES[bank.zfill(2)]):
+        return False
+    return bank_checksum_ok(algorithm, bank, branch, base, suffix)
+
+
+def _bank_candidates(text: str) -> list[tuple[str, str, str, str]]:
+    """The ways the typed account can split into bank, branch, base and
+    suffix: the groups as typed when there are four (the branch may be
+    written with three digits, IR's own example ``01-902-0068389-00``),
+    else the layouts an unseparated run of digits allows."""
+    groups = re.findall(r"\d+", text)
+    if len(groups) == 4:
+        bank, branch, base, suffix = groups
+        if (
+            len(bank) == 2
+            and 3 <= len(branch) <= 4
+            and 6 <= len(base) <= 8
+            and 2 <= len(suffix) <= 4
+        ):
+            return [(bank, branch, base, suffix)]
+        return []
+    digits = "".join(groups)
+    out = []
+    for layout in _BANK_LAYOUTS.get(len(digits), ()):
+        parts, at = [], 0
+        for size in layout:
+            parts.append(digits[at : at + size])
+            at += size
+        out.append(tuple(parts))
+    return out
 
 
 def normalise_bank_account(value: str | None) -> str:
-    """A New Zealand bank account as ``BB-bbbb-AAAAAAA-SSS``: bank (2),
-    branch (4), account (7–8) and suffix (2–4) digits. The shape is checked
-    here; the bank-specific modulus tables are not applied (the payroll
-    system holds the account for payroll lanes, and finance reads the
-    account ending back to the performer before accepting)."""
-    text = re.sub(r"\s+", "", value or "")
-    m = _BANK.match(text)
-    if not m:
-        raise Invalid(
-            "A bank account looks like 12-3456-7890123-00 (bank, branch, account, suffix)."
-        )
-    bank, branch, account, suffix = m.groups()
-    if int(account) == 0:
-        raise Invalid("That bank account number isn't valid.")
-    return f"{bank}-{branch}-{account.zfill(7)}-{suffix.zfill(2)}"
+    """A New Zealand bank account as ``BB-bbbb-AAAAAAA-SS(S)`` — or
+    ``Invalid`` unless it passes Inland Revenue's validation
+    (``nz_bank_account_valid``). Spaces and dashes are optional; an
+    unseparated run that could split two ways takes the split that checks
+    out."""
+    candidates = _bank_candidates(value or "")
+    if not candidates:
+        raise Invalid(BANK_SHAPE_MESSAGE)
+    for bank, branch, base, suffix in candidates:
+        if int(base) and nz_bank_account_valid(bank, branch, base, suffix):
+            # IR's padded form (8-digit base, 4-digit suffix) back to the
+            # one printed on a statement.
+            if len(base) == 8 and base.startswith("0"):
+                base = base[1:]
+            if len(suffix) == 4 and suffix.startswith("0"):
+                suffix = suffix[1:]
+            return f"{bank}-{branch.zfill(4)}-{base.zfill(7)}-{suffix.zfill(2)}"
+    raise Invalid(BANK_CHECK_MESSAGE)
 
 
 def account_ending(value: str | None) -> str | None:

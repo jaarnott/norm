@@ -162,10 +162,6 @@ class Api:
             return {"window": dict(WINDOW)}
         if action == "list_venues":
             return dict(VENUES)
-        if action == "caller_holds":
-            # A payroll:read holder: rates and per-shift costs stay. The
-            # strip for everyone else is tests/test_finance_platform_labour.py.
-            return {"holds": True}
         if p.get("venue") and p["venue"] == self.fail_venue:
             return {"error": "Loaded timed out"}
         if action == "get_roster":

@@ -20,8 +20,10 @@ from app.db.models import EmailLog
 from app.services.entertainers import performers, tokens
 from app.services.entertainers.performers import (
     account_ending,
+    bank_checksum_ok,
     normalise_bank_account,
     normalise_ird,
+    nz_bank_account_valid,
     payable,
 )
 from app.services.finance_core.errors import Invalid
@@ -55,12 +57,48 @@ class TestValidators:
             normalise_ird(value)
 
     def test_bank_account_shape(self):
-        assert normalise_bank_account("12-3456-7890123-00") == "12-3456-7890123-00"
-        assert normalise_bank_account("12 3456 7890123 000") == "12-3456-7890123-000"
-        assert normalise_bank_account("123456789012300") == "12-3456-7890123-00"
-        assert account_ending("12-3456-7890134-00") == "34"
+        assert normalise_bank_account("12-3456-7890138-00") == "12-3456-7890138-00"
+        assert normalise_bank_account("12 3456 7890138 000") == "12-3456-7890138-000"
+        assert normalise_bank_account("123456789013800") == "12-3456-7890138-00"
+        assert account_ending("12-3456-7890146-00") == "46"
         for bad in ("12-34-567-0", "12-3456-0000000-00", "", "hello"):
             with pytest.raises(Invalid):
+                normalise_bank_account(bad)
+
+    def test_bank_account_check_digits_follow_inland_revenue(self):
+        """IR's worked examples (Payroll Calculations and Business Rules
+        Specification 2026–27, §7): A, D and G. Bank 26 has since left IR's
+        list, so example 3 checks algorithm G on its own and the whole
+        number is refused as an unknown bank."""
+        assert normalise_bank_account("01-902-0068389-00") == "01-0902-0068389-00"
+        assert normalise_bank_account("08-6523-1954512-001") == "08-6523-1954512-001"
+        assert bank_checksum_ok("A", "01", "902", "0068389", "00")
+        assert bank_checksum_ok("D", "08", "6523", "1954512", "001")
+        assert bank_checksum_ok("G", "26", "2600", "0320871", "032")
+        assert not bank_checksum_ok("G", "26", "2600", "0320872", "032")
+        assert not nz_bank_account_valid("26", "2600", "0320871", "032")
+        # E and G add a product's digits (twice); IR's G example passes
+        # without that step too, so these two only pass with it.
+        assert bank_checksum_ok("G", "26", "2600", "0320869", "032")
+        assert bank_checksum_ok("E", "09", "0000", "0000018", "0001")
+        # B (a base of 00990000 or more), F (bank 25), X (bank 31: always).
+        assert nz_bank_account_valid("12", "3456", "7890138", "00")
+        assert not nz_bank_account_valid("12", "3456", "7890123", "00")
+        assert nz_bank_account_valid("25", "2500", "0000017", "00")
+        assert not nz_bank_account_valid("25", "2500", "0000018", "00")
+        assert nz_bank_account_valid("31", "2825", "12345678", "0000")
+        # IR's padded 18-digit form, and a 16-digit run that could split
+        # two ways, take the split that checks out.
+        assert normalise_bank_account("086523019545120001") == "08-6523-1954512-001"
+        assert normalise_bank_account("0865231954512001") == "08-6523-1954512-001"
+        # A wrong digit, a branch the bank doesn't use, a bank IR doesn't list.
+        for bad in (
+            "01-902-0068388-00",
+            "08-0001-1954512-001",
+            "99-9999-1234567-00",
+            "12-3456-7890123-00",
+        ):
+            with pytest.raises(Invalid, match="doesn't check out"):
                 normalise_bank_account(bad)
 
 
@@ -228,12 +266,12 @@ class TestFinance:
     def test_payroll_write_sees_endings_and_the_sensitive_route_logs(
         self, w, client, caplog
     ):
-        performer = add_performer(w.db, w.org, bank="12-3456-7890134-00")
+        performer = add_performer(w.db, w.org, bank="12-3456-7890146-00")
         r = client.get(
             f"/api/entertainers/performers/{performer.id}", headers=w.headers()
         )
         p = r.json()["performer"]
-        assert p["bank_account_ending"] == "34" and p["ird_ending"] == "850"
+        assert p["bank_account_ending"] == "46" and p["ird_ending"] == "850"
         assert "bank_account" not in p and "ird_number" not in p
         with caplog.at_level("INFO"):
             r = client.get(
@@ -241,7 +279,7 @@ class TestFinance:
                 headers=w.headers(),
             )
         assert r.json() == {
-            "bank_account": "12-3456-7890134-00",
+            "bank_account": "12-3456-7890146-00",
             "ird_number": "049091850",
             "date_of_birth": "1990-01-02",
         }
@@ -481,7 +519,7 @@ class TestAccessLog:
         r = client.get(
             f"/api/entertainers/performers/{performer.id}", headers=w.headers()
         )
-        assert r.json()["performer"]["bank_account_ending"] == "23"
+        assert r.json()["performer"]["bank_account_ending"] == "38"
         assert sorted(x.field for x in self._rows(w)) == [
             "bank_account_ending",
             "ird_number_ending",

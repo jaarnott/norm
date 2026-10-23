@@ -49,8 +49,11 @@ FINANCE_APP_SLUG = "norm-finance"
 #: sees. ``loadedhub.get_payrun`` and the week tools carry
 #: ``requires: ["payroll:read"]`` (writes ``payroll:write``); the entertainer
 #: tools carry none — venue access only (D15; mark-paid refuses inside).
+#: ``loadedhub.get_pay_adjustments`` (Loaded's pay adjustments and public
+#: holidays, owner 23 Oct) carries none either: it holds no dollar rates.
 PAYROLL_TOOLS = (
     "loadedhub.get_payrun",
+    "loadedhub.get_pay_adjustments",
     "norm_payroll.get_week",
     "norm_payroll.record_week",
     "norm_payroll.get_entertainers",

@@ -401,3 +401,105 @@ class TestMorningJob:
         )
         log = w.db.query(EmailLog).filter(EmailLog.id == link.email_log_id).one()
         assert log.to_addresses == ["payroll@cookbros.test"]
+
+
+class TestRolesSetting:
+    """D22 as a setting: a payroll writer picks the closing-manager roles
+    from the venue's real Loaded roles (free text allowed) on the
+    Entertainers Settings dialog; the morning lookup then asks for them."""
+
+    def test_pick_from_loaded_save_and_the_lookup_uses_them(
+        self, db_session, client, monkeypatch
+    ):
+        w = make_world(db_session)
+        seen = []
+
+        def read(db, ctx, venue):
+            seen.append((venue.name, ctx.user.id))
+            return [
+                {"name": "SALES MANAGER", "datestampDeleted": None},
+                {"name": "BAR TEAM", "datestampDeleted": None},
+                {"name": "Old Role", "datestampDeleted": "2024-01-01T00:00:00"},
+                {"name": "  Duty   Manager "},
+            ]
+
+        monkeypatch.setattr(closing_manager, "read_staff_roles", read)
+        r = client.get(
+            f"/api/entertainers/settings/loaded-roles?venue_id={w.venue.id}",
+            headers=w.headers(),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == {
+            "venue_id": w.venue.id,
+            "roles": ["BAR TEAM", "Duty Manager", "SALES MANAGER"],
+            "error": None,
+        }
+        assert seen == [("Brew Bar", w.payroll_person.id)]
+
+        settings = client.get("/api/entertainers/meta", headers=w.headers()).json()[
+            "settings"
+        ]
+        assert settings["closing_manager_roles"] == ["Sales Manager"]
+        r = client.put(
+            "/api/entertainers/settings",
+            json={
+                "closing_manager_roles": [
+                    "SALES MANAGER",
+                    " sales  manager",
+                    "Duty Manager",
+                    "",
+                ],
+                "version": settings["version"],
+            },
+            headers=w.headers(w.owner),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["closing_manager_roles"] == ["SALES MANAGER", "Duty Manager"]
+        performer = add_performer(w.db, w.org)
+        add_performance(w.db, w.org, w.venue, performer)
+        lookup = fake_lookup({})
+        closing_manager.resolve_for_org(w.db, w.org.id, now=NOW, lookup_fn=lookup)
+        assert lookup.calls[0][2] == ["SALES MANAGER", "Duty Manager"]
+
+        # None left is refused; a stale version is a conflict.
+        version = r.json()["version"]
+        for body, status in (
+            ({"closing_manager_roles": [" "], "version": version}, 400),
+            ({"closing_manager_roles": ["X"], "version": version - 1}, 409),
+        ):
+            assert (
+                client.put(
+                    "/api/entertainers/settings", json=body, headers=w.headers()
+                ).status_code
+                == status
+            )
+
+    def test_only_a_payroll_writer_and_a_loaded_failure_is_said(
+        self, db_session, client, monkeypatch
+    ):
+        w = make_world(db_session)
+        monkeypatch.setattr(
+            closing_manager,
+            "read_staff_roles",
+            lambda db, ctx, venue: {"error": "Loaded token expired"},
+        )
+        url = f"/api/entertainers/settings/loaded-roles?venue_id={w.venue.id}"
+        for user in (w.manager, w.team_member):
+            assert client.get(url, headers=w.headers(user)).status_code == 403
+            assert (
+                client.put(
+                    "/api/entertainers/settings",
+                    json={"closing_manager_roles": ["X"], "version": 1},
+                    headers=w.headers(user),
+                ).status_code
+                == 403
+            )
+        r = client.get(url, headers=w.headers())
+        assert r.status_code == 200
+        assert r.json()["roles"] == [] and "token expired" in r.json()["error"]
+        # A venue of another organisation is not one to read.
+        r = client.get(
+            f"/api/entertainers/settings/loaded-roles?venue_id={w.other_venue.id}",
+            headers=w.headers(),
+        )
+        assert r.status_code == 403

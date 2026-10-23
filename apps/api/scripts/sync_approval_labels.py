@@ -61,10 +61,12 @@ READS = [
     "loadedhub.get_stocktakes",
     # Loaded Payroll + Norm Finance on the loadedhub spec (Oct 2026,
     # scripts/sync_payroll_config.py): the pay week, the Weekly Summary and
-    # the engine-only closing-manager lookup are reads of Loaded.
+    # the engine-only closing-manager lookup are reads of Loaded; so are its
+    # pay adjustments and public holidays (23 Oct 2026).
     "loadedhub.get_payrun",
     "loadedhub.get_weekly_financials",
     "loadedhub.get_closing_manager",
+    "loadedhub.get_pay_adjustments",
     # Loaded Payroll's own rows (Oct 2026, scripts/sync_norm_finance.py): the
     # week as Norm holds it; the entertainer roster, register and sent emails
     # — venue-scoped, never bank or IRD details.

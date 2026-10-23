@@ -9,7 +9,7 @@
  * `?page=ent-register&performer=<id>` opens a record.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Plus, Search } from 'lucide-react';
+import { Plus, Search, Settings } from 'lucide-react';
 import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
@@ -24,9 +24,10 @@ import { when } from './format';
 import { LANE_SHORT, performerChips, registerRows } from './logic';
 import type { RegisterTab } from './logic';
 import { ChipRow, FilterChip, LaneBadge, Notice, RowCard, Toggle } from './ui';
-import { readPageParam, setPageParam, useEntMeta } from './useMeta';
+import { invalidateEntMeta, readPageParam, setPageParam, useEntMeta } from './useMeta';
 import AddPerformerDialog from './register/AddPerformerDialog';
 import PerformerDialog from './register/PerformerDialog';
+import SettingsDialog from './settings/SettingsDialog';
 import type { Lane, Performer } from './types';
 
 export function ModeBanner({ mode }: { mode: 'off' | 'shadow' | 'live' | undefined }) {
@@ -60,6 +61,7 @@ export default function EntertainersRegister({ props }: DisplayBlockProps) {
   const [includeInactive, setIncludeInactive] = useState(false);
   const [openId, setOpenId] = useState<string | null>(() => (isPage ? readPageParam('performer') : null));
   const [adding, setAdding] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -97,7 +99,12 @@ export default function EntertainersRegister({ props }: DisplayBlockProps) {
       <PageHeader
         title="Entertainers"
         meta={`${all.filter((p) => p.is_active).length} active performers`}
-        actions={<Button variant="primary" icon={Plus} onClick={() => setAdding(true)}>Add performer</Button>}
+        actions={
+          <>
+            {meta.can_edit_settings && <Button icon={Settings} onClick={() => setSettingsOpen(true)}>Settings</Button>}
+            <Button variant="primary" icon={Plus} onClick={() => setAdding(true)}>Add performer</Button>
+          </>
+        }
       >
         <Tabs
           label="Register lists"
@@ -204,6 +211,13 @@ export default function EntertainersRegister({ props }: DisplayBlockProps) {
           meta={meta}
           onClose={() => open(null)}
           onChanged={(p) => setRows((r) => (r ?? []).map((x) => (x.id === p.id ? p : x)))}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsDialog
+          meta={meta}
+          onSaved={() => { setSettingsOpen(false); invalidateEntMeta(); reload(); }}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
       {isPage && <ToastHost />}

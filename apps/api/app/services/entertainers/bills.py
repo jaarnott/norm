@@ -7,7 +7,10 @@ shown first (``preview``) and the person's click is the approval. The key is
 share), so a retried push returns the same bill. GST comes from the
 performer's registration and the tenant's rates (``create_bill`` reads the
 rates; this module only says ``gst: yes|no`` per line); the account is the
-venue's ``entertainment_expense`` mapping. The invoice's own lines go on the
+venue's ``entertainment_expense`` key in the payroll Xero mapping (the Mapping
+tab), sent as each line's ``account_code`` — ``create_bill``'s own categories
+are the stock ones, and a bill with no account would otherwise fall to the
+Bills page's default stock account. The invoice's own lines go on the
 bill when the check found they add up, else one line per performance.
 Nothing is rescaled.
 
@@ -46,6 +49,7 @@ from app.services.entertainers.invoice_check import invoice_bill_lines
 from app.services.entertainers.performers import payable
 from app.services.finance_core.ctx import FinanceCtx, require_staff
 from app.services.finance_core.errors import Conflict, Invalid, NotFound, flush
+from app.services.payroll import xero_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +114,10 @@ def tenant_for(db: Session, venue_id: str) -> str | None:
     return str((row.config or {}).get("xero_tenant_id") or "") or None
 
 
-def _contact_id(db: Session, performer: EntPerformer, tenant: str) -> str | None:
-    row = (
+def _contact(
+    db: Session, performer: EntPerformer, tenant: str
+) -> EntPerformerXeroContact | None:
+    return (
         db.query(EntPerformerXeroContact)
         .filter(
             EntPerformerXeroContact.organization_id == performer.organization_id,
@@ -120,7 +126,12 @@ def _contact_id(db: Session, performer: EntPerformer, tenant: str) -> str | None
         )
         .first()
     )
-    return row.xero_contact_id if row else None
+
+
+def entertainment_account(db: Session, venue_id: str) -> str | None:
+    """The venue's entertainment expense account code, from the payroll Xero
+    mapping (the Mapping tab and the importer both write it there)."""
+    return xero_mapping.payroll_of(db, venue_id).get("entertainment_expense")
 
 
 def bill_params(
@@ -138,6 +149,12 @@ def bill_params(
     """The ``create_bill`` parameters for one performance (or one share)."""
     gst = "yes" if (payee.gst_registered and payee.lane != "exemption") else "no"
     account = {"category": "entertainment_expense", "gst": gst}
+    code = entertainment_account(db, venue.id) if venue is not None else None
+    if code:
+        # create_bill resolves only the stock categories (food, beverage,
+        # other); without the code it refused the bill, or sent it to the Bills
+        # page's default stock account (live Federal Street test, 23 Oct 2026).
+        account["account_code"] = code
     amount = share.amount_cents if share is not None else (perf.actual_cents or 0)
     own_lines = invoice_bill_lines(db, file, perf) if share is None else None
     label = f"{performer.name} — performance {perf.performance_date.isoformat()}" + (
@@ -187,9 +204,13 @@ def bill_params(
             perf.id, share.band_member_id if share is not None else None
         ),
     }
-    contact = _contact_id(db, payee, tenant)
-    if contact:
-        params["supplier_contact_id"] = contact
+    contact = _contact(db, payee, tenant)
+    if contact is not None and contact.xero_contact_id:
+        params["supplier_contact_id"] = contact.xero_contact_id
+        # create_bill shows ``supplier`` as the contact on the card; with an id
+        # it never looks the name up, so name the contact the bill lands on.
+        if contact.xero_contact_name:
+            params["supplier"] = contact.xero_contact_name
     if file is not None:
         params["attachment_file_id"] = file.id
     return params
@@ -260,6 +281,11 @@ def _target(db: Session, ctx: FinanceCtx, performance_id: str, member_id: str | 
     tenant = tenant_for(db, perf.venue_id)
     if not tenant:
         raise Conflict("This venue has no live Xero connection.")
+    if not entertainment_account(db, perf.venue_id):
+        raise Conflict(
+            "This venue has no Xero account for entertainment — choose the "
+            "Entertainment expense account under Payroll settings → Xero mapping first."
+        )
     venue = db.query(Venue).filter(Venue.id == perf.venue_id).first()
     return perf, performer, payee, venue, file, share, tenant
 
@@ -356,9 +382,11 @@ def record_push(
         "xero_id": bill.get("InvoiceID")
         or bill.get("invoice_id")
         or (result or {}).get("invoice_id"),
+        # create_bill's own result is flat: invoice_id, number, status.
         "xero_number": bill.get("InvoiceNumber")
         or bill.get("invoice_number")
-        or (result or {}).get("invoice_number"),
+        or (result or {}).get("invoice_number")
+        or (result or {}).get("number"),
         "xero_status": bill.get("Status")
         or bill.get("status")
         or (result or {}).get("status"),

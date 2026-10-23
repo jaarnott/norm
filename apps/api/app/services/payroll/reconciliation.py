@@ -625,6 +625,7 @@ def compute(
             "payroll_on": bool(entity.payroll_on) if entity else False,
             "security_pay_code": entity.security_pay_code if entity else "SECURITY",
             "ico_leave_uplift_bp": int(entity.ico_leave_uplift_bp) if entity else 1200,
+            "ico_leave_tax": entity.ico_leave_tax if entity else "account_default",
             "loaded_company_id": entity.loaded_company_id if entity else None,
         },
         "week_id": week.id if week else None,

@@ -71,8 +71,19 @@ class TestSeries:
             and first.performance_date.isoweekday() == 6
         )
         dates = sorted(p.performance_date for p in made)
+        # A year ahead of whichever is later, the first night or today — so
+        # the count depends on the day the suite runs; derive it the same way.
+        through = max(dt.date.today(), dt.date(2026, 10, 10)) + series.HORIZON
+        expected = [
+            dt.date(2026, 10, 10) + dt.timedelta(days=n)
+            for n in range((through - dt.date(2026, 10, 10)).days + 1)
+        ]
+        expected = [d for d in expected if d.isoweekday() in (5, 6)]
         assert dates[0] == dt.date(2026, 10, 10) and dates[-1] >= dt.date(2027, 10, 1)
-        assert all(d.isoweekday() in (5, 6) for d in dates) and 100 <= len(dates) <= 108
+        assert all(d.isoweekday() in (5, 6) for d in dates)
+        assert (
+            abs(len(dates) - len(expected)) <= 2
+        )  # a day either side of local midnight
         assert all(p.agreed_cents == 40_000 for p in made)
         # the job tops it up: nothing new today, new rows once time passes
         assert series.extend_all(w.db, w.org.id, today=dt.date(2026, 10, 12)) == 0
@@ -718,7 +729,8 @@ def xero(w, monkeypatch):
         access_token="tok",
         config={
             "xero_tenant_id": "tenant-1",
-            "xero_mapping": {"accounts": {"entertainment_expense": "67300"}},
+            # Where the Mapping tab and the importer write it.
+            "xero_mapping": {"payroll": {"entertainment_expense": "67300"}},
         },
     )
     w.db.add(conn)
@@ -759,6 +771,7 @@ class TestBills:
                 "unit_amount": 400.0,
                 "category": "entertainment_expense",
                 "gst": "yes",
+                "account_code": "67300",
             }
         ]
         assert (
@@ -767,6 +780,24 @@ class TestBills:
             and params["due_date"] == "2026-10-24"
         )
         assert "attachment_file_id" not in params
+        assert "supplier_contact_id" not in params
+        # Linked to an existing Xero contact (the importer's rows): the bill
+        # goes to that contact, and the card names it — not Norm's spelling.
+        from app.db.entertainers_models import EntPerformerXeroContact
+
+        w.db.add(
+            EntPerformerXeroContact(
+                organization_id=w.org.id,
+                performer_id=agency.id,
+                xero_tenant_id="tenant-1",
+                xero_contact_id="c-smith",
+                xero_contact_name="Smith Sounds Limited",
+            )
+        )
+        w.db.flush()
+        params = bills.preview(w.db, ctx, perf.id)["params"]
+        assert params["supplier_contact_id"] == "c-smith"
+        assert params["supplier"] == "Smith Sounds Limited"
         push = bills.confirm(w.db, ctx, perf.id, fingerprint="fp-1")
         assert (
             isinstance(push, PayXeroPush)
@@ -785,6 +816,33 @@ class TestBills:
         )
         assert (
             xero.confirms[0][0] == "xero.create_bill" and xero.confirms[0][3] == "fp-1"
+        )
+
+    def test_the_ledger_reads_create_bills_own_result(self, w, xero):
+        """create_bill answers flat (invoice_id, number, status); the ledger
+        lost the bill number on the live Federal Street bill (23 Oct 2026)."""
+        agency = add_performer(
+            w.db, w.org, name="Agency", email="a@example.test", lane="invoice"
+        )
+        perf = approved(w.db, w.org, w.venue, agency)
+        push = bills.record_push(
+            w.db,
+            w.ctx(),
+            perf=perf,
+            member_id=None,
+            tenant="tenant-1",
+            params={"idempotency_key": f"norm:ent-bill:{perf.id}"},
+            result={
+                "created": True,
+                "invoice_id": "inv-flat",
+                "number": "SS-77",
+                "status": "DRAFT",
+            },
+        )
+        assert (push.xero_id, push.xero_number, push.xero_status) == (
+            "inv-flat",
+            "SS-77",
+            "DRAFT",
         )
 
     def test_a_re_push_voids_the_earlier_bill_first(self, w, xero):
@@ -834,6 +892,17 @@ class TestBills:
             bills.preview(w.db, ctx, perf3.id)
         with pytest.raises(Forbidden):
             bills.preview(w.db, w.ctx(w.team_member), perf3.id)
+        # Connected, but no entertainment account mapped: refused by name.
+        # create_bill knows only the stock categories, so the bill was refused
+        # in Xero's terms, or sent to the Bills default (live test, 23 Oct 2026).
+        from app.db.models import Connection
+
+        conn = w.db.query(Connection).filter(Connection.venue_id == w.venue.id).one()
+        conn.config = {"xero_tenant_id": "tenant-1"}
+        w.db.flush()
+        perf4 = approved(w.db, w.org, w.venue, agency)
+        with pytest.raises(Conflict, match="Entertainment expense"):
+            bills.preview(w.db, ctx, perf4.id)
         from app.services.finance_core import modes
 
         modes.set_mode(w.db, w.org.id, "entertainers", "shadow")

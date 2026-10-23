@@ -6,7 +6,7 @@
  * Nothing here is persisted anywhere: the form lives in React state and
  * dies with the page.
  */
-import { normaliseBankAccount, normaliseIrd, validEmail, validIrdNumber } from '../logic';
+import { BANK_CHECK_MESSAGE, BANK_SHAPE_MESSAGE, bankAccountProblem, normaliseBankAccount, normaliseIrd, validEmail, validIrdNumber } from '../logic';
 import type { JoinLane, JoinPage, JoinStep, Lane, PaidAs, PerformerType } from '../types';
 
 export interface MemberDraft {
@@ -184,7 +184,8 @@ export function validateStep(step: JoinStep, form: JoinForm, page: JoinPage): Fi
       }
       break;
     case 'bank_tax': {
-      if (!normaliseBankAccount(form.bank_account)) e.bank_account = 'Enter the full account number: bank, branch, account and suffix.';
+      const bank = bankAccountProblem(form.bank_account);
+      if (bank) e.bank_account = bank === 'shape' ? BANK_SHAPE_MESSAGE : BANK_CHECK_MESSAGE;
       const ird = form.ird_number.trim();
       if (irdRequired(form.paid_as, lanes) && !ird) e.ird_number = 'Your IRD number is needed for withholding tax.';
       else if (ird && !validIrdNumber(ird)) e.ird_number = 'That IRD number doesn’t check out — it should be 8 or 9 digits.';

@@ -25,7 +25,7 @@ scopes from EVERY role, custom ones included — once the code no longer knows
 them, a role still carrying one could not be saved.
 
 Revision ID: kb6e8g0i2k4m
-Revises: ja5d7f9h1j3l
+Revises: bk2m4o6q8s0u
 """
 
 import json
@@ -34,7 +34,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "kb6e8g0i2k4m"
-down_revision = "ja5d7f9h1j3l"
+down_revision = "bk2m4o6q8s0u"
 branch_labels = None
 depends_on = None
 

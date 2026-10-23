@@ -47,8 +47,8 @@ from app.services.entertainers._shared import (
     settings_for,
     venue_tz,
 )
-from app.services.finance_core.ctx import FinanceCtx
-from app.services.finance_core.errors import Conflict
+from app.services.finance_core.ctx import FinanceCtx, require_venue
+from app.services.finance_core.errors import Conflict, Forbidden
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,70 @@ def lookup(db: Session, venue: Venue, dates: list[dt.date], roles: list[str]) ->
         return {"error": data["error"]}
     by_date = data.get("by_date")
     return by_date if isinstance(by_date, dict) else {}
+
+
+def read_staff_roles(db: Session, ctx: FinanceCtx, venue: Venue):
+    """``loadedhub.get_staff_roles`` for the venue's own token, as the person
+    asking (the seam tests replace). Loaded answers a top-level list."""
+    from app.connectors.tool_executor import execute_connector_tool
+    from app.db.engine import _ConfigSessionLocal
+
+    config_db = _ConfigSessionLocal()
+    try:
+        result = execute_connector_tool(
+            "loadedhub",
+            "get_staff_roles",
+            {"venue_id": venue.id, "venue": venue.name},
+            db,
+            config_db,
+            venue_id=venue.id,
+            strict_venue=True,
+            user=ctx.user,
+        )
+    finally:
+        config_db.close()
+    if not getattr(result, "success", False):
+        return {"error": getattr(result, "error", None) or "Loaded did not answer"}
+    return getattr(result, "payload", None)
+
+
+def require_settings_editor(ctx: FinanceCtx) -> None:
+    """The entertainer settings (the closing-manager roles, tolerances,
+    reminders) are changed by a payroll writer or an owner of the
+    organisation (owner, 23 Oct 2026)."""
+    if not (ctx.holds("payroll:write") or ctx.is_owner):
+        raise Forbidden(
+            "Only a payroll writer or an owner of the organisation can change this."
+        )
+
+
+def loaded_roles(db: Session, ctx: FinanceCtx, venue_id: str, *, read=None) -> dict:
+    """The role names Loaded holds at a venue — what the Settings dialog
+    offers for the closing-manager roles (D22: the roles are the
+    organisation's setting, picked from Loaded's real ones, free text
+    allowed). ``{"venue_id", "roles": [names], "error": None | "…"}``: a
+    Loaded failure is said, not raised, so the dialog still takes typed
+    names."""
+    require_settings_editor(ctx)
+    require_venue(ctx, venue_id)
+    venue = db.query(Venue).filter(Venue.id == venue_id).first()
+    payload = (read or read_staff_roles)(db, ctx, venue)
+    if isinstance(payload, dict) and payload.get("error"):
+        return {"venue_id": venue_id, "roles": [], "error": str(payload["error"])}
+    if isinstance(payload, dict):
+        payload = payload.get("data") or payload.get("items") or []
+    names: dict[str, str] = {}
+    for row in payload if isinstance(payload, list) else []:
+        if not isinstance(row, dict) or row.get("datestampDeleted"):
+            continue
+        name = " ".join(str(row.get("name") or "").split())
+        if name:
+            names.setdefault(name.lower(), name)
+    return {
+        "venue_id": venue_id,
+        "roles": sorted(names.values(), key=str.lower),
+        "error": None,
+    }
 
 
 def match_user(db: Session, org_id: str, email: str | None) -> User | None:

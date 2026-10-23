@@ -4,6 +4,7 @@ import base64
 import logging
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
+from email.utils import formataddr
 
 import httpx
 from sqlalchemy.orm import Session
@@ -49,8 +50,15 @@ def send_system_email(
     db: Session,
     organization_id: str | None = None,
     thread_id: str | None = None,
+    from_name: str | None = None,
+    reply_to: str | None = None,
 ) -> str | None:
-    """Send a system email via Resend. Returns the email log ID or None on failure."""
+    """Send a system email via Resend. Returns the email log ID or None on failure.
+
+    Always from Norm's own address (``EMAIL_FROM_ADDRESS``); ``from_name``
+    replaces the display name (an organisation's emails carry its name, as
+    app and Functions emails do) and ``reply_to`` sends a reply to a person
+    rather than the no-reply address."""
     from app.db.models import EmailLog
     from app.services.email_templates import render_template
 
@@ -82,14 +90,18 @@ def send_system_email(
         import resend
 
         resend.api_key = settings.RESEND_API_KEY
-        result = resend.Emails.send(
-            {
-                "from": f"{settings.EMAIL_FROM_NAME} <{settings.EMAIL_FROM_ADDRESS}>",
-                "to": to,
-                "subject": subject,
-                "html": html_body,
-            }
-        )
+        payload = {
+            # formataddr quotes a name with a comma or quote in it.
+            "from": formataddr(
+                (from_name or settings.EMAIL_FROM_NAME, settings.EMAIL_FROM_ADDRESS)
+            ),
+            "to": to,
+            "subject": subject,
+            "html": html_body,
+        }
+        if reply_to:
+            payload["reply_to"] = reply_to
+        result = resend.Emails.send(payload)
         log.status = "sent"
         log.provider_message_id = (
             result.get("id") if isinstance(result, dict) else str(result)

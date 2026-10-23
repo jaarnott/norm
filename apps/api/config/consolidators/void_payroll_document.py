@@ -13,6 +13,8 @@
 #   already VOIDED or DELETED in Xero → nothing to send; the ledger row is
 #   marked voided so the week's slot is free again.
 # The journal rule is the one to confirm on the Xero Demo Company (Phase 4).
+# Confirmed on the live Federal Street organisation, 23 Oct 2026: Xero accepts
+# Status DELETED on a DRAFT manual journal and on DRAFT invoices and bills.
 #
 # Requires consolidator_config: {"max_api_calls": 8,
 #   "allowed_write_actions": ["update_manual_journal", "update_invoice",
@@ -24,6 +26,25 @@ _LABELS = {
     "ico_bill": "intercompany bill",
     "entertainer_bill": "entertainer bill",
 }
+
+
+def _week_label(week_start):
+    """' — WE dd.mm.yyyy' (the pay week's Sunday, as the push cards say it);
+    '' for a document with no pay week (an entertainer bill). The card said
+    'WE <the Monday>' and a bare 'WE' (live test, 23 Oct 2026)."""
+    try:
+        y, m, d = (int(x) for x in str(week_start or "")[:10].split("-"))
+        end = datetime.date(y, m, d) + datetime.timedelta(days=6)
+    except ValueError:
+        return ""
+    return (
+        " — WE "
+        + str(end.day).zfill(2)
+        + "."
+        + str(end.month).zfill(2)
+        + "."
+        + str(end.year)
+    )
 
 
 def _xero_messages(row):
@@ -119,8 +140,7 @@ def run(params, call_api, log):
             "title": "Void a payroll document in Xero",
             "target": label
             + (" " + str(number) if number else "")
-            + " — WE "
-            + str(push.get("week_start") or ""),
+            + _week_label(push.get("week_start")),
             "venue": settings.get("organisation"),
             "changes": [
                 {"field": "Document", "after": label + " " + str(xero_id)},
@@ -130,7 +150,9 @@ def run(params, call_api, log):
             "warnings": []
             if target
             else ["nothing is sent to Xero — only Norm's record changes"],
-            "note": "The week's slot is free again afterwards; a new push creates a new document.",
+            "note": "The performance can be billed again afterwards; a new push creates a new bill."
+            if kind == "entertainer_bill"
+            else "The week's slot is free again afterwards; a new push creates a new document.",
         },
         basis={
             "push_id": push_id,

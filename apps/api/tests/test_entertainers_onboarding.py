@@ -53,7 +53,7 @@ def full_submission(**over) -> dict:
         "paid_as": "individual",
         "legal_name": "Samuel Smith",
         "gst_registered": False,
-        "bank_account": "12-3456-7890123-00",
+        "bank_account": "12-3456-7890138-00",
         "ird_number": "49091850",
         "date_of_birth": "1990-01-02",
         "contractor_confirmations": {
@@ -280,7 +280,7 @@ class TestSubmit:
         )
         assert performer.lane == "payroll_contractor"
         assert (
-            performer.bank_account == "12-3456-7890123-00"
+            performer.bank_account == "12-3456-7890138-00"
             and performer.ird_number == "049091850"
         )
         assert performer.date_of_birth == "1990-01-02" and performer.tax_code == "WT"
@@ -320,7 +320,7 @@ class TestSubmit:
         )
         assert r.status_code == 409 and r.json()["detail"]["code"] == "conflict"
         w.db.refresh(performer)
-        assert performer.bank_account == "12-3456-7890123-00"
+        assert performer.bank_account == "12-3456-7890138-00"
         assert (
             client.post(
                 f"/api/public/join/{token}/steps/about",
@@ -329,7 +329,7 @@ class TestSubmit:
             == 409
         )
 
-    def test_a_bad_ird_check_digit_is_refused(self, w, client, invited):
+    def test_a_bad_ird_or_bank_check_digit_is_refused(self, w, client, invited):
         _performer, token = invited
         verified(w.db, token)
         r = client.post(
@@ -338,6 +338,17 @@ class TestSubmit:
         )
         assert r.status_code == 400
         assert "ird_number" in r.json()["detail"]["errors"]
+        # A bank account with the right shape but a wrong digit is refused
+        # in plain words, on the bank step and on the submit.
+        for path in ("steps/bank_tax", "submit"):
+            r = client.post(
+                f"/api/public/join/{token}/{path}",
+                json=full_submission(bank_account="12-3456-7890123-00"),
+            )
+            assert r.status_code == 400
+            assert r.json()["detail"]["errors"]["bank_account"] == (
+                "That bank account number doesn't check out — please re-check it."
+            )
 
     def test_gst_comes_from_the_registration_answer_whatever_the_lane(
         self, w, client, invited
@@ -468,7 +479,7 @@ class TestSubmit:
         token, _url = join_link(w.db, w.org, performer)
         verified(w.db, token)
         body = full_submission(
-            email="new@example.test", bank_account="12-3456-7777777-00"
+            email="new@example.test", bank_account="12-3456-7777725-00"
         )
         r = client.post(f"/api/public/join/{token}/submit", json=body)
         assert r.status_code == 200, r.text
@@ -478,7 +489,7 @@ class TestSubmit:
             and performer.onboarding_status == "submitted"
         )
         assert (
-            performer.bank_account == "12-3456-7777777-00"
+            performer.bank_account == "12-3456-7777725-00"
             and performer.email == "new@example.test"
         )
         link = (
@@ -632,7 +643,7 @@ class TestBandMembers:
         )
         assert (
             member_row.lane == "payroll_contractor"
-            and member_row.bank_account == "12-3456-7890123-00"
+            and member_row.bank_account == "12-3456-7890138-00"
         )
         assert (
             band.bank_account is None and band.needs_review is True

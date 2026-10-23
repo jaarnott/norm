@@ -77,7 +77,9 @@ _RULES: dict[str, dict[str, tuple[str, ...]]] = {
     "entertainers": {"ok": ("EXPENSE",)},
     "entertainment_expense": {"ok": ("EXPENSE",)},
     "gratuities_reclass": {"ok": ("REVENUE", "EXPENSE")},
-    "rounding": {"ok": ("EXPENSE",)},
+    # Xero's own Rounding account (860 in the standard NZ chart, Federal
+    # Street's included) is a current liability; an expense account works too.
+    "rounding": {"ok": ("EXPENSE", "LIABILITY")},
     "intercompany.wages_account": {"ok": ("LIABILITY", "ASSET")},
     "intercompany.leave_account": {"ok": ("LIABILITY", "ASSET", "EXPENSE", "REVENUE")},
 }
@@ -175,9 +177,13 @@ def missing_for_journal(payroll: dict, needed) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def chart(db: Session, config_db: Session, venue_id: str) -> list[dict]:
+def chart(db: Session, config_db: Session, venue_id: str, *, user=None) -> list[dict]:
     """The tenant's active chart with class and type — ``xero.get_accounts``
-    through the shared executor, with this venue's token only."""
+    through the shared executor, with this venue's token only.
+
+    ``user`` is the signed-in person: ``get_accounts`` carries ``requires:
+    ["finance:read"]``, and a call that names nobody is refused (the panel
+    read "Norm couldn't tell who is asking" against a live tenant, 23 Oct 2026)."""
     from app.connectors.tool_executor import execute_connector_tool
 
     result = execute_connector_tool(
@@ -188,6 +194,7 @@ def chart(db: Session, config_db: Session, venue_id: str) -> list[dict]:
         config_db=config_db,
         venue_id=venue_id,
         strict_venue=True,
+        user=user,
     )
     payload = result.payload if isinstance(result.payload, dict) else {}
     if not result.success or payload.get("error"):
@@ -341,7 +348,7 @@ def read(
     chart_error = None
     if row is not None and config_db is not None:
         try:
-            accounts = chart(db, config_db, venue_id)
+            accounts = chart(db, config_db, venue_id, user=ctx.user)
         except Invalid as exc:
             chart_error = exc.message
     return {
@@ -400,7 +407,7 @@ def save(
         raise Invalid(
             "This venue is not connected to Xero — connect it under Settings → Connections first."
         )
-    accounts = chart(db, config_db, venue_id)
+    accounts = chart(db, config_db, venue_id, user=ctx.user)
     pay, ico, issues = validate(
         db, ctx, venue_id, payroll, intercompany, accounts=accounts
     )

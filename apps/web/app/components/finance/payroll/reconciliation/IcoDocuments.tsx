@@ -21,7 +21,7 @@ import { Note, Section, Stack } from '../../shared/PageShell';
 import { bpLabel, instantLabel, plural } from '../../shared/format';
 import { finSend, useFinQuery, type FinanceApi } from '../../shared/useFinanceApi';
 import { weDotted, weekEnding } from '../../shared/weeks';
-import type { PayrollMode } from '../types';
+import { ICO_LEAVE_TAX_LABELS, type PayrollMode } from '../types';
 import { kindLabel, xeroStatusTone, type JournalDocument, type StoredIco } from './journalTypes';
 
 export function VoidDialog({ pushId, label, onClose, onDone }: { pushId: string; label: string; onClose: () => void; onDone: () => void }) {
@@ -101,7 +101,7 @@ export default function IcoDocuments({ api, venueId, venueName, weekStart, canWr
             <DataTable columns={columns} rows={doc.ico} rowKey={(r) => r.id} dense emptyTitle="No intercompany drafts yet." emptyDetail="Build the drafts once the week's close snapshot is in; a counterparty appears when at least one person crossed between the entities." />
             {doc.intercompany && (
               <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
-                Wages to account {doc.intercompany.wages_account || <Badge tone="error">not mapped</Badge>} · leave & entitlements ({bpLabel(doc.intercompany.uplift_bp)}) to {doc.intercompany.leave_account || <Badge tone="error">not mapped</Badge>} · due 14 days after {venueName}&rsquo;s week ending · GST from the tenant&rsquo;s tax rates · {money(doc.ico.reduce((s, d) => s + d.subtotal_cents, 0))} in all
+                Wages to account {doc.intercompany.wages_account || <Badge tone="error">not mapped</Badge>} · leave & entitlements ({bpLabel(doc.intercompany.uplift_bp)}) to {doc.intercompany.leave_account || <Badge tone="error">not mapped</Badge>}{doc.intercompany.leave_tax && <>, taxed as: {ICO_LEAVE_TAX_LABELS[doc.intercompany.leave_tax].toLowerCase()} (Payroll settings → Entities)</>} · due 14 days after {venueName}&rsquo;s week ending · GST from the tenant&rsquo;s tax rates · {money(doc.ico.reduce((s, d) => s + d.subtotal_cents, 0))} in all
                 {doc.ico.some((d) => d.built_at) && <> · built {instantLabel(doc.ico[0].built_at)}</>}
               </div>
             )}

@@ -9,7 +9,12 @@ import {
   groupByDate,
   isoWeekday,
   monthBounds,
+  bankAccountProblem,
+  hasRole,
+  toggleRole,
+  bankChecksumOk,
   normaliseBankAccount,
+  nzBankAccountValid,
   normaliseCode,
   percentToBp,
   performerChips,
@@ -82,17 +87,57 @@ describe('IRD number check digit (Inland Revenue rule)', () => {
   });
 });
 
+describe('closing-manager roles', () => {
+  it('adds and removes a role once, whatever its case or spacing', () => {
+    expect(toggleRole(['Sales Manager'], 'SALES MANAGER', true)).toEqual(['SALES MANAGER']);
+    expect(toggleRole(['Sales Manager'], ' Duty   Manager ', true)).toEqual(['Sales Manager', 'Duty Manager']);
+    expect(toggleRole(['Sales Manager', 'Duty Manager'], 'sales manager', false)).toEqual(['Duty Manager']);
+    expect(toggleRole(['Sales Manager'], '   ', true)).toEqual(['Sales Manager']);
+    expect(hasRole(['SALES MANAGER'], 'Sales  Manager')).toBe(true);
+    expect(hasRole(['SALES MANAGER'], 'Bar Team')).toBe(false);
+  });
+});
+
 describe('bank account format', () => {
   it('normalises bank–branch–account–suffix however it was typed', () => {
-    expect(normaliseBankAccount('12-3456-7890123-00')).toBe('12-3456-7890123-00');
-    expect(normaliseBankAccount('123456789012300')).toBe('12-3456-7890123-00');
-    expect(normaliseBankAccount('12 3456 7890123 000')).toBe('12-3456-7890123-000');
+    expect(normaliseBankAccount('12-3456-7890138-00')).toBe('12-3456-7890138-00');
+    expect(normaliseBankAccount('123456789013800')).toBe('12-3456-7890138-00');
+    expect(normaliseBankAccount('12 3456 7890138 000')).toBe('12-3456-7890138-000');
   });
 
   it('refuses the wrong number of digits or an all-zero part', () => {
     expect(normaliseBankAccount('12-3456-789')).toBeNull();
     expect(normaliseBankAccount('00-3456-7890123-00')).toBeNull();
+    expect(normaliseBankAccount('12-3456-0000000-00')).toBeNull();
     expect(normaliseBankAccount('')).toBeNull();
+    expect(bankAccountProblem('12-3456-789')).toBe('shape');
+  });
+
+  // Inland Revenue's worked examples (Payroll Calculations and Business Rules
+  // Specification 2026–27, §7) — the same vectors as the server's test.
+  it('checks the digits the way Inland Revenue does', () => {
+    expect(normaliseBankAccount('01-902-0068389-00')).toBe('01-0902-0068389-00');
+    expect(normaliseBankAccount('08-6523-1954512-001')).toBe('08-6523-1954512-001');
+    expect(bankChecksumOk('A', '01', '902', '0068389', '00')).toBe(true);
+    expect(bankChecksumOk('D', '08', '6523', '1954512', '001')).toBe(true);
+    expect(bankChecksumOk('G', '26', '2600', '0320871', '032')).toBe(true);
+    expect(bankChecksumOk('G', '26', '2600', '0320872', '032')).toBe(false);
+    // Bank 26 has left IR's list: the algorithm passes, the number doesn't.
+    expect(nzBankAccountValid('26', '2600', '0320871', '032')).toBe(false);
+    // E and G add a product's digits (twice); these pass only with that step.
+    expect(bankChecksumOk('G', '26', '2600', '0320869', '032')).toBe(true);
+    expect(bankChecksumOk('E', '09', '0000', '0000018', '0001')).toBe(true);
+    expect(nzBankAccountValid('12', '3456', '7890138', '00')).toBe(true); // B
+    expect(nzBankAccountValid('12', '3456', '7890123', '00')).toBe(false);
+    expect(nzBankAccountValid('25', '2500', '0000017', '00')).toBe(true); // F
+    expect(nzBankAccountValid('25', '2500', '0000018', '00')).toBe(false);
+    expect(nzBankAccountValid('31', '2825', '12345678', '0000')).toBe(true); // X
+    expect(normaliseBankAccount('086523019545120001')).toBe('08-6523-1954512-001');
+    expect(normaliseBankAccount('0865231954512001')).toBe('08-6523-1954512-001');
+    for (const bad of ['01-902-0068388-00', '08-0001-1954512-001', '99-9999-1234567-00', '12-3456-7890123-00']) {
+      expect(normaliseBankAccount(bad)).toBeNull();
+      expect(bankAccountProblem(bad)).toBe('check');
+    }
   });
 
   it('keeps only six digits of a code', () => {

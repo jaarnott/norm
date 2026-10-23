@@ -1,184 +1,224 @@
-"""Public holidays (``fin_holidays``) from Nager.Date, with the regional
-mapping Orbit's ``fetch-nz-holidays`` used (05 §7 item 2) — seeded per
-organisation and year, read per venue through its ``holiday_region``.
+"""Public holidays (``fin_holidays``) from Loaded's pay adjustments — owner,
+23 Oct 2026: "public holidays should come from Loaded".
 
-Nager.Date marks a regional holiday with ``counties`` (``NZ-AUK`` …, or
-``AU-NSW`` …); a national one has none. A national day is stored under the
-country code as its region; a regional day under each region name its
-county maps to. A venue sees the national rows plus its own region's
-(``fin_venue_settings.holiday_region``). Orbit only ever seeded two venues,
-by a button nobody pressed — here the seed is a command the owner runs each
-January (``POST /api/finance/holidays/seed``), and the forecast flags every
-holiday it knows for a human look.
+Loaded prices a public holiday with a pay adjustment of pay adjustment type
+Public Holiday ("Labour Day", time and a half) in a pay adjustment package the
+venue's company has activated: the managed "New Zealand Public Holidays", a
+regional "Canterbury Anniversary Day", the company's own. Each adjustment's
+dates are concrete, one per year. ``loadedhub.get_pay_adjustments`` reads them
+(the ONE shaping, the same answer chat gets); this module keeps them per
+venue for the forecast, which flags every holiday for a human look and takes
+last year's same holiday where the venue traded.
 
-HTTP is one small function (``fetch_year``) so tests fake it.
+Why per venue and no region setting: Loaded's packages are activated per
+company, so the company's activations ARE its region — La Zeppa has the
+national package only, Bessie & Royals added Canterbury's anniversary. Norm
+takes Loaded's word rather than a second region list (the Nager.Date seed and
+``holiday_region`` this replaced). Every dated holiday is kept, including one
+Loaded would not price (before its package was activated, or with the
+adjustment switched off): it is still a day that moves sales.
+
+A sync takes every holiday Loaded returns in its window. Rows from today on
+that Loaded no longer returns are removed (an activation taken away); past
+rows are kept, so history the backtest leans on never vanishes with a
+package. The nightly ``finance.nightly`` refreshes the next twelve months; the
+Forecasting page's "Sync from Loaded" also fills the history.
+
+Loaded's managed package says its dates run "until 31 December 2026": until
+Loaded publishes the next year's, the forecast has no holidays past that, and
+the sync says so (``dates_until``).
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import logging
-from typing import Callable
 
 from sqlalchemy.orm import Session
 
 from app.db.finance_models import FinHoliday
-from app.db.models import Organization
-from app.services.finance_core.ctx import FinanceCtx
-from app.services.finance_core.errors import Invalid, flush
+from app.db.models import Venue
+from app.services.finance_core.ctx import FinanceCtx, require_venue
+from app.services.finance_core.errors import Invalid, NotFound, flush
 
 logger = logging.getLogger(__name__)
 
-NAGER_URL = "https://date.nager.at/api/v3/PublicHolidays/{year}/{country}"
-SOURCE = "nager"
-
-#: Nager.Date county codes -> the region names a venue may be set to.
-NZ_REGIONS: dict[str, tuple[str, ...]] = {
-    "NZ-AUK": ("Auckland",),
-    "NZ-BOP": ("Bay of Plenty",),
-    "NZ-CAN": ("Canterbury",),
-    "NZ-CIT": ("Chatham Islands",),
-    "NZ-GIS": ("Gisborne",),
-    "NZ-HKB": ("Hawke's Bay",),
-    "NZ-MBH": ("Marlborough",),
-    "NZ-MWT": ("Manawatū-Whanganui", "Manawatu-Wanganui", "Manawatu"),
-    "NZ-NSN": ("Nelson",),
-    "NZ-NTL": ("Northland",),
-    "NZ-OTA": ("Otago",),
-    "NZ-STL": ("Southland",),
-    "NZ-TAS": ("Tasman",),
-    "NZ-TKI": ("Taranaki",),
-    "NZ-WGN": ("Wellington",),
-    "NZ-WKO": ("Waikato",),
-    "NZ-WTC": ("West Coast",),
-}
-AU_REGIONS: dict[str, tuple[str, ...]] = {
-    "AU-ACT": ("Australian Capital Territory", "ACT"),
-    "AU-NSW": ("New South Wales", "NSW"),
-    "AU-NT": ("Northern Territory", "NT"),
-    "AU-QLD": ("Queensland", "QLD"),
-    "AU-SA": ("South Australia", "SA"),
-    "AU-TAS": ("Tasmania", "TAS"),
-    "AU-VIC": ("Victoria", "VIC"),
-    "AU-WA": ("Western Australia", "WA"),
-}
-REGIONS = {"NZ": NZ_REGIONS, "AU": AU_REGIONS}
-#: Organisation currency -> the country whose calendar applies.
-COUNTRY_BY_CURRENCY = {"NZD": "NZ", "AUD": "AU"}
+SOURCE = "loaded"
+#: Days ahead each sync covers (the nightly window).
+AHEAD_DAYS = 365
+#: Years back the page's sync fills — the forecast's history reaches a year
+#: and ten weeks back; the backtest further.
+HISTORY_YEARS = 3
 
 
-def country_for(db: Session, org_id: str) -> str:
-    currency = (
-        db.query(Organization.currency).filter(Organization.id == org_id).scalar()
+def read_loaded(
+    db: Session,
+    config_db,
+    venue: Venue,
+    first: dt.date,
+    last: dt.date,
+    *,
+    user=None,
+) -> dict:
+    """``loadedhub.get_pay_adjustments`` for the venue on its own token. Raises
+    ``Invalid`` when Loaded can't be read — a failed read must never look like
+    a year with no holidays (it would delete the future rows)."""
+    from app.connectors.tool_executor import execute_connector_tool
+
+    res = execute_connector_tool(
+        connector_name="loadedhub",
+        action="get_pay_adjustments",
+        params={
+            "venue": venue.name,
+            "start": first.isoformat(),
+            "end": last.isoformat(),
+        },
+        db=db,
+        config_db=config_db,
+        venue_id=venue.id,
+        strict_venue=True,
+        user=user,
     )
-    return COUNTRY_BY_CURRENCY.get(str(currency or "NZD").upper(), "NZ")
-
-
-def region_names(country: str) -> list[str]:
-    """Every region name a venue of this country may be set to."""
-    return sorted({n for names in REGIONS.get(country, {}).values() for n in names})
-
-
-def fetch_year(year: int, country: str) -> list[dict]:
-    """Nager.Date's list for a year: ``[{date, localName, name, counties}]``."""
-    import httpx
-
-    response = httpx.get(NAGER_URL.format(year=year, country=country), timeout=20)
-    response.raise_for_status()
-    data = response.json()
-    if not isinstance(data, list):
-        raise Invalid("Nager.Date returned something that is not a list of holidays.")
+    if not res.success:
+        raise Invalid(f"Loaded's pay adjustments could not be read: {res.error}")
+    data = res.payload
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        data = data["data"]
+    if not isinstance(data, dict) or data.get("error"):
+        detail = data.get("error") if isinstance(data, dict) else "no answer"
+        raise Invalid(f"Loaded's pay adjustments could not be read: {detail}")
+    if not isinstance(data.get("public_holidays"), list):
+        raise Invalid("Loaded's pay adjustments came back without public holidays.")
     return data
 
 
-def rows_for(holidays: list[dict], country: str) -> list[tuple[str, dt.date, str]]:
-    """``(region, date, name)`` rows from Nager's list: a national day under
-    the country code, a regional day under each mapped region name."""
-    mapping = REGIONS.get(country, {})
-    out: list[tuple[str, dt.date, str]] = []
-    for h in holidays:
+def sync_venue(
+    db: Session,
+    org_id: str,
+    venue: Venue,
+    *,
+    first: dt.date,
+    last: dt.date,
+    today: dt.date,
+    config_db=None,
+    user=None,
+) -> dict:
+    """Store the venue's public holidays from Loaded for ``first``..``last``.
+    Adds what is new, updates a moved package name, removes rows from
+    ``today`` on that Loaded no longer holds; never touches the past."""
+    data = read_loaded(db, config_db, venue, first, last, user=user)
+    wanted: dict[tuple[dt.date, str], str | None] = {}
+    for h in data["public_holidays"]:
         if not isinstance(h, dict):
             continue
         try:
             date = dt.date.fromisoformat(str(h.get("date"))[:10])
         except (TypeError, ValueError):
             continue
-        name = str(h.get("localName") or h.get("name") or "").strip()
-        if not name:
+        name = str(h.get("name") or "").strip()
+        if not name or not (first <= date <= last):
             continue
-        counties = h.get("counties") or []
-        if not counties:
-            out.append((country, date, name))
-            continue
-        for county in counties:
-            for region in mapping.get(str(county), ()):
-                out.append((region, date, name))
-    return out
-
-
-def seed_year(
-    db: Session,
-    ctx: FinanceCtx,
-    year: int,
-    *,
-    country: str | None = None,
-    fetch: Callable[[int, str], list[dict]] = fetch_year,
-) -> dict:
-    """Store the year's holidays for the organisation. Idempotent: a row
-    already there is left alone (the unique key is region + date + name)."""
-    ctx.require("budgets:write")
-    if not (2000 <= int(year) <= 2100):
-        raise Invalid("year must be a four-digit year.")
-    country = (country or country_for(db, ctx.org_id)).upper()
-    if country not in REGIONS:
-        raise Invalid(f"country is one of {', '.join(REGIONS)}.")
-    wanted = rows_for(fetch(int(year), country), country)
-    existing = {
-        (r.region, r.date, r.name)
-        for r in db.query(FinHoliday).filter(
-            FinHoliday.organization_id == ctx.org_id,
-            FinHoliday.date >= dt.date(int(year), 1, 1),
-            FinHoliday.date <= dt.date(int(year), 12, 31),
+        wanted.setdefault((date, name), (str(h.get("package") or "").strip() or None))
+    rows = (
+        db.query(FinHoliday)
+        .filter(
+            FinHoliday.organization_id == org_id,
+            FinHoliday.venue_id == venue.id,
+            FinHoliday.date >= first,
+            FinHoliday.date <= last,
         )
-    }
-    inserted = 0
-    for region, date, name in wanted:
-        if (region, date, name) in existing:
-            continue
-        db.add(
-            FinHoliday(
-                organization_id=ctx.org_id,
-                region=region,
-                date=date,
-                name=name,
-                source=SOURCE,
+        .all()
+    )
+    have = {(r.date, r.name): r for r in rows}
+    inserted = updated = removed = 0
+    for key, package in wanted.items():
+        row = have.get(key)
+        if row is None:
+            db.add(
+                FinHoliday(
+                    organization_id=org_id,
+                    venue_id=venue.id,
+                    date=key[0],
+                    name=key[1],
+                    package=package,
+                    source=SOURCE,
+                )
             )
-        )
-        existing.add((region, date, name))
-        inserted += 1
+            inserted += 1
+        elif row.package != package or row.source != SOURCE:
+            row.package, row.source = package, SOURCE
+            updated += 1
+    for key, row in have.items():
+        if key not in wanted and row.date >= today:
+            db.delete(row)
+            removed += 1
     flush(db)
     return {
-        "year": int(year),
-        "country": country,
+        "venue_id": venue.id,
+        "venue": venue.name,
+        "first": first.isoformat(),
+        "last": last.isoformat(),
         "inserted": inserted,
-        "unchanged": len(wanted) - inserted,
-        "regions": sorted({r for r, _, _ in wanted}),
+        "updated": updated,
+        "removed": removed,
+        "unchanged": len(wanted) - inserted - updated,
+        "dates_until": data.get("dates_until"),
+        "packages": sorted(
+            {p.get("name") for p in data.get("packages") or [] if p.get("name")}
+        ),
     }
+
+
+def sync_from_page(
+    db: Session, ctx: FinanceCtx, venue_id: str, *, today: dt.date, config_db=None
+) -> dict:
+    """The Forecasting page's "Sync from Loaded" (``budgets:write``): the
+    history and the next twelve months, on the person's own call."""
+    ctx.require("budgets:write")
+    require_venue(ctx, venue_id)
+    venue = (
+        db.query(Venue)
+        .filter(Venue.organization_id == ctx.org_id, Venue.id == venue_id)
+        .first()
+    )
+    if venue is None:
+        raise NotFound("Venue not found.")
+    first = today.replace(year=today.year - HISTORY_YEARS, month=1, day=1)
+    return sync_venue(
+        db,
+        ctx.org_id,
+        venue,
+        first=first,
+        last=today + dt.timedelta(days=AHEAD_DAYS),
+        today=today,
+        config_db=config_db,
+        user=ctx.user,
+    )
 
 
 def list_holidays(
-    db: Session, ctx: FinanceCtx, *, year: int | None = None, region: str | None = None
+    db: Session, ctx: FinanceCtx, venue_id: str, *, year: int | None = None
 ) -> list[FinHoliday]:
     ctx.require("finance:read")
-    q = db.query(FinHoliday).filter(FinHoliday.organization_id == ctx.org_id)
+    require_venue(ctx, venue_id)
+    q = db.query(FinHoliday).filter(
+        FinHoliday.organization_id == ctx.org_id, FinHoliday.venue_id == venue_id
+    )
     if year is not None:
         q = q.filter(
             FinHoliday.date >= dt.date(int(year), 1, 1),
             FinHoliday.date <= dt.date(int(year), 12, 31),
         )
-    if region:
-        q = q.filter(FinHoliday.region == region)
-    return q.order_by(FinHoliday.date, FinHoliday.region).all()
+    return q.order_by(FinHoliday.date, FinHoliday.name).all()
+
+
+def holiday_dict(row: FinHoliday) -> dict:
+    return {
+        "date": row.date.isoformat(),
+        "name": row.name,
+        "package": row.package,
+        "source": row.source,
+    }
 
 
 def for_venue(
@@ -187,28 +227,17 @@ def for_venue(
     venue_id: str,
     first: dt.date,
     last: dt.date,
-    *,
-    region: str | None = None,
 ) -> dict[dt.date, str]:
-    """``{date: name}`` — the national rows plus the venue's region's. The
-    region comes from the venue's settings unless given."""
-    from app.services.finance import budgets
-
-    if region is None:
-        settings = budgets.venue_settings(db, org_id, venue_id)
-        region = settings.holiday_region if settings else None
-    regions = [country_for(db, org_id)]
-    if region:
-        regions.append(region)
+    """``{date: name}`` — the venue's public holidays (two on one day joined)."""
     rows = (
         db.query(FinHoliday)
         .filter(
             FinHoliday.organization_id == org_id,
-            FinHoliday.region.in_(regions),
+            FinHoliday.venue_id == venue_id,
             FinHoliday.date >= first,
             FinHoliday.date <= last,
         )
-        .order_by(FinHoliday.date)
+        .order_by(FinHoliday.date, FinHoliday.name)
         .all()
     )
     out: dict[dt.date, str] = {}

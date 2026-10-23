@@ -384,20 +384,160 @@ export function splitCents(amountCents: number, members: Pick<BandMember, 'id' |
   return out;
 }
 
+// ── Settings: the closing-manager roles ──────────────────────────────────
+
+/** A role name as Loaded compares it: trimmed, inner spaces collapsed. */
+export function cleanRole(name: string): string {
+  return name.trim().split(/\s+/).filter(Boolean).join(' ');
+}
+
+/** Whether `roles` already holds `name` (Loaded compares role names case-blind). */
+export function hasRole(roles: string[], name: string): boolean {
+  const key = cleanRole(name).toLowerCase();
+  return roles.some((r) => cleanRole(r).toLowerCase() === key);
+}
+
+/** Add a role (Loaded's spelling or one typed) or take it away — one of each,
+ *  whatever its case. */
+export function toggleRole(roles: string[], name: string, on: boolean): string[] {
+  const clean = cleanRole(name);
+  if (!clean) return roles;
+  const key = clean.toLowerCase();
+  const rest = roles.filter((r) => cleanRole(r).toLowerCase() !== key);
+  return on ? [...rest, clean] : rest;
+}
+
 // ── Format checks (mirrors of the server's) ──────────────────────────────
 
-/** A NZ bank account: bank (2) – branch (4) – account (7) – suffix (2 or 3).
- *  Returns the normalised "12-3456-7890123-00" form, or null. Spaces and
- *  dashes in the input are ignored; a 15- or 16-digit run is split. */
+// NZ bank account numbers — Inland Revenue's validation (Payroll Calculations
+// and Business Rules Specification 2026–27, §7), the mirror of
+// `nz_bank_account_valid` in app/services/entertainers/performers.py: change both.
+
+/** Step 1: banks with their own algorithm; every other listed bank uses A,
+ *  or B when the account base is 00990000 or more. */
+const BANK_ALGORITHM: Record<string, string> = { '08': 'D', '25': 'F', '31': 'X' };
+/** The branch numbers each bank IR lists uses (Payments NZ's register,
+ *  widened to each bank's blocks — every branch in the 23 Oct 2026 register). */
+const BANK_BRANCHES: Record<string, [number, number][]> = {
+  '01': [[1, 999], [1100, 1199], [1800, 1899], [6150, 6150]],
+  '02': [[1, 999], [1200, 1299], [2025, 2055]],
+  '03': [[1, 999], [1300, 1399], [1500, 1599], [1700, 1799], [1900, 1999], [5000, 5099], [7350, 7399]],
+  '04': [[2014, 2024]],
+  '05': [[8884, 8889]],
+  '06': [[1, 999], [1400, 1499]],
+  '08': [[6500, 6599]],
+  '10': [[5165, 5169]],
+  '11': [[5000, 6499], [6600, 8999]],
+  '12': [[3000, 3299], [3400, 3499], [3600, 3699]],
+  '13': [[4900, 4999]],
+  '14': [[4700, 4799]],
+  '15': [[3900, 3999]],
+  '16': [[4400, 4499]],
+  '17': [[3300, 3399]],
+  '18': [[3500, 3599]],
+  '19': [[4600, 4649]],
+  '20': [[4100, 4199]],
+  '21': [[4800, 4899]],
+  '22': [[4000, 4049]],
+  '23': [[3700, 3799]],
+  '24': [[4300, 4349]],
+  '25': [[2500, 2599]],
+  '27': [[3800, 3849]],
+  '30': [[2900, 2949]],
+  '31': [[2800, 2849]],
+  '38': [[9000, 9499]],
+  '88': [[8800, 8805]],
+};
+/** Step 2: weights over bank(2) branch(4) base(8) suffix(4), and the modulus. */
+const BANK_WEIGHTS: Record<string, [number[], number]> = {
+  A: [[0, 0, 6, 3, 7, 9, 0, 0, 10, 5, 8, 4, 2, 1, 0, 0, 0, 0], 11],
+  B: [[0, 0, 0, 0, 0, 0, 0, 0, 10, 5, 8, 4, 2, 1, 0, 0, 0, 0], 11],
+  C: [[3, 7, 0, 0, 0, 0, 9, 1, 10, 5, 3, 4, 2, 1, 0, 0, 0, 0], 11],
+  D: [[0, 0, 0, 0, 0, 0, 0, 7, 6, 5, 4, 3, 2, 1, 0, 0, 0, 0], 11],
+  E: [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 4, 3, 2, 0, 0, 0, 1], 11],
+  F: [[0, 0, 0, 0, 0, 0, 0, 1, 7, 3, 1, 7, 3, 1, 0, 0, 0, 0], 10],
+  G: [[0, 0, 0, 0, 0, 0, 0, 1, 3, 7, 1, 3, 7, 1, 0, 3, 7, 1], 10],
+  X: [Array(18).fill(0), 1],
+};
+/** How an unseparated run splits — bank, branch, base, suffix — in the order tried. */
+const BANK_LAYOUTS: Record<number, number[][]> = {
+  15: [[2, 4, 7, 2]],
+  16: [[2, 4, 7, 3], [2, 4, 8, 2]],
+  17: [[2, 4, 7, 4], [2, 4, 8, 3]],
+  18: [[2, 4, 8, 4]],
+};
+export const BANK_SHAPE_MESSAGE = 'Enter the full account number: bank, branch, account and suffix.';
+export const BANK_CHECK_MESSAGE = 'That bank account number doesn’t check out — please re-check it.';
+
+/** IR's step 2 for one algorithm: the weighted sum of the padded digits
+ *  divides by the modulus (E and G add a product's digits, twice). */
+export function bankChecksumOk(algorithm: string, bank: string, branch: string, base: string, suffix: string): boolean {
+  const [weights, modulus] = BANK_WEIGHTS[algorithm];
+  const digits = bank.padStart(2, '0') + branch.padStart(4, '0') + base.padStart(8, '0') + suffix.padStart(4, '0');
+  let total = 0;
+  for (let i = 0; i < 18; i += 1) {
+    let product = Number(digits[i]) * weights[i];
+    if (algorithm === 'E' || algorithm === 'G') {
+      for (let n = 0; n < 2; n += 1) product = String(product).split('').reduce((s, d) => s + Number(d), 0);
+    }
+    total += product;
+  }
+  return total % modulus === 0;
+}
+
+/** A New Zealand bank account passes Inland Revenue's validation: a bank IR
+ *  lists, a branch that bank uses, and the bank's check digits. */
+export function nzBankAccountValid(bank: string, branch: string, base: string, suffix: string): boolean {
+  if (![bank, branch, base, suffix].every((p) => /^\d+$/.test(p))) return false;
+  if (bank.length > 2 || branch.length > 4 || base.length > 8 || suffix.length > 4) return false;
+  const id = bank.padStart(2, '0');
+  const ranges = BANK_BRANCHES[id];
+  if (!ranges) return false;
+  const b = Number(branch);
+  if (!ranges.some(([lo, hi]) => b >= lo && b <= hi)) return false;
+  const algorithm = BANK_ALGORITHM[id] ?? (Number(base) < 990000 ? 'A' : 'B');
+  return bankChecksumOk(algorithm, bank, branch, base, suffix);
+}
+
+function bankCandidates(input: string): string[][] {
+  const groups = input.match(/\d+/g) ?? [];
+  if (groups.length === 4) {
+    const [bank, branch, base, suffix] = groups;
+    const fits = bank.length === 2 && branch.length >= 3 && branch.length <= 4 && base.length >= 6 && base.length <= 8 && suffix.length >= 2 && suffix.length <= 4;
+    return fits ? [groups] : [];
+  }
+  const digits = groups.join('');
+  return (BANK_LAYOUTS[digits.length] ?? []).map((layout) => {
+    const parts: string[] = [];
+    let at = 0;
+    for (const size of layout) {
+      parts.push(digits.slice(at, at + size));
+      at += size;
+    }
+    return parts;
+  });
+}
+
+/** What is wrong with a typed bank account: `shape` (not bank, branch,
+ *  account and suffix), `check` (the right shape, but it fails IR's
+ *  validation), or null when it is fine. */
+export function bankAccountProblem(input: string): 'shape' | 'check' | null {
+  const candidates = bankCandidates(input);
+  if (candidates.length === 0) return 'shape';
+  return normaliseBankAccount(input) ? null : 'check';
+}
+
+/** A NZ bank account as "12-3456-7890123-00" (the suffix as typed, 2–3
+ *  digits), or null unless it passes IR's validation. Spaces and dashes are
+ *  optional; a run that could split two ways takes the split that checks out. */
 export function normaliseBankAccount(input: string): string | null {
-  const digits = input.replace(/\D/g, '');
-  if (digits.length !== 15 && digits.length !== 16) return null;
-  const bank = digits.slice(0, 2);
-  const branch = digits.slice(2, 6);
-  const account = digits.slice(6, 13);
-  const suffix = digits.slice(13);
-  if (bank === '00' || branch === '0000' || account === '0000000') return null;
-  return `${bank}-${branch}-${account}-${suffix.padStart(digits.length === 16 ? 3 : 2, '0')}`;
+  for (const [bank, branch, rawBase, rawSuffix] of bankCandidates(input)) {
+    if (Number(rawBase) === 0 || !nzBankAccountValid(bank, branch, rawBase, rawSuffix)) continue;
+    const base = rawBase.length === 8 && rawBase.startsWith('0') ? rawBase.slice(1) : rawBase;
+    const suffix = rawSuffix.length === 4 && rawSuffix.startsWith('0') ? rawSuffix.slice(1) : rawSuffix;
+    return `${bank}-${branch.padStart(4, '0')}-${base.padStart(7, '0')}-${suffix.padStart(2, '0')}`;
+  }
+  return null;
 }
 
 /** Inland Revenue's check-digit rule for an IRD number (8 or 9 digits):

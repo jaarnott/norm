@@ -508,7 +508,6 @@ def set_lines(
 
 #: What a venue without a settings row behaves like.
 DEFAULT_SETTINGS = {
-    "holiday_region": None,
     "closed_weekdays": [],
     "level_correction_on": False,
 }
@@ -530,7 +529,6 @@ def settings_dict(row: FinVenueSettings | None, venue_id: str) -> dict:
         return {"venue_id": venue_id, **DEFAULT_SETTINGS, "version": 0}
     return {
         "venue_id": venue_id,
-        "holiday_region": row.holiday_region,
         "closed_weekdays": sorted(int(d) for d in (row.closed_weekdays or [])),
         "level_correction_on": bool(row.level_correction_on),
         "version": row.version,
@@ -542,7 +540,6 @@ def set_venue_settings(
     ctx: FinanceCtx,
     venue_id: str,
     *,
-    holiday_region=...,
     closed_weekdays=...,
     level_correction_on=...,
     version: int | None = None,
@@ -561,10 +558,6 @@ def set_venue_settings(
     elif version is not None and int(version) != row.version:
         raise Conflict(
             "These settings were changed by someone else since you opened them — reload."
-        )
-    if holiday_region is not ...:
-        row.holiday_region = (
-            (str(holiday_region).strip() or None) if holiday_region else None
         )
     if closed_weekdays is not ...:
         days = sorted({int(d) for d in (closed_weekdays or [])})

@@ -181,6 +181,7 @@ def meta(ctx: FinanceCtx = Depends(staff_ctx), db: Session = Depends(get_db)):
         "mode": ctx.mode("entertainers"),
         "can_pay": ctx.holds("payroll:write"),
         "is_owner": ctx.is_owner,
+        "can_edit_settings": ctx.holds("payroll:write") or ctx.is_owner,
         "venues": [
             {"id": v.id, "name": v.name, "timezone": v.timezone} for v in venues
         ],
@@ -213,22 +214,26 @@ class SettingsBody(_Body):
     version: int
 
 
-@router.put("/settings", dependencies=[Depends(require_permission("payroll:write"))])
+@router.put("/settings")
 def put_settings(
     body: SettingsBody,
     ctx: FinanceCtx = Depends(staff_ctx),
     db: Session = Depends(get_db),
 ):
+    """A payroll writer or an owner changes the settings (the service's
+    ``require_settings_editor`` — an owner with no payroll role included)."""
     with _writing(db):
-        ctx.require("payroll:write")
+        closing_svc.require_settings_editor(ctx)
         row = settings_for(db, ctx.org_id)
         check_version(row, body.version)
         if body.closing_manager_roles is not None:
-            roles = [
-                " ".join(r.split())
-                for r in body.closing_manager_roles
-                if r and r.strip()
-            ]
+            # Loaded's role names compare trimmed and case-blind: one each.
+            seen: dict[str, str] = {}
+            for r in body.closing_manager_roles:
+                name = " ".join((r or "").split())
+                if name:
+                    seen.setdefault(name.lower(), name)
+            roles = list(seen.values())
             if not roles:
                 raise HTTPException(
                     400,
@@ -248,6 +253,20 @@ def put_settings(
                 setattr(row, key, value)
         db.flush()
     return _settings_dict(row)
+
+
+@router.get("/settings/loaded-roles")
+def loaded_roles(
+    venue_id: str,
+    ctx: FinanceCtx = Depends(staff_ctx),
+    db: Session = Depends(get_db),
+):
+    """The venue's role names in Loaded, for picking the closing-manager
+    roles (``{"venue_id", "roles", "error"}``)."""
+    with _reading():
+        out = closing_svc.loaded_roles(db, ctx, venue_id)
+    db.commit()
+    return out
 
 
 # ===========================================================================

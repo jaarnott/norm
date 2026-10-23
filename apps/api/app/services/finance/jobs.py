@@ -1,6 +1,7 @@
 """``finance.nightly`` — the one Norm Finance job on the tick (plan §8,
 DESIGN-CONTRACT §6): per venue, 30 minutes after its trading day closes,
-refresh the actuals, log Loaded's budget, build the night's vintage and
+refresh the actuals, refresh the next twelve months of public holidays from
+Loaded's pay adjustments, log Loaded's budget, build the night's vintage and
 score the day that just closed. **Never a Loaded write.**
 
 The slot is the venue-local trading date that just closed (the insights
@@ -26,7 +27,7 @@ from app.db.models import Connection, Organization, Venue
 from app.services.business_calendar import day_start_for, timezone_for
 from app.services.finance import actuals as actuals_svc
 from app.services.finance import forecast as engine
-from app.services.finance import pushes, scoring
+from app.services.finance import holidays, pushes, scoring
 from app.services.finance_core import jobs as claims
 
 logger = logging.getLogger(__name__)
@@ -135,9 +136,10 @@ def _loaded_budget_days(
 def run_venue(
     db: Session, config_db, org: Organization, venue: Venue, slot: dt.date
 ) -> dict:
-    """The night's four steps for one venue; each failure is noted and the
+    """The night's five steps for one venue; each failure is noted and the
     next step still runs."""
     out: dict = {"venue": venue.name, "slot": slot.isoformat(), "errors": []}
+    today = slot + dt.timedelta(days=1)
     try:
         written = actuals_svc.refresh(db, config_db, venue, slot)
         out["actuals"] = written
@@ -146,7 +148,23 @@ def run_venue(
     except Exception as exc:  # noqa: BLE001
         out["errors"].append(f"actuals: {exc}"[:300])
     try:
-        today = slot + dt.timedelta(days=1)
+        # Before the vintage, so tonight's forecast sees a holiday Loaded
+        # published today. A failed read changes nothing (sync raises first).
+        synced = holidays.sync_venue(
+            db,
+            org.id,
+            venue,
+            first=today,
+            last=today + dt.timedelta(days=holidays.AHEAD_DAYS),
+            today=today,
+            config_db=config_db,
+        )
+        out["holidays"] = {
+            k: synced[k] for k in ("inserted", "updated", "removed", "dates_until")
+        }
+    except Exception as exc:  # noqa: BLE001
+        out["errors"].append(f"holidays: {exc}"[:300])
+    try:
         days = _loaded_budget_days(
             db, config_db, venue, slot, today + dt.timedelta(days=LOG_AHEAD_DAYS)
         )

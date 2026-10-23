@@ -161,8 +161,9 @@ class FinBudgetLine(NativeRow, _Versioned, Base):
 
 
 class FinVenueSettings(NativeRow, _Versioned, Base):
-    """Per-venue forecasting settings: the holiday region, the weekdays the
-    venue is closed, and whether the level correction runs."""
+    """Per-venue forecasting settings: the weekdays the venue is closed, and
+    whether the level correction runs. (No holiday region: a venue's public
+    holidays are the ones its Loaded company activated — ``FinHoliday``.)"""
 
     __tablename__ = "fin_venue_settings"
     __table_args__ = _tenancy(
@@ -172,7 +173,6 @@ class FinVenueSettings(NativeRow, _Versioned, Base):
     )
 
     venue_id = Column(String, nullable=False)
-    holiday_region = Column(String, nullable=True)
     #: ISO weekdays (1 = Monday … 7 = Sunday) the venue does not trade.
     closed_weekdays = Column(JSON, nullable=False, default=list)
     #: Plan §8: the damped level correction is a per-venue switch, OFF by
@@ -184,25 +184,34 @@ class FinVenueSettings(NativeRow, _Versioned, Base):
 
 
 class FinHoliday(NativeRow, Base):
-    """A public holiday in a region, seeded by the holidays service."""
+    """A public holiday at a venue, as Loaded holds it: a dated pay adjustment
+    of pay adjustment type Public Holiday in a package the venue's company
+    activated (``services/finance/holidays.py``, owner 23 Oct 2026). Loaded's
+    packages are per company, so a venue's region is whatever its company
+    activated — a regional anniversary day included. A cache Norm refreshes
+    nightly, never the record; it goes with the venue."""
 
     __tablename__ = "fin_holidays"
     __table_args__ = _tenancy(
         "fin_holidays",
+        # The unique key leads with venue_id, so it serves as the index.
+        _Ref("venue_id", "venues", "CASCADE", index=False),
         extra=(
             UniqueConstraint(
-                "organization_id",
-                "region",
+                "venue_id",
                 "date",
                 "name",
-                name="uq_fin_holidays_region_date",
+                name="uq_fin_holidays_venue_date",
             ),
         ),
     )
 
-    region = Column(String, nullable=False)
+    venue_id = Column(String, nullable=False)
     date = Column(Date, nullable=False)
     name = Column(String, nullable=False)
+    #: The Loaded pay adjustment package it came from ("New Zealand Public
+    #: Holidays", "Canterbury Anniversary Day").
+    package = Column(String, nullable=True)
     source = Column(String, nullable=True)
 
 

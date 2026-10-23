@@ -15,7 +15,7 @@ import Button from '../../../ui/Button';
 import PageState from '../../../ui/PageState';
 import { Field, FormGrid, Note, Section, Stack } from '../../shared/PageShell';
 import { errorText, useFinQuery, type FinanceApi } from '../../shared/useFinanceApi';
-import type { Entity, MappingDoc, MappingIssue, XeroAccount } from '../types';
+import { ICO_LEAVE_TAX_LABELS, type Entity, type MappingDoc, type MappingIssue, type XeroAccount } from '../types';
 
 const PAYROLL_LABELS: Record<string, { label: string; hint: string }> = {
   wages_payable: { label: 'Net wages payable', hint: 'Liability — credited with ACE net' },
@@ -31,8 +31,8 @@ const PAYROLL_LABELS: Record<string, { label: string; hint: string }> = {
   leave_entitlements: { label: 'Leave & entitlements', hint: 'Expense — leave paid + ESCT + KiwiSaver' },
   entertainers: { label: 'Entertainers (via payroll)', hint: 'Expense' },
   entertainment_expense: { label: 'Entertainment expense', hint: 'Expense' },
-  gratuities_reclass: { label: 'Reclass gratuities', hint: 'Revenue or expense' },
-  rounding: { label: 'Rounding', hint: 'Expense — takes a residual under $1' },
+  gratuities_reclass: { label: 'Reclass gratuities', hint: 'Revenue or expense — the accountant’s choice. Until it is set, a week that pays gratuities through payroll can’t be journalled (it is never left off the journal)' },
+  rounding: { label: 'Rounding', hint: 'Expense or liability (Xero’s own Rounding account) — takes a residual under $1' },
 };
 
 function AccountSelect({ id, value, onChange, accounts, allowBlank = true }: { id: string; value: string; onChange: (code: string) => void; accounts: XeroAccount[]; allowBlank?: boolean }) {
@@ -140,7 +140,7 @@ export default function MappingTab({ api, entity, entities, canWrite }: { api: F
           <Field id="map-ico-wages" label="Wages line account" hint={issueFor('intercompany.wages_account').map((i) => i.message).join(' ') || 'Liability or asset — an expense cannot take the sales tax type on an invoice'}>
             <AccountSelect id="map-ico-wages" value={ico.wages_account} onChange={(code) => { setChecked(null); setIco((s) => ({ ...s, wages_account: code })); }} accounts={accounts} />
           </Field>
-          <Field id="map-ico-leave" label="Leave & entitlements line account" hint={issueFor('intercompany.leave_account').map((i) => i.message).join(' ') || `The ${(entity.ico_leave_uplift_bp / 100).toFixed(0)}% uplift on recharged wages`}>
+          <Field id="map-ico-leave" label="Leave & entitlements line account" hint={issueFor('intercompany.leave_account').map((i) => i.message).join(' ') || `The ${(entity.ico_leave_uplift_bp / 100).toFixed(0)}% uplift on recharged wages, taxed as: ${ICO_LEAVE_TAX_LABELS[entity.ico_leave_tax]?.toLowerCase() ?? entity.ico_leave_tax} (Entities tab)`}>
             <AccountSelect id="map-ico-leave" value={ico.leave_account} onChange={(code) => { setChecked(null); setIco((s) => ({ ...s, leave_account: code })); }} accounts={accounts} />
           </Field>
         </FormGrid>

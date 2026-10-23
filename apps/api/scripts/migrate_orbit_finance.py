@@ -12,6 +12,7 @@ gates) are in ``app/services/finance_core/importer.py``.
     uv run python scripts/migrate_orbit_finance.py --org cook-brothers --skip-venue CBI --no-files
     uv run python scripts/migrate_orbit_finance.py --org <id> --report-json /tmp/import.json --no-people
     uv run python scripts/migrate_orbit_finance.py --org cook-brothers --write-xero-mapping
+    uv run python scripts/migrate_orbit_finance.py --org cook-brothers --settings-only --dry-run
 
 Exit codes: 0 imported (or, with --dry-run, would import); 1 refused (a live
 module, Orbit unreadable, models missing, bad argument); 2 a sanity gate
@@ -22,6 +23,14 @@ command serves local now and production later — run it against production
 only with the owner's go-ahead. ``--write-xero-mapping`` is the one step
 that touches a connection row (the venue's Xero ``xero_mapping`` blocks,
 filling only keys nobody has set); the coordinator runs it, once.
+
+``--settings-only`` writes ONLY the payroll settings (``pay_entities``: every
+setting on Payroll settings → Entities, as Orbit applies them) and reports
+the Xero mapping the full import would set — so production can carry the
+settings before the full import. A setting someone changed in Norm is never
+overwritten. Orbit names the sick-leave approver only in its email wording,
+so pass it with ``--sick-approver NAME`` (blank otherwise; never blanked once
+set).
 
 Credentials: ``$ORBIT_SUPABASE_CREDS``, else ``.local/orbit-supabase.json`` at
 the repo root (a worktree falls back to its main checkout's). Never printed.
@@ -66,6 +75,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also merge the xero_mapping blocks into each venue's Xero connection row (keys nobody set)",
     )
+    ap.add_argument(
+        "--settings-only",
+        action="store_true",
+        help="write ONLY the payroll settings (pay_entities) and report the Xero mapping "
+        "the full import would set",
+    )
+    ap.add_argument(
+        "--sick-approver",
+        metavar="NAME",
+        help="the sick-leave approver to set on every entity written (Orbit holds the "
+        "name only in its email wording)",
+    )
     ap.add_argument("--report-json", help="also write the report as JSON to this path")
     ap.add_argument(
         "--no-people",
@@ -99,9 +120,16 @@ def main(argv: list[str] | None = None, *, orbit=None, db=None) -> int:
         OrbitReadError,
         orbit_client,
         run_import,
+        run_settings_import,
     )
 
     args = build_parser().parse_args(argv)
+    if args.settings_only and (args.module or args.write_xero_mapping):
+        print(
+            "--settings-only writes only the payroll settings: leave out --module "
+            "and --write-xero-mapping (the mapping goes with the full import)"
+        )
+        return 1
     try:
         now = dt.datetime.fromisoformat(args.now) if args.now else None
         if now is not None and now.tzinfo is None:
@@ -124,6 +152,25 @@ def main(argv: list[str] | None = None, *, orbit=None, db=None) -> int:
             source = orbit or orbit_client(
                 pathlib.Path(args.creds) if args.creds else None
             )
+            if args.settings_only:
+                result = run_settings_import(
+                    db,
+                    source,
+                    org=args.org,
+                    dry_run=args.dry_run,
+                    skip_venues=args.skip_venue,
+                    sick_approver=args.sick_approver,
+                    commit=owns_db,
+                    now=now,
+                )
+                print("\n".join(result.report.lines(people=False)))
+                if args.report_json:
+                    pathlib.Path(args.report_json).write_text(
+                        json.dumps(
+                            result.report.as_dict(), indent=2, ensure_ascii=False
+                        )
+                    )
+                return result.exit_code
             result = run_import(
                 db,
                 source,
@@ -136,6 +183,7 @@ def main(argv: list[str] | None = None, *, orbit=None, db=None) -> int:
                 commit=owns_db,
                 now=now,
                 legacy_weeks=legacy_weeks,
+                sick_approver=args.sick_approver,
             )
         except ImportRefused as exc:
             print(f"refused: {exc}")

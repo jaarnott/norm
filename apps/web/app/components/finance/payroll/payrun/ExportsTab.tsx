@@ -31,7 +31,8 @@ function totalsText(e: ExportRow): string {
   if (typeof t.cost_cents === 'number') parts.push(`$${(t.cost_cents / 100).toFixed(2)}`);
   if (t.by_style && typeof t.by_style === 'object') parts.push(Object.entries(t.by_style as Record<string, number>).map(([s, n]) => `#${s}: ${n}`).join(', '));
   if (Array.isArray(t.skipped_zero_hours) && t.skipped_zero_hours.length) parts.push(`${t.skipped_zero_hours.length} zero-hour skipped`);
-  if (Array.isArray(t.unsigned_styles) && t.unsigned_styles.length) parts.push(`styles not signed off: ${t.unsigned_styles.join(', ')}`);
+  if (Array.isArray(t.unpaid_skipped) && t.unpaid_skipped.length) parts.push(`unpaid in Loaded, left out: ${t.unpaid_skipped.join(', ')}`);
+  if (Array.isArray(t.styles_set_in_norm) && t.styles_set_in_norm.length) parts.push(`style set in Norm: ${t.styles_set_in_norm.join(', ')}`);
   if (typeof t.amount_cents === 'number') parts.push(`$${(t.amount_cents / 100).toFixed(2)}`);
   return parts.join(' · ');
 }

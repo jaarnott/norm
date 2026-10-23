@@ -231,6 +231,7 @@ class TestTenancyMetadata:
             ("pay_journal_drafts", "kind", pm.JOURNAL_DRAFT_KINDS),
             ("pay_xero_pushes", "kind", pm.PUSH_KINDS),
             ("pay_files", "kind", pm.PAY_FILE_KINDS),
+            ("pay_entities", "ico_leave_tax", pm.ICO_LEAVE_TAX_RULES),
             ("ent_performers", "lane", em.LANES),
             ("ent_performers", "performer_type", em.PERFORMER_TYPES),
             ("ent_performers", "band_mode", em.BAND_MODES),

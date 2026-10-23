@@ -17,6 +17,9 @@
  * (`loadedhub.set_budgets`, `source=forecast`, D6) — and only once the API
  * says four weeks of nightly scores exist for the venue. The level
  * correction is a per-venue switch, off by default, scored separately.
+ * Public holidays are Loaded's: the Public Holiday pay adjustments in the
+ * packages the venue's company activated, refreshed nightly; the settings
+ * dialog's "Sync from Loaded" fills them now.
  */
 import { useMemo, useState } from 'react';
 import { Play, RefreshCw, Send, Settings } from 'lucide-react';
@@ -26,9 +29,8 @@ import Button from '../../ui/Button';
 import Dialog from '../../ui/Dialog';
 import PageState from '../../ui/PageState';
 import { useBreakpoint } from '../../../hooks/useBreakpoint';
-import { getStoredUser } from '../../../lib/api';
 import { StatTile, TileRow } from '../../functions/enquiries/bits';
-import PageShell, { Field, FormGrid, ModeBadge, Section, Stack } from '../shared/PageShell';
+import PageShell, { ModeBadge, Section, Stack } from '../shared/PageShell';
 import { csvFilename, downloadText, toCsv } from '../shared/csv';
 import { formatCents } from '../shared/money';
 import { toast } from '../shared/Toasts';
@@ -36,8 +38,8 @@ import { errorText, finSend, useFinQuery } from '../shared/useFinanceApi';
 import DayDrawer from './DayDrawer';
 import PushDialog, { type PushRequest } from './PushDialog';
 import { Chip, FinanceModeBanner, MonthNav, NotReady, Small, Variance, subtotalRow, totalRow, venueOptions } from './bits';
-import { addMonths, dayCell, groupIntoWeeks, monthLabel, pct, sumCents, yearMonthOf, type YearMonth } from './logic';
-import type { FinMeta, ForecastDay, ForecastDoc, ScoreBlock, ScoresDoc, VenueSettings } from './types';
+import { addMonths, dayCell, groupIntoWeeks, holidaySyncText, monthLabel, pct, sumCents, yearMonthOf, type YearMonth } from './logic';
+import type { FinMeta, ForecastDay, ForecastDoc, HolidaySync, ScoreBlock, ScoresDoc, VenueSettings } from './types';
 import { holds, useFinanceMeta, useFinanceVenue } from './useFinanceMeta';
 
 /** A score as "29.0%", or an em dash. The API's percentages are already ×100. */
@@ -118,9 +120,7 @@ function AccuracyStrip({ scores, month, weeksOfScores }: { scores: ScoresDoc | n
 function SettingsDialog({ meta, venueId, onClose, onChanged }: { meta: FinMeta; venueId: string; onClose: () => void; onChanged: () => void }) {
   const q = useFinQuery<VenueSettings>('/api/finance/settings', { venue_id: venueId });
   const [busy, setBusy] = useState<string | null>(null);
-  const [year, setYear] = useState(() => new Date().getFullYear() + 1);
-  const isAdmin = getStoredUser()?.role === 'admin';
-  const country = meta.currency === 'AUD' ? 'AU' : 'NZ';
+  const canSync = holds(meta, 'budgets:write');
   const venue = meta.venues.find((v) => v.id === venueId);
   const s = q.data;
 
@@ -139,11 +139,11 @@ function SettingsDialog({ meta, venueId, onClose, onChanged }: { meta: FinMeta; 
     }
   };
 
-  const seed = async () => {
-    setBusy('seed');
+  const sync = async () => {
+    setBusy('sync');
     try {
-      const r = await finSend<{ inserted: number; unchanged: number; regions: string[] }>('POST', '/api/finance/holidays/seed', { year, country });
-      toast(`${r.inserted} holiday${r.inserted === 1 ? '' : 's'} added for ${year} (${r.unchanged} already there).`, 'ok');
+      const r = await finSend<HolidaySync>('POST', '/api/finance/holidays/sync', { venue_id: venueId });
+      toast(holidaySyncText(r), 'ok');
       onChanged();
     } catch (e) {
       toast(errorText(e), 'error');
@@ -168,21 +168,16 @@ function SettingsDialog({ meta, venueId, onClose, onChanged }: { meta: FinMeta; 
             </span>
           </label>
           <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
-            Holiday region: <strong style={{ color: 'var(--text)' }}>{s.holiday_region || country}</strong> · closed on: <strong style={{ color: 'var(--text)' }}>{s.closed_weekdays.length ? s.closed_weekdays.map((d) => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d - 1]).join(', ') : 'no fixed days'}</strong>
+            Closed on: <strong style={{ color: 'var(--text)' }}>{s.closed_weekdays.length ? s.closed_weekdays.map((d) => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d - 1]).join(', ') : 'no fixed days'}</strong>
             <div style={{ marginTop: 2 }}>A weekday with no trade in most of the last eight weeks is treated as closed too.</div>
           </div>
-          {isAdmin && (
-            <div style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 12 }}>
-              <FormGrid min={120}>
-                <Field label="Seed public holidays" id="fin-holiday-year" hint={`National and regional ${country} holidays from Nager.Date.`}>
-                  <input id="fin-holiday-year" type="number" className="n-input" value={year} onChange={(e) => setYear(Number(e.target.value))} style={{ width: '100%' }} />
-                </Field>
-                <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-                  <Button size="sm" onClick={() => void seed()} disabled={busy !== null}>{busy === 'seed' ? 'Seeding…' : `Seed ${year}`}</Button>
-                </div>
-              </FormGrid>
-            </div>
-          )}
+          <div style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 12, display: 'flex', gap: 12, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+              <strong style={{ color: 'var(--text)' }}>Public holidays</strong>
+              <div>From Loaded&rsquo;s pay adjustments: every pay adjustment of type Public Holiday in the packages {venue?.name ?? 'this venue'}&rsquo;s company has activated in Loaded, regional anniversary days included. Refreshed every night.</div>
+            </span>
+            {canSync && <Button size="sm" onClick={() => void sync()} disabled={busy !== null} style={{ flexShrink: 0 }}>{busy === 'sync' ? 'Reading Loaded…' : 'Sync from Loaded'}</Button>}
+          </div>
         </Stack>
       )}
     </Dialog>

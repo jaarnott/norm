@@ -19,7 +19,9 @@
 # card shows numbers Norm derived, never numbers a browser or a model sent.
 #
 # Idempotent: Xero gets Idempotency-Key
-#   norm:payroll-journal:<org>:<venue>:<week_start>:<basis[:16]>
+#   norm:payroll-journal:<venue>:<week_start>:<basis[:16]>
+# (no organisation id — the venue's uuid names it; Xero refuses a key over
+# 128 characters, and with the org a re-push key ran to 126+)
 # (Orbit sent none and could double-post on a timeout), and the ledger
 # (norm_payroll.record_push) is idempotent on the same key. A live push for
 # the week refuses a second one unless replace='true', which voids the
@@ -117,8 +119,6 @@ def run(params, call_api, log):
     basis = str(row.get("basis_sha256") or "")
     key = (
         "norm:payroll-journal:"
-        + str(draft.get("organization_id"))
-        + ":"
         + str(draft.get("venue_id"))
         + ":"
         + week_start

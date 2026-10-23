@@ -1,7 +1,8 @@
 """``finance.nightly`` on the tick (plan §8, DESIGN-CONTRACT §6), the
-holiday seed with the regional mapping (HTTP faked), and the actuals cache
-read from ``get_sales`` on the trading calendar. The job never writes
-Loaded: every tool call it makes is a read, asserted by name.
+public holidays from Loaded's pay adjustments (``get_pay_adjustments``
+faked), and the actuals cache read from ``get_sales`` on the trading
+calendar. The job never writes Loaded: every tool call it makes is a read,
+asserted by name.
 """
 
 from __future__ import annotations
@@ -33,97 +34,126 @@ NOW = dt.datetime(2026, 11, 17, 7, 31, tzinfo=NZ)
 
 # ------------------------------------------------------------- holidays --
 
-NAGER = [
-    {
-        "date": "2027-01-01",
-        "localName": "New Year's Day",
-        "name": "New Year's Day",
-        "counties": None,
-    },
-    {
-        "date": "2027-01-25",
-        "localName": "Wellington Anniversary Day",
-        "name": "Wellington Anniversary Day",
-        "counties": ["NZ-WGN"],
-    },
-    {
-        "date": "2027-02-01",
-        "localName": "Auckland Anniversary Day",
-        "name": "Auckland Anniversary Day",
-        "counties": ["NZ-AUK", "NZ-NTL"],
-    },
-    {
-        "date": "2027-03-22",
-        "localName": "Otago Anniversary Day",
-        "name": "Otago Anniversary Day",
-        "counties": ["NZ-OTA"],
-    },
-    {"date": "bad", "localName": "Broken", "counties": None},
+#: Loaded's public holidays per venue as get_pay_adjustments answers them:
+#: La Zeppa activated the national package only; Dunedin Social Club also
+#: Otago's anniversary day (live shape, 23 Oct 2026).
+NATIONAL = [
+    ("2025-10-27", "Labour Day"),
+    ("2026-10-26", "Labour Day"),
+    ("2026-12-25", "Christmas Day"),
+    ("2026-12-26", "Boxing Day"),
 ]
+REGIONAL = {"Dunedin Social Club": [("2027-03-22", "Otago Anniversary Day")]}
+
+
+def _pay_adjustments(venue: str, start: str, end: str, holidays_by_venue) -> dict:
+    rows = [
+        {"date": d, "name": n, "package": "New Zealand Public Holidays", "priced": True}
+        for d, n in holidays_by_venue.get("*", NATIONAL)
+    ] + [
+        {"date": d, "name": n, "package": n, "priced": True}
+        for d, n in holidays_by_venue.get(venue, REGIONAL.get(venue, []))
+    ]
+    every = sorted(h["date"] for h in rows)
+    return {
+        "venue": venue,
+        "public_holidays": [h for h in rows if start <= h["date"] <= end],
+        "packages": [{"name": "New Zealand Public Holidays"}],
+        "dates_until": every[-1] if every else None,
+    }
+
+
+TODAY = dt.date(2026, 11, 17)
 
 
 class TestHolidays:
-    def test_national_rows_under_the_country_regional_under_each_mapped_region(self):
-        rows = holidays.rows_for(NAGER, "NZ")
-        assert ("NZ", dt.date(2027, 1, 1), "New Year's Day") in rows
-        assert ("Auckland", dt.date(2027, 2, 1), "Auckland Anniversary Day") in rows
-        assert ("Northland", dt.date(2027, 2, 1), "Auckland Anniversary Day") in rows
-        assert ("Otago", dt.date(2027, 3, 22), "Otago Anniversary Day") in rows
-        assert len(rows) == 5
-        assert "New South Wales" in holidays.region_names(
-            "AU"
-        ) and "Otago" in holidays.region_names("NZ")
-
-    def test_seed_is_idempotent_and_each_venue_reads_its_own_region(self, db_session):
+    def test_each_venue_gets_its_own_companys_holidays_and_history(
+        self, db_session, loaded
+    ):
         w = make_world(db_session)
-        ctx = w.ctx()
-        calls = []
-
-        def fetch(year, country):
-            calls.append((year, country))
-            return NAGER
-
-        out = holidays.seed_year(db_session, ctx, 2027, fetch=fetch)
-        assert out == {
-            "year": 2027,
-            "country": "NZ",
-            "inserted": 5,
-            "unchanged": 0,
-            "regions": ["Auckland", "NZ", "Northland", "Otago", "Wellington"],
-        }
-        assert holidays.seed_year(db_session, ctx, 2027, fetch=fetch)["inserted"] == 0
-        assert calls == [(2027, "NZ"), (2027, "NZ")]
-        assert (
-            db_session.query(FinHoliday)
-            .filter(FinHoliday.organization_id == w.org.id)
-            .count()
-            == 5
+        out = holidays.sync_from_page(db_session, w.ctx(), w.laz.id, today=TODAY)
+        call = loaded["calls"][-1]
+        assert (call["action"], call["params"]) == (
+            "get_pay_adjustments",
+            {"venue": "La Zeppa", "start": "2023-01-01", "end": "2027-11-17"},
         )
-        from app.services.finance import budgets
-
-        budgets.set_venue_settings(db_session, ctx, w.laz.id, holiday_region="Auckland")
-        budgets.set_venue_settings(db_session, ctx, w.dsc.id, holiday_region="Otago")
-        lo, hi = dt.date(2027, 1, 1), dt.date(2027, 12, 31)
+        assert call["strict_venue"] and call["venue_id"] == w.laz.id
+        assert (out["inserted"], out["removed"], out["dates_until"]) == (
+            4,
+            0,
+            "2026-12-26",
+        )
+        holidays.sync_from_page(db_session, w.ctx(), w.dsc.id, today=TODAY)
+        lo, hi = dt.date(2026, 1, 1), dt.date(2027, 12, 31)
         assert holidays.for_venue(db_session, w.org.id, w.laz.id, lo, hi) == {
-            dt.date(2027, 1, 1): "New Year's Day",
-            dt.date(2027, 2, 1): "Auckland Anniversary Day",
+            dt.date(2026, 10, 26): "Labour Day",
+            dt.date(2026, 12, 25): "Christmas Day",
+            dt.date(2026, 12, 26): "Boxing Day",
         }
-        assert holidays.for_venue(db_session, w.org.id, w.dsc.id, lo, hi) == {
-            dt.date(2027, 1, 1): "New Year's Day",
-            dt.date(2027, 3, 22): "Otago Anniversary Day",
-        }
-        assert holidays.for_venue(db_session, w.org.id, w.cbi.id, lo, hi) == {
-            dt.date(2027, 1, 1): "New Year's Day"
-        }
+        # The regional day belongs to the venue whose company activated it.
+        assert (
+            holidays.for_venue(db_session, w.org.id, w.dsc.id, lo, hi)[
+                dt.date(2027, 3, 22)
+            ]
+            == "Otago Anniversary Day"
+        )
+        row = (
+            db_session.query(FinHoliday)
+            .filter(FinHoliday.venue_id == w.laz.id, FinHoliday.name == "Boxing Day")
+            .one()
+        )
+        assert (row.package, row.source) == ("New Zealand Public Holidays", "loaded")
         # Another organisation sees none of it.
         assert (
             holidays.for_venue(db_session, w.other_org.id, w.other_venue.id, lo, hi)
             == {}
         )
+
+    def test_the_future_follows_loaded_and_the_past_is_kept(self, db_session, loaded):
+        w = make_world(db_session)
+        holidays.sync_from_page(db_session, w.ctx(), w.laz.id, today=TODAY)
+        # Loaded drops Boxing Day (an activation taken away) and the past
+        # Labour Day, and renames Christmas's package.
+        loaded["holidays"] = {
+            "*": [("2026-12-25", "Christmas Day")],
+            "La Zeppa": [],
+        }
+        out = holidays.sync_venue(
+            db_session,
+            w.org.id,
+            w.laz,
+            first=TODAY,
+            last=TODAY + dt.timedelta(days=holidays.AHEAD_DAYS),
+            today=TODAY,
+        )
+        assert (out["inserted"], out["removed"]) == (0, 1)
+        kept = holidays.for_venue(
+            db_session, w.org.id, w.laz.id, dt.date(2025, 1, 1), dt.date(2027, 12, 31)
+        )
+        assert dt.date(2026, 12, 26) not in kept  # the future follows Loaded
+        assert kept[dt.date(2026, 10, 26)] == "Labour Day"  # the past is kept
+        assert kept[dt.date(2025, 10, 27)] == "Labour Day"
+
+    def test_a_failed_read_changes_nothing_and_the_doors(self, db_session, loaded):
+        w = make_world(db_session)
+        holidays.sync_from_page(db_session, w.ctx(), w.laz.id, today=TODAY)
+        before = db_session.query(FinHoliday).count()
+        loaded["fail"].add("get_pay_adjustments")
+        with pytest.raises(Invalid, match="pay adjustments could not be read"):
+            holidays.sync_from_page(db_session, w.ctx(), w.laz.id, today=TODAY)
+        assert db_session.query(FinHoliday).count() == before
         with pytest.raises(Forbidden):
-            holidays.seed_year(db_session, w.ctx(w.team_member), 2027, fetch=fetch)
-        with pytest.raises(Invalid):
-            holidays.seed_year(db_session, ctx, 2027, country="XX", fetch=fetch)
+            holidays.sync_from_page(
+                db_session, w.ctx(w.team_member), w.laz.id, today=TODAY
+            )
+        with pytest.raises(Forbidden):  # the manager has La Zeppa only
+            holidays.sync_from_page(db_session, w.ctx(w.manager), w.dsc.id, today=TODAY)
+        assert [
+            h.name
+            for h in holidays.list_holidays(
+                db_session, w.ctx(w.manager), w.laz.id, year=2026
+            )
+        ] == ["Labour Day", "Christmas Day", "Boxing Day"]
 
 
 # -------------------------------------------------------------- actuals --
@@ -177,7 +207,7 @@ def loaded(monkeypatch):
     every call; any other action (a write) fails the test."""
     from app.connectors.tool_executor import ToolResult
 
-    state = {"calls": [], "fail": set()}
+    state = {"calls": [], "fail": set(), "holidays": {}}
 
     def execute(**kw):
         state["calls"].append(kw)
@@ -199,6 +229,13 @@ def loaded(monkeypatch):
                 payload=_budgets_payload(
                     dt.date.fromisoformat(params["from_date"]),
                     dt.date.fromisoformat(params["to_date"]),
+                ),
+            )
+        if action == "get_pay_adjustments":
+            return ToolResult(
+                success=True,
+                payload=_pay_adjustments(
+                    params["venue"], params["start"], params["end"], state["holidays"]
                 ),
             )
         raise AssertionError(f"the nightly job must never call {action}")
@@ -329,7 +366,18 @@ class TestNightly:
         )
         assert result["loaded_log"] > 0 and result["scored"]["date"] == SLOT.isoformat()
         actions = {c["action"] for c in loaded["calls"]}
-        assert actions == {"get_sales", "get_budgets_raw"}
+        assert actions == {"get_sales", "get_budgets_raw", "get_pay_adjustments"}
+        # The next twelve months of public holidays, refreshed before the
+        # vintage so tonight's forecast sees them.
+        hol = next(c for c in loaded["calls"] if c["action"] == "get_pay_adjustments")
+        assert hol["params"]["start"] == (SLOT + dt.timedelta(days=1)).isoformat()
+        assert hol["params"]["end"] == (SLOT + dt.timedelta(days=366)).isoformat()
+        # Christmas and Boxing Day; both Labour Days are behind the window.
+        assert result["holidays"]["inserted"] == 2
+        assert (
+            db_session.query(FinHoliday).filter(FinHoliday.venue_id == w.laz.id).count()
+            == 2
+        )
         run = (
             db_session.query(FinJobRun).filter(FinJobRun.job == "finance.nightly").one()
         )
@@ -385,13 +433,15 @@ class TestNightly:
             ],
         )
         db_session.commit()
-        loaded["fail"].add("get_budgets_raw")
+        loaded["fail"] |= {"get_budgets_raw", "get_pay_adjustments"}
         out = jobs.run_due(db_session, NOW, config_db=db_session)
         result = out["ran"][0]
-        assert result["errors"] == ["loaded budget log: get_budgets_raw is down"]
+        assert result["errors"] == [
+            "holidays: Loaded's pay adjustments could not be read: "
+            "get_pay_adjustments is down",
+            "loaded budget log: get_budgets_raw is down",
+        ]
         assert result["forecast_days"] == 70 and result["actuals"] == 14
         run = db_session.query(FinJobRun).one()
-        assert (
-            run.error == "loaded budget log: get_budgets_raw is down"
-            and run.finished_at
-        )
+        assert "loaded budget log: get_budgets_raw is down" in run.error
+        assert run.finished_at

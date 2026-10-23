@@ -1146,15 +1146,15 @@ class TestSetBudgets:
                 "venue": "La Zeppa",
                 "budget_id": "b-2026-10-12",
                 "loaded_date": "2026-10-13T00:00:00+13:00",
-                "amount": 2100.0,
-                "sales_tax": 0.15,
+                "amount": "2100.00",
+                "sales_tax": "0.1500",
             },
             {
                 "venue": "La Zeppa",
                 "budget_id": "b-2026-10-13",
                 "loaded_date": "2026-10-14T00:00:00+13:00",
-                "amount": 3350.0,
-                "sales_tax": 0.15,
+                "amount": "3350.00",
+                "sales_tax": "0.1500",
             },
         ]
         posts = [c[2] for c in api.calls if c[1] == "create_budget_raw"]
@@ -1162,7 +1162,7 @@ class TestSetBudgets:
             {
                 "venue": "La Zeppa",
                 "loaded_date": "2026-10-18T00:00:00+13:00",
-                "amount": 15000.0,
+                "amount": "15000.00",
             }
         ]
         # The new day lies past the last row, so its midnight was probed
@@ -1180,20 +1180,68 @@ class TestSetBudgets:
         assert out["ledger"] == "recorded"
         assert api.calls[0][1] == "get_mode"
 
-    def test_allow_zero_sends_the_zero_days(self):
-        api = budgets_api(WEEK_ROWS)
+    def test_allow_zero_sends_the_zero_days(self, monkeypatch):
+        """Through the REAL executor and endpoint rows: its required-field
+        check is falsy, so a $0 sent as the float 0.0 was refused as
+        "Missing required fields: amount" before reaching Loaded (Loaded's
+        test environment, 23 Oct 2026). Only the HTTP layer is faked."""
+        import types
+
+        from app.connectors import http_pool
+        from app.connectors.spec_executor import execute_spec
+        from scripts import sync_payroll_config as cfg
+
+        api = budgets_api([budget_row("2026-10-11", 50.0)] + WEEK_ROWS)
         out = harness.run(
             SET_BUDGETS,
             api,
             venue="La Zeppa",
-            days=[{"date": "2026-10-12", "amount": 0}],
+            days=[
+                {"date": "2026-10-11", "amount": 0},
+                {"date": "2026-10-12", "amount": 0},
+                {"date": "2026-10-15", "amount": 0},
+            ],
             allow_zero="true",
         )
-        assert out["updated"] == 1 and out["skipped_zero"] == []
-        assert (
-            next(c[2] for c in api.calls if c[1] == "update_budget_raw")["amount"]
-            == 0.0
+        assert out["updated"] == 2 and out["created"] == 1
+        assert out["skipped_zero"] == []
+
+        sent = []
+
+        class _Client:
+            def request(self, **kw):
+                sent.append(kw)
+                return types.SimpleNamespace(
+                    status_code=204 if kw["method"] == "PUT" else 200,
+                    headers={},
+                    text="",
+                    json=lambda: {"id": "new"},
+                )
+
+        monkeypatch.setattr(http_pool, "get_client", lambda: _Client())
+        rows = {e["action"]: e for e in cfg.ENDPOINTS}
+        spec = types.SimpleNamespace(
+            connector_name="loadedhub",
+            execution_mode="template",
+            auth_type="bearer",
+            auth_config={"token_field": "access_token"},
+            base_url_template="https://",
+            oauth_config=None,
         )
+        for _, action, params in api.calls:
+            if action not in ("update_budget_raw", "create_budget_raw"):
+                continue
+            params = {k: v for k, v in params.items() if k != "venue"}
+            result, _ = execute_spec(
+                spec, rows[action], params, {"access_token": "t"}, None
+            )
+            assert result.success, result.error_message
+        assert [(k["method"], k["json"]["amount"]) for k in sent] == [
+            ("PUT", 0),
+            ("PUT", 0),
+            ("POST", 0),
+        ]
+        assert sent[0]["json"]["salesTax"] == 0.15
 
     def test_offsets_across_the_clock_change_come_from_probes(self):
         """No Loaded rows at all, Thu 24 – Wed 30 Sep 2026: the midnights
@@ -1720,6 +1768,7 @@ class TestInstaller:
             "set_budgets",
             "set_budgets_typed",
             "get_closing_manager",
+            "get_pay_adjustments",
         }
         for r in rows.values():
             assert r["effect"] in ("read", "write") and r["field_schema"]
@@ -1737,6 +1786,10 @@ class TestInstaller:
         assert rows["set_budgets_typed"]["engine_only"] is True
         assert rows["set_budgets_typed"]["approval"]["allow_auto"] is True
         assert rows["get_closing_manager"]["engine_only"] is True
+        # No `requires`: no dollar rates, and the nightly finance job reads it
+        # with no person behind it.
+        assert "requires" not in rows["get_pay_adjustments"]
+        assert not rows["get_pay_adjustments"].get("engine_only")
         for twin in ("set_budgets", "set_budgets_typed"):
             cc = rows[twin]["consolidator_config"]
             assert cc["allowed_write_actions"] == [
@@ -1755,7 +1808,15 @@ class TestInstaller:
         )
         assert rows["get_closing_manager"]["consolidator_config"]["max_api_calls"] == 4
         eps = {e["action"]: e for e in cfg.ENDPOINTS}
-        assert len(eps) == 9 and all(e["engine_only"] for e in eps.values())
+        assert len(eps) == 10 and all(e["engine_only"] for e in eps.values())
+        assert all(
+            e["read_only"] and e["method"] == "GET"
+            for a, e in eps.items()
+            if a not in ("update_budget_raw", "create_budget_raw")
+        )
+        assert eps["get_pay_adjustment_packages_raw"]["path_template"].endswith(
+            "/pay-rules/packages?includeActivatedPackagesOnly=true&detail=Full"
+        )
         assert (
             eps["update_budget_raw"]["read_only"] is False
             and eps["update_budget_raw"]["method"] == "PUT"
@@ -1802,5 +1863,6 @@ def test_the_file_list_matches_the_build():
         "set_budgets",
         "set_budgets_typed",
         "set_budgets_common",
+        "get_pay_adjustments",
     ):
         assert name in present

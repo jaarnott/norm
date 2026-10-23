@@ -89,13 +89,23 @@ def run(params, call_api, log):
     status = str(params.get("status") or mapping.get("bill_status") or "DRAFT").upper()
     if status not in ("DRAFT", "SUBMITTED", "AUTHORISED"):
         status = "DRAFT"
-    amount_types = str(
-        params.get("line_amount_types")
-        or mapping.get("line_amount_types")
-        or "Exclusive"
-    ).capitalize()
-    if amount_types not in ("Exclusive", "Inclusive", "NoTax"):
-        amount_types = "Exclusive"
+    # Case-blind: .capitalize() turned "NoTax" into "Notax", so a no-tax bill
+    # went to Xero as Exclusive and an unflagged line took GST on top (found
+    # on the live Federal Street test, 23 Oct 2026).
+    amount_types = {
+        "exclusive": "Exclusive",
+        "inclusive": "Inclusive",
+        "notax": "NoTax",
+    }.get(
+        str(
+            params.get("line_amount_types")
+            or mapping.get("line_amount_types")
+            or "Exclusive"
+        )
+        .strip()
+        .lower(),
+        "Exclusive",
+    )
     lines = _lines_param(params.get("lines"))
     create_contact = _flag(params.get("create_contact"), True)
     # A file Norm holds (an ent_files / pay_files id), attached after the
@@ -368,8 +378,13 @@ def run(params, call_api, log):
             "changes": changes,
             "warnings": warnings,
             "note": (
-                f"{len(items)} line{'s' if len(items) != 1 else ''}; amounts are "
-                f"{amount_types.lower()} of GST. Nothing is paid — this records the bill."
+                f"{len(items)} line{'s' if len(items) != 1 else ''}; "
+                + (
+                    "no GST on these amounts"
+                    if amount_types == "NoTax"
+                    else f"amounts are {amount_types.lower()} of GST"
+                )
+                + ". Nothing is paid — this records the bill."
             ),
         },
         basis={"contact_id": contact_id, "bill": bill},

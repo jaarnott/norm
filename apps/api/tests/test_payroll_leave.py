@@ -456,8 +456,19 @@ def test_sick_email_goes_to_the_payroll_contact_in_shadow(db_session, monkeypatc
     w = make_world(db_session, payroll="shadow")
     sent = []
 
-    def fake_send(template, to, context, db, organization_id=None, thread_id=None):
+    def fake_send(
+        template,
+        to,
+        context,
+        db,
+        organization_id=None,
+        thread_id=None,
+        from_name=None,
+        reply_to=None,
+    ):
         from app.db.models import EmailLog
+
+        context = {**context, "_from_name": from_name, "_reply_to": reply_to}
 
         log = EmailLog(
             organization_id=organization_id,
@@ -487,5 +498,8 @@ def test_sick_email_goes_to_the_payroll_contact_in_shadow(db_session, monkeypatc
         sent[0][0] == "payroll_sick_certificate"
         and sent[0][2]["redirected_from"] == "manager@venue.test"
     )
+    # In the organisation's name, replies to payroll.
+    assert sent[0][2]["_from_name"] == w.org.name
+    assert sent[0][2]["_reply_to"] == "pay@cookbrothers.test"
     with pytest.raises(Invalid):
         leave_svc.send_sick_email(w.db, w.ctx(), payout, kind="other", to="x@y.z")

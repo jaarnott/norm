@@ -232,7 +232,6 @@ def meta(ctx: FinanceCtx = Depends(finance_ctx), db: Session = Depends(get_db)):
                 "is_trading": v.is_trading,
                 "timezone": timezone_name(v),
                 "day_start": day_start_for(v),
-                "holiday_region": settings["holiday_region"],
                 "closed_weekdays": settings["closed_weekdays"],
                 "level_correction_on": settings["level_correction_on"],
                 "forecast_push_ready": ready,
@@ -252,7 +251,6 @@ def meta(ctx: FinanceCtx = Depends(finance_ctx), db: Session = Depends(get_db)):
         "can_see_group": ctx.holds("payroll:read"),
         "venues": out_venues,
         "fiscal_years": [fy - 1, fy, fy + 1],
-        "holiday_regions": holidays.region_names(holidays.country_for(db, ctx.org_id)),
         "today": today.isoformat(),
     }
 
@@ -797,7 +795,6 @@ def get_settings(
 
 class SettingsBody(_Body):
     venue_id: str
-    holiday_region: str | None = None
     closed_weekdays: list[int] | None = None
     level_correction_on: bool | None = None
     version: int | None = None
@@ -811,9 +808,7 @@ def put_settings(
 ):
     given = body.model_dump(exclude_unset=True)
     kwargs = {
-        k: given[k]
-        for k in ("holiday_region", "closed_weekdays", "level_correction_on")
-        if k in given
+        k: given[k] for k in ("closed_weekdays", "level_correction_on") if k in given
     }
     with _writing(db):
         row = budgets.set_venue_settings(
@@ -1095,37 +1090,36 @@ def load_history(
 # ===========================================================================
 
 
-class SeedBody(_Body):
-    year: int
-    country: str | None = None
+class SyncHolidaysBody(_Body):
+    venue_id: str
 
 
-@router.post("/holidays/seed")
-def seed_holidays(
-    body: SeedBody, ctx: FinanceCtx = Depends(editor_ctx), db: Session = Depends(get_db)
+@router.post("/holidays/sync")
+def sync_holidays(
+    body: SyncHolidaysBody,
+    ctx: FinanceCtx = Depends(editor_ctx),
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
 ):
+    """The venue's public holidays from Loaded's pay adjustments — the
+    history and the next twelve months (the nightly job keeps the next twelve
+    fresh). Reads Loaded on the venue's token; never writes it."""
     with _writing(db):
-        return holidays.seed_year(db, ctx, body.year, country=body.country)
+        return holidays.sync_from_page(
+            db, ctx, body.venue_id, today=dt.date.today(), config_db=config_db
+        )
 
 
 @router.get("/holidays")
 def list_holidays(
+    venue_id: str,
     year: int | None = None,
-    region: str | None = None,
     ctx: FinanceCtx = Depends(finance_ctx),
     db: Session = Depends(get_db),
 ):
     with _reading():
-        rows = holidays.list_holidays(db, ctx, year=year, region=region)
-    return [
-        {
-            "date": r.date.isoformat(),
-            "name": r.name,
-            "region": r.region,
-            "source": r.source,
-        }
-        for r in rows
-    ]
+        rows = holidays.list_holidays(db, ctx, venue_id, year=year)
+    return [holidays.holiday_dict(r) for r in rows]
 
 
 # ===========================================================================

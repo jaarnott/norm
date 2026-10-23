@@ -859,6 +859,31 @@ class TestCreateBill:
         assert fields["Total ex GST"] == "NZD 100.00"
         assert fields["Beer"] == "1 × NZD 115.00 → 51100 Bar Purchases (INPUT2)"
 
+    def test_no_tax_is_honoured_and_puts_no_gst_on_a_line(self):
+        """The type "NoTax" became "Notax" under .capitalize(), so the bill went
+        as Exclusive and an unflagged line took 15% on top (23 Oct 2026)."""
+        api = self._api()
+        cards: list = []
+        run_bill(
+            api,
+            capture=cards,
+            line_amount_types="NoTax",
+            lines=[
+                {
+                    "description": "DJ set",
+                    "quantity": 1,
+                    "unit_amount": 200.0,
+                    "account_code": "51100",
+                },
+            ],
+        )
+        card, basis = cards[0]
+        fields = {c["field"]: c["after"] for c in card["changes"]}
+        assert basis["bill"]["LineAmountTypes"] == "NoTax"
+        assert [li["TaxType"] for li in basis["bill"]["LineItems"]] == ["NONE"]
+        assert fields["GST"] == "NZD 0.00" and fields["Total"] == "NZD 200.00"
+        assert "no GST on these amounts" in card["note"]
+
     def test_an_unconnected_venue_is_refused_first(self):
         api = Api({}, settings=NOT_CONNECTED)
         out = run_bill(api)

@@ -15,6 +15,12 @@
   emailed: the message goes to the organisation's ``payroll_contact_email``
   with a note saying who it was for, and with no contact set it is logged
   ``suppressed`` and not sent (DESIGN-CONTRACT §5).
+* **From Norm, in the organisation's name.** No sender of its own (D26,
+  settled 23 Oct 2026): Norm's platform address (``EMAIL_FROM_ADDRESS``)
+  with the organisation's name as the display name — how app and Functions
+  emails name the business — and ``Reply-To`` the organisation's
+  ``payroll_contact_email`` when set, so a performer's reply reaches a
+  person, not the no-reply box.
 * **Nothing is sent outside production.** The row is logged ``suppressed``
   (``functions/notify.py``'s rule): a local database holds real performers.
   The one-time code is never written down anywhere — its log row keeps no
@@ -120,6 +126,14 @@ def run_pending(db: Session, pending: list[Notice]) -> None:
 def suppressed() -> bool:
     """True outside production (tests patch this to exercise the send path)."""
     return not settings.is_production
+
+
+def sender(org: Organization) -> tuple[str, str | None]:
+    """``(display name, Reply-To)`` for the organisation's emails: its name
+    on Norm's address, replies to its payroll contact (None: no Reply-To)."""
+    name = " ".join(str(getattr(org, "name", None) or "").split()) or "Norm"
+    reply = (getattr(org, "payroll_contact_email", None) or "").strip() or None
+    return name, reply
 
 
 def first_name(name: str | None) -> str:
@@ -228,7 +242,16 @@ def deliver(
     else:
         from app.services.email_service import send_system_email
 
-        log_id = send_system_email(kind, [address], ctx, db, organization_id=org_id)
+        from_name, reply_to = sender(org)
+        log_id = send_system_email(
+            kind,
+            [address],
+            ctx,
+            db,
+            organization_id=org_id,
+            from_name=from_name,
+            reply_to=reply_to,
+        )
         log = (
             db.query(EmailLog).filter(EmailLog.id == log_id).first() if log_id else None
         )

@@ -51,6 +51,8 @@ export interface EntMeta {
   performer_types: PerformerType[];
   settings: EntSettings;
   is_owner?: boolean;
+  /** A payroll writer or an owner: may change the settings. */
+  can_edit_settings?: boolean;
   counts: {
     awaiting_approvals: number;
     awaiting_performer: number;

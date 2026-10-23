@@ -1,7 +1,9 @@
 """The four Ace files against golden text built from Orbit's exact formats
 (``PayrunReport.tsx``; report 01 §3.2) — byte-equal, CRLF — and the
-refusals: no close snapshot, a missing pay code, an unmapped leave type, no
-allowance code. Plus the JavaScript rounding the files were written with.
+refusals: no close snapshot, a missing pay code, a leave type with no Ace
+style, no allowance code. Plus the JavaScript rounding the files were
+written with. The leave types are Loaded's, as ``get_leave_types`` returned
+them live (23 Oct 2026).
 """
 
 from __future__ import annotations
@@ -11,8 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.db.payroll_models import PayLeaveStyle
-from app.services.finance_core.errors import Invalid
+from app.services.finance_core.errors import Conflict, Invalid, NotFound
 from app.services.payroll import exports as exports_svc
 from app.services.payroll import gratuities as gratuities_svc
 from app.services.payroll import snapshot as snapshot_svc
@@ -34,33 +35,71 @@ def w(db_session):
     return make_world(db_session)
 
 
-def _styles(w, venue, mapping):
-    rows = []
-    for type_id, (name, style) in mapping.items():
-        salaried, hourly = exports_svc.default_methods(style)
-        rows.append(
-            PayLeaveStyle(
-                organization_id=w.org.id,
-                venue_id=venue.id,
-                loaded_leave_type_id=type_id,
-                name=name,
-                ace_style=style,
-                salaried_method=salaried,
-                hourly_method=hourly,
-            )
-        )
-    w.db.add_all(rows)
-    w.db.flush()
-    return rows
+ANNUAL = "M:8298b9d2-98df-4b30-b735-1d604809d1c8"
+UNPAID = "M:67dfdc54-be51-432d-9fec-70866117bbdb"
+PPH = "C:49fa8896-4f17-483c-6501-08dee13fbf1d"
+#: get_leave_types as Loaded answered for Bessie & Royals (trimmed): its own
+#: managed types — the same ids in every company — and one custom type.
+LEAVE_TYPES = [
+    {
+        "id": ANNUAL,
+        "name": "New Zealand Annual Leave",
+        "isPaid": True,
+        "type": "Managed",
+        "activation": {"activatedAt": "2025-10-01T00:00:00+00:00"},
+    },
+    {
+        "id": "M:e55019cd-5b2f-4fc5-98fb-6f9d89fc8481",
+        "name": "New Zealand Sick Leave",
+        "isPaid": True,
+        "type": "Managed",
+        "activation": {"activatedAt": "2025-10-01T00:00:00+00:00"},
+    },
+    {
+        "id": "M:5afee836-7aa8-4cc1-b0ac-640a015bddbe",
+        "name": "New Zealand Bereavement Leave",
+        "isPaid": True,
+        "type": "Managed",
+        "activation": {"activatedAt": "2025-10-01T00:00:00+00:00"},
+    },
+    {
+        "id": UNPAID,
+        "name": "Unpaid Leave",
+        "isPaid": False,
+        "percentage": None,
+        "type": "Managed",
+        "activation": {"activatedAt": "2025-10-01T00:00:00+00:00"},
+    },
+    {
+        "id": PPH,
+        "name": "Paid Public Holiday",
+        "isPaid": True,
+        "type": "Custom",
+        "activation": {"activatedAt": "2026-01-01T00:00:00+00:00"},
+    },
+    {
+        "id": "M:29d1ae2a-d458-420e-94f1-1cf75e3a8440",
+        "name": "Australian Sick and Carer's Leave",
+        "isPaid": True,
+        "type": "Managed",
+        "activation": None,
+    },
+]
 
 
-def _close(w, monkeypatch, rows, venue=None):
+def _close(w, monkeypatch, rows, venue=None, leave_types=LEAVE_TYPES):
     venue = venue or w.laz
-    install(
-        monkeypatch, FakeLoaded(get_payrun=lambda v, p: payrun_result(v, MONDAY, rows))
+    fake = install(
+        monkeypatch,
+        FakeLoaded(
+            get_payrun=lambda v, p: payrun_result(v, MONDAY, rows),
+            get_leave_types=leave_types,
+        ),
     )
     snap = snapshot_svc.take(w.db, w.ctx(), venue.id, MONDAY, source="close")
-    return weeks_svc.get_or_create(w.db, w.ctx(), venue.id, MONDAY), snap
+    week = weeks_svc.get_or_create(w.db, w.ctx(), venue.id, MONDAY)
+    week.fake = fake
+    return week, snap
 
 
 class TestToFixed:
@@ -113,7 +152,7 @@ ROWS = [
         hours=8.0,
         cost_cents=24000,
         leave_request_id="lr1",
-        leave_type="NZ Annual",
+        leave_type="New Zealand Annual Leave",
     ),
 ]
 
@@ -184,7 +223,7 @@ LEAVE_ROWS = [
         hours=8.0,
         cost_cents=20000,
         leave_request_id="lr1",
-        leave_type="NZ Annual",
+        leave_type="New Zealand Annual Leave",
         start="2026-10-13T09:00:00+13:00",
         end="2026-10-13T17:00:00+13:00",
     ),
@@ -197,7 +236,7 @@ LEAVE_ROWS = [
         hours=8.0,
         cost_cents=20000,
         leave_request_id="lr1",
-        leave_type="NZ Annual",
+        leave_type="New Zealand Annual Leave",
         start="2026-10-14T09:00:00+13:00",
         end="2026-10-14T17:00:00+13:00",
     ),
@@ -212,7 +251,7 @@ LEAVE_ROWS = [
         hours=8.0,
         cost_cents=24000,
         leave_request_id="lr2",
-        leave_type="NZ Annual",
+        leave_type="New Zealand Annual Leave",
         start="2026-10-15T09:00:00+13:00",
         end="2026-10-15T17:00:00+13:00",
     ),
@@ -226,7 +265,7 @@ LEAVE_ROWS = [
         hours=6.0,
         cost_cents=15000,
         leave_request_id="lr3",
-        leave_type="NZ Sick",
+        leave_type="New Zealand Sick Leave",
         start="2026-10-16T09:00:00+13:00",
         end="2026-10-16T15:00:00+13:00",
     ),
@@ -241,7 +280,7 @@ LEAVE_ROWS = [
         hours=8.0,
         cost_cents=24000,
         leave_request_id="lr4",
-        leave_type="NZ Bereavement",
+        leave_type="New Zealand Bereavement Leave",
         start="2026-10-16T09:00:00+13:00",
         end="2026-10-16T17:00:00+13:00",
     ),
@@ -255,7 +294,7 @@ LEAVE_ROWS = [
         hours=8.0,
         cost_cents=24000,
         leave_request_id="lr4",
-        leave_type="NZ Bereavement",
+        leave_type="New Zealand Bereavement Leave",
         start="2026-10-17T09:00:00+13:00",
         end="2026-10-17T17:00:00+13:00",
     ),
@@ -269,22 +308,15 @@ LEAVE_ROWS = [
         hours=0.0,
         cost_cents=0,
         leave_request_id="lr5",
-        leave_type="NZ Sick",
+        leave_type="New Zealand Sick Leave",
         start="2026-10-17T09:00:00+13:00",
         end="2026-10-17T09:00:00+13:00",
     ),
 ]
-STYLE_MAP = {
-    "M:1": ("NZ Annual", "70"),
-    "M:2": ("NZ Sick", "60"),
-    "M:3": ("NZ Bereavement", "63"),
-    "M:4": ("Unpaid", None),
-}
 
 
 class TestImportLeaveTxt:
     def test_golden(self, w, monkeypatch):
-        _styles(w, w.laz, STYLE_MAP)
         week, _ = _close(w, monkeypatch, LEAVE_ROWS)
         built = exports_svc.build(w.db, w.ctx(), week, "leave")
         assert built["content"] == (
@@ -299,16 +331,18 @@ class TestImportLeaveTxt:
         )
         assert built["totals"]["by_style"] == {"70": 2, "60": 1, "63": 1}
         assert built["totals"]["skipped_zero_hours"] == ["Ben Roy"]
-        assert built["totals"]["unsigned_styles"] == [
-            "NZ Annual",
-            "NZ Sick",
-            "NZ Bereavement",
-        ]
+        assert built["totals"]["unpaid_skipped"] == []
+        assert built["totals"]["styles_set_in_norm"] == []
         assert built["refusals"] == []
+        # Loaded's leave types were read once, for this venue.
+        assert [c[1] for c in week.fake.calls].count("get_leave_types") == 1
 
-    def test_an_unmapped_type_refuses_and_lists_it(self, w, monkeypatch):
-        _styles(w, w.laz, STYLE_MAP)
+    def test_unpaid_in_loaded_is_left_out_and_a_custom_type_refuses_by_name(
+        self, w, monkeypatch
+    ):
         rows = LEAVE_ROWS + [
+            # Loaded marks Unpaid Leave isPaid=false: nothing to pay, no line —
+            # Orbit sent it as #70.
             shift(
                 "l8",
                 "a",
@@ -318,8 +352,49 @@ class TestImportLeaveTxt:
                 hours=8.0,
                 cost_cents=0,
                 leave_request_id="lr6",
-                leave_type="Unpaid",
+                leave_type="Unpaid Leave",
             ),
+            # A company's own type: Loaded gives it no payroll meaning.
+            shift(
+                "l9",
+                "a",
+                "Ana Lee",
+                code="LZ001",
+                shift_type="Leave",
+                hours=8.0,
+                cost_cents=20000,
+                leave_request_id="lr7",
+                leave_type="Paid Public Holiday",
+            ),
+            # Another company's type this one's Loaded doesn't list.
+            shift(
+                "l10",
+                "b",
+                "Ben Roy",
+                code="LZ002",
+                shift_type="Leave",
+                hours=8.0,
+                cost_cents=20000,
+                leave_request_id="lr8",
+                leave_type="Family Violence Leave",
+            ),
+        ]
+        week, _ = _close(w, monkeypatch, rows)
+        built = exports_svc.build(w.db, w.ctx(), week, "leave")
+        assert built["refusals"] == [
+            "Leave types with no Ace style — Loaded gives these no payroll meaning; "
+            "set one under Payroll settings → Leave types: Family Violence Leave, "
+            "Paid Public Holiday"
+        ]
+        assert built["totals"]["unpaid_skipped"] == ["Unpaid Leave"]
+        with pytest.raises(Invalid, match="Paid Public Holiday"):
+            exports_svc.generate(w.db, w.ctx(), week, kinds=["leave"])
+
+    def test_a_style_set_for_a_custom_type_is_used_loadeds_own_are_not_overridable(
+        self, w, monkeypatch
+    ):
+        rows = [
+            LEAVE_ROWS[2],
             shift(
                 "l9",
                 "a",
@@ -333,54 +408,72 @@ class TestImportLeaveTxt:
             ),
         ]
         week, _ = _close(w, monkeypatch, rows)
+        ctx = w.ctx()
+        entry = exports_svc.set_leave_style(w.db, ctx, w.laz.id, PPH, ace_style="#62")
+        assert (entry["ace_style"], entry["ace_style_from"], entry["kind"]) == (
+            "62",
+            "override",
+            "custom",
+        )
+        assert entry["override"]["set_by"] == ctx.user_id
+        built = exports_svc.build(w.db, ctx, week, "leave")
+        # Any style but #70/#60/#63 is hours × rate.
+        assert built["content"] == (
+            "#62,LZ001,0,8.00,25.00" + CRLF + "#70,LZ005,0,1.000,240.00,,,," + CRLF
+        )
+        assert built["totals"]["styles_set_in_norm"] == ["Paid Public Holiday"]
+        with pytest.raises(Invalid, match="comes from Loaded"):
+            exports_svc.set_leave_style(w.db, ctx, w.laz.id, ANNUAL, ace_style="75")
+        with pytest.raises(Invalid, match="unpaid"):
+            exports_svc.set_leave_style(w.db, ctx, w.laz.id, UNPAID, ace_style="70")
+        with pytest.raises(NotFound):
+            exports_svc.set_leave_style(w.db, ctx, w.laz.id, "C:nope", ace_style="62")
+        with pytest.raises(Invalid, match="style number"):
+            exports_svc.set_leave_style(w.db, ctx, w.laz.id, PPH, ace_style="sixty")
+        with pytest.raises(Conflict):
+            exports_svc.set_leave_style(
+                w.db, ctx, w.laz.id, PPH, ace_style="61", version=99
+            )
+        # Cleared: the type refuses again.
+        exports_svc.set_leave_style(w.db, ctx, w.laz.id, PPH, ace_style=None)
+        assert exports_svc.build(w.db, ctx, week, "leave")["refusals"]
+
+    def test_the_settings_view_lists_loadeds_types_with_their_source(
+        self, w, monkeypatch
+    ):
+        _close(w, monkeypatch, LEAVE_ROWS)
+        types = exports_svc.leave_types(w.db, w.ctx(), w.laz.id)
+        view = [
+            (t["name"], t["ace_style"], t["ace_style_from"], t["is_paid"])
+            for t in types
+        ]
+        assert view == [
+            ("New Zealand Annual Leave", "70", "loaded", True),
+            ("New Zealand Bereavement Leave", "63", "loaded", True),
+            ("New Zealand Sick Leave", "60", "loaded", True),
+            ("Unpaid Leave", None, None, False),
+            ("Paid Public Holiday", None, None, True),
+            # Loaded lists Australia's managed types to an NZ company too.
+            ("Australian Sick and Carer's Leave", None, None, True),
+        ]
+        assert types[-1]["active"] is False and types[0]["active"] is True
+
+    def test_a_failed_read_refuses_and_a_week_without_leave_never_reads(
+        self, w, monkeypatch
+    ):
+        week, _ = _close(
+            w,
+            monkeypatch,
+            LEAVE_ROWS,
+            leave_types=Invalid("Loaded could not be read: 401"),
+        )
         built = exports_svc.build(w.db, w.ctx(), week, "leave")
         assert built["refusals"] == [
-            "Leave types with no Ace style on the Payroll settings page: Paid Public Holiday, Unpaid"
+            "Could not read the leave types from Loaded: Loaded could not be read: 401"
         ]
-        with pytest.raises(Invalid, match="Paid Public Holiday"):
-            exports_svc.generate(w.db, w.ctx(), week, kinds=["leave"])
-
-    def test_the_style_number_and_method_are_the_rows(self, w, monkeypatch):
-        rows = _styles(w, w.laz, {"M:1": ("NZ Annual", "70")})
-        ctx = w.ctx()
-        # Payroll decides annual leave for salaried staff is written the hourly way.
-        exports_svc.update_leave_style(
-            w.db, ctx, rows[0].id, version=1, salaried_method="days_hours_rate"
-        )
-        week, _ = _close(w, monkeypatch, [LEAVE_ROWS[2]])
-        assert (
-            exports_svc.build(w.db, ctx, week, "leave")["content"]
-            == "#70,LZ005,0,1.000,,,,8.00,30.00" + CRLF
-        )
-        exports_svc.update_leave_style(w.db, ctx, rows[0].id, version=2, ace_style="75")
-        assert (
-            exports_svc.build(w.db, ctx, week, "leave")["content"]
-            == "#75,LZ005,0,8.00,30.00" + CRLF
-        )
-
-    def test_seed_from_loaded_prefills_orbits_mapping_unsigned(self, w, monkeypatch):
-        install(
-            monkeypatch,
-            FakeLoaded(
-                get_leave_types=[
-                    {"id": "M:1", "name": "NZ Annual", "isPaid": True},
-                    {"id": "M:2", "name": "NZ Sick", "isPaid": True},
-                    {"id": "M:9", "name": "Family Violence", "isPaid": True},
-                    {"id": "M:8", "name": "Gone", "deletedAt": "2025-01-01"},
-                ]
-            ),
-        )
-        out = exports_svc.seed_leave_styles(w.db, w.ctx(), w.laz.id)
-        assert out["created"] == 3
-        by_name = {s.name: s for s in out["styles"]}
-        assert (
-            by_name["NZ Annual"].ace_style == "70"
-            and by_name["NZ Annual"].hourly_method == "days_hours_rate"
-        )
-        assert by_name["NZ Sick"].ace_style == "60"
-        assert by_name["Family Violence"].ace_style is None  # never defaulted to #70
-        assert all(s.signed_off_at is None for s in out["styles"])
-        assert exports_svc.seed_leave_styles(w.db, w.ctx(), w.laz.id)["created"] == 0
+        quiet, _ = _close(w, monkeypatch, ROWS[:2])
+        assert exports_svc.build(w.db, w.ctx(), quiet, "leave")["content"] == ""
+        assert "get_leave_types" not in [c[1] for c in quiet.fake.calls]
 
 
 class TestGratuitiesTxt:
@@ -512,7 +605,6 @@ class TestEntertainersTxt:
 
 class TestGenerateAndStore:
     def test_stores_content_and_a_re_export_diffs(self, w, monkeypatch):
-        _styles(w, w.laz, STYLE_MAP)
         week, snap = _close(w, monkeypatch, ROWS + LEAVE_ROWS[:1])
         out = exports_svc.generate(
             w.db, w.ctx(), week, kinds=["import", "leave", "gratuities", "entertainers"]
@@ -540,7 +632,6 @@ class TestGenerateAndStore:
         assert weeks_svc.status_of(w.db, week) == "exported"
 
     def test_fallback_pack_has_the_four_files_and_the_rekey_sheet(self, w, monkeypatch):
-        _styles(w, w.laz, STYLE_MAP)
         week, _ = _close(w, monkeypatch, ROWS[:1])
         from app.services.payroll import inputs as inputs_svc
 
@@ -593,7 +684,6 @@ class TestGenerateAndStore:
 
 def test_leave_days_count_local_dates_not_shifts(w, monkeypatch):
     """Two leave rows on the same local date count as one day (Orbit: no hours/8)."""
-    _styles(w, w.laz, STYLE_MAP)
     rows = [
         shift(
             "l1",
@@ -604,7 +694,7 @@ def test_leave_days_count_local_dates_not_shifts(w, monkeypatch):
             hours=4.0,
             cost_cents=10000,
             leave_request_id="lr1",
-            leave_type="NZ Annual",
+            leave_type="New Zealand Annual Leave",
             start="2026-10-13T09:00:00+13:00",
             end="2026-10-13T13:00:00+13:00",
         ),
@@ -617,7 +707,7 @@ def test_leave_days_count_local_dates_not_shifts(w, monkeypatch):
             hours=4.0,
             cost_cents=10000,
             leave_request_id="lr1",
-            leave_type="NZ Annual",
+            leave_type="New Zealand Annual Leave",
             start="2026-10-13T14:00:00+13:00",
             end="2026-10-13T18:00:00+13:00",
         ),

@@ -166,6 +166,28 @@ class TestFindings:
         )
         assert out == []
 
+    def test_a_performance_with_no_approved_amount_is_named_not_read_as_zero(self):
+        """An Orbit shift approved with no actual amount imports as
+        actual_cents None. The 23 Oct trial's invoices for such shifts were
+        right, yet the check said "differs from the approved $0.00"."""
+        out = self._run(
+            {
+                **GOOD,
+                "total": 900.0,
+                "lines": [
+                    {"description": "a", "date": "2026-10-10", "amount": 400.0},
+                    {"description": "b", "date": "2026-10-17", "amount": 500.0},
+                ],
+            },
+            perfs=[_perf(), _perf(dt.date(2026, 10, 17), None)],
+        )
+        assert [f["code"] for f in out] == ["total"]
+        assert out[0]["message"] == (
+            "No approved amount is recorded for 2026-10-17, so the invoice "
+            "total can't be checked."
+        )
+        assert out[0]["expected"] is None and out[0]["found"] == 90_000
+
 
 class TestLines:
     def test_lines_go_on_the_bill_only_when_they_add_up_never_rescaled(self):

@@ -14,6 +14,7 @@ import {
   fiscalYearOf,
   fiscalYearRange,
   groupIntoWeeks,
+  holidaySyncText,
   isoWeekday,
   mondayOf,
   parseAmount,
@@ -215,5 +216,16 @@ describe('the push outcome', () => {
     expect(pushOutcome({ unchanged: 3 })).toBe('3 unchanged.');
     expect(pushOutcome({})).toBe('Nothing to change.');
     expect(pushOutcome(null)).toBe('Done.');
+  });
+});
+
+describe('the public holiday sync toast', () => {
+  it('says what changed and how far Loaded’s dates run', () => {
+    expect(holidaySyncText({ inserted: 3, updated: 0, removed: 1, dates_until: '2026-12-26' })).toBe(
+      'Public holidays from Loaded: 3 added, 1 removed. Loaded holds public holidays up to Sat 26 Dec 2026.',
+    );
+    expect(holidaySyncText({ inserted: 0, updated: 0, removed: 0, dates_until: null })).toBe(
+      'Public holidays from Loaded: nothing new. Loaded holds no public holidays for this venue.',
+    );
   });
 });

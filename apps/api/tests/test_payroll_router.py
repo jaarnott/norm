@@ -140,20 +140,35 @@ class TestShadow:
         entity = client.get(
             f"/api/payroll/entities/{w.laz.id}", headers=auth_headers(w.owner)
         ).json()
+        # Every setting on the Entities tab saves through the one route.
+        settings = {
+            "payroll_on": True,
+            "ace_pay_type_code": "50002",
+            "ace_gratuity_allowance_code": "10",
+            "security_pay_code": "GUARD",
+            "uniform_bond_cents": 12000,
+            "ico_leave_uplift_bp": 1100,
+            "ico_leave_tax": "no_gst",
+            "sick_approver_name": "James",
+            "payroll_contact_email": "pay@laz.test",
+        }
         r = client.put(
             f"/api/payroll/entities/{w.laz.id}",
-            json={
-                "version": entity["version"],
-                "payroll_on": True,
-                "sick_approver_name": "James",
-            },
+            json={"version": entity["version"], **settings},
             headers=auth_headers(w.owner),
         )
-        assert (
-            r.status_code == 200
-            and r.json()["payroll_on"] is True
-            and r.json()["version"] == entity["version"] + 1
-        )
+        assert r.status_code == 200 and r.json()["version"] == entity["version"] + 1
+        again = client.get(
+            f"/api/payroll/entities/{w.laz.id}", headers=auth_headers(w.owner)
+        ).json()
+        assert {k: again[k] for k in settings} == settings
+        for bad in ({"ico_leave_tax": "gst_free"}, {"payroll_contact_email": "pay"}):
+            r = client.put(
+                f"/api/payroll/entities/{w.laz.id}",
+                json={"version": again["version"], **bad},
+                headers=auth_headers(w.owner),
+            )
+            assert r.status_code == 400, bad
         week = client.post(
             "/api/payroll/weeks",
             json={"venue_id": w.laz.id, "week_start": "2026-10-12"},
@@ -247,6 +262,89 @@ class TestWeekAndExports:
             ).status_code
             == 404
         )
+
+    def test_leave_types_come_from_loaded_and_mark_the_payrun(
+        self, client, w, monkeypatch
+    ):
+        rows = ROWS + [
+            shift(
+                "l1",
+                "a",
+                "Ana Lee",
+                code="LZ001",
+                shift_type="Leave",
+                hours=8.0,
+                cost_cents=20000,
+                leave_request_id="lr1",
+                leave_type="Paid Public Holiday",
+            )
+        ]
+        annual = "M:8298b9d2-98df-4b30-b735-1d604809d1c8"
+        types = [
+            {"id": annual, "name": "New Zealand Annual Leave", "isPaid": True, "type": "Managed", "activation": {}},
+            {"id": "C:pph", "name": "Paid Public Holiday", "isPaid": True, "type": "Custom", "activation": {}},
+        ]  # fmt: skip
+        install(
+            monkeypatch,
+            FakeLoaded(
+                get_payrun=lambda v, p: payrun_result(v, MONDAY, rows),
+                get_leave_types=types,
+            ),
+        )
+        h = auth_headers(w.owner)
+        r = client.get(
+            "/api/payroll/leave-types", params={"venue_id": w.laz.id}, headers=h
+        )
+        assert r.status_code == 200, r.text
+        assert [
+            (t["name"], t["ace_style"], t["ace_style_from"])
+            for t in r.json()["leave_types"]
+        ] == [
+            ("New Zealand Annual Leave", "70", "loaded"),
+            ("Paid Public Holiday", None, None),
+        ]
+        r = client.put(
+            "/api/payroll/leave-types/C%3Apph/ace-style",
+            json={"venue_id": w.laz.id, "ace_style": "62"},
+            headers=h,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["ace_style"] == "62"
+        r = client.put(
+            f"/api/payroll/leave-types/{annual}/ace-style",
+            json={"venue_id": w.laz.id, "ace_style": "75"},
+            headers=h,
+        )
+        assert (
+            r.status_code == 400
+            and "comes from Loaded" in r.json()["detail"]["message"]
+        )
+        assert (
+            client.get(
+                "/api/payroll/leave-types",
+                params={"venue_id": w.laz.id},
+                headers=auth_headers(w.manager),
+            ).status_code
+            == 403
+        )
+        week = client.post(
+            "/api/payroll/weeks",
+            json={"venue_id": w.laz.id, "week_start": "2026-10-12"},
+            headers=h,
+        ).json()
+        client.post(
+            f"/api/payroll/weeks/{week['id']}/snapshots",
+            json={"source": "manual"},
+            headers=h,
+        )
+        leave = client.get(f"/api/payroll/weeks/{week['id']}/payrun", headers=h).json()[
+            "leave"
+        ]
+        assert [
+            (x["leave_type_name"], x["ace_style"], x["ace_style_from"], x["unpaid"])
+            for x in leave["rows"]
+        ] == [("Paid Public Holiday", "62", "override", False)]
+        assert leave["setup_error"] is None
 
     def test_a_loaded_failure_is_a_400_with_its_message(self, client, w, monkeypatch):
         install(monkeypatch, FakeLoaded(get_payrun={"error": "token expired"}))

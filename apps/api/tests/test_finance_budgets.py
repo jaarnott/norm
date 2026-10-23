@@ -254,13 +254,12 @@ class TestSettings:
         ctx = w.ctx()
         assert budgets.settings_dict(None, w.laz.id) == {
             "venue_id": w.laz.id,
-            "holiday_region": None,
             "closed_weekdays": [],
             "level_correction_on": False,
             "version": 0,
         }
         row = budgets.set_venue_settings(
-            db_session, ctx, w.laz.id, holiday_region="Auckland", closed_weekdays=[7, 1]
+            db_session, ctx, w.laz.id, closed_weekdays=[7, 1]
         )
         assert budgets.settings_dict(row, w.laz.id)["closed_weekdays"] == [1, 7]
         assert row.level_correction_on is False
@@ -690,3 +689,75 @@ class TestRoutes:
             headers=auth_headers(w.owner),
         )
         assert out.status_code == 422
+        # The region setting is gone: public holidays are Loaded's, per venue.
+        out = client.put(
+            "/api/finance/settings",
+            json={"venue_id": w.laz.id, "holiday_region": "Auckland"},
+            headers=auth_headers(w.owner),
+        )
+        assert out.status_code == 422
+
+    def test_holidays_sync_from_loaded_and_list(self, api, monkeypatch):
+        client, w = api
+        from app.connectors.tool_executor import ToolResult
+
+        calls = []
+
+        def execute(**kw):
+            calls.append(kw)
+            return ToolResult(
+                success=True,
+                payload={
+                    "public_holidays": [
+                        {
+                            "date": "2026-12-25",
+                            "name": "Christmas Day",
+                            "package": "New Zealand Public Holidays",
+                            "priced": True,
+                        }
+                    ],
+                    "packages": [{"name": "New Zealand Public Holidays"}],
+                    "dates_until": "2026-12-26",
+                },
+            )
+
+        monkeypatch.setattr(
+            "app.connectors.tool_executor.execute_connector_tool", execute
+        )
+        h = auth_headers(w.manager)
+        out = client.post(
+            "/api/finance/holidays/sync", json={"venue_id": w.laz.id}, headers=h
+        )
+        assert out.status_code == 200, out.text
+        assert out.json()["inserted"] == 1 and out.json()["dates_until"] == "2026-12-26"
+        assert [(c["action"], c["venue_id"], c["strict_venue"]) for c in calls] == [
+            ("get_pay_adjustments", w.laz.id, True)
+        ]
+        out = client.get(
+            "/api/finance/holidays",
+            params={"venue_id": w.laz.id, "year": 2026},
+            headers=h,
+        )
+        assert out.json() == [
+            {
+                "date": "2026-12-25",
+                "name": "Christmas Day",
+                "package": "New Zealand Public Holidays",
+                "source": "loaded",
+            }
+        ]
+        # The manager holds La Zeppa only; a team member holds no budgets:write.
+        assert (
+            client.post(
+                "/api/finance/holidays/sync", json={"venue_id": w.dsc.id}, headers=h
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                "/api/finance/holidays/sync",
+                json={"venue_id": w.laz.id},
+                headers=auth_headers(w.team_member),
+            ).status_code
+            == 403
+        )

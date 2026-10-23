@@ -151,6 +151,12 @@ def upgrade() -> None:
             server_default=sa.text("1200"),
             nullable=False,
         ),
+        sa.Column(
+            "ico_leave_tax",
+            sa.String(),
+            server_default="account_default",
+            nullable=False,
+        ),
         sa.Column("sick_approver_name", sa.String(), nullable=True),
         sa.Column("payroll_contact_email", sa.String(), nullable=True),
         sa.Column(
@@ -184,6 +190,10 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("organization_id", "id", name="uq_pay_entities_org_id"),
         sa.UniqueConstraint("venue_id", name="uq_pay_entities_venue"),
+        sa.CheckConstraint(
+            "ico_leave_tax IN ('account_default', 'no_gst', 'standard_gst')",
+            name="ck_pay_entities_ico_leave_tax",
+        ),
         if_not_exists=True,
     )
     op.create_table(
@@ -336,11 +346,8 @@ def upgrade() -> None:
         sa.Column("venue_id", sa.String(), nullable=False),
         sa.Column("loaded_leave_type_id", sa.String(), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
-        sa.Column("ace_style", sa.String(), nullable=True),
-        sa.Column("salaried_method", sa.String(), nullable=True),
-        sa.Column("hourly_method", sa.String(), nullable=True),
-        sa.Column("signed_off_by", sa.String(), nullable=True),
-        sa.Column("signed_off_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("ace_style", sa.String(), nullable=False),
+        sa.Column("set_by", sa.String(), nullable=True),
         sa.Column("version", sa.Integer(), server_default=sa.text("1"), nullable=False),
         sa.Column(
             "created_at",
@@ -367,9 +374,9 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
-            ["signed_off_by"],
+            ["set_by"],
             ["users.id"],
-            name="fk_pay_leave_styles_signed_off_by",
+            name="fk_pay_leave_styles_set_by",
             ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id"),

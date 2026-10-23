@@ -17,7 +17,6 @@ export interface FinVenue {
   is_trading: boolean;
   timezone: string | null;
   day_start: string | null;
-  holiday_region: string | null;
   closed_weekdays: number[];
   level_correction_on: boolean;
   /** Four weeks of nightly scores exist — "Set Loaded budget" may show. */
@@ -390,8 +389,22 @@ export interface DayDoc {
 
 export interface VenueSettings {
   venue_id: string;
-  holiday_region: string | null;
   closed_weekdays: number[];
   level_correction_on: boolean;
   version: number;
+}
+
+/** `POST /api/finance/holidays/sync` — the venue's public holidays from Loaded's pay adjustments. */
+export interface HolidaySync {
+  venue_id: string;
+  venue: string;
+  first: string;
+  last: string;
+  inserted: number;
+  updated: number;
+  removed: number;
+  unchanged: number;
+  /** The last public holiday Loaded holds at all (its managed dates run a year or so ahead). */
+  dates_until: string | null;
+  packages: string[];
 }
