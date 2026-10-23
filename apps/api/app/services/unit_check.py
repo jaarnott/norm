@@ -781,6 +781,208 @@ def proposal_view(p) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Where a booked unit came from (owner, 24 Oct 2026)
+# ---------------------------------------------------------------------------
+
+#: What Norm's reading of a line says decided its unit (replica ``unit_by`` /
+#: ``unit_source``). "variant" is the unit Loaded had stored for the product,
+#: which Norm stopped using on 19 Oct 2026.
+UNIT_SOURCE_WORDS = {
+    "copy": "Norm read it off the invoice",
+    "printed": "Norm read it off the invoice",
+    "catalogue": "Norm's catalogue answer for this product",
+    "estimate": "Norm's estimate",
+    "resolver": "Norm's estimate",
+    "variant": "The unit Loaded had stored for this product (how Norm worked "
+    "before 19 October)",
+}
+
+
+def _replica_line(data: dict, line: dict) -> dict | None:
+    lines = [r for r in (data.get("replica") or {}).get("lines") or [] if r]
+    code = str(line.get("code") or "").strip()
+    if code:
+        for r in lines:
+            if str(r.get("code") or "").strip() == code:
+                return r
+    item = line.get("linked_item_id")
+    if item:
+        for r in lines:
+            if r.get("linked_item_id") == item:
+                return r
+    return None
+
+
+def unit_origin(p, data: dict | None, names: dict) -> dict:
+    """Where the unit a line is booked in came from, read off the invoice's
+    record in Norm: ``{"who": person|norm|loaded|unknown, "text", "at"}``.
+
+    The latest thing that set it wins: a change in Loaded after the receive, a
+    person's edit on the card, a decision on one of Norm's unit suggestions,
+    Norm's own reading, else Loaded's draft. The check judges the unit against
+    the invoice; this says whose choice it would be undoing (a person changed
+    cases of wine to bottles on purpose — Mr Murdochs, 21 Oct 2026)."""
+    if not data:
+        return {
+            "who": "unknown",
+            "text": "Norm has no record of receiving this invoice.",
+            "at": None,
+        }
+    line = next(
+        (ln for ln in data.get("lines") or [] if str(ln.get("id")) == str(p.line_id)),
+        None,
+    )
+    if line is None:
+        return {
+            "who": "unknown",
+            "text": "The line isn't on Norm's record of the invoice: it was added "
+            "in Loaded.",
+            "at": None,
+        }
+    received = line.get("unit")
+    if (
+        p.booked_unit_id
+        and line.get("linked_unit_id")
+        and str(line["linked_unit_id"]) != str(p.booked_unit_id)
+    ):
+        return {
+            "who": "loaded",
+            "text": f"Changed in Loaded after Norm received it as '{received}'.",
+            "at": None,
+        }
+    edits = [
+        e
+        for e in data.get("edits") or []
+        if e.get("line_id") == line.get("id") and e.get("field") == "unit"
+    ]
+    if edits and edits[0].get("before") != edits[-1].get("after"):
+        who = names.get(str(edits[-1].get("by"))) or "Someone"
+        before = edits[0].get("before")
+        return {
+            "who": "person",
+            "text": f"{who} changed it on the invoice card"
+            + (f" from '{before}'" if before else "")
+            + ".",
+            "at": edits[-1].get("at"),
+        }
+    actions = {
+        a.get("suggestion_id"): a
+        for a in data.get("suggestion_actions") or []
+        if a.get("suggestion_id")
+    }
+    for s in reversed(data.get("suggestions") or []):
+        if s.get("field") != "unit" or str(s.get("line_id")) != str(line.get("id")):
+            continue
+        a = actions.get(s.get("id"))
+        if not a:
+            continue
+        why = str(s.get("explanation") or "").strip()
+        who = names.get(str(a.get("user_id"))) or "Someone"
+        if a.get("action") == "accepted":
+            if a.get("by") == "norm":
+                return {
+                    "who": "norm",
+                    "text": f"Norm set it when receiving: {why}.",
+                    "at": a.get("srv_at") or a.get("at"),
+                }
+            return {
+                "who": "person",
+                "text": f"{who} accepted Norm's suggestion: {why}.",
+                "at": a.get("srv_at") or a.get("at"),
+            }
+        if a.get("action") == "dismissed" and s.get("proposed") != received:
+            return {
+                "who": "person",
+                "text": f"{who} turned down Norm's suggestion of "
+                f"'{s.get('proposed')}' and kept '{received}'.",
+                "at": a.get("srv_at") or a.get("at"),
+            }
+    rl = _replica_line(data, line)
+    if rl and rl.get("linked_unit_id") == line.get("linked_unit_id"):
+        words = UNIT_SOURCE_WORDS.get(rl.get("unit_by") or rl.get("unit_source"))
+        if words:
+            why = str(rl.get("unit_why") or "").strip()
+            return {
+                "who": "norm",
+                "text": words + (f": {why}" if why else "") + ".",
+                "at": None,
+            }
+    if line.get("original_unit_id") == line.get("linked_unit_id"):
+        read = rl.get("unit") if rl else None
+        return {
+            "who": "loaded",
+            "text": f"Loaded's draft: it was '{received}' when Norm first saw the "
+            "invoice, and nothing changed it"
+            + (f" (Norm read '{read}')" if read and read != received else "")
+            + ".",
+            "at": None,
+        }
+    return {
+        "who": "unknown",
+        "text": f"Norm's record doesn't say: the line was already '{received}' "
+        "when it was received.",
+        "at": None,
+    }
+
+
+def views(db, proposals: list) -> list[dict]:
+    """``proposal_view`` for each, with where its unit came from and the copy
+    to show beside it (``file_id``), off the invoices' records in Norm."""
+    from app.db.models import User, WorkingDocument
+
+    wanted = {(p.venue_id, str(p.invoice_id)) for p in proposals}
+    docs: dict[tuple, dict] = {}
+    if wanted:
+        rows = (
+            db.query(
+                WorkingDocument.venue_id,
+                WorkingDocument.external_ref,
+                WorkingDocument.data,
+            )
+            .filter(
+                WorkingDocument.doc_type == "received_invoice",
+                WorkingDocument.venue_id.in_({v for v, _ in wanted}),
+                WorkingDocument.external_ref["invoice_id"]
+                .as_string()
+                .in_({i for _, i in wanted}),
+            )
+            .order_by(WorkingDocument.updated_at.desc())
+            .all()
+        )
+        for venue_id, ref, data in rows:
+            key = (venue_id, str((ref or {}).get("invoice_id")))
+            if key in wanted and key not in docs:
+                docs[key] = data or {}
+    people = set()
+    for data in docs.values():
+        people.update(str(e.get("by")) for e in data.get("edits") or [])
+        people.update(
+            str(a.get("user_id"))
+            for a in data.get("suggestion_actions") or []
+            if a.get("user_id")
+        )
+    names = (
+        {
+            u.id: u.full_name or u.email
+            for u in db.query(User).filter(User.id.in_(people)).all()
+        }
+        if people
+        else {}
+    )
+    out = []
+    for p in proposals:
+        data = docs.get((p.venue_id, str(p.invoice_id)))
+        out.append(
+            {
+                **proposal_view(p),
+                "origin": unit_origin(p, data, names),
+                "file_id": (data or {}).get("file_id"),
+            }
+        )
+    return out
+
+
 def run_view(run, counts: dict | None = None) -> dict:
     return {
         "id": run.id,

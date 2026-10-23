@@ -1,9 +1,11 @@
 'use client';
 
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { FileText } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import Badge, { type BadgeTone } from '../ui/Badge';
 import Button from '../ui/Button';
+import InvoicePdfPane from './InvoicePdfPane';
 
 /**
  * The daily unit check (owner, 18 Oct 2026).
@@ -18,6 +20,11 @@ import Button from '../ui/Button';
  *
  * Since 19 Oct 2026 the lines are shown in Settings → Invoice activity, under
  * "Units to look at", filtered by the page's dates and venues.
+ *
+ * Each line says where the unit it is booked in came from (a person's change
+ * on the card, a decision on Norm's suggestion, Norm's reading, Loaded's
+ * draft), and each invoice's copy opens beside its lines, as on the receive
+ * card (owner, 24 Oct 2026).
  */
 
 export interface Proposal {
@@ -45,7 +52,20 @@ export interface Proposal {
   decided_at: string | null;
   note: string | null;
   error: string | null;
+  venue_id?: string | null;
+  /** Where the booked unit came from, off the invoice's record in Norm. */
+  origin?: { who: 'person' | 'norm' | 'loaded' | 'unknown'; text: string; at: string | null } | null;
+  /** The invoice's copy in Loaded, to show beside its lines. */
+  file_id?: string | null;
 }
+
+/** Who set the booked unit, as a badge beside "where it came from". */
+const ORIGIN: Record<NonNullable<Proposal['origin']>['who'], { label: string; tone: BadgeTone } | null> = {
+  person: { label: "A person's choice", tone: 'info' },
+  norm: { label: 'Norm', tone: 'neutral' },
+  loaded: { label: 'Loaded', tone: 'neutral' },
+  unknown: null,
+};
 
 const STATUS: Record<Proposal['status'], { label: string; tone: BadgeTone }> = {
   open: { label: 'To review', tone: 'accent' },
@@ -155,6 +175,13 @@ export function ProposalCard({ p, onDone, onSettled }: { p: Proposal; onDone: (p
         <Field label="Booked as"><span style={{ textDecoration: p.status === 'applied' ? 'line-through' : undefined }}>{p.booked_unit_name || '—'}</span></Field>
         {(!confirm || p.status === 'applied') && <Field label={p.status === 'applied' ? 'Now' : 'Proposed'}><strong>{p.proposed_unit_name || '—'}</strong></Field>}
       </div>
+      {p.origin && (
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginBottom: 8, display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <span style={{ color: 'var(--muted)' }}>Where &lsquo;{p.booked_unit_name || 'the unit'}&rsquo; came from:</span>
+          {ORIGIN[p.origin.who] && <Badge tone={ORIGIN[p.origin.who]!.tone}>{ORIGIN[p.origin.who]!.label}</Badge>}
+          <span>{p.origin.text}{p.origin.at ? ` ${when(p.origin.at)}` : ''}</span>
+        </div>
+      )}
       {p.reason && <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)', marginBottom: 8 }}>{p.reason}</div>}
       {(p.error || error) && (
         <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--error)', marginBottom: 8 }}>{error || p.error}</div>
@@ -217,6 +244,57 @@ export function ProposalCard({ p, onDone, onSettled }: { p: Proposal; onDone: (p
   );
 }
 
+/** An invoice's copy beside its lines, as on the receive card: half the width
+ *  each, the copy sticky while the lines scroll; narrower, it stacks above. */
+function CopyBeside({ venueId, fileId, label, onClose, children }: {
+  venueId: string;
+  fileId: string;
+  label: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const src = `/api/invoice-fixes/file?venue_id=${encodeURIComponent(venueId)}&file_id=${encodeURIComponent(fileId)}`;
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [sideBySide, setSideBySide] = useState(true);
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([e]) => setSideBySide(e.contentRect.width >= 2 * 420 + 12));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // Its own tab: opened inside the click (a popup opened after the fetch is
+  // blocked), then pointed at the copy once it has arrived.
+  const popOut = async () => {
+    const w = window.open('about:blank', '_blank');
+    try {
+      const r = await apiFetch(src);
+      if (!r.ok) throw new Error(`Error ${r.status}`);
+      const url = URL.createObjectURL(await r.blob());
+      if (w && !w.closed) w.location.replace(url);
+      else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `invoice-${label || fileId}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch {
+      if (w && !w.closed) w.close();
+    }
+  };
+  return (
+    <div ref={rowRef} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div style={{ flex: '1 1 420px', minWidth: 0, ...(sideBySide ? { position: 'sticky' as const, top: 8 } : {}) }}>
+        <InvoicePdfPane src={src} onClose={onClose} onPopOut={popOut} />
+      </div>
+      <div style={{ flex: '1 1 420px', minWidth: 0 }}>{children}</div>
+    </div>
+  );
+}
+
 /** The flagged lines, grouped by venue and invoice. */
 export function UnitCheckLines({ proposals, onReplace, onReload }: {
   proposals: Proposal[];
@@ -224,13 +302,15 @@ export function UnitCheckLines({ proposals, onReplace, onReload }: {
   /** Confirming or changing settles the product's other open lines too. */
   onReload: () => void;
 }) {
+  // One copy open at a time: the invoice whose lines it sits beside.
+  const [copyFor, setCopyFor] = useState<string | null>(null);
   const groups = useMemo(() => {
     const out: { venue: string; invoices: { key: string; label: string; items: Proposal[] }[] }[] = [];
     for (const p of proposals) {
       const venue = p.venue_name || 'Venue';
       let g = out.find((x) => x.venue === venue);
       if (!g) { g = { venue, invoices: [] }; out.push(g); }
-      const key = p.invoice_id;
+      const key = `${p.venue_id || venue}:${p.invoice_id}`;
       let inv = g.invoices.find((x) => x.key === key);
       if (!inv) {
         inv = { key, label: [p.supplier_name, p.invoice_number, p.invoice_date].filter(Boolean).join(' · '), items: [] };
@@ -246,12 +326,30 @@ export function UnitCheckLines({ proposals, onReplace, onReload }: {
       {groups.map((g) => (
         <Fragment key={g.venue}>
           <h4 style={{ margin: '14px 0 8px', fontSize: 'var(--fs-base)', fontWeight: 600 }}>{g.venue}</h4>
-          {g.invoices.map((inv) => (
-            <div key={inv.key} style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginBottom: 6 }}>{inv.label}</div>
-              {inv.items.map((p) => <ProposalCard key={p.id} p={p} onDone={onReplace} onSettled={onReload} />)}
-            </div>
-          ))}
+          {g.invoices.map((inv) => {
+            const first = inv.items[0];
+            const canView = !!(first.file_id && first.venue_id);
+            const open = canView && copyFor === inv.key;
+            const cards = inv.items.map((p) => <ProposalCard key={p.id} p={p} onDone={onReplace} onSettled={onReload} />);
+            return (
+              <div key={inv.key} style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                  <div style={{ flex: '1 1 200px', minWidth: 0, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{inv.label}</div>
+                  {canView && (
+                    <Button size="sm" variant="quiet" icon={FileText} aria-pressed={open}
+                      onClick={() => setCopyFor(open ? null : inv.key)}>
+                      {open ? 'Hide the invoice copy' : 'View invoice copy'}
+                    </Button>
+                  )}
+                </div>
+                {open ? (
+                  <CopyBeside venueId={first.venue_id!} fileId={first.file_id!} label={first.invoice_number || ''} onClose={() => setCopyFor(null)}>
+                    {cards}
+                  </CopyBeside>
+                ) : cards}
+              </div>
+            );
+          })}
         </Fragment>
       ))}
     </>

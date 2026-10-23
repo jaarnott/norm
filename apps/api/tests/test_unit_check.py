@@ -544,6 +544,23 @@ class TestTheDojoEndpoints:
             "app.services.email_service.send_system_email", lambda *a, **k: None
         )
         _run(db_session, world)
+        # The basil line as the receive kept it: the owner changed it on the card.
+        doc = db_session.query(WorkingDocument).one()
+        doc.data = {
+            **doc.data,
+            "lines": [{"id": "l1", "unit": "Kilo", "linked_unit_id": "u-kilo"}],
+            "edits": [
+                {
+                    "line_id": "l1",
+                    "field": "unit",
+                    "before": "100 Grams",
+                    "after": "Kilo",
+                    "by": "u-owner",
+                    "at": "2026-10-19T01:00:00+00:00",
+                }
+            ],
+        }
+        db_session.flush()
         r = client.get(
             "/api/supplier-invoice-specs/dojo/unit-check", headers=admin_headers
         )
@@ -557,12 +574,98 @@ class TestTheDojoEndpoints:
             basil["booked_unit_name"] == "Kilo"
             and basil["proposed_unit_name"] == "100 Grams"
         )
+        # Where 'Kilo' came from, and the copy to show beside the line.
+        assert basil["origin"]["text"] == (
+            "Owner changed it on the invoice card from '100 Grams'."
+        )
+        assert basil["file_id"] == "f-1"
         r = client.post(
             f"/api/supplier-invoice-specs/dojo/unit-check/proposals/{basil['id']}/dismiss",
             json={"note": "checked"},
             headers=admin_headers,
         )
         assert r.status_code == 200 and r.json()["status"] == "dismissed"
+
+
+def test_each_line_says_where_its_unit_came_from():
+    """Whose unit the check would undo (owner, 24 Oct 2026): at Mr Murdochs a
+    person had changed cases of wine to bottles on the card, and the check
+    proposed the case back with nothing to say it was their choice."""
+    names = {"u-dianna": "Dianna Fong"}
+
+    def origin(booked="u-750", line=(), read=(), **over):
+        received = {
+            "id": "l1",
+            "code": "W1",
+            "unit": "750 mL",
+            "linked_unit_id": "u-750",
+            "original_unit_id": "u-case",
+            **dict(line),
+        }
+        reading = {
+            "code": "W1",
+            "unit": "6x750ml",
+            "linked_unit_id": "u-case",
+            **dict(read),
+        }
+        data = {"lines": [received], "replica": {"lines": [reading]}, **over}
+        p = UnitCheckProposal(line_id="l1", booked_unit_id=booked)
+        return UC.unit_origin(p, data, names)
+
+    edit = {
+        "line_id": "l1",
+        "field": "unit",
+        "before": "6x750ml",
+        "after": "750 mL",
+        "by": "u-dianna",
+        "at": "2026-10-21T19:59:38+00:00",
+    }
+    assert origin(edits=[edit]) == {
+        "who": "person",
+        "text": "Dianna Fong changed it on the invoice card from '6x750ml'.",
+        "at": "2026-10-21T19:59:38+00:00",
+    }
+    # Changed in Loaded since: Norm's record no longer explains it.
+    o = origin(booked="u-litre", edits=[edit])
+    assert o["who"] == "loaded" and "received it as '750 mL'" in o["text"]
+    suggestion = {
+        "id": "line_value:unit:l1",
+        "field": "unit",
+        "line_id": "l1",
+        "proposed": "6x750ml",
+        "explanation": "the invoice's delivered unit is 6x750ml",
+    }
+    turned_down = {
+        "suggestion_id": "line_value:unit:l1",
+        "action": "dismissed",
+        "by": "user",
+        "user_id": "u-dianna",
+    }
+    o = origin(suggestions=[suggestion], suggestion_actions=[turned_down])
+    assert o["text"] == (
+        "Dianna Fong turned down Norm's suggestion of '6x750ml' and kept '750 mL'."
+    )
+    norm_did = {
+        "suggestion_id": "line_value:unit:l1",
+        "action": "accepted",
+        "by": "norm",
+    }
+    o = origin(
+        suggestions=[{**suggestion, "proposed": "750 mL", "explanation": "x"}],
+        suggestion_actions=[norm_did],
+    )
+    assert (o["who"], o["text"]) == ("norm", "Norm set it when receiving: x.")
+    # Norm's reading decided it.
+    o = origin(read={"linked_unit_id": "u-750", "unit_source": "catalogue"})
+    assert o["text"] == "Norm's catalogue answer for this product."
+    # Loaded's draft, which nothing changed.
+    o = origin(line={"original_unit_id": "u-750"})
+    assert o["who"] == "loaded" and o["text"] == (
+        "Loaded's draft: it was '750 mL' when Norm first saw the invoice, and "
+        "nothing changed it (Norm read '6x750ml')."
+    )
+    p = UnitCheckProposal(line_id="l1", booked_unit_id="u-750")
+    assert UC.unit_origin(p, None, names)["who"] == "unknown"
 
 
 def test_a_venues_bunch_rule_is_its_choice_not_a_correction(db_session, world):

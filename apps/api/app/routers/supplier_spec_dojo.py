@@ -925,7 +925,7 @@ def unit_check_overview(
         )
         return {
             "runs": [UC.run_view(r, counts.get(r.id)) for r in runs[:10]],
-            "proposals": [UC.proposal_view(p) for p in proposals],
+            "proposals": UC.views(db, proposals),
         }
 
     q = db.query(P)
@@ -942,7 +942,7 @@ def unit_check_overview(
     )
     return {
         "runs": [UC.run_view(r, counts.get(r.id)) for r in runs],
-        "proposals": [UC.proposal_view(p) for p in proposals],
+        "proposals": UC.views(db, proposals),
     }
 
 
@@ -990,7 +990,7 @@ def unit_check_apply(
 
     p = _proposal_or_404(db, proposal_id)
     UC.apply_proposal(db, config_db, p, user.email)
-    return UC.proposal_view(p)
+    return UC.views(db, [p])[0]
 
 
 @router.post("/dojo/unit-check/proposals/{proposal_id}/confirm")
@@ -1006,7 +1006,7 @@ def unit_check_confirm(
 
     p = _proposal_or_404(db, proposal_id)
     UC.confirm_proposal(db, config_db, p, user.email)
-    return UC.proposal_view(p)
+    return UC.views(db, [p])[0]
 
 
 class UnitCheckChange(BaseModel):
@@ -1027,7 +1027,7 @@ def unit_check_change(
 
     p = _proposal_or_404(db, proposal_id)
     UC.change_proposal(db, config_db, p, body.unit_id, user.email)
-    return UC.proposal_view(p)
+    return UC.views(db, [p])[0]
 
 
 @router.get("/dojo/unit-check/proposals/{proposal_id}/units")
@@ -1058,4 +1058,4 @@ def unit_check_dismiss(
 
     p = _proposal_or_404(db, proposal_id)
     UC.dismiss_proposal(db, p, user.email, body.note)
-    return UC.proposal_view(p)
+    return UC.views(db, [p])[0]

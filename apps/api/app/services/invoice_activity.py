@@ -847,16 +847,16 @@ def timeline(db, venue_id: str, invoice_id: str) -> dict:
         row = _event_row(e, names)
         row["first_at"] = _iso(e.created_at)
         items.append({"type": "event", **row})
-    unit_lines = [
-        UC.proposal_view(p)
-        for p in db.query(UnitCheckProposal)
+    unit_lines = UC.views(
+        db,
+        db.query(UnitCheckProposal)
         .filter(
             UnitCheckProposal.venue_id == venue_id,
             UnitCheckProposal.invoice_id == invoice_id,
         )
         .order_by(UnitCheckProposal.created_at)
-        .all()
-    ]
+        .all(),
+    )
     # By when each last happened: a stop refreshed after a receive (the
     # invoice came back) is the latest thing, not the first.
     items.sort(key=lambda x: x.get("at") or "")
