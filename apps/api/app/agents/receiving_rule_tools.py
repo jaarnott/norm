@@ -22,7 +22,7 @@ from app.services import receiving_rules as RR
 
 _REFUSED = (
     "Only an owner or a manager can set receiving rules. Ask one of them, or "
-    "they can set it in Settings → Receiving rules."
+    "they can set it in Settings → Preferences, under Receive supplier invoices."
 )
 
 
@@ -142,7 +142,7 @@ def _get_receiving_rules(params: dict, db: Session, thread_id: str | None) -> di
         "and Autopilot both follow it, shown on the invoice as the venue's rule. "
         "A venue's own rule overrides the organisation's. A rule wins over what "
         "the invoice says. Owners and managers change them, here or in "
-        "Settings → Receiving rules."
+        "Settings → Preferences, under Receive supplier invoices."
     )
     view["_no_display"] = True
     return {"success": True, "data": view}

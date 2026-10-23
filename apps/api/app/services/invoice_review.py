@@ -1094,6 +1094,37 @@ def _add_line_suggestions(
         )
 
 
+def _due_date_suggestion(data: dict, replica: dict, suggestions: list[dict]) -> None:
+    """The due date the invoice prints, where Loaded's draft lacks it or has
+    another. Loaded's import misses some (Sydney Direct Fresh prints "Due
+    Date: 29th October 2026"; Loaded had none, so the Xero bill went without —
+    The Lott, 23 Oct 2026). Only a readable date, and never one before the
+    invoice's own date (that is a misread, not a due date). A receiving rule
+    that covers every invoice still wins (receiving_rules.apply)."""
+    printed = _date_part(str(replica.get("due_at") or ""))
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", printed):
+        return
+    current = _date_part(data.get("due_at")) or None
+    if printed == current:
+        return
+    issued = _date_part(str(replica.get("issued_at") or data.get("issued_at") or ""))
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", issued) and printed < issued:
+        return
+    when = datetime.date.fromisoformat(printed)
+    _sugg(
+        suggestions,
+        "header_value",
+        field="due_at",
+        current=current,
+        proposed=printed,
+        explanation=(
+            f"the invoice says it is due {when:%a %-d %b %Y} — Loaded has "
+            + (current or "no due date")
+        ),
+        apply={"due_at": printed},
+    )
+
+
 def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> None:
     fixes = replica.get("fixes") or {}
     if replica.get("reference_number") and _norm(
@@ -1130,6 +1161,7 @@ def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> N
             ),
             apply={"issued_at": replica.get("issued_at")},
         )
+    _due_date_suggestion(data, replica, suggestions)
     money = list(_HEADER_VALUE_FIELDS)
     # A totals fix may correct the subtotal too — derived, so otherwise never
     # proposed, but the fix has to be visible to be accepted.

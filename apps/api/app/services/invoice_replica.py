@@ -39,6 +39,7 @@ resolver's verdict is the authority — see docs/unit-resolution.md.
 from __future__ import annotations
 
 import logging
+import re
 
 import httpx
 from sqlalchemy.orm import Session
@@ -97,10 +98,15 @@ def _iso_date(v: object) -> str | None:
     if not v:
         return None
     s = " ".join(str(v).split())
+    # "Thursday, 29th October 2026" reads as "29 October 2026": a weekday in
+    # front and an ordinal day (Sydney Direct Fresh prints "Due Date: 29th
+    # October 2026", Oct 2026). Only for the parse — unparseable stays verbatim.
+    t = re.sub(r"^(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+", "", s, flags=re.I)
+    t = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", t, flags=re.I)
     for fmt in _DATE_FORMATS:
         try:
             return (
-                _dt.datetime.strptime(s[:10] if fmt == "%Y-%m-%d" else s, fmt)
+                _dt.datetime.strptime(t[:10] if fmt == "%Y-%m-%d" else t, fmt)
                 .date()
                 .isoformat()
             )

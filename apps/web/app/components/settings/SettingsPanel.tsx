@@ -29,7 +29,6 @@ import ApprovalPreferences from './ApprovalPreferences';
 import MemoryTab from './MemoryTab';
 import SuggestionsAdminPanel from './SuggestionsAdminPanel';
 import CompanySettingsTab from './CompanySettingsTab';
-import ReceivingRulesPanel from './ReceivingRulesPanel';
 import TeamSection from '../team/TeamSection';
 import AddressSearch from './AddressSearch';
 import OrganisationsPanel from './OrganisationsPanel';
@@ -1434,7 +1433,7 @@ function UsersTab({ canManage }: { canManage: boolean }) {
   );
 }
 
-export type SettingsTab = 'organisations' | 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'invoice-activity' | 'unit-check' | 'autopilot-readiness' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences' | 'suggestion-rules' | 'team' | 'receiving-rules';
+export type SettingsTab = 'organisations' | 'app-map' | 'connections' | 'connectors' | 'agents' | 'components' | 'playbooks' | 'supplier-specs' | 'invoice-activity' | 'unit-check' | 'autopilot-readiness' | 'templates' | 'venues' | 'members' | 'company' | 'billing' | 'email' | 'deployments' | 'tests' | 'roles' | 'secrets' | 'threads' | 'mcp' | 'preferences' | 'suggestion-rules' | 'team';
 
 function hasSettingsPermission(user: User | null, ...perms: string[]): boolean {
   return perms.some(p => can(user, p));
@@ -1698,9 +1697,6 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
     [true, 'members', 'Users'],
     // Hire and retire team members, switch their apps.
     [!!orgId, 'team', 'AI team'],
-    // How Norm fills in what an invoice leaves open (a due date) — the
-    // organisation's rules and each venue's own (owner, 22 Oct 2026).
-    [!!orgId, 'receiving-rules', 'Receiving rules'],
     [showRoles, 'roles', 'Roles'],
     [showBilling, 'billing', 'Billing'],
     [showEmail, 'email', 'Email'],
@@ -1799,7 +1795,8 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
           {tab === 'preferences' && (
             <>
               {/* What Norm may do without asking — every write, receiving and
-                  reconciling included. One home for one question. */}
+                  reconciling included. One home for one question. The
+                  organisation's receiving rules sit under the receive card. */}
               <ApprovalPreferences />
               <div style={{ height: 32 }} />
               {/* Knowledge and suggestion notes, one list. */}
@@ -1825,7 +1822,6 @@ export default function SettingsPanel({ initialTab, initialView }: { initialTab?
           {/* ============ COMPANY TAB (currency, time zone, tax, Functions mode) ============ */}
           {tab === 'company' && orgId && <CompanySettingsTab orgId={orgId} />}
           {tab === 'team' && orgId && <TeamSection user={storedUser} />}
-          {tab === 'receiving-rules' && orgId && <ReceivingRulesPanel />}
 
           {/* ============ CONNECTORS TAB ============ */}
           {tab === 'app-map' && isAdmin && <AppMapPanel />}

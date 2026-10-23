@@ -58,11 +58,17 @@ interface Editing {
   day: number;
 }
 
-const sectionTitle: CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' };
-const subTitle: CSSProperties = { margin: '24px 0 8px', fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text)' };
-const intro: CSSProperties = { margin: '4px 0 16px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
+/** A white .n-card block, like the Preferences cards around it. */
+const card: CSSProperties = { padding: '14px 16px', marginBottom: 12 };
+const cardTitle: CSSProperties = { margin: 0, fontSize: 'var(--fs-base)', fontWeight: 600, lineHeight: 1.35, color: 'var(--text)' };
+const intro: CSSProperties = { margin: '2px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
 const muted: CSSProperties = { fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
-const row: CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 12, padding: '10px 0', borderTop: '1px solid var(--line)' };
+const groupTitle: CSSProperties = { fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' };
+const row: CSSProperties = {
+  display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px 16px',
+  flexWrap: 'wrap', padding: '10px 0', borderTop: '1px solid var(--line-soft)',
+};
+const rowText: CSSProperties = { flex: '1 1 220px', minWidth: 0 };
 const alertBox: CSSProperties = {
   marginTop: 12, padding: '8px 12px', fontSize: 'var(--fs-sm)',
   color: 'var(--error)', backgroundColor: 'var(--error-bg)', borderRadius: 'var(--radius)',
@@ -97,13 +103,14 @@ function editingFrom(kind: string, venueId: string | null, where: string, rule?:
 }
 
 /**
- * Settings → Receiving rules: how Norm fills in what an invoice leaves to the
- * organisation (the due date, first) every time it reviews one — on the card
- * and under Autopilot alike. The organisation's rules, and each venue's own
- * overrides beside what is in force there. Everyone in the organisation can
- * read them; owners and managers (`can_edit`) change them.
+ * Settings → Preferences, under "Receive supplier invoices": how Norm fills in
+ * what an invoice leaves to the organisation (the due date, first) every time
+ * it reviews one — on the card and under Autopilot alike. The organisation's
+ * rules, and each venue's own overrides beside what is in force there.
+ * Everyone in the organisation can read them; owners and managers
+ * (`can_edit`) change them. Unlike the preferences around it, they are shared.
  */
-export default function ReceivingRulesPanel() {
+export default function ReceivingRulesPanel({ orgName }: { orgName?: string | null }) {
   const [view, setView] = useState<RulesView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -140,8 +147,15 @@ export default function ReceivingRulesPanel() {
     return () => { live = false; };
   }, [editing]);
 
-  if (loadError) return <PageState kind="error" title={loadError} />;
-  if (!view) return <PageState kind="loading" title="Loading receiving rules…" />;
+  const title = <h3 style={cardTitle}>Receiving rules</h3>;
+  if (loadError || !view) {
+    return (
+      <div className="n-card" style={card} data-testid="receiving-rules">
+        {title}
+        {loadError ? <PageState kind="error" title={loadError} /> : <PageState kind="loading" title="Loading receiving rules…" />}
+      </div>
+    );
+  }
 
   const kind = view.kinds[0];
   const editable = view.can_edit;
@@ -179,7 +193,8 @@ export default function ReceivingRulesPanel() {
   };
 
   const editor = editing && (
-    <div className="n-card" style={{ padding: 16, marginTop: 8 }} data-testid="receiving-rule-editor">
+    <div style={{ margin: '0 0 10px', padding: 12, borderRadius: 'var(--radius)', border: '1px solid var(--line)', background: 'var(--bg)' }}
+      data-testid="receiving-rule-editor">
       <div style={{ fontWeight: 600, marginBottom: 8 }}>{kind?.label} — {editing.where}</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
         <label style={{ minWidth: 0, flex: '1 1 100%' }}>
@@ -240,22 +255,22 @@ export default function ReceivingRulesPanel() {
   const orgRule = view.organisation.find((r) => r.kind === kind?.kind);
 
   return (
-    <div style={{ lineHeight: 1.45 }}>
-      <h2 style={sectionTitle}>Receiving rules</h2>
+    <div className="n-card" style={{ ...card, lineHeight: 1.45 }} data-testid="receiving-rules">
+      {title}
       <p style={intro}>
-        How Norm fills in what an invoice leaves to you, every time it reviews one — on the invoice card and under
-        Autopilot. A venue’s own rule overrides the organisation’s, and a rule wins over what the invoice says.
+        How Norm fills in the due date whenever it receives an invoice — on the invoice card and on Autopilot. Unlike
+        the choices above, these rules belong to {orgName ? <strong>{orgName}</strong> : 'your organisation'} and are
+        the same for everyone. Where a rule applies it wins over what the invoice says.
         {editable ? '' : ' Only owners and managers can change them.'}
       </p>
       {error && <div style={alertBox} role="alert">{error}</div>}
 
-      <h3 style={subTitle}>Organisation</h3>
-      <div className="n-card" style={{ padding: '4px 16px' }} data-testid="receiving-rules-organisation">
+      <div data-testid="receiving-rules-organisation">
         {kind && (
-          <div style={{ ...row, borderTop: 'none' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600 }}>{kind.label}</div>
-              <div style={muted}>{orgRule ? `The due date is ${orgRule.description}.` : 'No rule — the due date is what the invoice and Loaded give it.'}</div>
+          <div style={row}>
+            <div style={rowText}>
+              <div style={{ fontWeight: 500 }}>The whole organisation</div>
+              <div style={muted}>{orgRule ? `Due date: ${orgRule.description}.` : 'No rule — the due date is what the invoice and Loaded give it.'}</div>
               {orgRule?.note && <div style={{ ...muted, fontStyle: 'italic' }}>“{orgRule.note}”</div>}
             </div>
             {editable && (
@@ -268,43 +283,45 @@ export default function ReceivingRulesPanel() {
             )}
           </div>
         )}
+        {editing && editing.venueId === null && editor}
       </div>
-      {editing && editing.venueId === null && editor}
 
-      <h3 style={subTitle}>Venues</h3>
-      {view.venues.length === 0 && <p style={muted}>This organisation has no venues yet.</p>}
-      <div className="n-card" style={{ padding: '4px 16px' }} data-testid="receiving-rules-venues">
-        {view.venues.map((v, i) => {
-          const own = v.rules.find((r) => r.kind === kind?.kind);
-          const inForce = v.in_force.find((r) => r.kind === kind?.kind);
-          return (
-            <div key={v.id}>
-              <div style={{ ...row, ...(i === 0 ? { borderTop: 'none' } : {}) }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600 }}>{v.name}</div>
-                  <div style={muted}>
-                    {inForce ? `Due date: ${inForce.description}.` : 'Due date: no rule.'}{' '}
-                    {own ? <Badge tone="info">This venue’s own rule</Badge> : inForce ? <Badge>From the organisation</Badge> : null}
+      {view.venues.length > 0 && (
+        <div style={{ marginTop: 12, paddingTop: 14, borderTop: '1px solid var(--line)' }} data-testid="receiving-rules-venues">
+          <div style={groupTitle}>Venues</div>
+          <p style={intro}>A venue&rsquo;s own rule replaces the organisation&rsquo;s there.</p>
+          {view.venues.map((v) => {
+            const own = v.rules.find((r) => r.kind === kind?.kind);
+            const inForce = v.in_force.find((r) => r.kind === kind?.kind);
+            return (
+              <div key={v.id}>
+                <div style={row}>
+                  <div style={rowText}>
+                    <div style={{ fontWeight: 500 }}>{v.name}</div>
+                    <div style={muted}>
+                      {inForce ? `Due date: ${inForce.description}.` : 'Due date: no rule.'}{' '}
+                      {own ? <Badge tone="info">This venue’s own rule</Badge> : inForce ? <Badge>From the organisation</Badge> : null}
+                    </div>
                   </div>
-                </div>
-                {editable && kind && (
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <Button size="sm" onClick={() => setEditing(editingFrom(kind.kind, v.id, v.name, own ?? inForce))}>
-                      {own ? 'Edit' : 'Set for this venue'}
-                    </Button>
-                    {own && (
-                      <Button size="sm" variant="quiet" onClick={() => remove(own)}>
-                        {orgRule ? 'Use the organisation’s' : 'Remove'}
+                  {editable && kind && (
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <Button size="sm" onClick={() => setEditing(editingFrom(kind.kind, v.id, v.name, own ?? inForce))}>
+                        {own ? 'Edit' : 'Set for this venue'}
                       </Button>
-                    )}
-                  </div>
-                )}
+                      {own && (
+                        <Button size="sm" variant="quiet" onClick={() => remove(own)}>
+                          {orgRule ? 'Use the organisation’s' : 'Remove'}
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {editing && editing.venueId === v.id && editor}
               </div>
-              {editing && editing.venueId === v.id && editor}
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

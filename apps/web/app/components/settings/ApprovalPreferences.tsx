@@ -11,15 +11,20 @@
  *
  * Replaced two panels with two homes for one question: per-user "workflow
  * modes", and a per-venue receiving ladder.
+ *
+ * Under the receive card sit the organisation's receiving rules
+ * (ReceivingRulesPanel) — shared, not yours alone, but this is where people
+ * look for how invoices are received (owner, 23 Oct 2026).
  */
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Lock } from 'lucide-react';
 import { apiFetch, getStoredUser } from '../../lib/api';
 import Badge from '../ui/Badge';
 import Icon from '../ui/Icon';
 import PageState from '../ui/PageState';
+import ReceivingRulesPanel from './ReceivingRulesPanel';
 
 interface Level { id: string; label: string; description?: string }
 interface Switch { id: string; label: string; group?: 'after_receive' }
@@ -195,59 +200,62 @@ export default function ApprovalPreferences() {
         const afterSwitches = (t.switches || []).filter(sw => sw.group === 'after_receive');
         const busy = saving === t.key;
         return (
-          <div key={t.key} className="n-card" style={card}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-              <h3 style={cardTitle}>{t.label}</h3>
-              {busy && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>Saving…</span>}
+          <Fragment key={t.key}>
+            <div className="n-card" style={card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                <h3 style={cardTitle}>{t.label}</h3>
+                {busy && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>Saving…</span>}
+              </div>
+              {t.key === RECEIVE && readiness && readiness.attempts > 0 && (
+                <div style={{ margin: '10px 0 0', padding: '8px 12px', borderRadius: 'var(--radius)', background: 'var(--surface-alt)', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                  Over the last 30 days, autopilot would have been right on{' '}
+                  <strong style={{ fontWeight: 600, color: 'var(--text)' }}>{Math.round(readiness.rate * 100)}%</strong> of the {readiness.attempts} invoices a person received.
+                </div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                {(t.levels || []).map(lv => {
+                  const on = t.level === lv.id;
+                  // The chosen level reads as a selected tile: --selected fill, tan edge.
+                  return (
+                    <label key={lv.id} style={{
+                      display: 'flex', gap: 10, alignItems: 'flex-start', cursor: busy ? 'default' : 'pointer',
+                      padding: '10px 12px', borderRadius: 'var(--radius)',
+                      border: `1px solid ${on ? 'var(--brand-soft)' : 'var(--line)'}`,
+                      background: on ? 'var(--selected)' : 'var(--bg)',
+                    }}>
+                      <input type="radio" name={t.key} checked={on} disabled={busy}
+                        onChange={() => void save(t.key, { level: lv.id, options })}
+                        style={{ flex: '0 0 auto', width: 16, height: 16, margin: '2px 0 0', accentColor: 'var(--accent)', cursor: 'inherit' }} />
+                      <span style={{ minWidth: 0 }}>
+                        <span style={{ display: 'block', fontSize: 'var(--fs-base)', fontWeight: on ? 600 : 500, color: 'var(--text)' }}>{lv.label}</span>
+                        {lv.description && <span style={{ display: 'block', marginTop: 2, fontSize: 'var(--fs-sm)', color: on ? 'var(--text-soft)' : 'var(--muted)' }}>{lv.description}</span>}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {t.level === top && gateSwitches.length > 0 && (
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+                  <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>What Norm may also do on its own</div>
+                  <p style={{ margin: '2px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                    Everything here writes to Loaded and can&apos;t be undone from Norm — leave a switch off
+                    and invoices needing it wait for you instead, saying so.
+                  </p>
+                  {gateSwitches.map((sw, i) => renderSwitch(t, sw, i, options, busy))}
+                </div>
+              )}
+              {afterSwitches.length > 0 && (
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+                  <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>After a receive</div>
+                  <p style={{ margin: '2px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                    What Norm may do once an invoice is in Loaded. Applies at every level, not just Autopilot.
+                  </p>
+                  {afterSwitches.map((sw, i) => renderSwitch(t, sw, i, options, busy))}
+                </div>
+              )}
             </div>
-            {t.key === RECEIVE && readiness && readiness.attempts > 0 && (
-              <div style={{ margin: '10px 0 0', padding: '8px 12px', borderRadius: 'var(--radius)', background: 'var(--surface-alt)', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
-                Over the last 30 days, autopilot would have been right on{' '}
-                <strong style={{ fontWeight: 600, color: 'var(--text)' }}>{Math.round(readiness.rate * 100)}%</strong> of the {readiness.attempts} invoices a person received.
-              </div>
-            )}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-              {(t.levels || []).map(lv => {
-                const on = t.level === lv.id;
-                // The chosen level reads as a selected tile: --selected fill, tan edge.
-                return (
-                  <label key={lv.id} style={{
-                    display: 'flex', gap: 10, alignItems: 'flex-start', cursor: busy ? 'default' : 'pointer',
-                    padding: '10px 12px', borderRadius: 'var(--radius)',
-                    border: `1px solid ${on ? 'var(--brand-soft)' : 'var(--line)'}`,
-                    background: on ? 'var(--selected)' : 'var(--bg)',
-                  }}>
-                    <input type="radio" name={t.key} checked={on} disabled={busy}
-                      onChange={() => void save(t.key, { level: lv.id, options })}
-                      style={{ flex: '0 0 auto', width: 16, height: 16, margin: '2px 0 0', accentColor: 'var(--accent)', cursor: 'inherit' }} />
-                    <span style={{ minWidth: 0 }}>
-                      <span style={{ display: 'block', fontSize: 'var(--fs-base)', fontWeight: on ? 600 : 500, color: 'var(--text)' }}>{lv.label}</span>
-                      {lv.description && <span style={{ display: 'block', marginTop: 2, fontSize: 'var(--fs-sm)', color: on ? 'var(--text-soft)' : 'var(--muted)' }}>{lv.description}</span>}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-            {t.level === top && gateSwitches.length > 0 && (
-              <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
-                <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>What Norm may also do on its own</div>
-                <p style={{ margin: '2px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-                  Everything here writes to Loaded and can&apos;t be undone from Norm — leave a switch off
-                  and invoices needing it wait for you instead, saying so.
-                </p>
-                {gateSwitches.map((sw, i) => renderSwitch(t, sw, i, options, busy))}
-              </div>
-            )}
-            {afterSwitches.length > 0 && (
-              <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
-                <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>After a receive</div>
-                <p style={{ margin: '2px 0 4px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-                  What Norm may do once an invoice is in Loaded. Applies at every level, not just Autopilot.
-                </p>
-                {afterSwitches.map((sw, i) => renderSwitch(t, sw, i, options, busy))}
-              </div>
-            )}
-          </div>
+            {t.key === RECEIVE && <ReceivingRulesPanel orgName={orgName} />}
+          </Fragment>
         );
       })}
 

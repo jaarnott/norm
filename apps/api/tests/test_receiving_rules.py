@@ -313,9 +313,7 @@ class TestOnlyWhenTheInvoiceHasNoDueDate:
             == "2026-10-30"
         )
 
-    def test_a_review_leaves_a_printed_due_date_and_fills_a_missing_one(
-        self, db_session
-    ):
+    def test_a_review_uses_a_printed_due_date_and_fills_a_missing_one(self, db_session):
         from app.services.invoice_review import review_invoice
         from tests.test_invoice_review import DETAIL, EXTRACTION, REFERENCE
 
@@ -330,22 +328,46 @@ class TestOnlyWhenTheInvoiceHasNoDueDate:
             user=manager,
         )
 
-        def review(due_date):
+        def review(due_date, loaded="2026-08-07"):
             data = review_invoice(
                 db_session,
                 None,
                 lott.id,
                 "inv-1",
                 lh=object(),
-                detail=DETAIL(dueAt="2026-08-07"),
+                detail=DETAIL(dueAt=loaded),
                 extraction=EXTRACTION(due_date=due_date),
                 reference=REFERENCE(),
             )
-            return [s for s in data["suggestions"] if s["id"] == "rule:due_date"]
+            return {
+                s["id"]: s["apply"]
+                for s in data["suggestions"]
+                if s["field"] == "due_at"
+            }
 
-        assert review("2026-09-15") == []
-        [rule] = review(None)
-        assert rule["apply"] == {"due_at": "2026-08-09"}
+        # The invoice prints its own: the rule stays out, and the printed date
+        # fills what Loaded's import missed or got wrong (Sydney Direct Fresh
+        # prints "Due Date: 29th October 2026", Loaded had none — 23 Oct 2026).
+        printed = {"header_value:due_at": {"due_at": "2026-09-15"}}
+        assert review("2026-09-15") == printed
+        assert review("Tuesday, 15th September 2026", loaded=None) == printed
+        assert review("2026-09-15", loaded="2026-09-15") == {}
+        # A date before the invoice's own is a misread, not a due date.
+        assert review("2026-08-01") == {}
+        # None printed: Steve's Sunday.
+        assert review(None) == {"rule:due_date": {"due_at": "2026-08-09"}}
+        # A rule covering every invoice wins over the printed date (owner).
+        RR.set_rule(
+            db_session,
+            org_id=org.id,
+            venue_id=None,
+            kind="due_date",
+            params=SUNDAY_ON_OR_AFTER,
+            note=None,
+            user=manager,
+        )
+        assert review("2026-09-15") == {"rule:due_date": {"due_at": "2026-08-09"}}
+        assert review("2026-09-15", loaded="2026-08-09") == {}
 
 
 class TestSettings:

@@ -426,6 +426,13 @@ def apply(
         if not rep.get("due_date_read") or rep.get("due_at"):
             return
     due = due_date_for(issued, params)
+    # Where a rule applies it wins (owner): the printed due date the review
+    # would otherwise suggest gives way, even when the draft already matches.
+    suggestions[:] = [
+        s
+        for s in suggestions
+        if not (s.get("field") == "due_at" and s.get("line_id") is None)
+    ]
     current = _date_part(data.get("due_at")) or None
     if current == due.isoformat():
         return
