@@ -54,10 +54,17 @@ class TestSchema:
         # nothing, and its null read as phantom dojo failures). The one-time
         # cache invalidation was accepted: invoices re-extract lazily on next
         # touch, and readers keep a legacy fallback for pre-retirement data.
+        #
+        # 22 Oct 2026: `due_date` DELIBERATELY added, so a venue's "only when
+        # the invoice has no due date" receiving rule can tell the two apart
+        # (services/receiving_rules). One-time re-read accepted: ~39 open
+        # invoices in production, about NZ$4; a read without the field leaves
+        # such a rule untouched (`due_date_read`).
         assert set(ie.PDF_SCHEMA) == {
             "document_type",
             "invoice_number",
             "invoice_date",
+            "due_date",
             "supplier_name",
             "supplier_differs",
             "customer_purchase_order_number",

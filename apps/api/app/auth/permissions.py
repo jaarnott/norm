@@ -49,6 +49,9 @@ PERMISSION_SCOPES: set[str] = {
     # someone else's data with their permissions.
     "apps:build",
     "apps:share",
+    # Receiving rules — how an organisation's invoices are received where the
+    # invoice leaves a choice (a due date), set by an owner or a manager.
+    "receiving:rules",
     # Platform admin (checked via User.role, listed for completeness)
     "admin:deployments",
     "admin:tests",
@@ -133,4 +136,5 @@ PERMISSION_GROUPS: dict[str, list[str]] = {
     "Settings": ["settings:connectors", "settings:agents"],
     "Email": ["email:read", "email:manage"],
     "Apps": ["apps:build", "apps:share"],
+    "Receiving": ["receiving:rules"],
 }

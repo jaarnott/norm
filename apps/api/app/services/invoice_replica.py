@@ -1672,7 +1672,13 @@ def build_replica(
         "purchase_order_number": str(po_number) if po_number else None,
         "linked_purchase_order_id": linked_po_id,
         "issued_at": _iso_date(extraction.get("invoice_date")),
-        "due_at": None,
+        # The due date the invoice prints, when it prints one; whether the
+        # read looked for one at all (a venue's "only when the invoice has no
+        # due date" rule needs to know which: services/receiving_rules).
+        "due_at": _iso_date(extraction.get("due_date"))
+        if extraction.get("due_date")
+        else None,
+        "due_date_read": "due_date" in extraction,
         "received_at": None,
         # The engine's duplicate-gate markers (same names as the card
         # registry); warnings mirror the blocking flags for the dojo UI.

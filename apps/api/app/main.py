@@ -137,6 +137,9 @@ from app.routers import admin_organizations  # noqa: E402
 app.include_router(admin_organizations.router, prefix="/api")
 
 app.include_router(suggestion_admin.router, prefix="/api")
+from app.routers import receiving_rules as receiving_rules_router  # noqa: E402
+
+app.include_router(receiving_rules_router.router, prefix="/api")
 from app.routers import functions as functions_router  # noqa: E402
 from app.routers import functions_forms, functions_inbox  # noqa: E402
 from app.routers import public as public_router  # noqa: E402

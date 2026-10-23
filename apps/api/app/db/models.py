@@ -2062,6 +2062,53 @@ def _stamp_task_organization(mapper, connection, target):
         target.organization_id = _acting_org(connection, target.created_by)
 
 
+class ReceivingRule(Base):
+    """One of an organisation's receiving rules: how Norm fills in something
+    on an invoice it receives (the due date, first). Set for the whole
+    organisation (``venue_id`` NULL) or for one venue, which then overrides
+    the organisation's rule of the same kind (owner, 22 Oct 2026). A rule wins
+    over what the invoice says. Applied in the review as a suggestion marked
+    as the venue's rule, so the card and Autopilot treat it alike
+    (services/receiving_rules, docs/plans/receiving-rules.md).
+    """
+
+    __tablename__ = "receiving_rules"
+    __table_args__ = (
+        # One rule of a kind per organisation, and one per venue.
+        Index(
+            "uq_receiving_rule_org",
+            "organization_id",
+            "kind",
+            unique=True,
+            postgresql_where=sa_text("venue_id IS NULL"),
+        ),
+        Index(
+            "uq_receiving_rule_venue",
+            "venue_id",
+            "kind",
+            unique=True,
+            postgresql_where=sa_text("venue_id IS NOT NULL"),
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    #: NULL: the organisation's rule; set: this venue's override.
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=True, index=True)
+    #: The rule type (services/receiving_rules.KINDS): ``due_date``.
+    kind = Column(String, nullable=False)
+    #: The type's settings, e.g. ``{"basis": "weekday_on_or_after", "weekday": 6}``.
+    params = Column(JSON, nullable=False, default=dict)
+    #: The person's own words for it, when they said it in chat.
+    note = Column(Text, nullable=True)
+    created_by = Column(String, ForeignKey("users.id"), nullable=True)
+    updated_by = Column(String, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class OrdermentumPair(Base):
     """The two copies of one Ordermentum delivery, once Norm has settled them:
     Ordermentum's own copy (Loaded ``source = Ordermentum``, no file) and the

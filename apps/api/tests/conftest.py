@@ -167,6 +167,9 @@ _test_app.include_router(_suggestions.router, prefix="/api")
 from app.routers import suggestion_admin as _suggestion_admin  # noqa: E402
 
 _test_app.include_router(_suggestion_admin.router, prefix="/api")
+from app.routers import receiving_rules as _receiving_rules  # noqa: E402
+
+_test_app.include_router(_receiving_rules.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------

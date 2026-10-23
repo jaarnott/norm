@@ -3307,6 +3307,11 @@ def review_invoice(
                 on_unresolved=totals_unresolved,
             )
             unit_kind_issues(data, suggestions, catalogue, units, issues)
+            # The organisation's own receiving rules (a due date, first): its
+            # choice, so it wins over the invoice (owner, 22 Oct 2026).
+            from app.services import receiving_rules
+
+            receiving_rules.apply(db, venue_id, data, replica, suggestions)
             link_fixes(data, replica, issues, suggestions)
             data["suggestions"] = suggestions
             data["issues"] = issues

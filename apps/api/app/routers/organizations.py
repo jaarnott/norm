@@ -652,6 +652,7 @@ async def delete_venue(
         InvoiceActivityEvent,
         InvoiceAutopilotOutcome,
         OrdermentumPair,
+        ReceivingRule,
         HiringCriteria,
         HrSetup,
         Insight,
@@ -729,7 +730,9 @@ async def delete_venue(
     # The daily unit check's proposed corrections are about this venue's
     # invoices only and can't be applied once it's gone; so are the activity
     # page's notes of invoices that stopped there.
-    for model in (UnitCheckProposal, InvoiceActivityEvent):
+    # A venue's own receiving rules describe that venue only (the
+    # organisation's rules stay); gone with it.
+    for model in (UnitCheckProposal, InvoiceActivityEvent, ReceivingRule):
         db.query(model).filter(model.venue_id == venue_id).delete(
             synchronize_session=False
         )

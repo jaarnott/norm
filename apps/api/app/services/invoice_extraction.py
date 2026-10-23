@@ -64,6 +64,14 @@ PDF_SCHEMA = {
     ),
     "invoice_number": "string or null",
     "invoice_date": "string or null",
+    # Read so a venue's receiving rule can tell an invoice with no due date
+    # from one that prints its own (services/receiving_rules, Oct 2026).
+    "due_date": (
+        "string or null — the date payment is DUE, exactly as printed "
+        "('Due Date', 'Payment Due', 'Due By'). null when the document prints "
+        "no due date — including when it prints only terms ('7 days', '20th "
+        "of the month'); never work a date out from terms"
+    ),
     # Buyer vs supplier order references. Loaded's own purchaseOrderNumber
     # field is often the SUPPLIER's order number (e.g. Bidfood "O/N"), not
     # the buyer PO that matches a Loaded purchase order — hence two explicit
@@ -411,6 +419,8 @@ def extraction_from_loaded(detail: dict) -> dict:
         "supplier_differs": False,
         "invoice_number": detail.get("referenceNumber"),
         "invoice_date": detail.get("issuedAt"),
+        # The supplier's system sent it: its due date is the invoice's own.
+        "due_date": detail.get("dueAt"),
         "customer_purchase_order_number": detail.get("purchaseOrderNumber"),
         "supplier_order_number": None,
         "lines": lines,
