@@ -165,11 +165,15 @@ def bind_tenant(db: Session, venue_id: str | None, token_data: dict) -> dict:
     an organisation other than the one this venue is already bound to.
     """
     access_token = str(token_data.get("access_token") or "")
+    from app.services import connection_scope
+
     query = db.query(Connection).filter(Connection.connector_name == CONNECTOR)
     if venue_id:
         query = query.filter(Connection.venue_id == venue_id)
     else:
-        query = query.filter(Connection.venue_id.is_(None))
+        # The venue-less row this flow's code exchange just wrote — it names
+        # no organisation; never an organisation's own row (23 Oct 2026).
+        query = connection_scope.platform_only(query)
     row = query.first()
 
     if not venue_id:

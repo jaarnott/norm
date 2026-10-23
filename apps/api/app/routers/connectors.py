@@ -85,13 +85,30 @@ async def list_connectors(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    # Filter configs by venue_id (None = platform/global configs)
-    config_query = db.query(Connection)
+    # Filter configs by venue_id. No venue: the platform rows (the Anthropic
+    # key) and the caller's organisation-wide rows — never another
+    # organisation's (services/connection_scope.py, 23 Oct 2026).
+    from app.services import connection_scope
+    from app.services.entitlements import org_id_for_user
+
     if venue_id:
-        config_query = config_query.filter(Connection.venue_id == venue_id)
+        saved = {
+            r.connector_name: r
+            for r in db.query(Connection).filter(Connection.venue_id == venue_id)
+        }
     else:
-        config_query = config_query.filter(Connection.venue_id.is_(None))
-    saved = {r.connector_name: r for r in config_query.all()}
+        saved = {
+            r.connector_name: r
+            for r in connection_scope.platform_only(db.query(Connection)).all()
+        }
+        saved.update(
+            {
+                r.connector_name: r
+                for r in connection_scope.org_wide(
+                    db.query(Connection), org_id_for_user(user.id, db)
+                ).all()
+            }
+        )
     result = []
 
     # Platform connectors (Anthropic)
@@ -186,9 +203,21 @@ async def connector_connect_info(
     # An organisation-wide row (venue_id NULL) serves every venue that has no
     # row of its own — the same fallback tool_executor uses at runtime, so the
     # status here says what execution will actually find. Prod's BambooHR is
-    # exactly this shape: one basic-auth row, no venue, no OAuth token.
+    # exactly this shape: one basic-auth row, no venue, no OAuth token. Only
+    # the caller's own organisation's (services/connection_scope.py).
+    from app.services.entitlements import org_id_for_user
+
+    _org = org_id_for_user(user.id, db)
     global_cfg = next(
-        (c for c in rows if c.venue_id is None and c.enabled == "true"), None
+        (
+            c
+            for c in rows
+            if c.venue_id is None
+            and c.enabled == "true"
+            and _org
+            and c.organization_id == _org
+        ),
+        None,
     )
     platform = spec.auth_type == "none"
     required_keys = [
@@ -321,12 +350,25 @@ async def upsert_connector(
         if body.venue_id not in {v.id for v in get_user_venues(db, user.id)}:
             raise HTTPException(403, "Not one of your venues")
 
-    # Venue-aware lookup
+    # Venue-aware lookup. With no venue: a platform connector's row (the
+    # Anthropic key — platform admins only) or the caller's own
+    # organisation-wide row, never another organisation's (23 Oct 2026).
+    from app.services import connection_scope
+    from app.services.entitlements import org_id_for_user
+
     query = db.query(Connection).filter(Connection.connector_name == name)
+    org_id = None
     if body.venue_id:
         query = query.filter(Connection.venue_id == body.venue_id)
+    elif meta:
+        if user.role != "admin":
+            raise HTTPException(403, "Only a platform admin sets the platform key")
+        query = connection_scope.platform_only(query)
     else:
-        query = query.filter(Connection.venue_id.is_(None))
+        org_id = org_id_for_user(user.id, db)
+        if not org_id:
+            raise HTTPException(400, "Pick a venue, or act in an organisation")
+        query = connection_scope.org_wide(query, org_id)
     row = query.first()
 
     # Merge: keep existing values for redacted fields
@@ -362,6 +404,7 @@ async def upsert_connector(
         row = Connection(
             connector_name=name,
             venue_id=body.venue_id,
+            organization_id=org_id,
             config=config,
             enabled="true" if body.enabled else "false",
         )
@@ -381,13 +424,29 @@ async def upsert_connector(
     }
 
 
+def _platform_row(db: Session, name: str, user: User):
+    """The platform row for a platform connector (the Anthropic key), for a
+    platform admin. These routes name only the connector, so they used to act
+    on whichever row came first — another organisation's included
+    (23 Oct 2026)."""
+    from app.services import connection_scope
+
+    if not any(c["name"] == name for c in PLATFORM_CONNECTORS):
+        raise HTTPException(404, f"{name} is set per venue or per organisation")
+    if user.role != "admin":
+        raise HTTPException(403, "Only a platform admin changes the platform key")
+    return connection_scope.platform_only(
+        db.query(Connection).filter(Connection.connector_name == name)
+    ).first()
+
+
 @router.patch("/connectors/{name}/toggle")
 async def toggle_connector(
     name: str,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:connectors")),
 ):
-    row = db.query(Connection).filter(Connection.connector_name == name).first()
+    row = _platform_row(db, name, user)
     if not row:
         raise HTTPException(404, f"No config for connector: {name}")
     row.enabled = "false" if row.enabled == "true" else "true"
@@ -405,7 +464,7 @@ async def delete_connector(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:connectors")),
 ):
-    row = db.query(Connection).filter(Connection.connector_name == name).first()
+    row = _platform_row(db, name, user)
     if not row:
         raise HTTPException(404, f"No config for connector: {name}")
     db.delete(row)
@@ -429,9 +488,7 @@ async def test_connector(
         import anthropic
 
         # Merge saved credentials with form values (skip redacted)
-        config_row = (
-            db.query(Connection).filter(Connection.connector_name == name).first()
-        )
+        config_row = _platform_row(db, name, user)
         credentials = dict(config_row.config) if config_row else {}
         for k, v in body.config.items():
             if v and v != "••••••••":
@@ -463,9 +520,17 @@ async def test_connector(
             "error": "No test request configured for this connector. Add one in the Connector Spec editor.",
         }
 
-    # Merge saved credentials with any values from the form (non-redacted only)
-    config_row = db.query(Connection).filter(Connection.connector_name == name).first()
-    credentials = config_row.config if config_row else {}
+    # Merge saved credentials with any values from the form (non-redacted
+    # only) — the caller's organisation-wide row, never another
+    # organisation's (23 Oct 2026).
+    from app.services import connection_scope
+    from app.services.entitlements import org_id_for_user
+
+    config_row = connection_scope.org_wide(
+        db.query(Connection).filter(Connection.connector_name == name),
+        org_id_for_user(user.id, db),
+    ).first()
+    credentials = dict(config_row.config) if config_row else {}
     for k, v in body.config.items():
         if v and v != "••••••••":
             credentials[k] = v
@@ -533,7 +598,8 @@ async def execute_connector_action(
     Serves page components (the Hiring board, the criteria editor). Endpoints
     must be GET; built-in handlers must be on ``_UI_CALLABLE_HANDLERS``.
     Credentials are resolved strictly: the caller's ``venue_id`` if they hold
-    that venue, otherwise a platform-wide connection — never another venue's.
+    that venue, otherwise their organisation's organisation-wide connection —
+    never another venue's or another organisation's.
     """
     from app.agents.internal_tools import get_handler
 
@@ -594,6 +660,8 @@ async def execute_connector_action(
             config_db=config_db,
             venue_id=venue_id,
             strict_venue=True,
+            # a venue-less call acts in the caller's organisation
+            user=user,
         )
         return {
             "success": tool_result.success,
@@ -601,7 +669,11 @@ async def execute_connector_action(
             "error": tool_result.error,
         }
 
-    config_row = _resolve_credentials(name, venue_id, db, strict_venue=True)
+    from app.services.entitlements import org_id_for_user
+
+    config_row = _resolve_credentials(
+        name, venue_id, db, strict_venue=True, org_id=org_id_for_user(user.id, db)
+    )
     if not config_row:
         raise HTTPException(400, f"No credentials configured for {name}")
 
@@ -628,14 +700,20 @@ async def download_bamboohr_file(
     import httpx
     from fastapi.responses import Response
 
-    config_row = (
-        db.query(Connection)
-        .filter(
+    # The caller's organisation's BambooHR — it took whichever came first,
+    # so anyone signed in could fetch another organisation's files
+    # (23 Oct 2026).
+    from app.services import connection_scope
+    from app.services.entitlements import org_id_for_user
+
+    org_id = org_id_for_user(user.id, db)
+    config_row = connection_scope.in_org(
+        db.query(Connection).filter(
             Connection.connector_name == "bamboohr",
             Connection.enabled == "true",
-        )
-        .first()
-    )
+        ),
+        org_id,
+    ).first()
     if not config_row:
         raise HTTPException(400, "BambooHR connector not configured")
 

@@ -461,6 +461,9 @@ def call_action(
         venue_id=venue_id,
         # No silent fall back to another venue's credentials.
         strict_venue=True,
+        # a venue-less call acts in the person's organisation (its
+        # organisation-wide connections, services/connection_scope.py)
+        user=user,
         # An app only reads the config DB, so its connection can go back to the
         # pool for the slow part — a dashboard fires a dozen of these at once.
         release_config_db=True,

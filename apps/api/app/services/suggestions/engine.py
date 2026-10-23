@@ -127,17 +127,18 @@ class Context:
             return True
         from app.db.models import Connection
 
-        rows = (
-            self.db.query(Connection)
-            .filter(
-                Connection.connector_name == connector, Connection.enabled == "true"
-            )
-            .filter(
-                (Connection.venue_id == (venue.id if venue else None))
-                | Connection.venue_id.is_(None)
-            )
-            .all()
+        from app.services import connection_scope
+
+        q = self.db.query(Connection).filter(
+            Connection.connector_name == connector, Connection.enabled == "true"
         )
+        own = q.filter(Connection.venue_id == venue.id).all() if venue else []
+        # else the organisation's own organisation-wide row, never another's
+        wide = connection_scope.org_wide(
+            q,
+            connection_scope.org_for(self.db, venue.id if venue else None, self.org_id),
+        ).all()
+        rows = own + wide
         return any(not getattr(r, "needs_reconnect", False) for r in rows)
 
     def _used_tools(self) -> set[str]:

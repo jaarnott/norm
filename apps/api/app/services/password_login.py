@@ -220,13 +220,21 @@ def _connection(spec, db: Session, venue_id: str | None, *, lock: bool = False):
     fallback the executor and the connect card use)."""
     from app.db.models import Connection
 
+    from app.services import connection_scope
+
     def q(vid):
         query = db.query(Connection).filter(
             Connection.connector_name == spec.connector_name,
             Connection.user_id.is_(None),
             Connection.enabled == "true",
-            Connection.venue_id == vid if vid else Connection.venue_id.is_(None),
         )
+        if vid:
+            query = query.filter(Connection.venue_id == vid)
+        else:
+            # the organisation's own organisation-wide row, never another's
+            query = connection_scope.org_wide(
+                query, connection_scope.org_for(db, venue_id)
+            )
         return (query.with_for_update().populate_existing() if lock else query).first()
 
     return (q(venue_id) if venue_id else None) or q(None)

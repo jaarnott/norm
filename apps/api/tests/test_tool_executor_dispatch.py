@@ -20,6 +20,7 @@ from app.connectors.tool_executor import (
 )
 from app.db.config_models import ConnectionSpec
 from app.db.models import Connection, Venue
+from tests.conftest import _make_organization
 
 
 def _spec(db, connector_name, tools, execution_mode="internal"):
@@ -35,17 +36,23 @@ def _spec(db, connector_name, tools, execution_mode="internal"):
     return spec
 
 
-def _venue(db, name):
-    v = Venue(id=str(uuid.uuid4()), name=name, timezone="Pacific/Auckland")
+def _venue(db, name, org=None):
+    v = Venue(
+        id=str(uuid.uuid4()),
+        name=name,
+        timezone="Pacific/Auckland",
+        organization_id=org.id if org else None,
+    )
     db.add(v)
     db.flush()
     return v
 
 
-def _config(db, connector_name, venue_id, secret):
+def _config(db, connector_name, venue_id, secret, org=None):
     c = Connection(
         connector_name=connector_name,
         venue_id=venue_id,
+        organization_id=org.id if org else None,
         enabled="true",
         config={"api_key": secret},
     )
@@ -241,9 +248,14 @@ class TestInternalHandlerDispatch:
 
 
 class TestStrictVenueCredentials:
+    """Venues of one organisation. A connection with no venue serves only the
+    organisation it names (services/connection_scope.py, 23 Oct 2026); that
+    rule has its own tests in test_connection_scope.py."""
+
     def test_exact_venue_match_wins(self, db_session, connector):
-        a = _venue(db_session, "Venue A")
-        b = _venue(db_session, "Venue B")
+        org = _make_organization(db_session)
+        a = _venue(db_session, "Venue A", org)
+        b = _venue(db_session, "Venue B", org)
         _config(db_session, connector, a.id, "key-A")
         _config(db_session, connector, b.id, "key-B")
         row = _resolve_credentials(connector, b.id, db_session, strict_venue=True)
@@ -252,8 +264,9 @@ class TestStrictVenueCredentials:
     def test_strict_refuses_another_venues_credentials(self, db_session, connector):
         """The leak: venue B has no config, so the loose fallback would hand
         back venue A's key and answer B's question with A's data."""
-        a = _venue(db_session, "Venue A")
-        b = _venue(db_session, "Venue B")
+        org = _make_organization(db_session)
+        a = _venue(db_session, "Venue A", org)
+        b = _venue(db_session, "Venue B", org)
         _config(db_session, connector, a.id, "key-A")
 
         assert (
@@ -263,23 +276,29 @@ class TestStrictVenueCredentials:
         loose = _resolve_credentials(connector, b.id, db_session)
         assert loose is not None and loose.config["api_key"] == "key-A"
 
-    def test_strict_still_allows_platform_config(self, db_session, connector):
-        """Platform (venue_id NULL) connectors must keep working under strict."""
-        b = _venue(db_session, "Venue B")
-        _config(db_session, connector, None, "platform-key")
+    def test_strict_still_allows_the_organisation_wide_config(
+        self, db_session, connector
+    ):
+        """An organisation-wide (venue-less) connection keeps serving its
+        organisation's venues under strict."""
+        org = _make_organization(db_session)
+        b = _venue(db_session, "Venue B", org)
+        _config(db_session, connector, None, "org-key", org)
         row = _resolve_credentials(connector, b.id, db_session, strict_venue=True)
-        assert row.config["api_key"] == "platform-key"
+        assert row.config["api_key"] == "org-key"
 
-    def test_strict_prefers_venue_over_platform(self, db_session, connector):
-        b = _venue(db_session, "Venue B")
-        _config(db_session, connector, None, "platform-key")
+    def test_strict_prefers_venue_over_organisation_wide(self, db_session, connector):
+        org = _make_organization(db_session)
+        b = _venue(db_session, "Venue B", org)
+        _config(db_session, connector, None, "org-key", org)
         _config(db_session, connector, b.id, "key-B")
         row = _resolve_credentials(connector, b.id, db_session, strict_venue=True)
         assert row.config["api_key"] == "key-B"
 
     def test_loose_is_the_default(self, db_session, connector):
         """Existing callers (dashboard refresh) keep their behaviour."""
-        a = _venue(db_session, "Venue A")
-        b = _venue(db_session, "Venue B")
+        org = _make_organization(db_session)
+        a = _venue(db_session, "Venue A", org)
+        b = _venue(db_session, "Venue B", org)
         _config(db_session, connector, a.id, "key-A")
         assert _resolve_credentials(connector, b.id, db_session) is not None

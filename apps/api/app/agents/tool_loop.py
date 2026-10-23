@@ -1966,16 +1966,17 @@ def _resolve_venue_config(connector_name: str, input_params: dict, db: Session):
         if config:
             return config
 
-    # Fall back to venue-agnostic config (platform connectors only)
-    return (
-        db.query(Connection)
-        .filter(
+    # Fall back to the organisation's organisation-wide connection — never
+    # another organisation's (services/connection_scope.py, 23 Oct 2026).
+    from app.services import connection_scope
+
+    return connection_scope.org_wide(
+        db.query(Connection).filter(
             Connection.connector_name == connector_name,
-            Connection.venue_id.is_(None),
             Connection.enabled == "true",
-        )
-        .first()
-    )
+        ),
+        connection_scope.org_for(db, venue_id),
+    ).first()
 
 
 # ---------------------------------------------------------------------------

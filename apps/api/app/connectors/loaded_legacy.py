@@ -448,24 +448,15 @@ class LoadedLegacyError(Exception):
 def connection(db: Session | None, venue_id: str | None):
     """This venue's Loaded Legacy connection (its own, else an
     organisation-wide one), when it has a login and a company — or None."""
-    from app.db.models import Connection
 
     if db is None or not venue_id:
         return None
 
-    def q(vid):
-        return (
-            db.query(Connection)
-            .filter(
-                Connection.connector_name == CONNECTOR,
-                Connection.user_id.is_(None),
-                Connection.enabled == "true",
-                Connection.venue_id == vid if vid else Connection.venue_id.is_(None),
-            )
-            .first()
-        )
+    from app.services import connection_scope
 
-    row = q(venue_id) or q(None)
+    # its own, else its organisation's organisation-wide one — never another
+    # organisation's (services/connection_scope.py)
+    row = connection_scope.venue_or_org_wide(db, CONNECTOR, venue_id)
     config = (row.config or {}) if row is not None else {}
     return row if config.get("username") and config.get("x_loaded_company_id") else None
 

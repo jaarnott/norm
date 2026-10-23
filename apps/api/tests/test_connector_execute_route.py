@@ -146,10 +146,16 @@ class TestEndpointCredentials:
         # venue routing keys are not API fields
         assert params == {"status": "open"}
 
-    def test_a_platform_wide_connection_serves_a_venue_less_call(
-        self, client, db_session, manager_headers, spec
+    def test_an_organisation_wide_connection_serves_a_venue_less_call(
+        self, client, db_session, manager_user, manager_headers, spec
     ):
-        _connection(db_session, None, "platform")
+        """Its own organisation's — never another's (23 Oct 2026)."""
+        from tests.conftest import _make_membership, _make_organization
+
+        org = _make_organization(db_session)
+        _make_membership(db_session, manager_user, org)
+        _connection(db_session, None, "platform").organization_id = org.id
+        db_session.flush()
         call = _ok_spec_call()
         with patch("app.connectors.spec_executor.execute_spec", call):
             resp = client.post(

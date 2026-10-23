@@ -146,7 +146,8 @@ def _collect_tools(
         _conn, _, _act = _key.partition(".")
         owned_by_conn.setdefault(_conn, set()).add(_act)
 
-    _apps_on = apps_on(org_id_for_user(user_id, db), db, _cdb)
+    _org = org_id_for_user(user_id, db)
+    _apps_on = apps_on(_org, db, _cdb)
     _owner_blocked: set[str] = (
         {k for k, app in owners.items() if app not in _apps_on}
         if _apps_on is not None
@@ -165,18 +166,22 @@ def _collect_tools(
         if not spec:
             continue
 
-        # Gate on having an active connection — except internal specs which need no credentials
+        # Gate on having an active connection — except internal specs which
+        # need no credentials. The organisation's own: a venue of its, or its
+        # organisation-wide row — another organisation's BambooHR put
+        # BambooHR's tools in every organisation's menu (23 Oct 2026). No
+        # organisation to ask for (gating inactive) keeps the old rule.
         if spec.execution_mode != "internal":
-            has_config = (
-                db.query(Connection)
-                .filter(
-                    Connection.connector_name == connector_name,
-                    Connection.enabled == "true",
-                )
-                .count()
-                > 0
+            _q = db.query(Connection).filter(
+                Connection.connector_name == connector_name,
+                Connection.enabled == "true",
             )
-            if not has_config:
+            # Per-user mailboxes are each person's own: checked just below.
+            if _org is not None and connector_name not in USER_SCOPED_CONNECTORS:
+                from app.services import connection_scope
+
+                _q = connection_scope.in_org(_q, _org)
+            if _q.count() == 0:
                 continue
 
         # User-scoped email connectors: require per-user Connection

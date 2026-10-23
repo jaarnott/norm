@@ -92,9 +92,10 @@ def _execute_connector_tool(
     6. Return clean result
 
     ``strict_venue`` controls the credential fallback when no config exists for
-    ``venue_id``. False (default) keeps the historical loose behaviour — fall
-    back to any enabled config. True restricts the fallback to venue-agnostic
-    (platform) configs only, matching tool_loop._resolve_venue_config. Callers
+    ``venue_id``. Either way the organisation-wide connection comes next, and
+    only the caller's own organisation's (_resolve_credentials). False
+    (default) then also tries another of the organisation's venues; True
+    stops there, matching tool_loop._resolve_venue_config. Callers
     serving an authenticated, venue-scoped request must pass True: the loose
     fallback would otherwise answer a question about venue A using venue B's
     credentials.
@@ -371,17 +372,20 @@ def _resolve_credentials(
     db: Session,
     *,
     strict_venue: bool = False,
+    org_id: str | None = None,
 ):
-    """Venue-aware credential lookup.
+    """Venue-aware credential lookup: the venue's own connection, else its
+    organisation's organisation-wide one (services/connection_scope.py —
+    never another organisation's, 23 Oct 2026).
 
-    With ``strict_venue=True`` the fallback is restricted to venue-agnostic
-    (platform) configs, matching tool_loop._resolve_venue_config. The loose
-    default — fall back to *any* enabled config — is retained for existing
-    callers (dashboard chart refresh), but is a cross-venue leak on any
-    authenticated, venue-scoped path: a request scoped to venue A would be
-    answered with venue B's credentials, and the caller would never know.
+    With ``strict_venue=True`` that is all. The loose default — kept for the
+    dashboard chart refresh — may also take another venue's connection, but
+    only one of the same organisation: a request scoped to venue A answered
+    with venue B's credentials is still a leak inside an organisation, which
+    is why venue-scoped paths pass strict_venue.
     """
     from app.db.models import Connection
+    from app.services import connection_scope
 
     if venue_id:
         config = (
@@ -396,24 +400,14 @@ def _resolve_credentials(
         if config:
             return config
 
-    if strict_venue:
-        # Platform-level configs only — never another venue's.
-        return (
-            db.query(Connection)
-            .filter(
-                Connection.connector_name == connector_name,
-                Connection.venue_id.is_(None),
-                Connection.enabled == "true",
-            )
-            .first()
-        )
-
-    # Fall back to first enabled config (platform or any venue)
-    return (
-        db.query(Connection)
-        .filter(
+    def enabled():
+        return db.query(Connection).filter(
             Connection.connector_name == connector_name,
             Connection.enabled == "true",
         )
-        .first()
-    )
+
+    org = connection_scope.org_for(db, venue_id, org_id)
+    org_row = connection_scope.org_wide(enabled(), org).first()
+    if org_row is not None or strict_venue:
+        return org_row
+    return connection_scope.in_org(enabled(), org).first()

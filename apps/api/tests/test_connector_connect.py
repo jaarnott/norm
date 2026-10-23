@@ -39,10 +39,10 @@ def _oauth_spec_row(db_session, connector="loadedhub"):
     db_session.flush()
 
 
-def _manager_with_connectors_perm(db_session, *, venue, with_access=True):
+def _manager_with_connectors_perm(db_session, *, venue, with_access=True, org=None):
     """A non-admin who holds settings:connectors, optionally with venue access."""
     user = _make_user(db_session, role="manager")
-    org = _make_organization(db_session)
+    org = org or _make_organization(db_session)
     role = Role(
         id=str(uuid.uuid4()),
         name=f"mgr-{uuid.uuid4().hex[:6]}",
@@ -290,16 +290,18 @@ class TestConnectInfoIsTruthfulForEveryCredentialShape:
             "basic",
             [{"key": "subdomain"}, {"key": "api_key", "secret": True}],
         )
+        org = _make_organization(db_session)
         db_session.add(
             Connection(
                 connector_name="bamboo_x",
                 venue_id=None,
+                organization_id=org.id,  # its organisation's own (23 Oct 2026)
                 config={"subdomain": "acme", "api_key": "k"},
                 enabled="true",
             )
         )
         db_session.flush()
-        headers = _manager_with_connectors_perm(db_session, venue=venue)
+        headers = _manager_with_connectors_perm(db_session, venue=venue, org=org)
         data = client.get(
             "/api/connectors/bamboo_x/connect-info", headers=headers
         ).json()

@@ -18,6 +18,7 @@ from sqlalchemy import (
     Date,
     BigInteger,
 )
+from sqlalchemy import event as _sa_event
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -451,6 +452,14 @@ class Connection(Base):
     user_id = Column(
         String, ForeignKey("users.id"), nullable=True
     )  # for per-user OAuth (email connectors)
+    #: The organisation this connection belongs to (23 Oct 2026). A venue's
+    #: row takes its venue's (set on save, below). A row with no venue is an
+    #: organisation-wide connection, used only by that organisation; with no
+    #: organisation either it is a platform row (the Anthropic key) and never
+    #: serves an organisation's call (services/connection_scope.py).
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=True, index=True
+    )
     #: Typed credentials; secret-named values are stored encrypted (encrypted.py).
     config = Column(EncryptedSecretsJSON, nullable=False, default=dict)
     enabled = Column(String, nullable=False, default="true")
@@ -475,6 +484,20 @@ class Connection(Base):
 
     venue = relationship("Venue")
     user = relationship("User")
+
+
+@_sa_event.listens_for(Connection, "before_insert")
+@_sa_event.listens_for(Connection, "before_update")
+def _connection_takes_its_venues_organisation(mapper, connection, target):
+    """A venue's connection belongs to that venue's organisation — set here so
+    no code path that saves one can leave it unowned."""
+    if target.venue_id:
+        org = connection.execute(
+            sa_text("SELECT organization_id FROM venues WHERE id = :id"),
+            {"id": target.venue_id},
+        ).scalar()
+        if org:
+            target.organization_id = org
 
 
 class ToolCall(Base):

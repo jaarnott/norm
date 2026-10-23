@@ -470,7 +470,13 @@ async def create_from_connector(
         if body.venue_id:
             config_query = config_query.filter(Connection.venue_id == body.venue_id)
         else:
-            config_query = config_query.filter(Connection.venue_id.is_(None))
+            # the caller's organisation's own row, never another's (23 Oct 2026)
+            from app.services import connection_scope
+            from app.services.entitlements import org_id_for_user
+
+            config_query = connection_scope.org_wide(
+                config_query, org_id_for_user(user.id, db)
+            )
         config_row = config_query.first()
         if not config_row:
             venue_logins = db.query(Connection.id).filter(
