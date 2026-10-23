@@ -81,7 +81,7 @@ export default function ConnectionsMatrix() {
   if (connectors.length === 0) {
     if (!team.loaded) return <PageState kind="loading" title="Loading connections…" />;
     return team.gatingActive ? (
-      <PageState kind="empty" title="Nothing to connect yet" detail="Hire a team member and the systems its Apps work in appear here." />
+      <PageState kind="empty" title="Nothing to connect yet" detail="Hire an AI agent and the systems its Apps work in appear here." />
     ) : (
       <PageState
         kind="empty"

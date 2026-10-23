@@ -2,10 +2,10 @@
 
 /**
  * Your AI team — the marketplace, rebuilt around the hierarchy
- * (Organisation → AI Team Members → Apps → Components → Connections).
+ * (Organisation → AI agents → Apps → Components → Connections).
  * It is Settings → Organisation → AI team; it has no page of its own.
  *
- * Team members are the jobs you hire Norm to perform. Every App — Norm-built,
+ * AI agents are the jobs you hire Norm to perform. Every App — Norm-built,
  * integration-backed, community or built by your team — is bound to the
  * member(s) that use it and has an enabled state. A member's card lists ALL
  * its Apps; once hired, each App switches on/off right there (owners only).
@@ -52,14 +52,14 @@ const price = (cents: number) => `$${(cents / 100).toFixed(cents % 100 ? 2 : 0)}
 
 const memberIcon = (slug: string) => AGENTS.find((a) => a.id === slug);
 
-/* Shared styles. Team members are never colour-coded: one neutral icon tile. */
+/* Shared styles. AI agents are never colour-coded: one neutral icon tile. */
 const ICON_TILE: CSSProperties = {
   flex: '0 0 auto', width: 36, height: 36, borderRadius: 'var(--radius)',
   background: 'var(--surface-alt)', color: 'var(--text-soft)',
   display: 'flex', alignItems: 'center', justifyContent: 'center',
 };
 const TITLE: CSSProperties = { margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' };
-/** A team member's name on its card — a step below the section titles. */
+/** An AI agent's name on its card — a step below the section titles. */
 const CARD_TITLE: CSSProperties = { ...TITLE, fontSize: 'var(--fs-md)' };
 const INTRO: CSSProperties = { margin: '4px 0 16px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' };
 const META: CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--muted)' };
@@ -208,7 +208,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
         {apps.map((a, i) => (
           <li key={a.slug} style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, padding: i === apps.length - 1 ? '8px 0 0' : '8px 0', borderTop: '1px solid var(--line-soft)' }}>
             <AppIcon app={a} size="inline" fallback={fallback} />
-            <span title={a.bound_to_all ? 'Shared by every team member' : undefined}
+            <span title={a.bound_to_all ? 'Shared by every AI agent' : undefined}
               style={{ ...ELLIPSIS, flex: '0 0 auto', maxWidth: '60%', fontSize: 'var(--fs-base)', fontWeight: 500, color: 'var(--text)' }}>
               {a.name}
             </span>
@@ -251,7 +251,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
         {section('Menu pages', pages.length || a.app_platform ? list(
           <>
             {pages.map((c) => li(
-              <>{c.shared ? `${c.label} — in every team member's menu` : `${c.label} — in the ${memberName(a.member ?? '')} menu`}</>,
+              <>{c.shared ? `${c.label} — in every AI agent's menu` : `${c.label} — in the ${memberName(a.member ?? '')} menu`}</>,
               c.key,
             ))}
             {a.app_platform && (appComponents.some((c) => c.app_page)
@@ -331,7 +331,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
     );
   }
 
-  /** One team member's tile: icon, name, status, price and the hire/retire
+  /** One AI agent's tile: icon, name, status, price and the hire/retire
    *  action, its tagline, then every App it brings. */
   const memberTile = (t: {
     slug: string; name: string; icon: ReactNode; status?: ReactNode; price: string;
@@ -427,8 +427,8 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
       <h2 id="team-yours" style={TITLE}>Your AI team</h2>
       <p style={INTRO}>
         {isOwner
-          ? 'Team members do the jobs you hire Norm for. Each brings the apps it needs — switch any app on or off.'
-          : 'Team members do the jobs you hire Norm for. Ask an organisation owner to hire or change apps.'}
+          ? 'AI agents do the jobs you hire Norm for. Each brings the apps it needs — switch any app on or off.'
+          : 'AI agents do the jobs you hire Norm for. Ask an organisation owner to hire or change apps.'}
       </p>
       {notice && (
         <div role="status" style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', marginBottom: 16, borderRadius: 'var(--radius)', background: 'var(--info-bg)', color: 'var(--info)', fontSize: 'var(--fs-sm)' }}>
@@ -469,7 +469,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
           <section aria-labelledby="team-all-apps" style={{ marginTop: 32 }}>
             <h2 id="team-all-apps" style={TITLE}>All apps</h2>
             <p style={{ margin: '2px 0 12px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-              Every app on your platform and the team member it belongs to — open one to see what it unlocks. Build your own by chatting with Norm.
+              Every app on your platform and the AI agent it belongs to — open one to see what it unlocks. Build your own by chatting with Norm.
             </p>
             {team.apps.length === 0 ? (
               <PageState kind="empty" title="No apps yet." />
@@ -498,7 +498,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
                         </div>
                         <div style={{ flex: '0 0 auto', paddingLeft: 26, display: 'flex', alignItems: 'center', gap: 12 }}>
                           <span style={META}>
-                            {a.bound_to_all ? 'Bound to every team member' : a.member ? `Bound to ${memberName(a.member)}` : 'Not bound to a team member'}
+                            {a.bound_to_all ? 'Bound to every AI agent' : a.member ? `Bound to ${memberName(a.member)}` : 'Not bound to an AI agent'}
                           </span>
                           <Button size="sm" variant="secondary" aria-expanded={open} onClick={() => setDetail(open ? null : a.slug)}>
                             {open ? 'Hide' : 'What it unlocks'}

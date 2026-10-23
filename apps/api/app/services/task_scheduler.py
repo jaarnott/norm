@@ -580,7 +580,7 @@ def _execute_task_now(
         t0 = time.time()
 
         try:
-            # Hierarchy v2: a retired team member's task never runs — its tools
+            # Hierarchy v2: a retired AI agent's task never runs — its tools
             # are gone from the org's union, so the run would half-do the job
             # with whatever survives. The run record says why, so the task
             # board shows it instead of a mystery no-op. Fail-open: gating
@@ -591,7 +591,7 @@ def _execute_task_now(
             if not agent_entitled(task.agent_slug, _org, db, config_db):
                 run.status = "skipped_unhired"
                 run.error_message = (
-                    f"Team member '{task.agent_slug}' is not hired — "
+                    f"AI agent '{task.agent_slug}' is not hired — "
                     "re-hire them in Settings → AI team to resume this task."
                 )
                 run.completed_at = datetime.now(timezone.utc)

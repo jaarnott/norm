@@ -1,0 +1,138 @@
+/*
+ * The Hospo apps' landing pages. Deliberately not Norm's look: Sora headings
+ * over DM Sans, a navy base and one bright accent per app (aqua for Hospo HR,
+ * coral for Hospo Functions). Scoped to `.hospo`.
+ */
+
+.hospo {
+  --hospo-navy: #112a46;
+  --hospo-ink-soft: #3b4a5c;
+  --hospo-muted: #5a6878;
+  --hospo-line: #e3e9ee;
+  --hospo-on-navy: #c6d3df;
+  --hospo-accent: #2ec4b6;
+  --hospo-tint: #f3f8f7;
+  --hospo-tint-line: #dfe9e6;
+  min-height: 100vh;
+  background: #ffffff;
+  color: var(--hospo-navy);
+  font-family: var(--font-hospo-body), system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 17px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+.hospo--functions { --hospo-accent: #ff8a65; --hospo-tint: #fff6f2; --hospo-tint-line: #f3dcd3; }
+
+.hospo-wrap { max-width: 1180px; margin: 0 auto; padding-inline: 24px; }
+.hospo h1, .hospo h2, .hospo h3 { margin: 0; font-family: var(--font-hospo-head), var(--font-hospo-body), sans-serif; font-weight: 800; letter-spacing: -0.03em; }
+.hospo h1 { font-size: clamp(40px, 4.6vw, 62px); line-height: 1.04; text-wrap: balance; }
+.hospo h2 { font-size: clamp(30px, 3.4vw, 44px); line-height: 1.08; }
+.hospo h3 { font-size: 22px; letter-spacing: -0.02em; }
+.hospo p { margin: 0; }
+.hospo-lead { font-size: clamp(18px, 1.5vw, 20px); color: var(--hospo-ink-soft); max-width: 32em; }
+.hospo-small { font-size: 14px; color: var(--hospo-muted); }
+.hospo-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.hospo-stack--lg { gap: 24px; }
+.hospo-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 56px; align-items: center; }
+.hospo-split > * { min-width: 0; }
+.hospo-section { padding-block: 80px; }
+.hospo-section--tint { background: var(--hospo-tint); }
+.hospo-section--navy { background: var(--hospo-navy); color: #ffffff; }
+.hospo-section--navy .hospo-lead, .hospo-section--navy .hospo-body { color: var(--hospo-on-navy); }
+.hospo-body { font-size: 18px; color: var(--hospo-ink-soft); max-width: 32em; }
+@media (max-width: 720px) { .hospo-section { padding-block: 64px; } }
+
+/* Buttons. */
+.hospo-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 54px; padding: 0 26px; border-radius: 10px; font-size: 17px; font-weight: 600; text-decoration: none; white-space: nowrap; border: 1px solid transparent; }
+.hospo-btn--primary { background: var(--hospo-navy); color: #ffffff; }
+.hospo-btn--accent { background: var(--hospo-accent); color: var(--hospo-navy); font-weight: 700; }
+.hospo-btn--secondary { border-color: #c9d3dc; color: var(--hospo-navy); }
+.hospo-section--navy .hospo-btn--secondary, .hospo-header--navy .hospo-btn--secondary { border-color: rgba(255, 255, 255, 0.35); color: #ffffff; }
+.hospo-btn--sm { min-height: 44px; padding: 0 16px; font-size: 15px; }
+.hospo-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+
+/* The mark: a navy square holding a square (Hospo HR) or a dot (Functions). */
+.hospo-mark { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 28%; background: var(--hospo-navy); }
+.hospo-mark > span { width: 46%; height: 46%; border-radius: 28%; background: var(--hospo-accent); }
+.hospo--functions .hospo-mark { background: var(--hospo-accent); }
+.hospo--functions .hospo-mark > span { border-radius: 50%; background: var(--hospo-navy); }
+
+/* Header and footer. */
+.hospo-header { background: #ffffff; border-bottom: 1px solid var(--hospo-line); }
+.hospo-header--navy { background: var(--hospo-navy); color: #ffffff; border-bottom: none; }
+.hospo-nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding-block: 18px; }
+.hospo-brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
+.hospo-brand-name { font-family: var(--font-hospo-head), sans-serif; font-size: 21px; font-weight: 800; letter-spacing: -0.02em; }
+.hospo-nav-links { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; font-size: 15px; }
+.hospo-nav-links a { color: var(--hospo-ink-soft); text-decoration: none; font-weight: 500; }
+.hospo-header--navy .hospo-nav-links a { color: var(--hospo-on-navy); }
+.hospo-nav-links a.hospo-btn { color: #ffffff; }
+.hospo-header--navy .hospo-nav-links a.hospo-btn--accent { color: var(--hospo-navy); }
+@media (max-width: 720px) { .hospo-nav-links .hospo-hide-phone { display: none; } }
+.hospo-works-norm { display: inline-flex; align-items: center; gap: 8px; border: 1px solid #d3dbe3; border-radius: 8px; padding: 6px 10px; font-size: 13px; font-weight: 600; color: inherit; text-decoration: none; }
+.hospo-header--navy .hospo-works-norm, .hospo-section--navy .hospo-works-norm, .hospo-addon .hospo-works-norm { border-color: rgba(255, 255, 255, 0.3); }
+.hospo-norm-mark { width: 18px; height: 18px; border-radius: 5px; background: #1a1a1a; color: #ffffff; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; font-family: var(--font-sans), sans-serif; }
+.hospo-section--navy .hospo-norm-mark, .hospo-header--navy .hospo-norm-mark, .hospo-addon .hospo-norm-mark { background: #ffffff; color: #1a1a1a; }
+.hospo-footer { border-top: 1px solid var(--hospo-line); padding-block: 40px; font-size: 14px; color: var(--hospo-muted); }
+.hospo-footer-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+.hospo-footer-brand { display: flex; align-items: center; gap: 8px; color: var(--hospo-navy); font-weight: 700; }
+.hospo-footer-links { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
+.hospo-footer-links a { color: var(--hospo-ink-soft); }
+
+/* The product board in the hero: three columns of cards. */
+.hospo-board-field { background: var(--hospo-accent); border-radius: 22px; padding: 32px; }
+.hospo-board { background: #ffffff; color: var(--hospo-navy); border: 1px solid rgba(17, 42, 70, 0.1); border-radius: 14px; overflow: hidden; }
+.hospo-board-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--hospo-line); }
+.hospo-board-head strong { display: block; font-size: 15px; }
+.hospo-board-head span { font-size: 13px; color: var(--hospo-muted); }
+.hospo-pill { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.hospo-board-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 14px 16px 16px; font-size: 13px; }
+.hospo-board-col { display: flex; flex-direction: column; gap: 8px; }
+.hospo-board-col > span { font-weight: 600; color: var(--hospo-muted); }
+.hospo-board-card { background: #f3f6f8; border-radius: 10px; padding: 10px 11px; display: flex; flex-direction: column; gap: 2px; }
+.hospo-board-card span { color: var(--hospo-muted); }
+.hospo-board-card--hot { background: #e3f6f3; }
+.hospo-board-card--hot span { color: #0f7f75; }
+.hospo--functions .hospo-board-card--hot { background: #ffe7de; }
+.hospo--functions .hospo-board-card--hot span { color: #9a3d1f; }
+
+/* The apps or parts, as cards. */
+.hospo-parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 16px; }
+.hospo-part { background: #ffffff; border: 1px solid var(--hospo-tint-line); border-radius: 18px; padding: 24px; display: flex; flex-direction: column; gap: 10px; }
+.hospo-part p { color: var(--hospo-ink-soft); font-size: 16px; }
+.hospo-part-tags { margin-top: auto; border-top: 1px solid var(--hospo-line); padding-top: 12px; font-size: 14px; color: var(--hospo-muted); }
+
+/* A Norm conversation, drawn the way Norm draws it. */
+.hospo-chat { background: #ffffff; color: #1a1a1a; border-radius: 18px; overflow: hidden; font-family: var(--font-sans), system-ui, sans-serif; }
+.hospo-chat-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #efe9e1; }
+.hospo-chat-title { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 14px; }
+.hospo-chat-title .hospo-norm-mark { width: 24px; height: 24px; border-radius: 7px; font-size: 13px; background: #1a1a1a; color: #ffffff; }
+.hospo-chat-venue { font-size: 12px; color: #4f4943; border: 1px solid #e2ddd7; border-radius: 8px; padding: 4px 9px; }
+.hospo-chat-body { background: #faf8f5; padding: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 14px; }
+.hospo-chat-ask { align-self: flex-end; max-width: 82%; background: #ebe3d8; border-radius: 14px 14px 4px 14px; padding: 9px 13px; }
+.hospo-chat-card { background: #ffffff; border: 1px solid #e2ddd7; border-radius: 12px; overflow: hidden; }
+.hospo-chat-card-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: #fbf1de; border-bottom: 1px solid #f1e3c8; font-weight: 600; }
+.hospo-chat-card-head span { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 9px; background: #ffffff; color: #8a5a1f; border: 1px solid #f1e3c8; }
+.hospo-chat-card-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 12px; }
+.hospo-chat-card-actions span { font-size: 13px; font-weight: 600; padding: 7px 12px; border-radius: 8px; border: 1px solid #ddd5ca; }
+.hospo-chat-card-actions span:last-child { background: #1a1a1a; border-color: #1a1a1a; color: #ffffff; }
+
+/* Pricing: three plans, then Norm as an add-on. */
+.hospo-plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; align-items: stretch; }
+.hospo-plan { background: #ffffff; border: 1px solid var(--hospo-line); border-radius: 20px; padding: 28px; display: flex; flex-direction: column; gap: 14px; }
+.hospo-plan--featured { border: 2px solid var(--hospo-navy); padding: 27px; }
+.hospo-plan-name { font-family: var(--font-hospo-head), sans-serif; font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
+.hospo-plan-price { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.hospo-plan-price strong { font-family: var(--font-hospo-head), sans-serif; font-size: 44px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+.hospo-plan-price span, .hospo-plan > p { color: var(--hospo-ink-soft); font-size: 15px; }
+.hospo-plan ul { margin: 0; padding: 0; list-style: none; font-size: 15px; color: var(--hospo-ink-soft); }
+.hospo-plan li { padding: 8px 0; border-top: 1px solid var(--hospo-line); }
+.hospo-plan .hospo-btn { margin-top: auto; }
+.hospo-addon { background: var(--hospo-navy); color: #ffffff; border-radius: 20px; padding: 32px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 28px; align-items: center; }
+.hospo-addon h3 { font-size: 26px; line-height: 1.15; }
+.hospo-addon p { color: var(--hospo-on-navy); }
+.hospo-addon ul { margin: 0; padding: 0; list-style: none; font-size: 15px; color: #dbe4ec; }
+.hospo-addon li { padding: 8px 0; border-top: 1px solid rgba(255, 255, 255, 0.2); }
+/* The "Works with Norm" badge hugs its words inside a column. */
+.hospo-stack > .hospo-works-norm { align-self: flex-start; }
+@media (max-width: 720px) { .hospo-board-field { padding: 14px; border-radius: 18px; } }

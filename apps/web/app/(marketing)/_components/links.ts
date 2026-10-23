@@ -5,5 +5,6 @@ export const LOGIN_HREF = '/login';
 
 export const NAV_LINKS = [
   { href: '/features', label: 'Features' },
+  { href: '/marketplace', label: 'Marketplace' },
   { href: '/pricing', label: 'Pricing' },
 ];

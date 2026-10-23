@@ -78,7 +78,7 @@ export default function WordingCard({ settings, meta, placeholders, version, onS
     <section className="n-card" style={{ padding: '16px 18px', marginBottom: 16 }} aria-labelledby="sugg-words">
       <h3 id="sugg-words" style={sectionTitle}>Words</h3>
       <p style={{ ...muted, margin: '4px 0 0' }}>
-        Insight prompts are written from each detector&apos;s template (below, per team member), then reworded by Haiku in the
+        Insight prompts are written from each detector&apos;s template (below, per AI agent), then reworded by Haiku in the
         organisation&apos;s own words — checked so no number is added or changed.
         {wordingOn && (wordingOn.value ? ' Rewording is on.' : ' Rewording is off.')} Wording version {version}.
       </p>

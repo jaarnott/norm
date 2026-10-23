@@ -63,7 +63,7 @@ export function howItPicks(settings: SettingRow[]): string[] {
   }
   out.push(
     (v('pending_slot') ? 'Then one waiting-on-you item when there is real work (invoices that need a person). ' : '') +
-    'Then catalogue prompts, one per team member before any member gets a second.',
+    'Then catalogue prompts, one per AI agent before any agent gets a second.',
   );
   out.push(
     `An insight scores by its detector's weight and its dollars a week, plus ${v('venue_boost')} at the venue the person is in. ` +
@@ -72,6 +72,6 @@ export function howItPicks(settings: SettingRow[]): string[] {
   out.push(
     `An insight is shown to a person at most once in ${v('repeat_days')} days unless its value moves ${shown('percent', v('repeat_move'))}; a dismissed suggestion stays away ${v('dismiss_days')} days.`,
   );
-  out.push('Every suggestion must work for the person: the team member hired, the App on, the permission held and the venue’s connection healthy.');
+  out.push('Every suggestion must work for the person: the AI agent hired, the App on, the permission held and the venue’s connection healthy.');
   return out;
 }

@@ -315,7 +315,7 @@ def check_prompt(
     else:
         out += insight_rules.check_template(text, {"venue": "the person's venue"})
     if members is not None and p.get("member") not in members:
-        out.append(f"{p.get('member')!r} isn't a team member.")
+        out.append(f"{p.get('member')!r} isn't an AI agent.")
     if apps is not None and p.get("app") not in apps:
         out.append(f"{p.get('app')!r} isn't an App.")
     tools = p.get("tools")
@@ -361,10 +361,10 @@ def check_detector(name: str, o: dict, members: set[str] | None = None) -> list[
     if "members" in o:
         m = o["members"]
         if not isinstance(m, list) or not all(isinstance(x, str) for x in m):
-            out.append("Members is a list of team members.")
+            out.append("Members is a list of AI agents.")
         elif members is not None and any(x not in members for x in m):
             out.append(
-                "Unknown team member: " + ", ".join(x for x in m if x not in members)
+                "Unknown AI agent: " + ", ".join(x for x in m if x not in members)
             )
     for k, v in (o.get("thresholds") or {}).items():
         t = spec.thresholds.get(k)

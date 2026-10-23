@@ -10,7 +10,7 @@ export const metadata: Metadata = {
     'Norm handles rostering, procurement, stock management, and reporting — so you can focus on your guests. Free for 7 days.',
 };
 
-// Each team member keeps one colour across the site (marketing.css .mkt-c-*).
+// Each AI agent keeps one colour across the site (marketing.css .mkt-c-*).
 // `image` is a still life on the member's colour (public/marketing/team-*.webp).
 const TEAM: { name: string; image: string; tone: string; dark?: boolean; job: string; does: string[] }[] = [
   {
@@ -122,7 +122,7 @@ export default function HomePage() {
       <section className="mkt-section">
         <div className="mkt-wrap mkt-stack mkt-stack--xl">
           <div className="mkt-head">
-            <h2 className="mkt-h2">A team member for each part of the business.</h2>
+            <h2 className="mkt-h2">An AI agent for each part of the business.</h2>
             <p className="mkt-body">
               Hire the ones you need. Each works in the systems you already use, and checks with you before it changes anything.
             </p>
@@ -280,7 +280,7 @@ export default function HomePage() {
       <section className="mkt-section">
         <div className="mkt-wrap mkt-split">
           <div className="mkt-field mkt-field--blush" style={{ display: 'grid', placeItems: 'center' }}>
-            <div className="mkt-phone" role="img" aria-label="Norm on a phone: team members along the top and recent conversations below.">
+            <div className="mkt-phone" role="img" aria-label="Norm on a phone: AI agents along the top and recent conversations below.">
               <div className="mkt-phone-screen">
                 <div className="mkt-phone-head"><span className="mkt-demo-mark">N</span>Norm</div>
                 <div className="mkt-phone-members">
@@ -350,7 +350,7 @@ export default function HomePage() {
           <h2 className="mkt-h2">Start with a free week.</h2>
           <div className="mkt-stack mkt-stack--lg">
             <p className="mkt-lead">
-              Then from $49 a month, plus $10 for each AI team member you hire. Every plan includes every feature and reports; plans differ only in how much Norm can do each month.
+              Then from $49 a month, plus $10 for each AI agent you hire. Every plan includes every feature and reports; plans differ only in how much Norm can do each month.
             </p>
             <div className="mkt-actions">
               <Link href={SIGNUP_HREF} className="mkt-btn mkt-btn--primary">Start your free week</Link>

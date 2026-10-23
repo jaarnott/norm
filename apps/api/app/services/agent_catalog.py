@@ -1,14 +1,14 @@
-"""The team catalog — AI Team Members, the Apps they use, and what each App
+"""The team catalog — AI agents, the Apps they use, and what each App
 needs connected.
 
-Hierarchy v2 (plan of 27 Sep 2026): Organisation -> AI Team Members -> Apps ->
+Hierarchy v2 (plan of 27 Sep 2026): Organisation -> AI agents -> Apps ->
 Components -> Connections. This module answers the storefront's questions from
 the marketplace catalog + component plumbing, so requirements are COMPUTED,
 never hand-maintained:
 
     a component may require zero, one or more Connections
     an App inherits the combined Connection requirements of its Components
-    a team member's WORKS WITH line is the union over the Apps it uses
+    an AI agent's WORKS WITH line is the union over the Apps it uses
 
 Config-DB only (three small queries, 60s TTL cache) — deliberately no main-DB
 dependency, so /api/team stays cheap and the answers are the same for every
@@ -473,7 +473,7 @@ def _functions_view(
 def team_payload(organization_id: str | None, db: Session, config_db: Session) -> dict:
     """Everything the team page and the sidebar need, in one response.
 
-    Apps v3: every App is bound to ONE team member (Norm Core: all of them)
+    Apps v3: every App is bound to ONE AI agent (Norm Core: all of them)
     and has an enabled state; each App carries what it unlocks — its tools,
     components, skills and connection needs — for the capability panel.
 
@@ -713,7 +713,7 @@ def ownership_findings(config_db: Session) -> dict:
                 {
                     "app": a.slug,
                     "member": m,
-                    "problem": "not bound to an existing team member",
+                    "problem": "not bound to an existing AI agent",
                 }
             )
 

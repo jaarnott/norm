@@ -7,7 +7,7 @@ choice changed only a label and a tone line — while still costing ~1.5s per
 turn and, now and then, a lost question (a cross-App ask scored "unknown" and
 the user got a capability menu instead of an answer).
 
-Team members survive as packaging: hiring one turns its Apps on, and the
+AI agents survive as packaging: hiring one turns its Apps on, and the
 sidebar files threads under the members whose Apps they used. None of that
 needs a router. New threads are filed under ``NORM_DOMAIN``; threads created
 before this keep their member domain and are answered by this same agent.
@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 NORM_DOMAIN = "norm"
 
 _NO_TOOLS = (
-    "I don't have any Apps to work with yet. Hire a team member on the Team "
-    "page — that switches their Apps on — and ask me again."
+    "I don't have any Apps to work with yet. Hire an AI agent in Settings → "
+    "AI team — that switches its Apps on — and ask me again."
 )
 
 

@@ -86,7 +86,7 @@ export default function Sidebar({ selected, onSelect, user, onLogout, hired }: S
 
   return (
     <nav
-      aria-label="Team members"
+      aria-label="AI agents"
       style={{
         width: 60,
         minWidth: 60,
@@ -104,7 +104,7 @@ export default function Sidebar({ selected, onSelect, user, onLogout, hired }: S
         <div aria-hidden style={{ fontSize: 'var(--fs-xl)', fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1 }}>N</div>
       </div>
 
-      {/* Team members */}
+      {/* AI agents */}
       <div style={{ padding: '12px 0', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
         {AGENTS.filter((a) => a.id === 'home' || !hired || hired.has(a.id)).map((agent) => {
           const isActive = selected === agent.id;

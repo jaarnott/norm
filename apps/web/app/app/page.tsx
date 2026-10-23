@@ -32,7 +32,7 @@ import { useTeam } from '../hooks/useTeam';
 import { threadMembers } from '../lib/threadApps';
 import type { Thread, WidgetAction, VenueDetail } from '../types';
 
-type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null; kind?: 'app' | 'dashboard' };
+type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null; kind?: 'app' | 'dashboard'; mine?: boolean };
 
 type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null; organizations?: { id: string; name: string | null }[]; active_organization_id?: string | null };
 
@@ -131,7 +131,7 @@ export default function Home() {
   const connectFromLoad = useRef(false);
   const { isMobile, isTablet } = useBreakpoint();
   const [mobileView, setMobileView] = useState<'list' | 'detail' | 'home' | 'settings'>('home');
-  // Hierarchy v2: which team members are hired and which Apps are on. null
+  // Hierarchy v2: which AI agents are hired and which Apps are on. null
   // sets = show everything (gating inactive / fetch failed — fail-open).
   const team = useTeam(token);
   // Apps v3: an App-platform app gets a menu item under its member while its
@@ -144,8 +144,15 @@ export default function Home() {
       if (team.gatingActive && !a.enabled) continue;
       auto.set(a.app_slug, { member: a.member && a.member !== '*' ? a.member : null, appTag: a.slug });
     }
-    setAppPages(
-      appRows
+    // Every app lives under the AI agent whose job it does. The person who
+    // built one also finds it in the App Builder's menu, to change it — a
+    // second entry with its own id, ungated, so it shows even while the
+    // agent isn't hired (opening a built app doesn't need it on).
+    const madeHere = appRows
+      .filter((r) => r.kind !== 'dashboard' && r.mine && r.agent && r.agent !== 'app_builder')
+      .map((r) => ({ ...appPageConfig(r), id: `app:${r.slug}~builder`, agent: 'app_builder', app: undefined }));
+    setAppPages([
+      ...appRows
         // A dashboard lives on its AI agent's Dashboard page, never in a menu.
         .filter((r) => r.kind !== 'dashboard' && (r.pinned || auto.has(r.slug)))
         .map((r) => {
@@ -153,7 +160,8 @@ export default function Home() {
           const hit = auto.get(r.slug);
           return hit ? { ...cfg, agent: hit.member ?? cfg.agent, app: hit.appTag } : cfg;
         }),
-    );
+      ...madeHere,
+    ]);
   }, [appRows, team.apps, team.gatingActive]);
   // A pinned custom app whose member isn't hired joins the Norm/home menu
   // instead of vanishing — an app is never invisible, never a reason to hire.
@@ -480,7 +488,7 @@ export default function Home() {
     return () => { cancelled = true; clearInterval(id); };
   }, [selectedThreadId, selectedThread?.status, loading]);
 
-  // Thread counts per team member — a thread counts for every member whose
+  // Thread counts per AI agent — a thread counts for every member whose
   // Apps it used (see lib/threadApps).
   const threadCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -929,7 +937,7 @@ export default function Home() {
   const handleNewChat = useCallback(() => {
     setSelectedThreadId(null);
     setActivePage(null);
-    // Stay with the current team member: the main pane is the new-chat box
+    // Stay with the current AI agent: the main pane is the new-chat box
     // whenever no thread or page is open, whoever is selected — jumping to
     // Home only lost the member's menu. Settings fills the whole pane, so it
     // (reachable from the phone's top bar) gives way.
@@ -1320,7 +1328,7 @@ export default function Home() {
       return mobileShell('Settings', <SettingsPanel key={settingsTab} initialTab={settingsTab} initialView={settingsView} />);
     }
 
-    // List view (hamburger destination) — team members + menu + user footer
+    // List view (hamburger destination) — AI agents + menu + user footer
     if (mobileView === 'list') {
       const members = AGENTS.filter(a => a.id === 'home' || !team.hired || team.hired.has(a.id));
       const footerButton = (testId: string, label: string, icon: LucideIcon, onClick: () => void) => (
@@ -1348,9 +1356,9 @@ export default function Home() {
             <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--text)' }}>Norm</span>
           </div>
 
-          {/* Team members: a row you swipe sideways — full-size icons, no
+          {/* AI agents: a row you swipe sideways — full-size icons, no
               scrollbar. Items spread out when few are hired. */}
-          <nav aria-label="Team members" style={{ flex: '0 0 auto', position: 'relative', borderBottom: '1px solid var(--line)' }}>
+          <nav aria-label="AI agents" style={{ flex: '0 0 auto', position: 'relative', borderBottom: '1px solid var(--line)' }}>
             <div
               ref={memberRowRef}
               className="no-scrollbar"

@@ -154,6 +154,8 @@ class TestSubmission:
         db_session.commit()
         listing = client.get("/api/marketplace", headers=_headers(stranger)).json()
         assert slug not in {a["slug"] for a in listing["apps"]}
+        public = client.get("/api/public/marketplace/apps").json()["apps"]
+        assert slug not in {a["slug"] for a in public}
         # platform admin approves -> visible to everyone
         admin = _make_user(db_session, role="admin")
         db_session.commit()
@@ -161,6 +163,22 @@ class TestSubmission:
         assert r.status_code == 200
         listing = client.get("/api/marketplace", headers=_headers(stranger)).json()
         assert slug in {a["slug"] for a in listing["apps"]}
+        # ...and on the public App Marketplace, under its agent, with no login
+        # and nothing saying which organisation made it.
+        public = client.get("/api/public/marketplace/apps").json()["apps"]
+        row = next(a for a in public if a["slug"] == slug)
+        assert row["agent"] == "reports" and row["connections"] == ["loadedhub"]
+        assert org.id not in str(row).replace(slug, "")
+
+    def test_an_app_under_no_agent_cannot_be_published(self, client, db_session):
+        """The marketplace files every app under its AI agent (21 Oct 2026)."""
+        user, org = _org_user(db_session, permissions=["billing:manage"])
+        self._user_app(db_session, org, user).agent = None
+        db_session.commit()
+        r = client.post(
+            "/api/marketplace/submit", headers=_headers(user), json={"app_slug": "mini"}
+        )
+        assert r.status_code == 400 and "App Builder" in r.json()["detail"]
 
     def test_approve_requires_platform_admin(self, client, db_session):
         user, org = _org_user(db_session, permissions=["billing:manage"])

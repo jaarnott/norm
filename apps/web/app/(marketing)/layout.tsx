@@ -35,6 +35,7 @@ export default function MarketingLayout({ children }: { children: ReactNode }) {
               <div className="mkt-footer-col">
                 <span className="mkt-footer-label">Product</span>
                 <Link href="/features">Features</Link>
+                <Link href="/marketplace">Marketplace</Link>
                 <Link href="/pricing">Pricing</Link>
               </div>
               <div className="mkt-footer-col">

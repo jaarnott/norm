@@ -117,7 +117,7 @@ def _set_enabled(
 
         if app.tier == "app" and not is_switchable(app):
             raise HTTPException(
-                400, f"{app.name} is always on while its team member is hired."
+                400, f"{app.name} is always on while its AI agent is hired."
             )
     row = (
         db.query(OrgAppEntitlement)
@@ -138,7 +138,7 @@ def _set_enabled(
         "enable" if enabled else "disable",
         extra={"org_id": org_id, "app": slug, "by": user.id},
     )
-    # A team member's $10 rides on the subscription: hiring or retiring one
+    # An AI agent's $10 rides on the subscription: hiring or retiring one
     # updates the Stripe quantity (best effort; logged, never raised).
     if not slug.startswith(CUSTOM_PREFIX) and app.tier == "agent":
         from app.services.billing_service import sync_agent_count
@@ -218,6 +218,14 @@ async def submit_app(
             f"'{app_row.name}' is a dashboard, and dashboards stay inside the "
             "business. To publish it, make it an app first.",
         )
+    # The marketplace files every app under its AI agent; one made before
+    # apps had to name an agent picks one on its next save first.
+    if not app_row.agent:
+        raise HTTPException(
+            400,
+            f"'{app_row.name}' isn't under an AI agent yet. Ask the App Builder "
+            "to put it under one, then publish it.",
+        )
     version = (
         db.query(AppVersion).filter(AppVersion.id == app_row.current_version_id).first()
     )
@@ -233,7 +241,7 @@ async def submit_app(
         "app_slug": req.app_slug,
         "origin_org": org_id,
         "connections": connections,
-        "agents": [app_row.agent] if app_row.agent else [],
+        "agents": [app_row.agent],
         "components": [],
     }
     if existing:
@@ -261,6 +269,39 @@ async def submit_app(
     config_db.commit()
     logger.info("marketplace_submit", extra={"org_id": org_id, "app": req.app_slug})
     return {"slug": slug, "status": "pending"}
+
+
+@router.get("/public/marketplace/apps")
+def public_marketplace_apps(config_db: Session = Depends(get_config_db)):
+    """Apps people built in Norm and published, once approved — for the public
+    App Marketplace page (apps/web/app/(marketing)/marketplace), which files
+    each under its AI agent beside Norm's own. No login, so only what that
+    page shows: never the organisation that made it (owner, 21 Oct 2026)."""
+    from app.db.config_models import MarketplaceApp
+
+    rows = (
+        config_db.query(MarketplaceApp)
+        .filter(MarketplaceApp.tier == "user", MarketplaceApp.status == "active")
+        .order_by(MarketplaceApp.name)
+        .all()
+    )
+    out = []
+    for row in rows:
+        comp = row.composition or {}
+        agent = next((a for a in comp.get("agents") or [] if a), None)
+        if not agent:
+            continue  # published before every app had one: nowhere to file it
+        out.append(
+            {
+                "slug": row.slug,
+                "name": row.name,
+                "description": row.description or "",
+                "agent": agent,
+                "connections": list(comp.get("connections") or []),
+                "price_cents": row.price_cents or 0,
+            }
+        )
+    return {"apps": out}
 
 
 @router.post("/marketplace/{slug}/approve")

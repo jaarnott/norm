@@ -396,3 +396,84 @@
 .mkt-faq details:last-child { border-bottom: 1px solid var(--mkt-border); }
 .mkt-faq summary { font-weight: 700; font-size: 18px; cursor: pointer; }
 .mkt-faq p { margin: 10px 0 0; color: var(--mkt-ink-soft); max-width: 40em; }
+
+/* ── Apps (the marketplace page and each app's page) ─────────────────── */
+
+/* The two agents the home page doesn't show yet. */
+.mkt-c-finance { background: #ebe3d8; color: var(--mkt-ink); }
+.mkt-c-functions { background: #e4dcef; color: var(--mkt-ink); }
+
+/* One chip per agent under the page title, jumping to its apps. */
+.mkt-agent-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 10px; }
+.mkt-agent-chip { border-radius: 16px; padding: 16px 16px 14px; display: flex; flex-direction: column; gap: 18px; min-height: 104px; text-decoration: none; }
+.mkt-agent-chip strong { font-size: 16px; letter-spacing: -0.01em; }
+.mkt-agent-chip span { font-size: 14px; opacity: 0.85; margin-top: auto; }
+
+/* How it works, in three steps. */
+.mkt-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+.mkt-step-card { background: var(--mkt-cream); border-radius: 18px; padding: 24px; display: flex; flex-direction: column; gap: 8px; }
+.mkt-step-card strong { font-size: 20px; letter-spacing: -0.01em; }
+.mkt-step-card > span:last-child { color: var(--mkt-ink-soft); font-size: 15px; }
+.mkt-step-label { font-size: 14px; font-weight: 700; color: #8a5200; }
+
+/* An agent's apps. */
+.mkt-agent-apps { display: flex; flex-direction: column; gap: 14px; scroll-margin-top: 24px; }
+.mkt-agent-apps-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.mkt-agent-apps-head .mkt-swatch { width: 14px; height: 14px; margin: 0; align-self: center; box-shadow: inset 0 0 0 1px rgba(26, 26, 26, 0.12); }
+.mkt-app-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 268px), 1fr)); gap: 12px; }
+.mkt-app-card { text-decoration: none; color: var(--mkt-ink); background: var(--mkt-paper); border: 1px solid var(--mkt-line); border-radius: 16px; padding: 18px; display: flex; flex-direction: column; gap: 10px; min-height: 220px; transition: border-color 0.15s; }
+.mkt-app-card:hover { border-color: var(--mkt-border); box-shadow: 0 6px 18px rgba(30, 24, 16, 0.06); }
+.mkt-app-head { display: flex; align-items: center; gap: 12px; }
+.mkt-app-tile { width: 40px; height: 40px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 17px; flex-shrink: 0; }
+.mkt-app-tile--lg { width: 76px; height: 76px; border-radius: 20px; font-size: 34px; }
+.mkt-app-tile--sm { width: 34px; height: 34px; border-radius: 10px; font-size: 15px; }
+.mkt-app-title { display: flex; flex-direction: column; min-width: 0; }
+.mkt-app-title strong { font-size: 17px; letter-spacing: -0.01em; }
+.mkt-app-title span { font-size: 13px; color: var(--mkt-muted); }
+.mkt-app-blurb { font-size: 14px; color: var(--mkt-ink-soft); }
+.mkt-app-foot { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid var(--mkt-line-soft); padding-top: 10px; font-size: 14px; color: var(--mkt-ink-soft); }
+.mkt-app-view { font-weight: 600; color: var(--mkt-ink); }
+
+/* "Works with" chips, each with the system's mark. */
+.mkt-works { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: auto; }
+.mkt-works-label { font-size: 12px; color: var(--mkt-muted); margin-right: 2px; }
+.mkt-works-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; border: 1px solid var(--mkt-border); border-radius: 999px; padding: 2px 10px 2px 3px; }
+.mkt-logo { border-radius: 25%; object-fit: contain; background: var(--mkt-paper); flex-shrink: 0; }
+.mkt-hospo-mark { display: inline-flex; align-items: center; justify-content: center; border-radius: 25%; flex-shrink: 0; }
+.mkt-hospo-mark--hospo-hr { background: #112a46; }
+.mkt-hospo-mark--hospo-hr > span { background: #2ec4b6; border-radius: 28%; }
+.mkt-hospo-mark--hospo-functions { background: #ff8a65; }
+.mkt-hospo-mark--hospo-functions > span { background: #112a46; border-radius: 50%; }
+
+/* Connections. */
+.mkt-connection-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 12px; }
+.mkt-connection { background: var(--mkt-paper); border: 1px solid var(--mkt-line); border-radius: 16px; padding: 18px; display: flex; align-items: center; gap: 14px; }
+.mkt-connection > span { display: flex; flex-direction: column; min-width: 0; }
+.mkt-connection strong { font-size: 17px; }
+.mkt-connection > span > span { font-size: 14px; color: var(--mkt-muted); }
+
+/* On the leaf-green section, the column rules are light. */
+.mkt-columns--leaf > div { border-top: 1px solid rgba(246, 241, 232, 0.35); }
+
+/* An app's page. */
+.mkt-crumbs { display: flex; flex-wrap: wrap; gap: 8px; font-size: 14px; color: var(--mkt-muted); }
+.mkt-crumbs a { color: var(--mkt-ink-soft); }
+.mkt-app-hero-title { display: flex; align-items: center; gap: 18px; }
+.mkt-app-hero-photo { aspect-ratio: 1; height: auto; max-width: 520px; justify-self: end; border-radius: 24px; }
+.mkt-app-hero-field { aspect-ratio: 1; max-width: 520px; width: 100%; justify-self: end; border-radius: 24px; display: flex; align-items: center; justify-content: center; font-size: 160px; font-weight: 800; }
+@media (max-width: 900px) { .mkt-app-hero-photo, .mkt-app-hero-field { justify-self: stretch; max-width: none; } }
+.mkt-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; margin-top: -36px; }
+.mkt-facts > div { background: var(--mkt-paper); border: 1px solid var(--mkt-line); border-radius: 16px; padding: 18px 20px; display: flex; flex-direction: column; gap: 6px; }
+.mkt-facts > div > span { font-size: 13px; color: var(--mkt-muted); }
+.mkt-facts strong { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; font-weight: 600; }
+.mkt-facts .mkt-swatch { margin: 0; }
+.mkt-facts-marks > span { display: inline-flex; align-items: center; gap: 6px; }
+.mkt-app-body { display: flex; flex-wrap: wrap; gap: 56px; align-items: flex-start; }
+.mkt-asks { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.mkt-ask { background: var(--mkt-selected); border-radius: 14px 14px 14px 4px; padding: 10px 14px; font-size: 16px; }
+.mkt-siblings { flex: 1 1 300px; min-width: 0; background: var(--mkt-cream); border: 1px solid var(--mkt-line); border-radius: 18px; padding: 22px; display: flex; flex-direction: column; gap: 10px; }
+.mkt-siblings > strong { font-size: 17px; }
+.mkt-sibling { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--mkt-ink); padding: 10px 0 0; border-top: 1px solid var(--mkt-line); }
+.mkt-sibling > span:last-child { display: flex; flex-direction: column; min-width: 0; }
+.mkt-sibling strong { font-size: 15px; }
+.mkt-sibling > span:last-child > span { font-size: 13px; color: var(--mkt-muted); }

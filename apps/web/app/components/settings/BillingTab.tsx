@@ -345,7 +345,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
           onClose={() => setConfirming(null)}
         >
           <p style={{ margin: 0 }}>
-            Billing starts today on {card}: {target ? `${formatCents(target.price_cents)} a month` : 'the plan’s monthly price'}, plus {formatCents(billing.agent_price_cents)} a month for each AI team member you’ve hired.
+            Billing starts today on {card}: {target ? `${formatCents(target.price_cents)} a month` : 'the plan’s monthly price'}, plus {formatCents(billing.agent_price_cents)} a month for each AI agent you’ve hired.
           </p>
         </ConfirmDialog>
       );
@@ -497,7 +497,7 @@ export default function BillingTab({ orgId }: { orgId: string }) {
       {/* Your AI team — hired and paid state; managed on Settings → AI team */}
       <Section
         title="Your AI team"
-        footnote="Hire and retire team members — and switch their Apps — in Settings → AI team."
+        footnote="Hire and retire AI agents — and switch their Apps — in Settings → AI team."
       >
         {teamRows > 0 && (
           <div className="n-card" style={{ overflowX: 'auto' }}>

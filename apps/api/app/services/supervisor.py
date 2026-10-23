@@ -160,14 +160,14 @@ def _run_task_now(
 
     logger.info("Automated task Run Now detected (task=%s)", at.id[:12])
     if not agent_entitled(at.agent_slug, org_id_for_user(user_id, db), db, config_db):
-        # Hierarchy v2: a retired team member's task must not run — its tools
+        # Hierarchy v2: a retired AI agent's task must not run — its tools
         # are gone from the union, so it would execute near-toolless and
         # half-do the job.
         logger.info(
             "Run Now skipped: member %s not hired (task=%s)", at.agent_slug, at.id[:12]
         )
         skip = (
-            "This task belongs to a team member that isn't hired right now. "
+            "This task belongs to an AI agent that isn't hired right now. "
             "Re-hire them in Settings → AI team to run it."
         )
         db.add(Message(thread_id=thread.id, role="assistant", content=skip))

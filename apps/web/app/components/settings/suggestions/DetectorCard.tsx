@@ -137,7 +137,7 @@ export default function DetectorCard({ d, onSaved }: { d: DetectorRow; onSaved: 
             <input className="n-input" inputMode="decimal" aria-label="Weight" value={weight} onChange={e => setWeight(e.target.value)} style={{ width: 70, textAlign: 'right' }} />
           </Field>
           <div style={{ padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
-            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)' }}>Shows in these team members&apos; new chats</div>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text)' }}>Shows in these AI agents&apos; new chats</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 4 }}>
               {MEMBERS.map(m => (
                 <label key={m.id} style={{ fontSize: 'var(--fs-sm)', display: 'inline-flex', gap: 4 }}>

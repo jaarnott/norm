@@ -603,7 +603,7 @@ def check_binding_actions(
 def check_team_catalog(
     agent_rows: list, known_agent_slugs: set[str]
 ) -> list[ConfigIssue]:
-    """Every team member joins agent_configs: an ``owns_agents`` slug with no
+    """Every AI agent joins agent_configs: an ``owns_agents`` slug with no
     agent config row means hiring that member configures nothing."""
     issues: list[ConfigIssue] = []
     for row in agent_rows:
@@ -625,7 +625,7 @@ def check_team_catalog(
 
 
 def check_app_pages_reachable(app_rows: list) -> list[ConfigIssue]:
-    """Every App carrying a page must be bound to a team member — an App with
+    """Every App carrying a page must be bound to an AI agent — an App with
     no member can never be on, so its pages are unreachable dead config
     (tier='user' rows are exempt: they gate on entitlement alone)."""
     from app.services.entitlements import app_member
@@ -644,7 +644,7 @@ def check_app_pages_reachable(app_rows: list) -> list[ConfigIssue]:
                     severity="error",
                     where=f"catalog.{app.slug}",
                     problem=(
-                        "App declares pages but is bound to no team member — "
+                        "App declares pages but is bound to no AI agent — "
                         "the pages are unreachable for every org"
                     ),
                     fix="Set composition.member, or remove the row.",
@@ -1346,7 +1346,7 @@ def validate_config(db=None, config_db=None) -> dict:
                     )
                 )
 
-            # Hierarchy v2 / Apps v3: team members <-> agent configs <-> Apps
+            # Hierarchy v2 / Apps v3: AI agents <-> agent configs <-> Apps
             # must stay a closed graph, and money must be chargeable.
             from app.db.config_models import AgentConfig
 

@@ -7,7 +7,7 @@
  *
  * Opens with how suggestions are picked (in words, from the live settings) and
  * a preview of what any person would see now; then the ranking and the words;
- * then a section for each team member with its prompts and the insights that
+ * then a section for each AI agent with its prompts and the insights that
  * reach its chats.
  */
 
@@ -90,7 +90,7 @@ export default function SuggestionsAdminPanel() {
           </h3>
           <p style={{ ...muted, margin: '2px 0 0' }}>
             {s.id === 'home'
-              ? 'Home shows every team member’s prompts and every insight. Here: Norm’s own prompts, and the insights that show on Home only.'
+              ? 'Home shows every AI agent’s prompts and every insight. Here: Norm’s own prompts, and the insights that show on Home only.'
               : `What ${s.label}’s new chat suggests (Home shows these too).`}
           </p>
           <PromptList member={s.id} admin={data} onSaved={load} />

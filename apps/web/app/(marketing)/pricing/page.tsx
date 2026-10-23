@@ -5,7 +5,7 @@ import { SIGNUP_HREF } from '../_components/links';
 export const metadata: Metadata = {
   title: { absolute: 'Pricing — Norm' },
   description:
-    'Free for 7 days. Then from $49 a month, plus $10 for each AI team member you hire. No charge per venue, and every plan includes every feature.',
+    'Free for 7 days. Then from $49 a month, plus $10 for each AI agent you hire. No charge per venue, and every plan includes every feature.',
 };
 
 // Keep in step with apps/api/app/services/billing_service.py (PLANS,
@@ -44,7 +44,7 @@ const FAQ: { q: string; a: string }[] = [
     q: 'Which plan do we need?',
     a: "Start on Core. Settings shows how much of each month you're using; if you regularly run out, Pro gives you 4× as much and Max 11×.",
   },
-  { q: 'Do we pay per venue?', a: 'No. Connect every venue you run. Plans and team members are priced per organisation, across all your venues.' },
+  { q: 'Do we pay per venue?', a: 'No. Connect every venue you run. Plans and AI agents are priced per organisation, across all your venues.' },
   { q: 'How does the free week work?', a: 'Your first 7 days are free. Pick a plan any time to keep going.' },
   { q: 'Can we change plans?', a: 'Yes, up or down at any time. The change is prorated on your bill.' },
   { q: 'Which systems does Norm work with?', a: 'LoadedHub, Bidfood, BambooHR, Brevo and Metricool. Tell us what else you use.' },
@@ -57,7 +57,7 @@ export default function PricingPage() {
         <div className="mkt-wrap mkt-stack mkt-stack--lg">
           <h1 className="mkt-h1 mkt-h1--page">A plan, and the team you need.</h1>
           <p className="mkt-lead">
-            Your first 7 days are free. After that, pick a plan for how much you&apos;ll use Norm, and hire the AI team members you need at $10 a month each. Every plan includes every feature and reports, and there&apos;s no charge per venue.
+            Your first 7 days are free. After that, pick a plan for how much you&apos;ll use Norm, and hire the AI agents you need at $10 a month each. Every plan includes every feature and reports, and there&apos;s no charge per venue.
           </p>
         </div>
       </section>
@@ -92,7 +92,7 @@ export default function PricingPage() {
         <div className="mkt-wrap mkt-split" style={{ alignItems: 'start', gap: 32 }}>
           <div className="mkt-stack" style={{ gap: 14 }}>
             <h2 className="mkt-h2 mkt-h2--sm">Your AI team</h2>
-            <p className="mkt-text">Hire the team members you need. Each is priced per organisation, across all your venues.</p>
+            <p className="mkt-text">Hire the AI agents you need. Each is priced per organisation, across all your venues.</p>
             <div className="mkt-list">
               {TEAM.map(member => (
                 <div key={member.name} className="mkt-list-row">

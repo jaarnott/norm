@@ -79,7 +79,7 @@ export default function AppMapPanel() {
     <>
       <h3 style={{ margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>App map</h3>
       <p style={{ margin: '2px 0 16px', maxWidth: 760, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-        Every App, the team member it belongs to, and everything it owns — derived live from the catalog.
+        Every App, the AI agent it belongs to, and everything it owns — derived live from the catalog.
         Each tool, component and skill belongs to exactly one App (Norm Core is the one App shared by every
         member). Edit through <code style={inlineCode}>scripts/sync_marketplace_catalog.py</code>.
       </p>
