@@ -241,7 +241,22 @@ CATEGORY_UNIT_TYPES: dict[str, set[str]] = {
     # (Kilo) and genuine counts (each pie) are all legitimate.
     "packaging": {"count"},
     "fee": {"count"},
+    # Herbs and greens sold by the bunch are booked by weight: a count of
+    # bunches is booking 'bunch' (is_bunch_line).
+    "bunch": {"weight"},
 }
+
+#: Sold by the bunch: 'HERB BASIL BCH', 'HERB CORIANDER 5-6 M/B' (a market
+#: bunch), 'KALE BUNCH'.
+_BUNCH = re.compile(r"\b(bch|bunch(?:es)?|m/b)\b", re.IGNORECASE)
+
+
+def is_bunch_line(description: object) -> bool:
+    """True for a line sold by the bunch. Its unit is a weight: Norm's
+    estimator counted Grange Gully Bistro's coriander as '6 Pack' (six retail
+    bunches in a market bunch) while dill, with the same wording, was 500 g
+    (23 Oct 2026)."""
+    return bool(_BUNCH.search(str(description or "")))
 
 
 def unit_type_allowed(category: object, unit_type: object) -> bool:

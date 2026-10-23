@@ -107,6 +107,35 @@ class TestTheEstimate:
         assert r["unit"] is None and r["create_name"] is None
         assert r["confidence"] == "low"
 
+    def test_a_bunch_is_a_weight_never_a_count_of_bunches(self):
+        """Grange Gully Bistro, 23 Oct 2026: 'HERB CORIANDER 5-6 M/B' came
+        back as '6 each' (six retail bunches) and was booked '6 Pack'; dill,
+        worded the same, was 500 g. A count is asked again, with the reason."""
+        line = {
+            "id": "rep-5",
+            "code": "HCORM",
+            "description": "HERB CORIANDER 5-6 M/B",
+            "quantity": 1,
+            "unit_of_measure": None,
+            "unit_price": 9.8,
+        }
+        asked = []
+
+        def ask(prompt):
+            asked.append(prompt)
+            size = "6 each" if len(asked) == 1 else "500 g"
+            return {"size": size, "confidence": "medium", "why": "market bunch"}
+
+        out = resolve_units([line], ["rep-5"], UNITS, ask_llm=ask)
+        assert len(asked) == 2
+        assert "measured by weight, not by count" in asked[1]
+        assert out["rep-5"]["size"] == "500 g"
+        # Still a count after asking again: no unit, never '6 Pack'.
+        out = resolve_units(
+            [line], ["rep-5"], UNITS, ask_llm=_answer(size="6 each", confidence="high")
+        )
+        assert out["rep-5"]["unit"] is None and out["rep-5"]["create_name"] is None
+
     def test_a_beverage_may_be_a_volume_or_a_count(self):
         # Poured drinks are volumes, but a drink sold as an each is a count —
         # the category bans neither (27 Aug 2026).

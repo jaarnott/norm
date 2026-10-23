@@ -906,12 +906,12 @@ class TestAGuessIsCheckedAgain:
             ],
         )
 
-    def _build(self, db, ask):
+    def _build(self, db, ask, line=None):
         return build_replica(
             None,
             db,
             "v-1",
-            dict(EXTRACTION, lines=[self.FREIGHT]),
+            dict(EXTRACTION, lines=[line or self.FREIGHT]),
             lh=object(),
             catalogue=CATALOGUE,
             units=UNITS,
@@ -962,6 +962,22 @@ class TestAGuessIsCheckedAgain:
         assert ln["linked_unit_id"] == "u-6x750" and ln["unit_source"] == "estimate"
         assert ln["unit_resolved"]["confidence"] == "medium"
         assert not [i for i in doc["issues"] if i["code"].startswith("unit_")]
+
+    def test_a_bunch_counted_as_bunches_is_not_reused(self, db_session):
+        # Grange Gully Bistro, 23 Oct 2026: coriander's estimate '6 Pack' (six
+        # retail bunches) was reused for the next invoice; a bunch is a weight.
+        self._spec(db_session)
+        self._learn(db_session, "medium", unit_name="6 Pack")
+        asked = []
+
+        def ask(prompt):
+            asked.append(prompt)
+            return {"size": "1 kg", "confidence": "medium", "why": "market bunch"}
+
+        herb = dict(self.FREIGHT, description="HERB CORIANDER 5-6 M/B")
+        ln = self._build(db_session, ask, line=herb)["lines"][0]
+        assert asked, "worked out again, not reused"
+        assert ln["linked_unit_id"] == "u-kilo"
 
     def test_loadeds_unit_is_never_taken(self, db_session):
         # No verdict, no earlier estimate, and the estimator has no answer,

@@ -44,6 +44,7 @@ import re
 from app.services.invoice_units import (
     CATEGORY_UNIT_TYPES,
     count_first,
+    is_bunch_line,
     is_charge_line,
     is_multipack,
     is_packaging_word,
@@ -88,8 +89,9 @@ _SYSTEM_PROMPT = (
     "'72 each', never '72x95g'.\n"
     "- A whole piece of cured meat or cheese priced each (a salami, a "
     "mortadella, a cheese wheel or block) is its nominal size, e.g. '2.25 kg'.\n"
-    "- Herbs and leafy greens sold by the bunch are the weight of ONE bunch, "
-    "e.g. '100 g'.\n"
+    "- Herbs and leafy greens sold by the bunch are a WEIGHT, never a count of "
+    "bunches: one bunch is about '100 g'; a market bunch ('M/B', 5-6 bunches) "
+    "about '500 g'. With no published weight, estimate it this way.\n"
     "- A box, bag or tray of fruit or vegetables is its weight, e.g. '15 kg'.\n"
     "- Drinks sold whole are counted: a single-serve bottle or can (about 350 ml "
     "or less) is 'each', a carton of 24 cans is '24 each'. Bottles of a litre or "
@@ -428,13 +430,19 @@ def resolve_units(
                 country,
             )
 
+    def category_of(lid: str) -> str | None:
+        # A line sold by the bunch is booked by weight, whatever its category.
+        if is_bunch_line((by_id.get(lid) or {}).get("description")):
+            return "bunch"
+        return (category_by_line or {}).get(lid)
+
     def problem(lid: str, ans: dict) -> str | None:
         # The category rule below, applied while there is still a chance to
         # ask again: a beverage is never a weight, packaging is a count.
         why_not = _size_problem(ans)
         if why_not:
             return why_not
-        category = (category_by_line or {}).get(lid)
+        category = category_of(lid)
         kind = _measure(ans.get("size"))[0]
         if category and not unit_type_allowed(category, kind):
             allowed = " or ".join(
@@ -470,7 +478,7 @@ def resolve_units(
         create_name = None if unit is not None else unit_name_for(size)
         # Category rules trump the model: a type its category forbids is
         # invalid, whatever the confidence.
-        category = (category_by_line or {}).get(lid)
+        category = category_of(lid)
         kind = _measure(size)[0]
         if category and not unit_type_allowed(category, kind):
             logger.info("unit estimate %r rejected for %s line %s", size, category, lid)

@@ -51,6 +51,7 @@ from app.services.supplier_identity import (
     resolve_supplier,
 )
 from app.services.invoice_units import (
+    is_bunch_line,
     is_multipack,
     is_packaging_word,
     parse_unit,
@@ -883,6 +884,15 @@ def build_replica(
                     # old the estimator works the product out again.
                     elif unit_create_name is None:
                         guess = supplier_catalog.earlier_estimate(prow)
+                        # A bunch counted as bunches is not reused: it is
+                        # worked out again as a weight (coriander '6 Pack',
+                        # Grange Gully Bistro, 23 Oct 2026).
+                        if (
+                            guess
+                            and is_bunch_line(el.get("description"))
+                            and (parse_unit(guess["unit"]) or ("",))[0] == "count"
+                        ):
+                            guess = None
                         if guess and guess["fresh"] and guess["unit"]:
                             skip_estimate = True
                             rec = _resolve_unit_record(guess["unit"], units)
