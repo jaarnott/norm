@@ -225,8 +225,14 @@ class TestItemMatch:
         text = IM._MATCH_SYSTEM_PROMPT
         assert "never the product's FORM" in text
         assert "are not the fresh 'Tomatoes'" in text
-        # New items are named as people say them (the human lists' style).
-        assert "'Tomato Sauce'" in text and "Flour All Purpose" not in text
+        # A grade is part of the product (Grange Gully Bistro, 23 Oct 2026:
+        # XL and medium strawberries went on one item).
+        assert "A GRADE or class is part of the product" in text
+        # New items are named core product first, as the human-built lists
+        # do ('Onion Brown', 'Ice Cream Cup Vanilla'), and add no word the
+        # invoice doesn't print ('Tinned').
+        assert "the core product FIRST" in text and "'Flour All Purpose'" in text
+        assert "Never add a word the invoice doesn't print" in text
 
     def test_classify_labels_lines(self, monkeypatch):
         def fake(**kw):

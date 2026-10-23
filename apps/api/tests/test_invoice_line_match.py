@@ -85,13 +85,35 @@ class TestCatalogueIndex:
         assert item["id"] == "item-freight" and by == "description_exact"
 
     def test_description_substring_floor_and_uniqueness(self):
-        item, by = self._idx().match_line(None, "SALMON FILLET SKIN ON 1KG", None)
-        assert item["id"] == "item-salmon" and by in (
-            "description_substring",
-            "description_exact",
-        )
-        none_item, _ = self._idx().match_line(None, "WIDGET", None)
+        # The supplier's own earlier wording, inside a fuller one.
+        item, by = self._idx().match_line(None, "SALMON FILLET SKIN ON 1KG", "sup-1")
+        assert item["id"] == "item-salmon" and by == "description_substring"
+        none_item, _ = self._idx().match_line(None, "WIDGET", "sup-2")
         assert none_item is None  # 6 chars, under the floor / ambiguous
+
+    def test_a_name_inside_another_products_description_is_no_match(self):
+        """Grange Gully Bistro, 23 Oct 2026: Two Providores' 'Pineapple
+        Crushed Australian in Syrup 3kg A10' went on Select Fresh's fresh
+        'Pineapple' because the name sat inside the description. Only the
+        line's own supplier's wording counts here; the rest is the matcher's."""
+        idx = M.CatalogueIndex.build(
+            [
+                {
+                    "id": "item-pineapple",
+                    "name": "Pineapple",
+                    "suppliers": [
+                        {
+                            "supplierId": "sup-select",
+                            "stockCode": "PINTE",
+                            "description": "PINEAPPLE WITH TOP EACH",
+                        }
+                    ],
+                }
+            ]
+        )
+        crushed = "Pineapple Crushed Australian in Syrup 3kg A10"
+        assert idx.match_line("E0543", crushed, "sup-two") == (None, None)
+        assert idx.match_line(None, "SALMON FILLET SKIN ON 1KG", None) == (None, None)
 
     def test_supplier_variant_picker(self):
         v = M.supplier_variant(self.ITEMS[0], "sup-1", "PBO0.7")

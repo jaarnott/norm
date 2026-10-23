@@ -165,6 +165,19 @@ class TestWhatNormDid:
         )
         assert IA.activity_from_doc(doc)["totals"] == "didn't add up"
 
+    def test_totals_norms_corrections_made_add_up(self):
+        """Grange Gully Bistro, 23 Oct 2026: Loaded's draft put 10% on every
+        GST-free line; Norm set each line's rate from the invoice and the
+        invoice was received exactly as its copy — but 30 read "didn't add up"
+        because the blocker stays on the card once it clears."""
+        doc = _doc(
+            suggestions=[],
+            issues=[{"code": "totals_inconsistent", "blocking": True}],
+            total=20.0,
+            lines=[{"quantity_received": 2, "unit_cost": 10.0, "sale_tax_rate": 0.0}],
+        )
+        assert IA.activity_from_doc(doc)["totals"] == "worked out"
+
     def test_a_bad_document_never_raises(self):
         assert IA.activity_from_doc({"replica": "nonsense", "suggestions": 4}) == {
             "lines": 0,

@@ -56,8 +56,13 @@ class CatalogueIndex:
        hit only (a code shared by two suppliers' variants stays unmatched).
     3. Exact normalized description — variant description or item name,
        unique hit only.
-    4. Substring with the 8-char floor over variant descriptions and item
-       names — unique hit only.
+    4. Substring with the 8-char floor over THIS supplier's own variant
+       descriptions — unique hit only. Not item names, and not other
+       suppliers' wording: a short name sits inside many longer descriptions
+       of other products. 'Pineapple' (fresh, from Select Fresh) was inside
+       Two Providores' 'Pineapple Crushed Australian in Syrup 3kg A10', and
+       the tin went on the fresh item (Grange Gully Bistro, 23 Oct 2026).
+       Those lines go to the LLM matcher, which knows a food's form.
 
     A tie at any tier (or a live-variant-less catalogue miss) returns None —
     the caller falls back to the LLM matcher.
@@ -67,8 +72,9 @@ class CatalogueIndex:
         self.by_supplier_code: dict[tuple[str, str], list[dict]] = {}
         self.by_code: dict[str, list[dict]] = {}
         self.by_text: dict[str, list[dict]] = {}
-        # (normalized text, item) pairs for the substring tier
-        self.texts: list[tuple[str, dict]] = []
+        # (normalized variant description, item, supplier id) for the
+        # substring tier
+        self.texts: list[tuple[str, dict, str]] = []
 
     @classmethod
     def build(cls, items: list[dict]) -> "CatalogueIndex":
@@ -79,7 +85,6 @@ class CatalogueIndex:
             name_n = _norm(item.get("name"))
             if name_n:
                 idx.by_text.setdefault(name_n, []).append(item)
-                idx.texts.append((name_n, item))
             for v in item.get("suppliers") or []:
                 if not isinstance(v, dict) or (
                     v.get("datestampDeleted")
@@ -95,7 +100,7 @@ class CatalogueIndex:
                 desc_n = _norm(v.get("description"))
                 if desc_n:
                     idx.by_text.setdefault(desc_n, []).append(item)
-                    idx.texts.append((desc_n, item))
+                    idx.texts.append((desc_n, item, str(v.get("supplierId") or "")))
         return idx
 
     @staticmethod
@@ -125,7 +130,9 @@ class CatalogueIndex:
                 return hit, "description_exact"
             subs = []
             seen_ids = set()
-            for t, item in self.texts:
+            for t, item, sup in self.texts:
+                if not supplier_id or sup != str(supplier_id):
+                    continue
                 small, big = (t, desc_n) if len(t) <= len(desc_n) else (desc_n, t)
                 if len(small) >= 8 and small in big and item.get("id") not in seen_ids:
                     subs.append(item)

@@ -172,7 +172,14 @@ def _activity(data: dict) -> dict:
     ):
         totals = "worked out"
     elif any(i.get("code") == TOTALS_ISSUE and i.get("blocking") for i in issues):
-        totals = "didn't add up"
+        # The blocker stays on the card and clears once the working values
+        # balance. Norm's own corrections often get them there: Loaded's draft
+        # put 10% on every GST-free line, and 30 of Grange Gully Bistro's
+        # invoices read "didn't add up" though each was received exactly as
+        # its copy (23 Oct 2026).
+        from app.services.invoice_review import totals_balance
+
+        totals = "worked out" if totals_balance(data) else "didn't add up"
     else:
         totals = "added up"
 
