@@ -418,6 +418,8 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
   );
 
   const memberGlyph = (slug: string) => <Icon icon={memberIcon(slug)?.icon ?? CircleUserRound} size={20} />;
+  // Norm Core serves every AI agent, so it's listed once, on Norm's own card.
+  const ownApps = (apps: TeamApp[]) => apps.filter((a) => !a.bound_to_all);
 
   const includedCard = (m: IncludedMember) => memberTile({
     slug: m.slug,
@@ -431,7 +433,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
     ),
     price: 'Free',
     tagline: m.tagline,
-    apps: m.apps,
+    apps: ownApps(m.apps),
     live: true,
     fallback: memberIcon(m.slug)?.icon,
   });
@@ -459,7 +461,7 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
       </Button>
     )),
     tagline: m.tagline,
-    apps: m.apps,
+    apps: ownApps(m.apps),
     live: m.hired,
     fallback: memberIcon(m.slug)?.icon,
   });
@@ -472,6 +474,8 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
     status: <Badge>Included</Badge>,
     price: 'Free',
     tagline: 'Your assistant — chat, general help and connection setup.',
+    apps: team.apps.filter((a) => a.bound_to_all),
+    live: true,
   });
 
   const hiredMembers = team.members.filter((m) => m.hired);

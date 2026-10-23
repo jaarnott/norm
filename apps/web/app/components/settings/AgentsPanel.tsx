@@ -37,6 +37,8 @@ export default function AgentsPanel() {
   }, []);
   const appsFor = (slug: string) => (mapApps ?? []).filter((a) => a.member === slug);
   const coreApps = () => (mapApps ?? []).filter((a) => a.member === '*');
+  // The list names Norm Core once, under Norm itself (base), not under every agent.
+  const listedApps = (slug: string) => (slug === 'base' ? coreApps() : appsFor(slug));
 
   const fetchAgents = useCallback(async () => {
     try {
@@ -263,15 +265,15 @@ export default function AgentsPanel() {
                 {agent.description && (
                   <span style={{ display: 'block', fontSize: 'var(--fs-sm)', fontWeight: 400, color: 'var(--muted)', marginTop: 2 }}>{agent.description}</span>
                 )}
-                {mapApps && appsFor(agent.slug).length > 0 && (
+                {mapApps && listedApps(agent.slug).length > 0 && (
                   <span style={{ display: 'block', fontSize: 'var(--fs-sm)', fontWeight: 400, color: 'var(--text-soft)', marginTop: 4 }}>
-                    {appsFor(agent.slug).map((a) => a.name).join(' · ')}
+                    {listedApps(agent.slug).map((a) => a.name).join(' · ')}
                   </span>
                 )}
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '0 0 auto' }}>
-                {mapApps && appsFor(agent.slug).length > 0 && (
-                  <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 400, color: 'var(--muted)' }}>{appsFor(agent.slug).length} app{appsFor(agent.slug).length !== 1 ? 's' : ''}</span>
+                {mapApps && listedApps(agent.slug).length > 0 && (
+                  <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 400, color: 'var(--muted)' }}>{listedApps(agent.slug).length} app{listedApps(agent.slug).length !== 1 ? 's' : ''}</span>
                 )}
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 'var(--fs-sm)', fontWeight: 500, color: 'var(--text-soft)' }}>
                   Edit
