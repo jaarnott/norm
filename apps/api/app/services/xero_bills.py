@@ -86,7 +86,13 @@ def _num(v) -> float | None:
         return None
 
 
-def bill_params_from_doc(venue_id: str, invoice_id: str, data: dict) -> dict:
+def bill_params_from_doc(
+    venue_id: str,
+    invoice_id: str,
+    data: dict,
+    *,
+    attachment_file_id: str | None = None,
+) -> dict:
     """The create_bill parameters for a received invoice's working values.
 
     Lines carry what the review settled on: description, quantity received,
@@ -94,6 +100,11 @@ def bill_params_from_doc(venue_id: str, invoice_id: str, data: dict) -> dict:
     when Loaded's draft had it, the item's category for the account mapping.
     Struck lines and empty lines are left out; a line with a total but no unit
     cost is sent as one unit at that total.
+
+    ``attachment_file_id`` (an ``ent_files`` / ``pay_files`` id) rides through
+    to ``create_bill``, which attaches it after creating the bill (Oct 2026,
+    Finance). The Loaded-file path below stays separate: those bytes come
+    straight from Loaded.
     """
     lines = []
     for ln in data.get("lines") or []:
@@ -138,6 +149,8 @@ def bill_params_from_doc(venue_id: str, invoice_id: str, data: dict) -> dict:
     due = str(data.get("due_at") or "")[:10]
     if due:
         params["due_date"] = due
+    if attachment_file_id:
+        params["attachment_file_id"] = str(attachment_file_id)
     return params
 
 
@@ -234,11 +247,13 @@ def push_bill_after_receive(
     *,
     doc=None,
     enabled: bool = False,
+    attachment_file_id: str | None = None,
 ) -> dict | None:
     """Create the bill in Xero for a just-received invoice. Returns the outcome
     (also written to ``data["xero_bill"]`` and the document when given), or
     None when the person has not switched it on or the venue is not connected
-    to Xero. Never raises."""
+    to Xero. Never raises. ``attachment_file_id`` is passed through to
+    ``create_bill`` (a file Norm holds, attached after the create)."""
     try:
         if not enabled:
             return None
@@ -253,7 +268,9 @@ def push_bill_after_receive(
             return _ensure_attachment(
                 db, config_db, venue_id, invoice_id, data, existing, doc
             )
-        params = bill_params_from_doc(str(venue_id), invoice_id, data)
+        params = bill_params_from_doc(
+            str(venue_id), invoice_id, data, attachment_file_id=attachment_file_id
+        )
         if not params["lines"] or not params["supplier"]:
             outcome = {
                 "created": False,

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ total }} payroll row{% if total != 1 %}s{% endif %} keyed in Orbit since the freeze</h1>
+<p>Orbit was frozen on {{ freeze_at }} and Norm has been the payroll record since. As of {{ today }}, these Orbit rows were created or changed after that moment. Anything keyed in Orbit now does not reach Norm's exports, reconciliation or journal — re-key it in Norm, or tell whoever entered it.</p>
+{% for t in tables %}
+<h2 style="font-size:15px;margin:16px 0 4px">{{ t.table }} ({{ t.rows | length }})</h2>
+<table style="border-collapse:collapse;margin:4px 0 12px">
+  <tr><th align="left" style="padding:4px 12px 4px 0">Venue</th><th align="left" style="padding:4px 12px">Week / date</th><th align="left" style="padding:4px 12px">Changed</th><th align="left" style="padding:4px 0 4px 12px">Orbit id</th></tr>
+  {% for r in t.rows %}
+  <tr><td style="padding:4px 12px 4px 0">{{ r.venue }}</td><td style="padding:4px 12px">{{ r.week }}</td><td style="padding:4px 12px">{{ r.at }}</td><td style="padding:4px 0 4px 12px;font-family:monospace">{{ r.id[:8] }}…</td></tr>
+  {% endfor %}
+</table>
+{% endfor %}
+<p>This check runs every day until the fallback window closes. No amounts or names are included; open the row in Orbit to see what was entered.</p>
+{% endblock %}

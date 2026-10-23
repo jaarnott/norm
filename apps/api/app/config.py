@@ -107,6 +107,11 @@ class Settings(BaseSettings):
 
     # ── Email ─────────────────────────────────────────────────────────
     RESEND_API_KEY: str = ""
+    # Resend's signing secret ("whsec_…") for POST /api/public/email-events/resend —
+    # the delivery webhook (delivered / bounced / complained on email_logs). Unset =
+    # the route answers 503 and nothing changes. Set in production with the owner's
+    # go-ahead (D32).
+    RESEND_WEBHOOK_SECRET: str = ""
     EMAIL_FROM_ADDRESS: str = "noreply@cbhg.co.nz"
     EMAIL_FROM_NAME: str = "Norm"
     GOOGLE_CLIENT_ID: str = ""

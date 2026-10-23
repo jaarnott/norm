@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Payroll parity — week {{ week_start }} to {{ week_ending }}</h1>
+<p>{{ unexplained }} unexplained difference{% if unexplained != 1 %}s{% endif %} across {{ runs | length }} run{% if runs | length != 1 %}s{% endif %}. Open the Shadow tab to read and sign them off.</p>
+<table style="border-collapse:collapse;margin:4px 0 12px">
+  <tr><th align="left" style="padding:4px 12px 4px 0">Entity</th><th align="left" style="padding:4px 12px">Module</th><th align="left" style="padding:4px 12px">Items</th><th align="left" style="padding:4px 0 4px 12px">Unexplained</th></tr>
+  {% for r in runs %}
+  <tr><td style="padding:4px 12px 4px 0">{{ r.venue_name }}</td><td style="padding:4px 12px">{{ r.module }}</td><td style="padding:4px 12px">{% if r.error %}failed: {{ r.error }}{% else %}{{ r.item_count }}{% endif %}</td><td style="padding:4px 0 4px 12px">{{ r.unexplained }}</td></tr>
+  {% endfor %}
+</table>
+<h2 style="font-size:15px;margin:16px 0 4px">Failed job runs this week ({{ failed | length }})</h2>
+{% if failed %}
+<table style="border-collapse:collapse;margin:4px 0 12px">
+  <tr><th align="left" style="padding:4px 12px 4px 0">Job</th><th align="left" style="padding:4px 12px">Entity</th><th align="left" style="padding:4px 12px">Slot</th><th align="left" style="padding:4px 0 4px 12px">Error</th></tr>
+  {% for f in failed %}
+  <tr><td style="padding:4px 12px 4px 0">{{ f.job }}</td><td style="padding:4px 12px">{{ f.venue_name or f.scope_id }}</td><td style="padding:4px 12px">{{ f.slot }}</td><td style="padding:4px 0 4px 12px">{{ f.error }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p>None.</p>{% endif %}
+{% endblock %}

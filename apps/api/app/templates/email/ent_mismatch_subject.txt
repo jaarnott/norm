@@ -1,0 +1,1 @@
+Please double-check your times for {{ venue_name }} on {{ date_text }}

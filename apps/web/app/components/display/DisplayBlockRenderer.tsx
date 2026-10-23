@@ -30,6 +30,21 @@ import StockPicker from './StockPicker';
 import McpEmbed from './McpEmbed';
 import ConnectorConnectCard from './ConnectorConnectCard';
 import BackgroundJobCard from './BackgroundJobCard';
+import FinanceWeekly from './FinanceWeekly';
+import PayrollPayrun from '../finance/payroll/PayrollPayrun';
+import PayrollLeave from '../finance/payroll/PayrollLeave';
+import PayrollIntercompany from '../finance/payroll/PayrollIntercompany';
+import PayrollReconciliation from '../finance/payroll/PayrollReconciliation';
+import PayrollSettings from '../finance/payroll/PayrollSettings';
+import PayrollShadow from '../finance/payroll/PayrollShadow';
+import EntertainersRegister from '../finance/entertainers/EntertainersRegister';
+import EntertainersRoster from '../finance/entertainers/EntertainersRoster';
+import EntertainersPayments from '../finance/entertainers/EntertainersPayments';
+import EntertainersEmails from '../finance/entertainers/EntertainersEmails';
+import FinanceSummary from '../finance/finance/FinanceSummary';
+import FinanceBudgets from '../finance/finance/FinanceBudgets';
+import FinanceBudgetVsLoaded from '../finance/finance/FinanceBudgetVsLoaded';
+import FinanceForecasting from '../finance/finance/FinanceForecasting';
 import FunctionsDashboard from '../functions/FunctionsDashboard';
 import FunctionsEnquiries from '../functions/FunctionsEnquiries';
 import FunctionsEvents from '../functions/FunctionsEvents';
@@ -57,7 +72,7 @@ export interface DisplayBlockProps {
 // block (the latest), and a draft_recipe call opens one card per recipe —
 // they need to sit inline, each its own card. The Recipes page is unaffected
 // (it is a functional page, not a block).
-export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'menu_engineering', 'supplier_tenders', 'stock_catalogue', 'dashboard_view', 'apps_dashboard', 'app_runner', 'functions_dashboard', 'functions_enquiries', 'functions_events', 'functions_inbox', 'functions_contacts', 'functions_reports', 'functions_settings', 'xero_bills']);
+export const FULL_WIDTH_COMPONENTS = new Set(['roster_editor', 'hiring_board', 'report_builder', 'orders_dashboard', 'invoices_dashboard', 'menu_editor', 'menu_engineering', 'supplier_tenders', 'stock_catalogue', 'dashboard_view', 'apps_dashboard', 'app_runner', 'functions_dashboard', 'functions_enquiries', 'functions_events', 'functions_inbox', 'functions_contacts', 'functions_reports', 'functions_settings', 'xero_bills', 'finance_weekly', 'payroll_payrun', 'payroll_leave', 'payroll_intercompany', 'payroll_reconciliation', 'payroll_settings', 'payroll_shadow', 'entertainers_register', 'entertainers_roster', 'entertainers_payments', 'entertainers_emails', 'finance_summary', 'finance_budgets', 'finance_budget_vs_loaded', 'finance_forecasting']);
 
 // The single source of truth for which display components EXIST. The admin
 // Settings → Components panel derives its catalogue from these keys (with a
@@ -92,6 +107,23 @@ const REGISTRY: Record<string, React.ComponentType<DisplayBlockProps>> = {
   functions_reports: FunctionsReports,
   functions_settings: FunctionsSettings,
   xero_bills: XeroBills,
+  // Finance (Norm Finance App): the Weekly Summary block, chat + page
+  finance_weekly: FinanceWeekly,
+  // Finance member pages (Loaded Payroll + Norm Finance Apps), each loading its own data
+  payroll_payrun: PayrollPayrun,
+  payroll_leave: PayrollLeave,
+  payroll_intercompany: PayrollIntercompany,
+  payroll_reconciliation: PayrollReconciliation,
+  payroll_settings: PayrollSettings,
+  payroll_shadow: PayrollShadow,
+  entertainers_register: EntertainersRegister,
+  entertainers_roster: EntertainersRoster,
+  entertainers_payments: EntertainersPayments,
+  entertainers_emails: EntertainersEmails,
+  finance_summary: FinanceSummary,
+  finance_budgets: FinanceBudgets,
+  finance_budget_vs_loaded: FinanceBudgetVsLoaded,
+  finance_forecasting: FinanceForecasting,
   tool_approval: ToolApprovalCard,
   receive_invoice_editor: ReceiveInvoiceEditor,
   venue_picker: VenuePicker,

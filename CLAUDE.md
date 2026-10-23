@@ -431,5 +431,6 @@ Use it to visually verify UI changes on `http://localhost:3000`:
 | Email | `app/services/email_service.py`, `app/templates/email/` |
 | Invoice units | `docs/unit-resolution.md` (how a product's delivered unit is chosen — self-healing), `app/services/supplier_catalog.py`, `app/services/unit_resolver.py`, `app/services/invoice_replica.py` |
 | Norm Functions | `docs/norm-functions.md` (architecture, jobs, ship runbook, cut-over), `app/db/functions_models.py`, `app/services/functions/`, `app/routers/{functions,functions_inbox,functions_forms,public}.py`, `apps/web/app/components/functions/` |
+| Norm Finance (Loaded Payroll + Norm Finance) | `docs/norm-finance.md` (architecture, modes, jobs, ship runbook, cut-over, owner decisions), `app/db/{payroll,entertainers,finance}_models.py`, `app/services/{finance_core,payroll,entertainers,finance}/`, `app/routers/{payroll,payroll_xero,entertainers,entertainers_public,email_events,finance}.py`, `app/agents/{payroll,payroll_xero,entertainers,finance}_tools.py`, `apps/web/app/components/finance/` |
 | Deploy | `.github/workflows/deploy.yml`, `.github/workflows/deploy-env.yml` |
 | Infra | `infra/terraform/main.tf`, `infra/terraform/modules/` |

@@ -1,0 +1,1 @@
+{{ org_name }}: {{ total }} payroll row{% if total != 1 %}s{% endif %} keyed in Orbit after the freeze

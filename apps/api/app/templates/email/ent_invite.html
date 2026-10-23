@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+{% if shadow_original_to %}<p style="background:#fff7e6;border:1px solid #f0c36d;padding:8px 12px;border-radius:6px;font-size:13px;">Shadow mode: this email was meant for <strong>{{ shadow_original_to }}</strong> and was sent to you instead.</p>{% endif %}
+<h1>{% if update %}Please update your details{% else %}Performer setup with {{ org_name }}{% endif %}</h1>
+<p>Hi {{ first_name }},</p>
+{% if update %}<p>{{ org_name }} has asked you to update the details we hold for paying you. The short form below takes a few minutes; it asks for a code we email you before the bank and tax step.</p>
+{% else %}<p>{{ org_name }} has set you up as a performer. To get you paid for your gigs we need a few details from you — about five minutes.</p>{% endif %}
+<p>You'll need your bank account number and your IRD number (or your company or exemption-certificate details).</p>
+<p><a class="btn" href="{{ url }}">Open my setup form</a></p>
+<p style="font-size:13px;color:#666;">Or copy this link into your browser:<br>{{ url }}</p>
+<p style="font-size:13px;color:#666;">This personal link works for {{ expires_days }} days and can be used once. Your details are only used by the finance team to pay you correctly. If you weren't expecting this email, reply and let us know.</p>
+<p style="font-size:12px;color:#888;margin-top:24px;">This email was sent by Norm on behalf of {{ org_name }}.</p>
+{% endblock %}

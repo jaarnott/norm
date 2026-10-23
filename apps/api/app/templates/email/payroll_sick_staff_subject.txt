@@ -1,0 +1,1 @@
+Sick leave request for {{ staff_name }} cannot be processed yet

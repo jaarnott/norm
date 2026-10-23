@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+{% if shadow_original_to %}<p style="background:#fff7e6;border:1px solid #f0c36d;padding:8px 12px;border-radius:6px;font-size:13px;">Shadow mode: this email was meant for <strong>{{ shadow_original_to }}</strong> and was sent to you instead.</p>{% endif %}
+<h1>Your code</h1>
+<p>Hi {{ first_name }},</p>
+<p>Enter this code on the form to continue to the bank and tax details:</p>
+<p style="font-size:28px;letter-spacing:6px;font-weight:700;">{{ code }}</p>
+<p>It works for {{ minutes }} minutes. If you didn't ask for a code, ignore this email — nothing changes without it.</p>
+<p style="font-size:12px;color:#888;margin-top:24px;">This email was sent by Norm on behalf of {{ org_name }}.</p>
+{% endblock %}

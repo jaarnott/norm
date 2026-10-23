@@ -31,6 +31,7 @@ from app.db.models import (
 from app.db.config_models import ConfigBase
 from app.db import mcp_models  # noqa: F401 — register MCP tables on Base.metadata
 from app.db import functions_models  # Norm Functions tables (fn_*) on Base.metadata
+from app.db import payroll_models, entertainers_models, finance_models  # finance: pay_*/ent_*/fin_* tables
 from app.db.engine import get_db, get_config_db, get_config_db_rw
 from app.auth.security import hash_password, create_access_token
 from app.routers import (
@@ -163,6 +164,15 @@ _test_app.include_router(_functions_inbox.router, prefix="/api")
 _test_app.include_router(_functions_forms.router, prefix="/api")
 _test_app.include_router(_public.router, prefix="/api")
 
+# finance: entertainers (F5)
+from app.routers import email_events as _email_events  # noqa: E402
+from app.routers import entertainers as _entertainers  # noqa: E402
+from app.routers import entertainers_public as _entertainers_public  # noqa: E402
+
+_test_app.include_router(_entertainers.router, prefix="/api")
+_test_app.include_router(_entertainers_public.router, prefix="/api")
+_test_app.include_router(_email_events.router, prefix="/api")
+
 from app.routers import suggestions as _suggestions  # noqa: E402
 
 _test_app.include_router(_suggestions.router, prefix="/api")
@@ -172,6 +182,18 @@ _test_app.include_router(_suggestion_admin.router, prefix="/api")
 from app.routers import receiving_rules as _receiving_rules  # noqa: E402
 
 _test_app.include_router(_receiving_rules.router, prefix="/api")
+
+# finance: Loaded Payroll + Norm Finance routers (each module agent appends its line)
+from app.routers import payroll_xero as _payroll_xero  # noqa: E402
+
+_test_app.include_router(_payroll_xero.router, prefix="/api")
+from app.routers import payroll as _payroll  # noqa: E402
+
+_test_app.include_router(_payroll.router, prefix="/api")
+from app.agents import finance_tools as _finance_tools  # noqa: E402, F401 — registers the norm_finance built-ins
+from app.routers import finance as _finance  # noqa: E402
+
+_test_app.include_router(_finance.router, prefix="/api")
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +229,13 @@ def _setup_tables():
         tables=[
             t
             for t in Base.metadata.sorted_tables
-            if t.name not in functions_models.FUNCTIONS_TABLES
+            if t.name
+            not in (
+                functions_models.FUNCTIONS_TABLES
+                | payroll_models.PAYROLL_TABLES
+                | entertainers_models.ENTERTAINERS_TABLES
+                | finance_models.FINANCE_TABLES
+            )
         ],
     )
     ConfigBase.metadata.create_all(bind=_engine)

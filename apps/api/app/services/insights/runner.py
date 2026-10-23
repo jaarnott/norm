@@ -387,7 +387,13 @@ def _group_gaps(db, org_id: str, now: datetime, cfg=None) -> int:
     (within 8 days)."""
     from app.db.models import InsightRun, Venue
 
-    venues = db.query(Venue).filter(Venue.organization_id == org_id).all()
+    # Trading venues only: a head office venue (is_trading = false) buys
+    # nothing to compare prices on (Oct 2026).
+    venues = (
+        db.query(Venue)
+        .filter(Venue.organization_id == org_id, Venue.is_trading.is_(True))
+        .all()
+    )
     if len(venues) < 2:
         return 0
     names = {v.name for v in venues}
@@ -519,7 +525,10 @@ def run_venue(
     siblings = {
         v.name
         for v in db.query(Venue)
-        .filter(Venue.organization_id == venue.organization_id)
+        .filter(
+            Venue.organization_id == venue.organization_id,
+            Venue.is_trading.is_(True),
+        )
         .all()
     }
     cfg = suggestion_config.current(config_db)
@@ -552,6 +561,8 @@ def due_venues(
         db.query(Venue)
         .join(Connection, Connection.venue_id == Venue.id)
         .filter(Connection.connector_name == "loadedhub", Connection.enabled == "true")
+        # A venue that trades nothing has no sales to find insights in.
+        .filter(Venue.is_trading.is_(True))
     )
     if venue_ids:
         q = q.filter(Venue.id.in_(venue_ids))

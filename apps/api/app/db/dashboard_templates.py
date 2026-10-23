@@ -1637,6 +1637,109 @@ DASHBOARD_TEMPLATES: list[dict] = [
             },
         ],
     },
+    # Weekly summary (Oct 2026, Norm Finance): Orbit's Financial Report and
+    # Financial KPIs as one read per venue — get_weekly_financials, rendered
+    # by the finance_weekly component, with the group's headline tiles on
+    # top. The tool takes a week, not a period, so the tiles read the last
+    # completed week whatever the board's period control says.
+    {
+        "slug": "finance-weekly",
+        "agent_slug": "finance",
+        "default_period": "last_week",
+        "title": "Weekly summary",
+        "description": "The week and the month to date per venue: sales, budget, orders, the food and beverage split, wages and wage %, roster vs actual, voids and cash-ups.",
+        "charts": [
+            {
+                "title": "Sales — last week",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 900,
+                    "value_key": "sales",
+                    "format": "currency",
+                    "prefix": "$",
+                    "comparison_key": "budget",
+                    "comparison_label": "vs budget",
+                    "note": "incl GST, every venue",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_weekly_financials",
+                    "params": {"venues": "all", "include_days": False},
+                    "rows": "group.week",
+                },
+                "layout": {"col": 1, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Wage % — last week",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 900,
+                    "value_key": "wage_pct",
+                    "numerator_key": "wages",
+                    "denominator_key": "sales_ex_gst",
+                    "format": "percent",
+                    "lower_is_better": True,
+                    "note": "wages ÷ sales ex GST",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_weekly_financials",
+                    "params": {"venues": "all", "include_days": False},
+                    "rows": "group.week",
+                },
+                "layout": {"col": 7, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Sales — month to date",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 900,
+                    "value_key": "sales",
+                    "format": "currency",
+                    "prefix": "$",
+                    "comparison_key": "budget",
+                    "comparison_label": "vs budget",
+                    "note": "incl GST, every venue",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_weekly_financials",
+                    "params": {"venues": "all", "include_days": False},
+                    "rows": "group.mtd",
+                },
+                "layout": {"col": 13, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Cash variance — last week",
+                "chart_type": "kpi",
+                "chart_spec": {
+                    "refresh_interval_seconds": 900,
+                    "value_key": "cash_variance",
+                    "format": "currency",
+                    "prefix": "$",
+                    "note": "counted − system, every cash-up",
+                },
+                "script": {
+                    "connector": "loadedhub",
+                    "action": "get_weekly_financials",
+                    "params": {"venues": "all", "include_days": False},
+                    "rows": "group.week",
+                },
+                "layout": {"col": 19, "row": 1, "colSpan": 6, "rowSpan": 4},
+            },
+            {
+                "title": "Weekly summary",
+                "chart_type": "component",
+                "chart_spec": {
+                    "component_key": "finance_weekly",
+                    "title": "Weekly summary",
+                    "component_props": {"persistVenue": True},
+                },
+                "script": {},
+                "layout": {"col": 1, "row": 5, "colSpan": 24, "rowSpan": 14},
+            },
+        ],
+    },
 ]
 
 

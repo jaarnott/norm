@@ -372,7 +372,13 @@ def project_tools(
     # stay hidden — this lifts the exposure requirement, not the curation.
     for _key in ALWAYS_EXPOSE:
         _def = _raw_defs.get(_key)
-        if _key not in available and _def and not _def.get("engine_only"):
+        if (
+            _key not in available
+            and _def
+            and not _def.get("engine_only")
+            # A row with `requires` is never lifted past the person's role.
+            and not _def.get("requires")
+        ):
             available[_key] = _def
 
     # 2. Curation.

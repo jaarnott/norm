@@ -49,6 +49,8 @@ def execute_connector_tool(
     (a dashboard tile on "all venues": every HR tile reading app records said
     "couldn't tell which organisation is asking", 18 Oct 2026).
     See _execute_connector_tool for the rest."""
+    from dataclasses import replace
+
     from app.services import caller_scope
 
     scope = (
@@ -56,6 +58,15 @@ def execute_connector_tool(
         or caller_scope.for_thread(db, thread_id)
         or (caller_scope.for_user(db, user) if user is not None else None)
     )
+    if user is not None and scope is not None and scope.user_id is None:
+        # The signed-in person stays the person acting at their venue, so a
+        # tool row's `requires` is checked against THEIR role (Oct 2026): a
+        # venue scope alone names nobody, and nobody is refused pay data.
+        person = caller_scope.for_user(db, user)
+        if person is not None and (
+            person.unrestricted or person.org_id == scope.org_id
+        ):
+            scope = replace(scope, user_id=user.id)
     with caller_scope.use(scope):
         return _execute_connector_tool(
             connector_name,
@@ -145,6 +156,16 @@ def _execute_connector_tool(
     if release_config_db:
         # Detaches ``spec`` with its columns loaded, so it still reads below.
         config_db.close()
+
+    # 2b. The row's `requires` (Oct 2026): a payroll or finance tool runs only
+    #     for a person whose role holds the scope — checked here, once, for
+    #     every door that reaches this executor (pages, charts, apps, MCP),
+    #     and in the chat loop for a thread. Nobody known is refused too.
+    from app.services import caller_scope
+
+    refusal = caller_scope.missing_scopes(db, tool_def)
+    if refusal:
+        return ToolResult(success=False, payload=None, error=refusal)
 
     # 3. Dispatch to an in-process handler if one applies. Order mirrors
     #    tool_loop._execute_tool_call: a registered internal handler shadows a

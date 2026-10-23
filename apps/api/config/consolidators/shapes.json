@@ -134,6 +134,128 @@
    "flatten": []
   }
  },
+ "loadedhub.get_closing_manager": {
+  "loadedhub.get_roster": {
+   "enabled": true,
+   "fields": {
+    "datestampCreated": "",
+    "datestampDeleted": "datestampDeleted",
+    "datestampLocked": "",
+    "datestampModified": "",
+    "datestampPublished": "",
+    "endDateTime": "",
+    "id": "id",
+    "rosteredShifts[].adjustedHourlyRate": "",
+    "rosteredShifts[].adjustedHourlyRatePrecise": "",
+    "rosteredShifts[].breaks": "",
+    "rosteredShifts[].clockinTime": "clockinTime|tz",
+    "rosteredShifts[].clockoutTime": "clockoutTime|tz",
+    "rosteredShifts[].datestampApproved": "",
+    "rosteredShifts[].datestampCreated": "",
+    "rosteredShifts[].datestampDeleted": "datestampDeleted",
+    "rosteredShifts[].datestampModified": "",
+    "rosteredShifts[].history": "",
+    "rosteredShifts[].hourlyRate": "",
+    "rosteredShifts[].id": "id",
+    "rosteredShifts[].isCompanyClockin": "",
+    "rosteredShifts[].isFinalised": "",
+    "rosteredShifts[].isFromOtherVenue": "",
+    "rosteredShifts[].jobs": "",
+    "rosteredShifts[].payRateBreakdown": "",
+    "rosteredShifts[].payrollExportTotal": "",
+    "rosteredShifts[].posIdentifier": "",
+    "rosteredShifts[].remunerationType": "",
+    "rosteredShifts[].roleId": "roleId",
+    "rosteredShifts[].roleName": "roleName",
+    "rosteredShifts[].rosterId": "",
+    "rosteredShifts[].rules": "",
+    "rosteredShifts[].shiftRequests": "",
+    "rosteredShifts[].showOnFinancialReports": "",
+    "rosteredShifts[].staffMemberDatestampDeleted": "",
+    "rosteredShifts[].staffMemberFirstName": "staffMemberFirstName",
+    "rosteredShifts[].staffMemberId": "staffMemberId",
+    "rosteredShifts[].staffMemberLastName": "staffMemberLastName",
+    "rosteredShifts[].staffMemberPayCode": "",
+    "rosteredShifts[].staffMemberShowInRoster": "",
+    "rosteredShifts[].totalCost": "",
+    "rosteredShifts[].totalHours": "",
+    "rosteredShifts[].type": "type",
+    "rosteredShifts[].venueFullName": "",
+    "rosteredShifts[].venueId": "",
+    "rosteredShifts[].venueShortName": "",
+    "startDateTime": "",
+    "templateName": "",
+    "totalHours": ""
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_staff_members": {
+   "enabled": true,
+   "fields": {
+    "activeRemuneration": "",
+    "datestampDeleted": "datestampDeleted",
+    "defaultMemberRoleHourlyRate": "",
+    "defaultMemberRoleRoleId": "",
+    "defaultMemberRoleRoleName": "",
+    "email": "email",
+    "hasPin": "",
+    "id": "id",
+    "isExported": "",
+    "lastClockClockinTime": "",
+    "lastClockClockoutTime": "",
+    "memberRoles": "",
+    "name": "name",
+    "payCode": "",
+    "phoneMobile": "",
+    "posStaffName": "",
+    "remunerationTimeline": "",
+    "remunerationType": "",
+    "salaryRate": "",
+    "showInRoster": ""
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_timeclock_entries": {
+   "enabled": true,
+   "fields": {
+    "adjustedHourlyRate": "",
+    "adjustedHourlyRatePrecise": "",
+    "breaks": "",
+    "clockinTime": "clockinTime|tz",
+    "clockoutTime": "clockoutTime|tz",
+    "datestampApproved": "",
+    "datestampCreated": "",
+    "datestampDeleted": "datestampDeleted",
+    "hourlyRate": "",
+    "id": "id",
+    "isCompanyClockin": "",
+    "isFinalised": "",
+    "isFromOtherVenue": "",
+    "payRateBreakdown": "",
+    "payrollExportTotal": "",
+    "posIdentifier": "",
+    "remunerationType": "",
+    "roleId": "roleId",
+    "roleName": "roleName",
+    "rules": "",
+    "showOnFinancialReports": "",
+    "staffMemberFirstName": "staffMemberFirstName",
+    "staffMemberId": "staffMemberId",
+    "staffMemberLastName": "staffMemberLastName",
+    "staffMemberPayCode": "",
+    "totalCost": "",
+    "totalHours": "",
+    "type": "type",
+    "venueFullName": "",
+    "venueId": "",
+    "venueShortName": ""
+   },
+   "filters": [],
+   "flatten": []
+  }
+ },
  "loadedhub.get_cogs_detail_for_period": {
   "loadedhub.get_cogs_detail": {
    "enabled": true,
@@ -408,6 +530,147 @@
      "value": ""
     }
    ]
+  }
+ },
+ "loadedhub.get_payrun": {
+  "loadedhub.get_leave_types": {
+   "enabled": true,
+   "fields": {
+    "activation": "",
+    "automaticApproval": "",
+    "conditions": "",
+    "deletedAt": "deletedAt",
+    "description": "",
+    "id": "id",
+    "isPaid": "isPaid",
+    "name": "name",
+    "percentage": "percentage",
+    "salaryReduceNormalCost": "",
+    "showOnFinancialReports": "showOnFinancialReports",
+    "type": "type"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_payrun_clockins_raw": {
+   "enabled": true,
+   "fields": {
+    "adjustedHourlyRate": "",
+    "adjustedHourlyRatePrecise": "",
+    "breaks[].breakEnd": "",
+    "breaks[].breakStart": "",
+    "breaks[].createdAt": "",
+    "breaks[].deletedAt": "",
+    "breaks[].id": "",
+    "breaks[].paid": "",
+    "breaks[].shiftId": "",
+    "breaks[].type": "",
+    "breaks[].unroundedBreakEnd": "",
+    "clockinTime": "clockinTime|tz",
+    "clockoutTime": "clockoutTime|tz",
+    "datestampApproved": "datestampApproved",
+    "datestampCreated": "",
+    "datestampDeleted": "datestampDeleted",
+    "hourlyRate": "hourlyRate",
+    "id": "id",
+    "isCompanyClockin": "",
+    "isFinalised": "",
+    "isFromOtherVenue": "isFromOtherVenue",
+    "leaveRequestId": "leaveRequestId",
+    "leaveTypeName": "leaveTypeName",
+    "leaveTypeRef": "leaveTypeRef",
+    "payRateBreakdown[].hoursWorked": "hoursWorked",
+    "payRateBreakdown[].includeInPayrollExport": "includeInPayrollExport",
+    "payRateBreakdown[].isOrdinaryPay": "isOrdinaryPay",
+    "payRateBreakdown[].order": "order",
+    "payRateBreakdown[].payRate": "payRate",
+    "payRateBreakdown[].periodEnd": "periodEnd|tz",
+    "payRateBreakdown[].periodStart": "periodStart|tz",
+    "payRateBreakdown[].title": "title",
+    "payRateBreakdown[].total": "total",
+    "payrollExportTotal": "payrollExportTotal",
+    "posIdentifier": "",
+    "remunerationType": "remunerationType",
+    "roleId": "roleId",
+    "roleName": "roleName",
+    "rules[].actions": "",
+    "rules[].appliedTimePeriods": "",
+    "rules[].endTime": "",
+    "rules[].id": "id",
+    "rules[].includeInPayrollExport": "includeInPayrollExport",
+    "rules[].packageId": "",
+    "rules[].payCode": "payCode",
+    "rules[].processedRuleCost": "processedRuleCost",
+    "rules[].processedTotalHours": "processedTotalHours",
+    "rules[].roundUpHours": "roundUpHours",
+    "rules[].ruleId": "ruleId",
+    "rules[].ruleName": "ruleName",
+    "rules[].ruleRate": "ruleRate",
+    "rules[].ruleType": "ruleType",
+    "rules[].source": "source",
+    "rules[].startTime": "",
+    "rules[].totalHours": "totalHours",
+    "rules[].totalPaidHours": "totalPaidHours",
+    "showOnFinancialReports": "showOnFinancialReports",
+    "staffMemberFirstName": "staffMemberFirstName",
+    "staffMemberId": "staffMemberId",
+    "staffMemberLastName": "staffMemberLastName",
+    "staffMemberPayCode": "staffMemberPayCode",
+    "totalCost": "totalCost",
+    "totalHours": "totalHours",
+    "type": "type",
+    "venueFullName": "venueFullName",
+    "venueId": "venueId",
+    "venueShortName": "venueShortName"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_staff_members": {
+   "enabled": true,
+   "fields": {
+    "activeRemuneration": "",
+    "datestampDeleted": "datestampDeleted",
+    "defaultMemberRoleHourlyRate": "",
+    "defaultMemberRoleRoleId": "",
+    "defaultMemberRoleRoleName": "",
+    "email": "",
+    "hasPin": "",
+    "id": "id",
+    "isExported": "",
+    "lastClockClockinTime": "",
+    "lastClockClockoutTime": "",
+    "memberRoles": "",
+    "name": "name",
+    "payCode": "payCode",
+    "phoneMobile": "",
+    "posStaffName": "",
+    "remunerationTimeline[].id": "id",
+    "remunerationTimeline[].isPaidByEachVenue": "isPaidByEachVenue",
+    "remunerationTimeline[].payrollVenueId": "payrollVenueId",
+    "remunerationTimeline[].validFrom": "validFrom",
+    "remunerationTimeline[].validTo": "validTo",
+    "remunerationType": "",
+    "salaryRate": "",
+    "showInRoster": ""
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_staff_roles": {
+   "enabled": true,
+   "fields": {
+    "costGroup": "costGroup",
+    "datestampCreated": "",
+    "datestampDeleted": "datestampDeleted",
+    "deptCode": "deptCode",
+    "id": "id",
+    "name": "name",
+    "posIdentifier": "",
+    "team": ""
+   },
+   "filters": [],
+   "flatten": []
   }
  },
  "loadedhub.get_pos_orders_for_period": {
@@ -712,6 +975,125 @@
     "name": "name",
     "ratio": "ratio",
     "stockUnitType": "stockUnitType"
+   },
+   "filters": [],
+   "flatten": []
+  }
+ },
+ "loadedhub.get_weekly_financials": {
+  "loadedhub.get_cashup_sets_summary_raw": {
+   "enabled": true,
+   "fields": {
+    "cashVariance": "cashVariance",
+    "startTime": "startTime|tz",
+    "totalVariance": "totalVariance"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_clockins_summary_by_role_raw": {
+   "enabled": true,
+   "fields": {
+    "cost": "cost",
+    "hours": "hours",
+    "roleCostGroup": "roleCostGroup",
+    "roleId": "roleId",
+    "roleName": "roleName"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_pos_item_sales": {
+   "enabled": true,
+   "fields": {
+    "amount": "amount",
+    "itemCategoryIdentifier": "",
+    "itemCategoryName": "itemCategoryName",
+    "itemGroupIdentifier": "",
+    "itemGroupName": "itemGroupName",
+    "itemName": "itemName",
+    "itemPosIdentifier": "",
+    "quantity": "quantity"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_pos_orders": {
+   "enabled": true,
+   "fields": {
+    "amount": "amount",
+    "count": "count",
+    "period": "",
+    "startTime": "startTime|tz"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_pos_voids_raw": {
+   "enabled": true,
+   "fields": {
+    "invoices": "",
+    "startTime": "startTime|tz",
+    "transactions": "",
+    "voidAmount": "voidAmount",
+    "voidQuantity": "voidQuantity",
+    "voidReason": "",
+    "wasteAmount": "wasteAmount",
+    "wasteQuantity": "wasteQuantity"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_roster_vs_actual": {
+   "enabled": true,
+   "fields": {
+    "actualCost": "actualCost",
+    "actualHours": "actualHours",
+    "categories": "",
+    "rosteredCost": "rosteredCost",
+    "rosteredHours": "rosteredHours",
+    "startTime": "startTime|tz"
+   },
+   "filters": [],
+   "flatten": []
+  },
+  "loadedhub.get_sales_data": {
+   "enabled": true,
+   "fields": {
+    "count": "count",
+    "discounts": "discounts",
+    "invoices": "invoices",
+    "invoicesTax": "invoicesTax",
+    "period": "",
+    "quantity": "",
+    "startTime": "startTime|tz",
+    "surcharges": ""
+   },
+   "filters": [],
+   "flatten": []
+  }
+ },
+ "loadedhub.set_budgets": {
+  "loadedhub.get_budgets_raw": {
+   "enabled": true,
+   "fields": {
+    "amount": "amount",
+    "date": "date",
+    "id": "id",
+    "salesTax": "salesTax"
+   },
+   "filters": [],
+   "flatten": []
+  }
+ },
+ "loadedhub.set_budgets_typed": {
+  "loadedhub.get_budgets_raw": {
+   "enabled": true,
+   "fields": {
+    "amount": "amount",
+    "date": "date",
+    "id": "id",
+    "salesTax": "salesTax"
    },
    "filters": [],
    "flatten": []

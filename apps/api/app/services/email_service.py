@@ -105,6 +105,47 @@ def send_system_email(
     return log.id
 
 
+#: Delivery states a provider's webhook may move a log row to (the row's
+#: ``status`` after the send: sent → delivered | bounced | complained).
+DELIVERY_STATUSES = ("delivered", "bounced", "complained")
+
+
+def update_delivery_status(
+    db: Session,
+    provider_message_id: str | None,
+    status: str,
+    *,
+    detail: str | None = None,
+):
+    """Record what the provider's webhook says happened to an email Norm
+    sent (``POST /api/public/email-events/resend``): the ``email_logs`` row
+    with that ``provider_message_id`` moves to ``delivered``, ``bounced`` or
+    ``complained``. Returns the row, or None when no such email was sent —
+    an id Norm never saw is ignored, not an error. ``bounced`` and
+    ``complained`` keep the provider's reason in ``error_message``; a
+    ``delivered`` never overwrites a later bounce."""
+    from app.db.models import EmailLog
+
+    if status not in DELIVERY_STATUSES:
+        raise ValueError(f"unknown delivery status {status!r}")
+    if not provider_message_id:
+        return None
+    log = (
+        db.query(EmailLog)
+        .filter(EmailLog.provider_message_id == str(provider_message_id))
+        .first()
+    )
+    if log is None:
+        return None
+    if status == "delivered" and log.status in ("bounced", "complained"):
+        return log
+    log.status = status
+    if status != "delivered":
+        log.error_message = (detail or status)[:500]
+    db.flush()
+    return log
+
+
 def send_on_behalf_gmail(
     user_id: str,
     to: list[str],

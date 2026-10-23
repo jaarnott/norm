@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Payroll hygiene — {{ venue_name }}, {{ week_label }}</h1>
+<p>Snapshot taken for {{ taken }} of {{ of }} entit{% if of == 1 %}y{% else %}ies{% endif %}{% if failed %}; failed: {% for f in failed %}{{ f.venue_name }} ({{ f.error }}){% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.</p>
+{% if of == 0 %}
+<p><strong>No entity has payroll switched on yet</strong> — nothing is snapshotted or exported until a venue is switched on under Payroll settings → Entities.</p>
+{% endif %}
+{% if not live %}
+<p><strong>Loaded could not be read tonight</strong>{% if error %} ({{ error }}){% endif %} — the lists below come from the snapshot and may be stale.</p>
+{% endif %}
+<h2 style="font-size:15px;margin:16px 0 4px">Unapproved clock-ins ({{ unapproved | length }})</h2>
+{% if unapproved %}
+<table style="border-collapse:collapse;margin:4px 0 12px">
+  <tr><th align="left" style="padding:4px 12px 4px 0">Staff</th><th align="left" style="padding:4px 12px">Clock in</th><th align="left" style="padding:4px 0 4px 12px">Clock out</th></tr>
+  {% for r in unapproved %}
+  <tr><td style="padding:4px 12px 4px 0">{{ r.staff_name }}</td><td style="padding:4px 12px">{{ r.clockin_at }}</td><td style="padding:4px 0 4px 12px">{{ r.clockout_at }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p>None.</p>{% endif %}
+<h2 style="font-size:15px;margin:16px 0 4px">Staff without a pay code ({{ without_pay_code | length }})</h2>
+<p>{% if without_pay_code %}{{ without_pay_code | join(", ") }}{% else %}None.{% endif %}</p>
+<h2 style="font-size:15px;margin:16px 0 4px">Unfinished clock-ins left out ({{ unfinished | length }})</h2>
+<p>{% if unfinished %}{% for r in unfinished %}{{ r.staff_name }} ({{ r.clockin_at }}){% if not loop.last %}, {% endif %}{% endfor %}{% else %}None.{% endif %}</p>
+<h2 style="font-size:15px;margin:16px 0 4px">Staff with no remuneration timeline ({{ without_timeline | length }})</h2>
+<p>{% if without_timeline %}{{ without_timeline | join(", ") }}{% else %}None.{% endif %}</p>
+<h2 style="font-size:15px;margin:16px 0 4px">Salaried staff: {{ salaried_count }} · Public holidays this week: {% if public_holidays %}{{ public_holidays | join(", ") }}{% else %}none{% endif %}</h2>
+{% if parity %}
+<h2 style="font-size:15px;margin:16px 0 4px">Against Loaded's pay summary</h2>
+<p>Rows ${{ "%.2f" | format(parity.rows_wages or 0) }} vs pay summary ${{ "%.2f" | format(parity.pay_summary_total_wages or 0) }} (difference ${{ "%.2f" | format(parity.difference or 0) }}){% if parity.within_tolerance %} — within tolerance{% else %} — <strong>outside tolerance</strong>{% endif %}. Leave ${{ "%.2f" | format(parity.rows_leave or 0) }} vs ${{ "%.2f" | format(parity.pay_summary_leave or 0) }}.</p>
+{% endif %}
+<p>Fix these in Loaded before the close snapshot on Tuesday morning (or press Start close on the Payrun page once they are done). Norm approves no clock-ins.</p>
+{% endblock %}

@@ -15,6 +15,7 @@ import { SIDE_PANEL_EVENT, type SidePanelRequest } from '../lib/sidePanel';
 import ConnectPrompt from '../components/display/ConnectPrompt';
 import { requestOpenRecipe } from '../components/display/RecipeEditor';
 import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../components/pages/pageRegistry';
+import { pageAllowed } from '../components/threads/ThreadList';
 import type { SendOptions } from '../components/chat/AttachmentComposer';
 import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
 import { OPEN_APP_PAGE_EVENT } from '../components/apps/AppRunner';
@@ -134,6 +135,11 @@ export default function Home() {
   // Hierarchy v2: which AI agents are hired and which Apps are on. null
   // sets = show everything (gating inactive / fetch failed — fail-open).
   const team = useTeam(token);
+  // The viewer's org permissions, for pages that carry one (Finance, Oct
+  // 2026). A platform admin holds every scope; before /auth/me answers there
+  // is no list, and no gate.
+  const viewerPermissions: string[] | null =
+    !user || user.role === 'admin' ? null : (user.permissions ?? []);
   // Apps v3: an App-platform app gets a menu item under its member while its
   // App is on (Norm Hiring under HR, a custom app under its member) — no pin
   // needed. Pinned apps keep their item too. Placement follows the catalog.
@@ -182,8 +188,9 @@ export default function Home() {
     if (activePage && team.appsOn) {
       const cfg = FUNCTIONAL_PAGES.find(pg => pg.id === activePage);
       if (cfg?.app && !team.appsOn.has(cfg.app)) setActivePage(null);
+      else if (cfg && !pageAllowed(cfg, viewerPermissions)) setActivePage(null);
     }
-  }, [team.hired, team.appsOn, activeAgent, activePage]);
+  }, [team.hired, team.appsOn, activeAgent, activePage, viewerPermissions]);
 
   // Check for existing auth on mount
   useEffect(() => {
@@ -1406,6 +1413,7 @@ export default function Home() {
               extraPages={effectiveAppPages}
               appsOn={team.appsOn}
               pageMember={team.pageMember}
+              permissions={viewerPermissions}
               activePage={activePage}
               showBrand={false}
             />
@@ -1496,6 +1504,7 @@ export default function Home() {
           onSelectPage={(pageId) => { handleSelectPage(pageId); closeDrawer(); }}
           appsOn={team.appsOn}
           pageMember={team.pageMember}
+          permissions={viewerPermissions}
           activePage={activePage}
         />
       </div>

@@ -17,6 +17,7 @@ if settings.SENTRY_DSN:
 
 from app.db import mcp_models  # noqa: F401, E402 — register MCP tables on Base.metadata
 from app.db import functions_models  # noqa: F401, E402 — register Functions tables on Base.metadata
+from app.db import payroll_models, entertainers_models, finance_models  # noqa: F401, E402 — finance: pay_*/ent_*/fin_* tables on Base.metadata
 from app.routers import (  # noqa: E402
     health,
     venues,
@@ -151,7 +152,28 @@ app.include_router(functions_router.router, prefix="/api")
 app.include_router(functions_inbox.router, prefix="/api")
 app.include_router(functions_forms.router, prefix="/api")
 app.include_router(public_router.router, prefix="/api")
+
+# finance: entertainers (F5) — staff API, the performers' public links, the Resend webhook
+from app.routers import email_events as email_events_router  # noqa: E402
+from app.routers import entertainers as entertainers_router  # noqa: E402
+from app.routers import entertainers_public as entertainers_public_router  # noqa: E402
+
+app.include_router(entertainers_router.router, prefix="/api")
+app.include_router(entertainers_public_router.router, prefix="/api")
+app.include_router(email_events_router.router, prefix="/api")
 app.include_router(mcp_oauth.router, prefix="/api")
+
+# finance: Loaded Payroll + Norm Finance routers (each module agent appends its line)
+from app.routers import payroll_xero as payroll_xero_router  # noqa: E402
+
+app.include_router(payroll_xero_router.router, prefix="/api")
+from app.routers import payroll as payroll_router  # noqa: E402
+
+app.include_router(payroll_router.router, prefix="/api")
+from app.agents import finance_tools  # noqa: E402, F401 — registers the norm_finance built-ins
+from app.routers import finance as finance_router  # noqa: E402
+
+app.include_router(finance_router.router, prefix="/api")
 
 
 @app.on_event("startup")

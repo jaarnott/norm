@@ -52,6 +52,16 @@ PERMISSION_SCOPES: set[str] = {
     # Receiving rules — how an organisation's invoices are received where the
     # invoice leaves a choice (a due date), set by an owner or a manager.
     "receiving:rules",
+    # Payroll and finance (Oct 2026, Loaded Payroll + Norm Finance). Pay data
+    # — rates, per-shift costs, payruns, leave payouts, wage journals — is for
+    # the owner and the payroll administrator only; a venue manager does not
+    # open the Payrun for their own venue (owner decision D8). The group's
+    # finances — weekly summaries, budgets, forecasts — are for owners and
+    # managers; never a team member.
+    "payroll:read",
+    "payroll:write",
+    "finance:read",
+    "budgets:write",
     # Platform admin (checked via User.role, listed for completeness)
     "admin:deployments",
     "admin:tests",
@@ -78,8 +88,13 @@ STANDARD_ROLES: dict[str, dict] = {
     "manager": {
         "display_name": "Manager",
         "description": "Manage day-to-day operations. Cannot change billing or create custom roles.",
+        # Everything but billing, custom roles and pay: a new scope lands on
+        # managers by default, which is why payroll:* is named here — a venue
+        # manager never sees rates, payruns or journals (D8).
         "permissions": [
-            p for p in ALL_ORG_PERMISSIONS if p not in {"billing:manage", "org:roles"}
+            p
+            for p in ALL_ORG_PERMISSIONS
+            if p not in {"billing:manage", "org:roles", "payroll:read", "payroll:write"}
         ],
     },
     "team_member": {
@@ -100,7 +115,9 @@ STANDARD_ROLES: dict[str, dict] = {
     },
     "payroll_admin": {
         "display_name": "Payroll Administrator",
-        "description": "Manage HR, roster, and employee data.",
+        "description": (
+            "Manage HR, roster, employee and payroll data, and the group's finances."
+        ),
         "permissions": [
             "hr:read",
             "hr:write",
@@ -111,6 +128,10 @@ STANDARD_ROLES: dict[str, dict] = {
             "tasks:write",
             "reports:read",
             "org:read",
+            "payroll:read",
+            "payroll:write",
+            "finance:read",
+            "budgets:write",
         ],
     },
 }
@@ -137,4 +158,6 @@ PERMISSION_GROUPS: dict[str, list[str]] = {
     "Email": ["email:read", "email:manage"],
     "Apps": ["apps:build", "apps:share"],
     "Receiving": ["receiving:rules"],
+    "Payroll": ["payroll:read", "payroll:write"],
+    "Finance": ["finance:read", "budgets:write"],
 }

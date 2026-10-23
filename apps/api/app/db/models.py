@@ -68,6 +68,22 @@ class Organization(Base):
             "functions_mode IN ('off', 'shadow', 'live')",
             name="ck_organizations_functions_mode",
         ),
+        CheckConstraint(
+            "payroll_mode IN ('off', 'shadow', 'live')",
+            name="ck_organizations_payroll_mode",
+        ),
+        CheckConstraint(
+            "entertainers_mode IN ('off', 'shadow', 'live')",
+            name="ck_organizations_entertainers_mode",
+        ),
+        CheckConstraint(
+            "finance_mode IN ('off', 'shadow', 'live')",
+            name="ck_organizations_finance_mode",
+        ),
+        CheckConstraint(
+            "fiscal_year_start_month BETWEEN 1 AND 12",
+            name="ck_organizations_fiscal_year_start_month",
+        ),
     )
 
     id = Column(String, primary_key=True, default=_uuid)
@@ -93,6 +109,23 @@ class Organization(Base):
     #: Norm Functions switch: off | shadow (imported, read-only) | live.
     #: Checked in the service layer, the public router and the Gmail client.
     functions_mode = Column(String, nullable=False, default="off", server_default="off")
+    #: Loaded Payroll and Norm Finance switches (Oct 2026), each
+    #: off | shadow | live — the Functions pattern. Shadow: Norm computes
+    #: (snapshots, exports, drafts, parity) and refuses every Loaded and Xero
+    #: write; emails go to payroll_contact_email. Entertainers has its own
+    #: switch so it can go live before the payroll close does.
+    payroll_mode = Column(String, nullable=False, default="off", server_default="off")
+    entertainers_mode = Column(
+        String, nullable=False, default="off", server_default="off"
+    )
+    finance_mode = Column(String, nullable=False, default="off", server_default="off")
+    #: The month the financial year starts in (April for NZ, 1–12).
+    fiscal_year_start_month = Column(
+        Integer, nullable=False, default=4, server_default="4"
+    )
+    #: Where shadow-mode payroll and entertainer emails go instead of staff
+    #: and performers (no address: nothing is sent, the log says suppressed).
+    payroll_contact_email = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -174,6 +207,11 @@ class Venue(Base):
     day_start_time = Column(String, nullable=True)  # HH:MM e.g. "07:00"
     # (invoice_autopilot was here until Oct 2026 — receiving settings are the
     # person's now; see services/venue_autopilot.)
+    #: False for a venue that trades nothing — a head office with its own
+    #: Loaded and Xero logins (CBI, Oct 2026). Left out of the venue lists
+    #: that sum sales, run insights or suggest prompts, so its $0 days never
+    #: drag a group figure down; GET /api/venues and the payroll pages keep it.
+    is_trading = Column(Boolean, nullable=False, default=True, server_default="true")
 
     organization = relationship("Organization", back_populates="venues")
 

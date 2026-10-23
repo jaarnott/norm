@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+{% if shadow_original_to %}<p style="background:#fff7e6;border:1px solid #f0c36d;padding:8px 12px;border-radius:6px;font-size:13px;">Shadow mode: this email was meant for <strong>{{ shadow_original_to }}</strong> and was sent to you instead.</p>{% endif %}
+<h1>A question about your invoice</h1>
+<p>Hi {{ first_name }},</p>
+<p>We've looked at your invoice <strong>{{ invoice_number }}</strong> for:</p>
+<ul>{% for p in performances %}<li>{{ p.venue }}, {{ p.date_text }} — approved {{ p.amount_text }}</li>{% endfor %}</ul>
+<p>The approved total is <strong>{{ expected_text }}</strong>. Before we can pay it, these need another look:</p>
+<ul>{% for f in findings %}<li>{{ f }}</li>{% endfor %}</ul>
+<p>Please send a corrected invoice, or reply{% if contact_email %} to {{ contact_email }}{% endif %} if you think the approved figure is wrong.</p>
+<p style="font-size:12px;color:#888;margin-top:24px;">This email was sent by Norm on behalf of {{ org_name }}.</p>
+{% endblock %}

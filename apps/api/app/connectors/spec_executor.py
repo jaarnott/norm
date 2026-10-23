@@ -38,10 +38,20 @@ class RenderedRequest:
     method: str
     url: str
     headers: dict
-    body: dict | str | None
+    #: A dict is sent as JSON, a str as text, bytes as a binary body (a file
+    #: attachment, Oct 2026 — see ``body_file_id`` in execute_spec).
+    body: dict | str | bytes | None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if isinstance(self.body, (bytes, bytearray)):
+            # Never a file's bytes in an audit row: its size and type instead.
+            d["body"] = {
+                "binary": True,
+                "size_bytes": len(self.body),
+                "content_type": (self.headers or {}).get("Content-Type"),
+            }
+        return d
 
     def to_audit_dict(self) -> dict:
         """Version safe for DB storage — redacts auth headers."""
@@ -287,9 +297,12 @@ def execute_http(
             url=rendered.url,
             headers=rendered.headers,
             # A list is a JSON body too (a JSON Patch is one): until Oct 2026 a
-            # list body was dropped, and the request went out empty.
+            # list body was dropped, and the request went out empty. Bytes are a
+            # file's own body (body_file_id — an invoice attached in Xero).
             json=rendered.body if isinstance(rendered.body, (dict, list)) else None,
-            content=rendered.body if isinstance(rendered.body, str) else None,
+            content=rendered.body
+            if isinstance(rendered.body, (str, bytes, bytearray))
+            else None,
             auth=httpx_auth,
             timeout=float(timeout),
         )
@@ -533,6 +546,7 @@ def execute_spec(
     thread_id: str | None = None,
     venue_id: str | None = None,
     release_db_after_render: bool = False,
+    file_bytes=None,
 ) -> tuple[ConnectorResult, RenderedRequest]:
     """Execute a connector spec operation. Returns (result, rendered_request).
 
@@ -540,6 +554,14 @@ def execute_spec(
     commit) after the render/token phase and before the slow HTTP call — pass it
     ONLY for a fresh, disposable per-call session (a parallel fan-out worker's),
     never a shared request session, which must not be committed mid-turn.
+
+    ``file_bytes(file_id) -> (bytes, content_type)`` serves a row that declares
+    ``body_file_id`` (Oct 2026): the name of the field holding a file id — a
+    Xero attachment, an invoice PDF. The executor sends the file's bytes as
+    the body with its content type, instead of a rendered template. Without
+    a callback the finance modules' file tables are read by id
+    (services/files/store); a file nobody holds is refused rather than sent
+    empty. Rows without ``body_file_id`` are untouched.
     """
     # Normalize field values to fix common LLM formatting mistakes
     extracted_fields = _normalize_fields(extracted_fields, operation)
@@ -656,6 +678,18 @@ def execute_spec(
                 )
                 if release_db_after_render:
                     db.commit()
+            body_field = operation.get("body_file_id")
+            if body_field:
+                if file_bytes is None and db is not None:
+                    # The finance modules' own file tables (services/files/store).
+                    from app.services.files import store
+
+                    def file_bytes(fid, _db=db):
+                        return store.file_bytes(_db, fid)
+
+                rendered = _attach_file_body(
+                    rendered, operation, extracted_fields, file_bytes
+                )
     except ConnectorAuthError as exc:
         return ConnectorResult(
             success=False,
@@ -679,6 +713,30 @@ def execute_spec(
         )
 
     return result, rendered
+
+
+def _attach_file_body(
+    rendered: RenderedRequest, operation: dict, extracted_fields: dict, file_bytes
+) -> RenderedRequest:
+    """The request with a file's bytes as its body (``body_file_id`` rows)."""
+    field = operation["body_file_id"]
+    field = "file_id" if field is True else str(field)
+    file_id = extracted_fields.get(field)
+    if not file_id:
+        raise ValueError(f"{field} is required — the file to send")
+    if file_bytes is None:
+        raise ValueError(
+            f"{operation.get('action')} sends a file, which this caller can't "
+            "supply (no file_bytes)"
+        )
+    data, content_type = file_bytes(str(file_id))
+    if not data:
+        raise ValueError(f"file {file_id} is empty or missing")
+    headers = dict(rendered.headers or {})
+    headers["Content-Type"] = content_type or "application/octet-stream"
+    return RenderedRequest(
+        method=rendered.method, url=rendered.url, headers=headers, body=bytes(data)
+    )
 
 
 def _should_retry_after_refresh(result: ConnectorResult, spec, db: Session) -> bool:

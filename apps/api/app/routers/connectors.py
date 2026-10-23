@@ -584,6 +584,13 @@ class ExecuteBody(BaseModel):
 _UI_CALLABLE_HANDLERS = frozenset({("norm_hr", "save_criteria")})
 
 
+def _writes(tool_def: dict) -> bool:
+    """A tool that changes something, whatever its declared method."""
+    return spec_rows.effect(tool_def) in ("write", "draft") or bool(
+        (tool_def.get("consolidator_config") or {}).get("allowed_write_actions")
+    )
+
+
 @router.post("/connectors/{name}/execute/{action}")
 async def execute_connector_action(
     name: str,
@@ -629,7 +636,10 @@ async def execute_connector_action(
     if not tool_def:
         raise HTTPException(404, f"Tool not found: {action}")
 
-    if tool_def.get("method", "POST").upper() != "GET":
+    if tool_def.get("method", "POST").upper() != "GET" or _writes(tool_def):
+        # GET-only means READ-only: an internal-mode write declares GET too
+        # (effect "write", or a consolidator with allowed_write_actions). A
+        # page's write goes through the preview/confirm routes below.
         raise HTTPException(400, "Only read-only (GET) tools can be executed directly")
 
     # Credentials: the requested venue if the caller holds it, else a
@@ -651,18 +661,22 @@ async def execute_connector_action(
         # credentials strictly and runs the sandbox. execute_spec below is for
         # raw HTTP rows only.
         from app.connectors.tool_executor import execute_connector_tool
+        from app.services import caller_scope
 
-        tool_result = execute_connector_tool(
-            connector_name=name,
-            action=action,
-            params={**params, **({"venue_id": venue_id} if venue_id else {})},
-            db=db,
-            config_db=config_db,
-            venue_id=venue_id,
-            strict_venue=True,
-            # a venue-less call acts in the caller's organisation
-            user=user,
-        )
+        # The signed-in person is the one acting, so a tool row's `requires`
+        # is checked against their role (Oct 2026).
+        with caller_scope.use(caller_scope.for_user(db, user)):
+            tool_result = execute_connector_tool(
+                connector_name=name,
+                action=action,
+                params={**params, **({"venue_id": venue_id} if venue_id else {})},
+                db=db,
+                config_db=config_db,
+                venue_id=venue_id,
+                strict_venue=True,
+                # a venue-less call acts in the caller's organisation
+                user=user,
+            )
         return {
             "success": tool_result.success,
             "data": tool_result.payload,
@@ -688,6 +702,63 @@ async def execute_connector_action(
         }
     except Exception as exc:
         raise HTTPException(500, f"Execution failed: {exc}")
+
+
+class PageWriteBody(BaseModel):
+    params: dict = {}
+    venue_id: str | None = None
+    #: confirm only — what the person's card carried.
+    fingerprint: str | None = None
+
+
+@router.post("/connectors/{name}/execute/{action}/preview")
+async def preview_connector_write(
+    name: str,
+    action: str,
+    body: PageWriteBody,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """What a page's write button would change — the card and its fingerprint,
+    from live data, nothing written (services/page_writes). The write half of
+    the component-API door: the GET route above never runs a write."""
+    from app.services import page_writes
+
+    return page_writes.preview(
+        db,
+        tool=f"{name}.{action}",
+        params=body.params,
+        user=user,
+        venue_id=body.venue_id,
+        config_db=config_db,
+    )
+
+
+@router.post("/connectors/{name}/execute/{action}/confirm")
+async def confirm_connector_write(
+    name: str,
+    action: str,
+    body: PageWriteBody,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """Run the write the person previewed: refused (409) if Loaded or Xero
+    moved since they looked; recorded against the person who pressed."""
+    from app.services import page_writes
+
+    result = page_writes.confirm(
+        db,
+        tool=f"{name}.{action}",
+        params=body.params,
+        user=user,
+        venue_id=body.venue_id,
+        fingerprint=body.fingerprint,
+        config_db=config_db,
+    )
+    db.commit()
+    return result
 
 
 @router.get("/connectors/bamboohr/files/{file_id}")

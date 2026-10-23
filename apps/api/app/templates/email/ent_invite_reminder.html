@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+{% if shadow_original_to %}<p style="background:#fff7e6;border:1px solid #f0c36d;padding:8px 12px;border-radius:6px;font-size:13px;">Shadow mode: this email was meant for <strong>{{ shadow_original_to }}</strong> and was sent to you instead.</p>{% endif %}
+<h1>Still need your details</h1>
+<p>Hi {{ first_name }},</p>
+<p>A friendly reminder that {{ org_name }} still needs a few details from you before it can pay you for your performances.</p>
+<p><a class="btn" href="{{ url }}">Finish my setup</a></p>
+<p style="font-size:13px;color:#666;">Or copy this link into your browser:<br>{{ url }}</p>
+<p style="font-size:13px;color:#666;">The link works for {{ expires_days }} days from when it was sent.</p>
+<p style="font-size:12px;color:#888;margin-top:24px;">This email was sent by Norm on behalf of {{ org_name }}.</p>
+{% endblock %}

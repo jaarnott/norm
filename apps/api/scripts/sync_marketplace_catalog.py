@@ -45,6 +45,15 @@ Norm Functions' two rows are declared in app/services/functions/catalog.py
 its agent_configs row first: run scripts/sync_norm_functions.py before this,
 or the validation below refuses with "unknown agent 'functions'".
 
+The two Finance Apps (Loaded Payroll, Norm Finance — Oct 2026) are declared
+in app/services/finance_core/catalog.py the same way, under the existing
+Finance member, bundled=False. Their tools and skills must exist first
+(scripts/sync_norm_finance.py, sync_payroll_config.py, sync_xero_connector.py
+— docs/norm-finance.md has the order), or the validation refuses with "tool
+… does not exist" / "skill … does not exist". Land them with
+``--only loaded-payroll,norm-finance,xero`` (comma-separated, no spaces) so
+nothing else pending in this seed applies with them.
+
 Usage:
     .venv/bin/python scripts/sync_marketplace_catalog.py --dry-run
     .venv/bin/python scripts/sync_marketplace_catalog.py
@@ -56,6 +65,11 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+from app.services.finance_core.catalog import (  # noqa: E402 — path set above
+    APPS as FINANCE_APPS,
+    FINANCE_APP_SLUG,
+    PAYROLL_APP_SLUG,
+)
 from app.services.functions.catalog import (  # noqa: E402 — path set above
     APP as FUNCTIONS_APP,
     MEMBER as FUNCTIONS_MEMBER,
@@ -620,6 +634,14 @@ APPS = [
             "xero.get_accounts",
             "xero.get_profit_and_loss",
             "xero.create_bill",
+            # Loaded Payroll's Xero writes (Oct 2026, docs/plans/finance-
+            # migration.md §4, D5): the payroll journal, the intercompany
+            # invoices and bills, and the void — each `requires:
+            # ["payroll:write"]` on its row (scripts/sync_xero_connector.py),
+            # invoked by the Payroll pages through their approval cards.
+            "xero.post_wage_journal",
+            "xero.post_intercompany_documents",
+            "xero.void_payroll_document",
         ],
         components=[
             _c(
@@ -634,6 +656,14 @@ APPS = [
             ),
         ],
     ),
+    # The two Finance Apps (Oct 2026): native modules under the Finance member
+    # — Loaded Payroll (the pay week, leave, intercompany, the reconciliation
+    # and the entertainers) and Norm Finance (the weekly summary, budgets and
+    # the forecast). Declared once in app/services/finance_core/catalog.py
+    # (tests pin pages, tools and skills); bundled=False so hiring Finance
+    # does not switch them on, and each organisation's module modes gate them.
+    _app(**FINANCE_APPS[PAYROLL_APP_SLUG]),
+    _app(**FINANCE_APPS[FINANCE_APP_SLUG]),
     _app(
         "app-builder",
         note=(

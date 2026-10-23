@@ -91,26 +91,36 @@ def entitled_slugs(
             logger.warning("org_app_entitlements unavailable — failing open")
             overrides = {}
     entitled = {a.slug for a in apps if overrides.get(a.slug, bool(a.bundled))}
-    return _functions_off_wins(entitled, organization_id, db)
+    return _mode_off_wins(entitled, organization_id, db)
 
 
-def _functions_off_wins(
+def _mode_off_wins(
     entitled: set[str], organization_id: str | None, db: Session
 ) -> set[str]:
-    """Norm Functions' catalog rows — its team member and its App — count only
-    while the org's ``functions_mode`` is on: ``off`` beats any entitlement,
-    so an organisation that hasn't been switched on is neither shown Functions
-    nor billed for it (billing reads this same set). The mode is only read
-    when one of those rows is entitled."""
+    """A native module's catalog rows count only while its switch on the
+    organisation is on: ``off`` beats any entitlement, so an organisation that
+    hasn't been switched on is neither shown the App nor billed for it
+    (billing reads this same set). Norm Functions' team member and App go
+    with ``functions_mode``; the Finance Apps (Oct 2026) with
+    ``payroll_mode`` / ``entertainers_mode`` (Loaded Payroll) and
+    ``finance_mode`` (Norm Finance) — ``finance_core.catalog`` decides those.
+    A mode is only read when one of the rows is entitled."""
     from app.services.functions.catalog import CATALOG_SLUGS
 
-    if not entitled & CATALOG_SLUGS:
-        return entitled
-    from app.services.functions.entitlement import functions_mode
+    if entitled & CATALOG_SLUGS:
+        from app.services.functions.entitlement import functions_mode
 
-    if functions_mode(db, organization_id) == "off":
-        return entitled - CATALOG_SLUGS
-    return entitled
+        if functions_mode(db, organization_id) == "off":
+            entitled = entitled - CATALOG_SLUGS
+    try:
+        from app.services.finance_core.catalog import entitled_after_modes
+    except ImportError:  # pragma: no cover — the Finance catalog ships with F1
+        return entitled
+    return entitled_after_modes(entitled, organization_id, db)
+
+
+# The old name, for anything that still imports it.
+_functions_off_wins = _mode_off_wins
 
 
 # The team members every organisation gets for free, always on: the base
@@ -267,10 +277,14 @@ def apps_on(
             custom_on.add(key)
     # Norm Functions is also switched by the org's functions_mode, and counts
     # as on without a catalog row while none exists (services/functions/
-    # entitlement.py has the rule).
+    # entitlement.py has the rule). The two Finance Apps (Oct 2026) follow
+    # their own modes the same way, while the Finance member is hired
+    # (services/finance_core/catalog.py).
+    from app.services.finance_core.catalog import adjust_apps_on as finance_apps_on
     from app.services.functions.entitlement import adjust_apps_on
 
-    return adjust_apps_on(on | custom_on, organization_id, db, apps)
+    on = adjust_apps_on(on | custom_on, organization_id, db, apps)
+    return finance_apps_on(on, organization_id, db, apps, hired=hired)
 
 
 def _custom_apps_on(organization_id: str, db: Session, hired: set[str]) -> set[str]:

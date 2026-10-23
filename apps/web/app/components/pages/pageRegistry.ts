@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, LayoutGrid, Grid2x2, Gavel, ClipboardList, CalendarDays, Inbox, Contact, Settings, Package, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, LayoutGrid, Grid2x2, Gavel, ClipboardList, CalendarDays, Inbox, Contact, Settings, Package, Banknote, CalendarOff, ArrowLeftRight, Scale, Eye, Music, Wallet, Mail, Table, GitCompare, TrendingUp, type LucideIcon } from 'lucide-react';
 import { resolveAppIcon } from '../ui/appIcons';
 import { tradingMonday, tradingWeekRange } from '../../lib/rosterTime';
 
@@ -16,6 +16,14 @@ export interface FunctionalPageConfig {
    *  loadAction connector; self-loading pages (`_none`) declare theirs
    *  explicitly so the connection guard can prompt instead of blank-failing. */
   connections?: string[];
+  /** An org permission the viewer must hold to see this page (Oct 2026,
+   *  Finance): `payroll:read` for the Payrun, `finance:read` for the Weekly
+   *  Summary. A page without one keeps today's rule — it shows to every user
+   *  of an organisation whose App is on — which the entertainer Register
+   *  and Roster rely on (venue access, decided server-side). The server
+   *  still gates every route; this only keeps a page off a menu it would
+   *  refuse to load. */
+  permission?: string;
   component: string;
   loadAction: {
     connector: string;
@@ -436,6 +444,147 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     icon: LayoutGrid,
     agent: 'app_builder',
     component: 'apps_dashboard',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  // Finance member — the Loaded Payroll and Norm Finance Apps (native modules;
+  // ids, labels, icons and permissions mirror app/services/finance_core/catalog.py,
+  // which tests pin). Pages without a permission show to every user of a hired
+  // organisation; the server keeps them to the person's venues (D15).
+  {
+    id: 'payroll-payrun',
+    app: 'loaded-payroll',
+    label: 'Payrun',
+    icon: Banknote,
+    agent: 'finance',
+    component: 'payroll_payrun',
+    permission: 'payroll:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'payroll-leave',
+    app: 'loaded-payroll',
+    label: 'Leave',
+    icon: CalendarOff,
+    agent: 'finance',
+    component: 'payroll_leave',
+    permission: 'payroll:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'payroll-intercompany',
+    app: 'loaded-payroll',
+    label: 'Intercompany',
+    icon: ArrowLeftRight,
+    agent: 'finance',
+    component: 'payroll_intercompany',
+    permission: 'payroll:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'payroll-reconciliation',
+    app: 'loaded-payroll',
+    label: 'Reconciliation',
+    icon: Scale,
+    agent: 'finance',
+    component: 'payroll_reconciliation',
+    permission: 'payroll:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'payroll-settings',
+    app: 'loaded-payroll',
+    label: 'Payroll settings',
+    icon: Settings,
+    agent: 'finance',
+    component: 'payroll_settings',
+    permission: 'payroll:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'payroll-shadow',
+    app: 'loaded-payroll',
+    label: 'Shadow',
+    icon: Eye,
+    agent: 'finance',
+    component: 'payroll_shadow',
+    permission: 'payroll:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'ent-register',
+    app: 'loaded-payroll',
+    label: 'Entertainers',
+    icon: Music,
+    agent: 'finance',
+    component: 'entertainers_register',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'ent-roster',
+    app: 'loaded-payroll',
+    label: 'Roster',
+    icon: CalendarDays,
+    agent: 'finance',
+    component: 'entertainers_roster',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'ent-payments',
+    app: 'loaded-payroll',
+    label: 'Payments',
+    icon: Wallet,
+    agent: 'finance',
+    component: 'entertainers_payments',
+    permission: 'payroll:write',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'ent-emails',
+    app: 'loaded-payroll',
+    label: 'Emails',
+    icon: Mail,
+    agent: 'finance',
+    component: 'entertainers_emails',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'finance-summary',
+    app: 'norm-finance',
+    label: 'Weekly Summary',
+    icon: BarChart3,
+    agent: 'finance',
+    component: 'finance_summary',
+    permission: 'finance:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'finance-budgets',
+    app: 'norm-finance',
+    label: 'Budgets',
+    icon: Table,
+    agent: 'finance',
+    component: 'finance_budgets',
+    permission: 'finance:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'finance-budget-vs-loaded',
+    app: 'norm-finance',
+    label: 'Budget vs Loaded',
+    icon: GitCompare,
+    agent: 'finance',
+    component: 'finance_budget_vs_loaded',
+    permission: 'finance:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'finance-forecasting',
+    app: 'norm-finance',
+    label: 'Forecasting',
+    icon: TrendingUp,
+    agent: 'finance',
+    component: 'finance_forecasting',
+    permission: 'finance:read',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
 ];

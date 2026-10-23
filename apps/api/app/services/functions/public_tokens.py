@@ -30,16 +30,13 @@ on. Rotation never breaks a link already in a customer's inbox.
 
 from __future__ import annotations
 
-import base64
 import datetime as dt
-import hashlib
 import hmac
 import re
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.db.functions_models import (
     PUBLIC_TOKEN_KINDS,
     FnEvent,
@@ -48,6 +45,7 @@ from app.db.functions_models import (
     FnPublicToken,
 )
 from app.db.models import _now, _uuid
+from app.services import public_links
 from app.services.functions import enquiries as enquiries_svc
 from app.services.functions import events as events_svc
 from app.services.functions.contacts import normalise_email
@@ -67,31 +65,26 @@ _IN_TEXT = {
 
 
 # ---------------------------------------------------------------------------
-# Token derivation
+# Token derivation — shared with the entertainers' links (services/public_links)
 # ---------------------------------------------------------------------------
 
 
 def _key() -> bytes:
-    # Derived at call time: the startup hook may replace JWT_SECRET with the
-    # config DB's value after this module is imported.
-    return hmac.new(
-        settings.JWT_SECRET.encode(), b"norm-functions/public-token/v1", "sha256"
-    ).digest()
+    return public_links.key("functions")
 
 
 def hash_token(token: str) -> str:
     """What ``fn_public_tokens.token_hash`` stores (SHA-256 hex)."""
-    return hashlib.sha256(token.encode()).hexdigest()
+    return public_links.hash_token(token)
 
 
 def _derive(kind: str, row_id: str) -> str:
-    digest = hmac.new(_key(), f"{kind}:{row_id}".encode(), "sha256").digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return public_links.derive(kind, row_id, purpose="functions")
 
 
 def link_url(kind: str, token: str) -> str:
     """``{app_url}/q/<token>`` or ``{app_url}/e/<token>`` — the customer page."""
-    return f"{settings.app_url.rstrip('/')}/{_PATHS[kind]}/{token}"
+    return public_links.link_url(f"{_PATHS[kind]}/{token}")
 
 
 def quote_url(token: str) -> str:

@@ -214,18 +214,20 @@ def resolve_access(db: Session, app, user) -> AppAccess:
     )
 
 
-def org_permissions(db: Session, user) -> set[str]:
+def org_permissions(db: Session, user, org_id: str | None = None) -> set[str]:
     """The viewer's own org permissions — the ceiling on everything below.
 
     Platform admins bypass org roles everywhere else in Norm; they do here too,
-    but nowhere else in this module is that shortcut taken.
+    but nowhere else in this module is that shortcut taken. ``org_id`` names
+    the organisation to read the role in (a caller scope's); without it, the
+    request's active organisation.
     """
     from app.auth.permissions import ALL_ORG_PERMISSIONS
     from app.db.models import Role
 
     if getattr(user, "role", None) == "admin":
         return set(ALL_ORG_PERMISSIONS)
-    membership = active_org.membership_for(db, user.id)
+    membership = active_org.membership_for(db, user.id, org_id)
     if not membership or not membership.role_id:
         return set()
     role = db.query(Role).filter(Role.id == membership.role_id).first()
@@ -297,6 +299,21 @@ def _reachable_venues(db: Session, user) -> set[str] | None:
         r.venue_id
         for r in db.query(UserVenueAccess).filter(UserVenueAccess.user_id == user.id)
     }
+
+
+def _tool_row(config_db: Session, connector: str, action: str) -> dict | None:
+    """The tool's spec row (for its `requires`), or None."""
+    from app.db.config_models import ConnectionSpec
+
+    try:
+        spec = (
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == connector)
+            .first()
+        )
+    except Exception:  # noqa: BLE001 — no spec is "no requires", as before
+        return None
+    return spec_rows.find_tool(spec, action) if spec else None
 
 
 def _tool_writes(config_db: Session, connector: str, action: str, method: str) -> bool:
@@ -451,23 +468,36 @@ def call_action(
 
     _check_venue(db, user, venue_id)
 
+    from app.services import caller_scope
+
     t0 = time.time()
-    result = execute_connector_tool(
-        connector,
-        action,
-        dict(params or {}),
-        db,
-        config_db,
-        venue_id=venue_id,
-        # No silent fall back to another venue's credentials.
-        strict_venue=True,
-        # a venue-less call acts in the person's organisation (its
-        # organisation-wide connections, services/connection_scope.py)
-        user=user,
-        # An app only reads the config DB, so its connection can go back to the
-        # pool for the slow part — a dashboard fires a dozen of these at once.
-        release_config_db=True,
-    )
+    # The viewer is the person acting, so a tool row's `requires` is checked
+    # against THEIR role (Oct 2026) — the app's declared scopes are a ceiling
+    # (above), not a key to pay data its author never held. Refused here, as
+    # a 403 about the viewer, before anything runs; the executor checks
+    # again underneath for every other door.
+    with caller_scope.use(caller_scope.for_user(db, user)):
+        refusal = caller_scope.missing_scopes(
+            db, _tool_row(config_db, connector, action)
+        )
+        if refusal:
+            raise HTTPException(403, refusal)
+        result = execute_connector_tool(
+            connector,
+            action,
+            dict(params or {}),
+            db,
+            config_db,
+            venue_id=venue_id,
+            # No silent fall back to another venue's credentials.
+            strict_venue=True,
+            # a venue-less call acts in the person's organisation (its
+            # organisation-wide connections, services/connection_scope.py)
+            user=user,
+            # An app only reads the config DB, so its connection can go back to the
+            # pool for the slow part — a dashboard fires a dozen of these at once.
+            release_config_db=True,
+        )
     ms = int((time.time() - t0) * 1000)
 
     # Audited unconditionally — including the failures, which is where anything

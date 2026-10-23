@@ -217,6 +217,26 @@ MCP_SCOPES: dict[str, McpScope] = {
         access_level=ACCESS_WRITE,
         requires=frozenset({"orders:read", "orders:write"}),
     ),
+    # Payroll and finance (Oct 2026). Reads only: pay data and the group's
+    # finances leave Norm through MCP the way they reach the in-app agent —
+    # the tool rows carry `requires`, so a token can hold the scope and still
+    # be refused a payroll tool its person's role does not cover.
+    "mcp:payroll:read": McpScope(
+        name="mcp:payroll:read",
+        label="View payroll data",
+        description="See payruns, pay rates, leave payouts and wage costs for "
+        "your venues.",
+        access_level=ACCESS_READ,
+        requires=frozenset({"payroll:read"}),
+    ),
+    "mcp:finance:read": McpScope(
+        name="mcp:finance:read",
+        label="View the group's finances",
+        description="See weekly financial summaries, budgets and forecasts for "
+        "your venues.",
+        access_level=ACCESS_READ,
+        requires=frozenset({"finance:read"}),
+    ),
 }
 
 

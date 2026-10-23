@@ -89,7 +89,8 @@ class Context:
         self.member = member if member and member != "home" else None
         self.org_id = entitlements.org_id_for_user(user.id, db)
         self.permissions = permissions_of(db, user)
-        self.venues = list(get_user_venues(db, user.id) or [])
+        # Trading venues only: nothing to suggest about a head office venue.
+        self.venues = [v for v in (get_user_venues(db, user.id) or []) if v.is_trading]
         self.venue = next((v for v in self.venues if v.id == venue_id), None) or (
             self.venues[0] if self.venues else None
         )

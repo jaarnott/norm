@@ -15,6 +15,13 @@ _jinja_env = SandboxedEnvironment(
     loader=FileSystemLoader(str(TEMPLATE_DIR)),
     autoescape=True,
 )
+#: Subjects are plain text, not HTML: escaping them put "Bessie &amp; Royals"
+#: in recipients' inboxes (Oct 2026). Rendered without autoescape, one line.
+_subject_env = SandboxedEnvironment(autoescape=False)
+
+
+def _subject(template: str, context: dict) -> str:
+    return " ".join(_subject_env.from_string(template).render(**context).split())
 
 
 def render_template(
@@ -34,7 +41,7 @@ def render_template(
             db.query(EmailTemplate).filter(EmailTemplate.name == template_name).first()
         )
         if tpl:
-            subject = _jinja_env.from_string(tpl.subject_template).render(**context)
+            subject = _subject(tpl.subject_template, context)
             html = _jinja_env.from_string(tpl.html_template).render(**context)
             return subject, html
 
@@ -51,7 +58,7 @@ def render_template(
 
     subject = ""
     if subject_file.exists():
-        subject = _jinja_env.from_string(subject_file.read_text()).render(**context)
+        subject = _subject(subject_file.read_text(), context)
     else:
         subject = context.get("subject", template_name.replace("_", " ").title())
 

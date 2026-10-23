@@ -225,6 +225,23 @@ REGISTERED_COMPONENTS = frozenset(
         "functions_settings",
         # Xero App (Finance member): bills in Xero, chat block + Bills page
         "xero_bills",
+        # Norm Finance App: the Weekly Summary block (chat + the Summary page)
+        "finance_weekly",
+        # Finance member pages (Loaded Payroll + Norm Finance Apps)
+        "payroll_payrun",
+        "payroll_leave",
+        "payroll_intercompany",
+        "payroll_reconciliation",
+        "payroll_settings",
+        "payroll_shadow",
+        "entertainers_register",
+        "entertainers_roster",
+        "entertainers_payments",
+        "entertainers_emails",
+        "finance_summary",
+        "finance_budgets",
+        "finance_budget_vs_loaded",
+        "finance_forecasting",
     }
 )
 
@@ -449,26 +466,35 @@ def _catalog_app_entry(row, ctx, config_db, db=None, organization_id=None) -> di
     }
 
 
-def _functions_view(
+def _native_view(
     rows: list, organization_id: str | None, db: Session
 ) -> tuple[list, set[str]]:
-    """The catalog as this organisation sees Norm Functions in it.
+    """The catalog as this organisation sees the native modules in it: Norm
+    Functions (its member and App, by ``functions_mode``) and the two Finance
+    Apps (Loaded Payroll by ``payroll_mode`` / ``entertainers_mode``, Norm
+    Finance by ``finance_mode``).
 
-    While its ``functions_mode`` is off, Functions' member and App are not
-    there at all — not "available to hire": hiring can't switch them on, the
-    mode does (Settings → Company). While it's on and the seed hasn't written
-    the rows yet, unsaved stand-ins built from the declaration the seed uses
-    (services/functions/catalog.py) take their place, so the team page, the
-    sidebar and the page gate agree with entitlements. Returns the rows and
-    the stand-in slugs — rows with nothing behind them to hire, retire or
-    switch."""
+    While a module's switch is off, its rows are not there at all — not
+    "available to hire": hiring can't switch them on, the mode does (Settings
+    → Company). While it's on and the seed hasn't written the rows yet,
+    unsaved stand-ins built from the declaration the seed uses
+    (services/functions/catalog.py, services/finance_core/catalog.py) take
+    their place, so the team page, the sidebar and the page gate agree with
+    entitlements. Returns the rows and the stand-in slugs — rows with nothing
+    behind them to hire, retire or switch."""
+    from app.services.finance_core import catalog as finance_catalog
     from app.services.functions.catalog import CATALOG_SLUGS, stand_in_rows
     from app.services.functions.entitlement import functions_mode
 
+    stand_ins: set[str] = set()
     if functions_mode(db, organization_id) == "off":
-        return [r for r in rows if r.slug not in CATALOG_SLUGS], set()
-    missing = set(CATALOG_SLUGS - {r.slug for r in rows})
-    return rows + stand_in_rows(missing), missing
+        rows = [r for r in rows if r.slug not in CATALOG_SLUGS]
+    else:
+        missing = set(CATALOG_SLUGS - {r.slug for r in rows})
+        rows = rows + stand_in_rows(missing)
+        stand_ins |= missing
+    rows, finance_stand_ins = finance_catalog.catalog_view(rows, organization_id, db)
+    return rows, stand_ins | finance_stand_ins
 
 
 def team_payload(organization_id: str | None, db: Session, config_db: Session) -> dict:
@@ -481,7 +507,8 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
     `gating_active: false` (no tier='agent' rows yet, or no org) tells the web
     to show everything — the dark-launch/fail-open contract.
 
-    Norm Functions follows its organisation's functions_mode (_functions_view).
+    Norm Functions and the two Finance Apps follow their organisation's
+    module modes (_native_view).
     """
     from app.services.entitlements import (
         ALL_MEMBERS,
@@ -493,7 +520,7 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
         hired_agent_slugs,
     )
 
-    rows, stand_ins = _functions_view(_catalog_rows(config_db), organization_id, db)
+    rows, stand_ins = _native_view(_catalog_rows(config_db), organization_id, db)
     agent_rows = [
         a
         for a in rows

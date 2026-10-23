@@ -275,8 +275,10 @@ class TestCredentials:
         """A consolidator call naming a venue that doesn't resolve ran on the
         organisation's FIRST login — another venue's data, or for a write,
         another venue's change (17 Oct 2026: set_revenue_group's preview for
-        Applegum Cafe read La Zeppa's POS items). Naming no venue still falls
-        back, as single-venue organisations rely on."""
+        Applegum Cafe read La Zeppa's POS items). Naming no venue falls back
+        only when the organisation has ONE login for the connector (Finance
+        Phase 0, Oct 2026): with two it is refused rather than guessed —
+        tests/test_finance_platform_venue_rule.py has both cases."""
         import app.connectors.spec_executor as spec_mod
         import app.db.engine as engine
         from app.connectors.function_executor import execute_function
@@ -345,8 +347,9 @@ class TestCredentials:
         assert sent == []
         assert call({"venue": "Mr Murdochs"}) == {"ok": True}
         assert sent == ["Mr Murdochs"]
-        assert call({}) == {"ok": True}  # no venue named: the scoped fallback
-        assert len(sent) == 2
+        # No venue named, two logins here: refused, never the first one.
+        assert "needs a venue" in call({})["error"]
+        assert len(sent) == 1
 
     def test_parallel_workers_keep_the_scope(self, db_session, world, monkeypatch):
         """call_api_parallel runs workers in threads; a bare thread starts

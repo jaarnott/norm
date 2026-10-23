@@ -1741,6 +1741,7 @@ def _execute_tool_call_scoped(
 ) -> dict:
     from app.db.models import ConnectionSpec
     from app.connectors.spec_executor import execute_spec
+    from app.services import caller_scope
 
     _cdb = config_db
     if _cdb is None:
@@ -1781,6 +1782,16 @@ def _execute_tool_call_scoped(
         tc.error_message = f"Tool not found: {tc.action} in {tc.connector_name}"
         db.flush()
         return {"error": tc.error_message}
+
+    # The row's `requires` (Oct 2026): the thread's person must hold the
+    # scope. The menu already omits such a tool for them (prompt_builder), but
+    # a model can name a tool it wasn't offered, so the door checks too.
+    refusal = caller_scope.missing_scopes(db, tool_def) if tool_def else None
+    if refusal:
+        tc.status = "failed"
+        tc.error_message = refusal
+        db.flush()
+        return {"success": False, "error": refusal}
 
     from app.services import previews
 

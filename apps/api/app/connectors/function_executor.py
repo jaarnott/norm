@@ -588,8 +588,21 @@ def execute_function(
                 "venue's full name (list_venues), or connect it first"
             )
         if not config_row:
+            # A call naming NO venue (Oct 2026, Finance Phase 0). Until now it
+            # ran on the organisation's first login — another venue's data,
+            # or for a write, another venue's change (a venue-less
+            # set_budgets would have landed on Mr Murdochs' series). Now:
+            #   - a consolidator that declares writes never falls back;
+            #   - a read uses the organisation's login only when it is the
+            #     ONLY one for this connector, and is refused when there are
+            #     two or more — a single-venue organisation still answers.
             from app.services.caller_scope import venue_query
 
+            if allowed_write_actions:
+                raise ValueError(
+                    f"{connector}.{action} needs a venue — this tool can write, "
+                    "so it never guesses one (name the venue)"
+                )
             fallback = use_db.query(Connection).filter(
                 Connection.connector_name == connector,
                 Connection.enabled == "true",
@@ -602,7 +615,14 @@ def execute_function(
                 fallback = fallback.filter(
                     Connection.venue_id.in_(scoped.with_entities(_Venue.id))
                 )
-            config_row = fallback.first()
+            candidates = fallback.limit(2).all()
+            if len(candidates) > 1:
+                raise ValueError(
+                    f"{connector}.{action} needs a venue — more than one venue "
+                    f"uses {connector} here, so Norm won't pick one (name the "
+                    "venue, or use venues='all' where the tool offers it)"
+                )
+            config_row = candidates[0] if candidates else None
 
         credentials = config_row.config if config_row else {}
         venue_id = config_row.venue_id if config_row else None

@@ -4,6 +4,8 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.services import caller_scope
+
 from app.db.engine import get_db, get_config_db
 from app.db.models import OrganizationMembership, Report, ReportChart, User
 from app.auth.dependencies import get_current_user
@@ -579,10 +581,11 @@ def _chart_venue_ids(db: Session, user, connector: str, venue_id: str | None) ->
         scoped = caller_scope.venue_query(db)
     if scoped is None:
         raise HTTPException(403, "Norm couldn't tell which organisation you're in")
-    q = q.filter(
-        (Connection.venue_id.in_(scoped.with_entities(Venue.id)))
-        | Connection.venue_id.is_(None)
-    )
+    # "All venues" means the trading ones: a head office with its own login
+    # (is_trading = false, Oct 2026) would otherwise put $0 days into every
+    # group tile. Ask for it by venue_id to see it.
+    trading = scoped.filter(Venue.is_trading.is_(True)).with_entities(Venue.id)
+    q = q.filter((Connection.venue_id.in_(trading)) | Connection.venue_id.is_(None))
     ids = [vc.venue_id for vc in q.all()]
     if getattr(user, "role", None) != "admin":
         from app.services.venue_service import get_user_venues
@@ -1246,16 +1249,19 @@ async def refresh_report(
                 _db = SessionLocal()
                 _cdb = _ConfigSessionLocal()
                 try:
-                    return vid, execute_connector_tool(
-                        connector_name=script["connector"],
-                        action=script["action"],
-                        params=resolved,
-                        db=_db,
-                        config_db=_cdb,
-                        venue_id=vid,
-                        strict_venue=True,
-                        user=user,
-                    )
+                    # A worker thread starts with no scope: the viewer is set
+                    # again here, so a tool row's `requires` sees them.
+                    with caller_scope.use(caller_scope.for_user(_db, user)):
+                        return vid, execute_connector_tool(
+                            connector_name=script["connector"],
+                            action=script["action"],
+                            params=resolved,
+                            db=_db,
+                            config_db=_cdb,
+                            venue_id=vid,
+                            strict_venue=True,
+                            user=user,
+                        )
                 finally:
                     _db.close()
                     _cdb.close()
@@ -1264,21 +1270,22 @@ async def refresh_report(
                 with ThreadPoolExecutor(max_workers=min(len(venue_ids), 4)) as pool:
                     venue_results_list = list(pool.map(_run_venue, venue_ids))
             else:
-                venue_results_list = [
-                    (
-                        venue_ids[0],
-                        execute_connector_tool(
-                            connector_name=script["connector"],
-                            action=script["action"],
-                            params=resolved,
-                            db=db,
-                            config_db=config_db,
-                            venue_id=venue_ids[0],
-                            strict_venue=True,
-                            user=user,
-                        ),
-                    )
-                ]
+                with caller_scope.use(caller_scope.for_user(db, user)):
+                    venue_results_list = [
+                        (
+                            venue_ids[0],
+                            execute_connector_tool(
+                                connector_name=script["connector"],
+                                action=script["action"],
+                                params=resolved,
+                                db=db,
+                                config_db=config_db,
+                                venue_id=venue_ids[0],
+                                strict_venue=True,
+                                user=user,
+                            ),
+                        )
+                    ]
 
             for vid, tool_result in venue_results_list:
                 if tool_result.rendered_request:
@@ -1387,16 +1394,18 @@ def run_tile(
     errors: list[str] = []
 
     for vid in venue_ids:
-        tool_result = execute_connector_tool(
-            connector_name=script["connector"],
-            action=script["action"],
-            params=resolved,
-            db=db,
-            config_db=config_db,
-            venue_id=vid,
-            strict_venue=True,
-            user=user,
-        )
+        # The viewer is the person acting (a tool row's `requires`, Oct 2026).
+        with caller_scope.use(caller_scope.for_user(db, user)):
+            tool_result = execute_connector_tool(
+                connector_name=script["connector"],
+                action=script["action"],
+                params=resolved,
+                db=db,
+                config_db=config_db,
+                venue_id=vid,
+                strict_venue=True,
+                user=user,
+            )
 
         payload = tool_result.payload
         if (
@@ -1523,16 +1532,17 @@ async def test_chart_script(
     all_logs: list[str] = []
 
     for vid in venue_ids:
-        tool_result = execute_connector_tool(
-            connector_name=script["connector"],
-            action=script["action"],
-            params=resolved,
-            db=db,
-            config_db=config_db,
-            venue_id=vid,
-            strict_venue=True,
-            user=user,
-        )
+        with caller_scope.use(caller_scope.for_user(db, user)):
+            tool_result = execute_connector_tool(
+                connector_name=script["connector"],
+                action=script["action"],
+                params=resolved,
+                db=db,
+                config_db=config_db,
+                venue_id=vid,
+                strict_venue=True,
+                user=user,
+            )
         # Resolve venue name
         venue_name = vid
         if vid:

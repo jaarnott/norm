@@ -951,6 +951,9 @@ def check_endpoints_and_tools(
 
     issues: list[ConfigIssue] = []
     kind: dict[str, str] = {}
+    from app.auth.permissions import PERMISSION_SCOPES, PLATFORM_ADMIN_SCOPES
+
+    org_scopes = PERMISSION_SCOPES - PLATFORM_ADMIN_SCOPES
     for name, mode, tools, endpoints in specs:
         tools = [t for t in tools or [] if isinstance(t, dict)]
         eps = (
@@ -963,6 +966,35 @@ def check_endpoints_and_tools(
                 f"{name}.{t.get('action')}",
                 spec_rows.classify(name, t, execution_mode=mode),
             )
+            # `requires` (Oct 2026) names org scopes the caller must hold. A
+            # scope no role can hold would make the tool silently unusable;
+            # an endpoint never meets a person, so a `requires` there is a
+            # misfiled rule that nothing would ever check.
+            needed = t.get("requires")
+            if needed is not None:
+                key = f"{name}.{t.get('action')}"
+                listed = needed if isinstance(needed, list) else [needed]
+                unknown = sorted(str(x) for x in listed if str(x) not in org_scopes)
+                if not isinstance(needed, list) or unknown:
+                    issues.append(
+                        ConfigIssue(
+                            "error",
+                            key,
+                            "requires an unknown permission scope: "
+                            + (", ".join(unknown) or repr(needed)),
+                            "Use org scopes from app/auth/permissions.py "
+                            "(e.g. payroll:read, finance:read), as a list.",
+                        )
+                    )
+                if spec_rows.classify(name, t, execution_mode=mode) == "endpoint":
+                    issues.append(
+                        ConfigIssue(
+                            "error",
+                            key,
+                            "is an endpoint carrying `requires` — only tools meet a person",
+                            "Put `requires` on the consolidator that calls it.",
+                        )
+                    )
         if eps is None:
             continue  # not split yet: one list, nothing to misfile
         both = {t.get("action") for t in tools} & {e.get("action") for e in eps}

@@ -1,0 +1,1 @@
+Reminder: please confirm your performance at {{ venue_name }} on {{ date_text }}

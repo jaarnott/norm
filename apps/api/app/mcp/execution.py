@@ -65,7 +65,7 @@ def resolve_mcp_venue(
 
     permitted = (
         db.query(Venue)
-        .filter(Venue.id.in_(principal.venue_ids))
+        .filter(Venue.id.in_(principal.venue_ids), Venue.is_trading.is_(True))
         .order_by(Venue.name)
         .all()
     )
@@ -131,7 +131,7 @@ class NormMcpContext(McpContext):
         return [
             v.name
             for v in self.db.query(Venue)
-            .filter(Venue.id.in_(self.principal.venue_ids))
+            .filter(Venue.id.in_(self.principal.venue_ids), Venue.is_trading.is_(True))
             .order_by(Venue.name)
             .all()
         ]
@@ -366,7 +366,7 @@ class NormMcpContext(McpContext):
         return [
             (v.id, v.name)
             for v in self.db.query(Venue)
-            .filter(Venue.id.in_(self.principal.venue_ids))
+            .filter(Venue.id.in_(self.principal.venue_ids), Venue.is_trading.is_(True))
             .order_by(Venue.name)
             .all()
         ]

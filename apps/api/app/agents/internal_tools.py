@@ -2803,6 +2803,25 @@ def _app_records(params: dict, db: Session, thread_id: str | None) -> dict:
     }
 
 
+@register("norm", "caller_holds")
+def _caller_holds(params: dict, db: Session, thread_id: str | None) -> dict:  # noqa: ARG001
+    """Does the person this call is running for hold an org scope?
+    ``{"holds": true|false}`` — false when nobody is known (a job, a script).
+
+    Engine-only (the row is ``engine_only``): a consolidator asks it so one
+    tool can answer differently by person — get_labour keeps rates and
+    per-shift costs for ``payroll:read`` holders and strips them for everyone
+    else (owner decision D8, Oct 2026). The person comes from caller_scope,
+    set where the call came in, never from these params.
+    """
+    from app.services import caller_scope
+
+    scope = str(params.get("scope") or "").strip()
+    if not scope:
+        return {"success": False, "data": {}, "error": "scope is required"}
+    return {"success": True, "data": {"holds": caller_scope.holds(db, scope)}}
+
+
 @register("norm", "list_venues")
 def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
     """The venues a connector fan-out can cover: name + connection state.
@@ -2811,8 +2830,14 @@ def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
     resolves credentials one venue per call, so a multi-venue read is N
     parallel calls over this list — see get_sales). Names only:
     call_api's venue param takes the venue NAME.
+
+    ``mine: true`` narrows to the venues the person acting holds access to
+    (their ``UserVenueAccess`` rows — the Finance pages' rule, Oct 2026).
+    ``include_non_trading: true`` keeps venues marked ``is_trading = false``
+    (a head office with its own logins); by default they are left out, so a
+    group fan-out never sums a venue that trades nothing.
     """
-    from app.db.models import Connection, Venue
+    from app.db.models import Connection, UserVenueAccess, Venue
 
     connector = str(params.get("connector") or "loadedhub")
     connected = {
@@ -2841,6 +2866,23 @@ def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
                 "list 'all' venues — name the venues instead."
             ),
         }
+    if not _flag(params.get("include_non_trading")):
+        q = q.filter(Venue.is_trading.is_(True))
+    if _flag(params.get("mine")):
+        from app.services.caller_scope import current
+
+        scope = current()
+        if scope is None or not scope.user_id:
+            return {
+                "success": False,
+                "data": {},
+                "error": (
+                    "Norm couldn't tell who is asking, so it can't list their venues."
+                ),
+            }
+        q = q.join(UserVenueAccess, UserVenueAccess.venue_id == Venue.id).filter(
+            UserVenueAccess.user_id == scope.user_id
+        )
     venues = [
         {"id": v.id, "name": v.name, "connected": v.id in connected}
         for v in q.order_by(Venue.name).all()
@@ -2849,6 +2891,13 @@ def _list_venues(params: dict, db: Session, thread_id: str | None) -> dict:
         "success": True,
         "data": {"connector": connector, "venues": venues},
     }
+
+
+def _flag(value) -> bool:
+    """A boolean a model may send as a string ("true") or a real bool."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return bool(value)
 
 
 def _preference_change(params: dict, db: Session, thread_id: str | None):
@@ -4051,3 +4100,7 @@ def _get_app(params: dict, db: Session, thread_id: str | None) -> dict:
 from app.agents import functions_tools  # noqa: E402,F401 — registers the norm_functions tools
 from app.agents import dashboard_tools  # noqa: E402,F401 — registers the dashboard tools
 from app.agents import receiving_rule_tools  # noqa: E402,F401 — registers the receiving-rule tools
+from app.agents import payroll_tools  # noqa: E402,F401 — registers the norm_payroll tools (payroll)
+from app.agents import payroll_xero_tools  # noqa: E402,F401 — registers the norm_payroll tools (wages reconciliation + Xero)
+from app.agents import entertainers_tools  # noqa: E402,F401 — registers the norm_payroll tools (entertainers)
+from app.agents import finance_tools  # noqa: E402,F401 — registers the norm_finance tools

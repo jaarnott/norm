@@ -23,9 +23,19 @@ NOT in this file: ``client_id`` / ``client_secret``. Paste them in Settings →
 Connector specs → Xero (OAuth section) once the row exists. Re-runs preserve
 them, and preserve ``tools`` and any endpoint row this script doesn't own.
 
-Not yet here: ``attach_to_invoice`` (binary PUT body — needs executor support,
-Phase 3) and an ``If-Modified-Since`` header on invoice lists (an empty header
-template would be sent as an empty header).
+Loaded Payroll (Oct 2026, docs/plans/finance-migration.md §7.2, §10): four
+more endpoint rows (``create_manual_journal``, ``get_manual_journal``,
+``update_manual_journal``, ``attach_to_invoice`` — a binary body through the
+executor's ``body_file_id``), the three payroll write tools
+(``post_wage_journal``, ``post_intercompany_documents``,
+``void_payroll_document``, each ``requires: ["payroll:write"]``),
+``requires`` on the five existing tools (owner decision D8), and
+``attachment_file_id`` on ``create_bill``. The payroll tools' approval labels
+are carried inline here until scripts/sync_approval_labels.py lists them
+(F11); the labels script wins once it does.
+
+Not yet here: an ``If-Modified-Since`` header on invoice lists (an empty
+header template would be sent as an empty header).
 
 The config DB is shared by every environment, so committing here is live
 everywhere at once — harmless until a venue connects, and invisible to the
@@ -128,7 +138,11 @@ def _ep(
     body: str = "",
     headers: dict[str, str] | None = None,
     read_only: bool = True,
+    body_file_id: str | None = None,
 ) -> dict:
+    """One endpoint row. ``body_file_id`` names the field holding a file id:
+    the executor then sends that file's bytes as the body with its content
+    type instead of a rendered template (app/connectors/spec_executor.py)."""
     row = {
         "action": action,
         "description": description,
@@ -148,6 +162,8 @@ def _ep(
     }
     if body:
         row["headers"]["Content-Type"] = "application/json"
+    if body_file_id:
+        row["body_file_id"] = body_file_id
     return row
 
 
@@ -297,6 +313,67 @@ ENDPOINTS = [
             "tracking_category_id": "Split columns by this tracking category",
         },
     ),
+    # --- Loaded Payroll (Oct 2026): manual journals and attachments ------
+    _ep(
+        "create_manual_journal",
+        "PUT",
+        "/ManualJournals?summarizeErrors=false",
+        "Create a manual journal (the payroll journal: DRAFT, NoTax, balanced "
+        "lines). PUT strictly creates; the Idempotency-Key makes a retry safe. "
+        "summarizeErrors=false returns 200 with ManualJournals[0].HasErrors + "
+        "ValidationErrors on a bad payload.",
+        required=("journal", "idempotency_key"),
+        fields={
+            "journal": "Xero ManualJournal object: Narration, Date, Status (DRAFT), "
+            "LineAmountTypes (NoTax), JournalLines[{LineAmount (+debit/−credit), "
+            "AccountCode, Description, Tracking[]}]",
+            "idempotency_key": "Stable key for this write (≤128 chars), e.g. "
+            "norm:payroll-journal:<org>:<venue>:<week>:<hash>",
+        },
+        body='{"ManualJournals": [{{ journal | tojson }}]}',
+        headers={"Idempotency-Key": "{{ idempotency_key }}"},
+        read_only=False,
+    ),
+    _ep(
+        "get_manual_journal",
+        "GET",
+        "/ManualJournals/{{ manual_journal_id }}",
+        "One manual journal with its lines and Status (DRAFT, POSTED, DELETED, "
+        "VOIDED) — the weekly status refresh and the void tool read it.",
+        required=("manual_journal_id",),
+        fields={"manual_journal_id": "Xero ManualJournalID (GUID)"},
+    ),
+    _ep(
+        "update_manual_journal",
+        "POST",
+        "/ManualJournals/{{ manual_journal_id }}?summarizeErrors=false",
+        "Update a manual journal — used to void or delete one "
+        '({"Status": "VOIDED"} for a posted journal, "DELETED" for a draft).',
+        required=("manual_journal_id", "journal"),
+        fields={
+            "manual_journal_id": "Xero ManualJournalID (GUID)",
+            "journal": 'Partial Xero ManualJournal object, e.g. {"Status": "VOIDED"}',
+        },
+        body='{"ManualJournals": [{{ journal | tojson }}]}',
+        read_only=False,
+    ),
+    _ep(
+        "attach_to_invoice",
+        "PUT",
+        "/Invoices/{{ invoice_id }}/Attachments/{{ filename }}",
+        "Attach a file Norm holds (an ent_files / pay_files id) to an invoice or "
+        "bill. The body is the file's bytes with its content type (the "
+        "executor's body_file_id); a PUT creates, a file of the same name is "
+        "replaced by Xero on a POST.",
+        required=("invoice_id", "filename", "file_id"),
+        fields={
+            "invoice_id": "Xero InvoiceID (GUID)",
+            "filename": "The attachment's name in Xero, with its extension",
+            "file_id": "The Norm file id whose bytes are sent",
+        },
+        read_only=False,
+        body_file_id="file_id",
+    ),
 ]
 
 
@@ -372,6 +449,7 @@ TOOLS = [
         "optional_fields": list(_BILLS_FIELDS),
         "field_descriptions": _BILLS_FIELDS,
         "field_schema": _schema(**_BILLS_FIELDS),
+        "requires": ["finance:read"],
         "max_result_chars": 40_000,
         "display_component": "xero_bills",
         "display_props": {"title": "Bills in Xero"},
@@ -395,6 +473,7 @@ TOOLS = [
         "optional_fields": list(_CONTACT_FIELDS),
         "field_descriptions": _CONTACT_FIELDS,
         "field_schema": _schema(**_CONTACT_FIELDS),
+        "requires": ["finance:read"],
         "max_result_chars": 30_000,
         "consolidator_config": {
             "max_api_calls": 4,
@@ -416,6 +495,7 @@ TOOLS = [
         "optional_fields": list(_ACCOUNT_FIELDS),
         "field_descriptions": _ACCOUNT_FIELDS,
         "field_schema": _schema(**_ACCOUNT_FIELDS),
+        "requires": ["finance:read"],
         "max_result_chars": 30_000,
         "consolidator_config": {
             "max_api_calls": 3,
@@ -437,6 +517,8 @@ TOOLS = [
         "optional_fields": list(_PNL_FIELDS),
         "field_descriptions": _PNL_FIELDS,
         "field_schema": _schema(**_PNL_FIELDS),
+        # D8: the Xero P&L holds the group's pay figures.
+        "requires": ["payroll:read"],
         "max_result_chars": 40_000,
         "consolidator_config": {
             "max_api_calls": 3,
@@ -487,6 +569,8 @@ _BILL_FIELDS = dict(
     status="'DRAFT' (default, or the venue's bill_status), 'SUBMITTED' or 'AUTHORISED'",
     create_contact="'false' to refuse rather than create a missing supplier contact",
     idempotency_key="Stable key for this bill (default: venue + supplier + number); a retry never doubles up",
+    attachment_file_id="A file Norm holds (an ent_files / pay_files id) to attach to the bill after it is created",
+    attachment_filename="The attachment's name in Xero (default: the invoice number + .pdf)",
 )
 _BILL_SCHEMA = _schema(**{k: v for k, v in _BILL_FIELDS.items() if k != "lines"})
 _BILL_SCHEMA["lines"] = {
@@ -527,14 +611,162 @@ CREATE_BILL_TOOL = {
     ],
     "field_descriptions": _BILL_FIELDS,
     "field_schema": _BILL_SCHEMA,
+    # What receiving an invoice already needs, so bills-after-receive never
+    # refuses someone who could receive the invoice (D8).
+    "requires": ["orders:write"],
     "max_result_chars": 20_000,
     "consolidator_config": {
-        "max_api_calls": 8,
-        "allowed_write_actions": ["create_contact", "create_invoice"],
+        "max_api_calls": 10,
+        "allowed_write_actions": [
+            "create_contact",
+            "create_invoice",
+            "attach_to_invoice",
+        ],
         "function_file": "create_bill.py",
     },
 }
 TOOLS.append(CREATE_BILL_TOOL)
+
+# --- Loaded Payroll's three write tools (plan §10) ------------------------
+# Each reads Norm's stored draft through the engine-only built-in
+# norm_payroll.get_journal_draft (which refuses unless the person holds
+# payroll:write, payroll is live and the run is attended) and records the
+# outcome through norm_payroll.record_push. `requires` keeps them out of a
+# manager's menu and refuses one who names them anyway; the built-in checks
+# the person again.
+_JOURNAL_FIELDS = dict(
+    venue="Venue name — the payroll entity whose journal this is",
+    week_ending="The pay week's Sunday, YYYY-MM-DD (any day of the week is snapped)",
+    draft_id="The stored journal draft to push (default: the week's current draft)",
+    basis_sha256="The draft's basis hash the person saw; refused if the draft was rebuilt or its inputs moved",
+    replace="'true' to void the journal already in Xero for this week and push again",
+)
+_ICO_FIELDS = dict(
+    venue="Venue name — the payroll entity",
+    week_ending="The pay week's Sunday, YYYY-MM-DD",
+    replace="'true' to void documents already in Xero for this week and re-create them",
+)
+_VOID_FIELDS = dict(
+    push_id="The push-ledger row (pay_xero_pushes id) of the document to void",
+)
+
+#: Carried inline so the rows are complete before scripts/sync_approval_labels.py
+#: lists them (F11); the labels script's entry wins once it exists.
+INLINE_LABELS = {
+    "xero.post_wage_journal": {
+        "effect": "write",
+        "approval": {
+            "default": "ask",
+            "allow_auto": True,
+            "label": "post the payroll journal to Xero",
+        },
+    },
+    "xero.post_intercompany_documents": {
+        "effect": "write",
+        "approval": {
+            "default": "ask",
+            "allow_auto": True,
+            "label": "post intercompany invoices and bills to Xero",
+        },
+    },
+    "xero.void_payroll_document": {
+        "effect": "write",
+        "approval": {
+            "default": "ask",
+            "allow_auto": False,
+            "label": "void a payroll document in Xero",
+        },
+    },
+}
+
+PAYROLL_TOOLS = [
+    {
+        "action": "post_wage_journal",
+        "method": "PUT",
+        "read_only": False,
+        "requires": ["payroll:write"],
+        "description": (
+            "Post one entity's payroll journal for a pay week to Xero as a DRAFT "
+            "manual journal — from the draft Norm built on the Reconciliation "
+            "page (net wages, payroll taxes, unpaid wages, security owed, the "
+            "intercompany line, the team cost lines, leave and entitlements, "
+            "entertainers, adjustments). Previews every line and the balance "
+            "for approval; refuses while a live journal exists unless replace "
+            "is 'true'. The accountant posts it inside Xero."
+        ),
+        "required_fields": ["venue", "week_ending"],
+        "optional_fields": ["draft_id", "basis_sha256", "replace"],
+        "field_descriptions": _JOURNAL_FIELDS,
+        "field_schema": _schema(**_JOURNAL_FIELDS),
+        "max_result_chars": 20_000,
+        "consolidator_config": {
+            "max_api_calls": 10,
+            "allowed_write_actions": [
+                "create_manual_journal",
+                "update_manual_journal",
+                "norm_payroll.record_push",
+            ],
+            "function_file": "post_wage_journal.py",
+        },
+    },
+    {
+        "action": "post_intercompany_documents",
+        "method": "PUT",
+        "read_only": False,
+        "requires": ["payroll:write"],
+        "description": (
+            "Post the week's intercompany recharges for one entity to Xero: a "
+            "DRAFT invoice to each entity whose venues its staff worked at, and "
+            "a DRAFT bill from each entity whose staff worked here — one line "
+            "per person at the labour cost plus the leave-and-entitlements "
+            "uplift, GST from the organisation's own rates. Previews every "
+            "document for approval; a counterparty with no Xero contact is "
+            "refused by name; documents already pushed are skipped unless "
+            "replace is 'true'."
+        ),
+        "required_fields": ["venue", "week_ending"],
+        "optional_fields": ["replace"],
+        "field_descriptions": _ICO_FIELDS,
+        "field_schema": _schema(**_ICO_FIELDS),
+        "max_result_chars": 30_000,
+        "consolidator_config": {
+            "max_api_calls": 60,
+            "allowed_write_actions": [
+                "create_invoice",
+                "update_invoice",
+                "norm_payroll.record_push",
+            ],
+            "function_file": "post_intercompany_documents.py",
+        },
+    },
+    {
+        "action": "void_payroll_document",
+        "method": "POST",
+        "read_only": False,
+        "requires": ["payroll:write"],
+        "description": (
+            "Take one payroll document Norm pushed out of Xero — a wage journal, "
+            "an intercompany invoice or bill, or an entertainer bill — by its "
+            "push-ledger row. Reads its status first: a draft is deleted, an "
+            "authorised document voided, a paid one refused. Always asks."
+        ),
+        "required_fields": ["push_id"],
+        "optional_fields": [],
+        "field_descriptions": _VOID_FIELDS,
+        "field_schema": _schema(**_VOID_FIELDS),
+        "max_result_chars": 10_000,
+        "consolidator_config": {
+            "max_api_calls": 8,
+            "allowed_write_actions": [
+                "update_manual_journal",
+                "update_invoice",
+                "norm_payroll.record_push",
+            ],
+            "function_file": "void_payroll_document.py",
+        },
+    },
+]
+TOOLS.extend(PAYROLL_TOOLS)
 
 FINANCE_AGENT = {
     "agent_slug": "finance",
@@ -563,10 +795,11 @@ def _tool_rows() -> list[dict]:
         fname = cfg.pop("function_file")
         cfg["function_code"] = _function_code(fname)
         row["consolidator_config"] = cfg
-        fields = label_for.get(f"{CONNECTOR}.{tool['action']}")
+        key = f"{CONNECTOR}.{tool['action']}"
+        fields = label_for.get(key) or INLINE_LABELS.get(key)
         if not fields:
             raise SystemExit(
-                f"{CONNECTOR}.{tool['action']} has no approval label — add it to "
+                f"{key} has no approval label — add it to "
                 "scripts/sync_approval_labels.py first"
             )
         row.update(fields)

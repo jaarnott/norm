@@ -57,6 +57,21 @@ async def run_due_tasks_endpoint(
 
     threading.Thread(target=_app_schedules, name="app-schedules", daemon=True).start()
 
+    # The finance modules' jobs (payroll snapshots and hygiene, entertainer
+    # mornings and invoice checks, nightly forecasts, the Orbit shadow import)
+    # ride the same tick (services/finance_core/tick.py): each claims its
+    # (org, job, scope, slot) row in fin_job_runs first, so overlapping ticks
+    # and instances never run one twice. Its own thread, for the same reason.
+    def _finance_tick() -> None:
+        try:
+            from app.services.finance_core.tick import run_due_jobs
+
+            run_due_jobs()
+        except Exception:  # noqa: BLE001
+            logger.exception("finance tick failed")
+
+    threading.Thread(target=_finance_tick, name="finance-tick", daemon=True).start()
+
     # Insights ride the same tick: each venue's run claims its (venue, day)
     # slot first, so overlapping ticks and instances never repeat one
     # (services/insights/runner.py). Its own thread: a Monday's weekly reads

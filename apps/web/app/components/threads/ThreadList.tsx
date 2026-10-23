@@ -31,13 +31,25 @@ interface ThreadListProps {
    *  App's pages show only in its member's menu; Norm Core pages (shared)
    *  keep their own per-member placement. */
   pageMember?: Record<string, string>;
+  /** The viewer's org permissions (from /auth/me). null/undefined = no
+   *  gate (a platform admin, or not loaded yet). A page with a `permission`
+   *  shows iff it is in here. */
+  permissions?: string[] | null;
   /** The page open in the content area — its menu row shows as current. */
   activePage?: string | null;
   /** The Norm name block at the top (off on mobile, whose top bar shows it). */
   showBrand?: boolean;
 }
 
-export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pageMember, activePage, showBrand = true }: ThreadListProps) {
+/** A page with a `permission` shows only to a viewer holding it. No
+ *  permission list (a platform admin, or /auth/me not loaded yet) = no gate,
+ *  the same fail-open contract as `appsOn`; the server refuses what the
+ *  menu wrongly shows. */
+export function pageAllowed(page: FunctionalPageConfig, permissions?: string[] | null): boolean {
+  return !page.permission || !permissions || permissions.includes(page.permission);
+}
+
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pageMember, permissions, activePage, showBrand = true }: ThreadListProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const searchBtnRef = useRef<HTMLButtonElement>(null);
@@ -54,7 +66,8 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
 
   const pages = [...FUNCTIONAL_PAGES, ...(extraPages ?? [])]
     .filter(p => (pageMember?.[p.id] ?? p.agent) === activeAgent)
-    .filter(p => !p.app || !appsOn || appsOn.has(p.app));
+    .filter(p => !p.app || !appsOn || appsOn.has(p.app))
+    .filter(p => pageAllowed(p, permissions));
 
   return (
     <div style={{

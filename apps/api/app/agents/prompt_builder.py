@@ -154,6 +154,18 @@ def _collect_tools(
         else set()
     )
 
+    # The person's own scopes, for rows that carry `requires` (Oct 2026): a
+    # payroll tool is not in a manager's menu at all. Read once; None means
+    # nobody is known (a system prompt built with no user), and then every
+    # such row is left out — the executor would refuse it anyway.
+    _held: set[str] | None = None
+    if user_id:
+        from app.db.models import User as _User
+        from app.services.app_runtime import org_permissions
+
+        _viewer = db.query(_User).filter(_User.id == user_id).first()
+        _held = org_permissions(db, _viewer) if _viewer is not None else None
+
     tools: list[dict] = []
     for connector_name, owned_actions in sorted(owned_by_conn.items()):
         spec = (
@@ -218,6 +230,9 @@ def _collect_tools(
             # tool that can't run. `delegate_to_agent` went when the multi-agent
             # router/handoff was folded into one capable agent.
             if action in _RETIRED_ACTIONS or action in _ENGINE_AND_MCP_ONLY:
+                continue
+            needed = tool.get("requires") or []
+            if needed and (_held is None or not set(needed) <= _held):
                 continue
 
             tools.append(
@@ -631,6 +646,10 @@ def build_tool_definitions(
         if _viewer is None or getattr(_viewer, "role", None) == "admin"
         else get_user_venues(db, user_id)
     )
+    # A non-trading venue (a head office with its own logins, Oct 2026) is
+    # not somewhere to ask about sales or rosters: it stays off the venue
+    # guidance and out of the tool enums. The payroll pages reach it by id.
+    user_venues = [v for v in user_venues if getattr(v, "is_trading", True)]
 
     # Inject automated tasks guidance if those tools are available.
     # Inside an existing task's conversation the advice inverts: the task

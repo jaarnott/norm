@@ -141,6 +141,68 @@ def for_thread(db: Session, thread_id: str | None) -> Scope | None:
 # ------------------------------------------------------------ using it ----
 
 
+def holder_permissions(db: Session) -> set[str] | None:
+    """The org permissions of the person acting, or None when nobody is known.
+
+    A tool row's ``requires`` is checked against this at every door — thread,
+    page, saved chart, self-built app, MCP (Oct 2026, Finance Phase 0). The
+    person is the scope's ``user_id``, never a param, and their permissions
+    are read in the scope's organisation (a person in two organisations holds
+    a role in each). A platform admin holds every org scope, as everywhere.
+    """
+    scope = current()
+    if scope is None or not scope.user_id:
+        return None
+    from app.db.models import User
+    from app.services.app_runtime import org_permissions
+
+    user = db.query(User).filter(User.id == scope.user_id).first()
+    if user is None:
+        return None
+    return org_permissions(db, user, org_id=scope.org_id)
+
+
+def required_scopes(row) -> list[str]:
+    """The org scopes a spec tool row says its caller must hold
+    (``requires: ["payroll:read"]``); ``[]`` when it says nothing."""
+    value = row.get("requires") if isinstance(row, dict) else None
+    if isinstance(value, str):
+        value = [value]
+    return [str(s) for s in (value or []) if s]
+
+
+def missing_scopes(db: Session, row) -> str | None:
+    """Why the person acting may not run this tool row, or None when they may.
+
+    No ``requires`` on the row: anyone the doors let in. With one: the person
+    must hold every scope named, and no person at all — a background worker,
+    a script, a page that never said who is asking — is refused: pay data
+    never leaves on nobody's authority.
+    """
+    needed = required_scopes(row)
+    if not needed:
+        return None
+    action = str((row or {}).get("action") or "this tool")
+    held = holder_permissions(db)
+    if held is None:
+        return (
+            f"Norm couldn't tell who is asking, so it can't run {action} "
+            f"(it needs {', '.join(needed)})"
+        )
+    lacking = [s for s in needed if s not in held]
+    if lacking:
+        return (
+            f"You don't have permission to use {action} — it needs {', '.join(lacking)}"
+        )
+    return None
+
+
+def holds(db: Session, scope: str) -> bool:
+    """Does the person acting hold this org scope? False when nobody is known."""
+    held = holder_permissions(db)
+    return bool(held) and scope in held
+
+
 def venue_query(db: Session):
     """The venues the caller may name, or None when nobody is known."""
     from app.db.models import Venue

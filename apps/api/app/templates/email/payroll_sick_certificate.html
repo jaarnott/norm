@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Sick leave — {{ staff_name }}, {{ venue_name }}</h1>
+<p>Hi</p>
+<p>I have received a sick leave request for {{ staff_name }} (week of {{ week_start }}) but unfortunately I cannot process this pay without a medical certificate.</p>
+<p>Are you able to send a certificate through? If the leave is less than 3 days the company can reimburse the cost of obtaining it.</p>
+{% if redirected_from %}<p style="color:#888">Shadow mode: this note was meant for {{ redirected_from }} and was sent to the payroll contact instead.</p>{% endif %}
+{% endblock %}

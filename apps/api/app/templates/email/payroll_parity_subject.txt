@@ -1,0 +1,1 @@
+{{ org_name }} payroll parity — week {{ week_start }}: {{ unexplained }} unexplained, {{ failed | length }} failed job{% if failed | length != 1 %}s{% endif %}

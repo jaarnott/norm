@@ -54,6 +54,17 @@ def _flag(v, default=False):
     return str(v).strip().lower() in ("true", "1", "yes", "y")
 
 
+def _caller_holds(call_api, scope):
+    """Does the person this run is for hold ``scope``? False when the engine
+    can't say (no person) — the get_labour helper, repeated: a consolidator
+    can't import another."""
+    try:
+        out = call_api("norm", "caller_holds", {"scope": scope})
+    except Exception:
+        return False
+    return bool(isinstance(out, dict) and out.get("holds"))
+
+
 def run(params, call_api, log):
     vp = xero_venue_params(params)
     settings, err = xero_settings(call_api, params)
@@ -87,9 +98,26 @@ def run(params, call_api, log):
         amount_types = "Exclusive"
     lines = _lines_param(params.get("lines"))
     create_contact = _flag(params.get("create_contact"), True)
+    # A file Norm holds (an ent_files / pay_files id), attached after the
+    # bill exists — its own step with its own outcome; a bill without the
+    # file is still a good bill (Oct 2026, Finance).
+    attachment_file_id = str(params.get("attachment_file_id") or "").strip()
+    attachment_name = "".join(
+        c if (c.isalnum() or c in "._-") else "_"
+        for c in str(params.get("attachment_filename") or "").strip()
+    ).strip("._")[:80]
 
     if not supplier and not contact_id:
         return {"error": "supplier (name) or supplier_contact_id is required"}
+    # A held file is a performer's invoice (ent_files) or a bond consent
+    # (pay_files) — pay records. Receiving an invoice (orders:write) is not
+    # enough to send one to Xero; entertainers' own bill path runs as a
+    # payroll:write person (security review, 20 Oct 2026).
+    if attachment_file_id and not _caller_holds(call_api, "payroll:write"):
+        return {
+            "error": "Attaching a file Norm holds to a bill needs the payroll "
+            "permission (payroll:write)."
+        }
     if not date:
         return {"error": "date (YYYY-MM-DD) is required"}
     if not lines:
@@ -323,6 +351,13 @@ def run(params, call_api, log):
         {"field": "Total", "after": money(total)},
         {"field": "Lands as", "after": status.title()},
     ]
+    if attachment_file_id:
+        changes.append(
+            {
+                "field": "Attachment",
+                "after": attachment_name or "the file Norm holds for this bill",
+            }
+        )
     if contact_note:
         warnings.append(contact_note)
     preview(
@@ -379,7 +414,31 @@ def run(params, call_api, log):
     log(
         f"created Xero bill {inv.get('InvoiceNumber')} ({invoice_id}) as {inv.get('Status')}"
     )
+    attachment = None
+    if attachment_file_id and invoice_id:
+        filename = attachment_name or (
+            "".join(
+                c if (c.isalnum() or c in "._-") else "_"
+                for c in (invoice_number or "invoice")
+            )[:80]
+            + ".pdf"
+        )
+        uploaded = call_api(
+            "xero",
+            "attach_to_invoice",
+            {
+                **vp,
+                "invoice_id": invoice_id,
+                "filename": filename,
+                "file_id": attachment_file_id,
+            },
+        )
+        _rows, aerr = xero_rows(uploaded, "Attachments")
+        attachment = {"uploaded": not aerr, "filename": filename, "error": aerr}
+        if aerr:
+            log(f"attachment NOT uploaded to bill {invoice_id}: {aerr}")
     return {
+        "attachment": attachment,
         "created": True,
         "invoice_id": invoice_id,
         "number": inv.get("InvoiceNumber"),

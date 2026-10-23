@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Gratuities for {{ period_label }} — {{ venue_name }}</h1>
+<p>It's the start of a new month: enter {{ venue_name }}'s gratuity pool for {{ period_label }} on the Payrun page (Gratuities), against the pay week it is paid in. Norm splits it on the hours people worked at {{ venue_name }} across the pay weeks of the month.</p>
+{% if not allowance_code %}
+<p><strong>This entity has no Ace gratuity allowance code yet</strong> — set it on the Payroll settings page before exporting GRATUITIES.TXT.</p>
+{% endif %}
+{% endblock %}

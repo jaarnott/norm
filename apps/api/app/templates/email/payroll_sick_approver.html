@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Sick leave — {{ staff_name }}, {{ venue_name }}</h1>
+<p>Hi {{ approver_name }}</p>
+<p>Unfortunately {{ staff_name }} doesn't currently qualify for paid sick leave (employed less than 6 months / an average under 10 hours a week / not continuous), or the request is blocked on another gate{% if qualification is not none %} — qualification {% if qualification %}passes{% else %}blocked{% endif %}, balance {% if balance %}passes{% else %}blocked{% endif %}, certificate {% if certificate %}passes{% else %}blocked{% endif %}{% endif %}.</p>
+<p>If you'd still like this processed for the week of {{ week_start }}, reply with your approval and the reason so it can be recorded against the payout as a special approval.</p>
+{% if redirected_from %}<p style="color:#888">Shadow mode: this note was meant for {{ redirected_from }} and was sent to the payroll contact instead.</p>{% endif %}
+{% endblock %}

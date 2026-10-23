@@ -41,6 +41,10 @@ const nextConfig: NextConfig = {
     return [
       { source: "/q/:path*", headers: unframed },
       { source: "/e/:path*", headers: unframed },
+      // Loaded Payroll: the performer portal and the onboarding form (bank and
+      // tax details) — never indexed, never framed, no referrer.
+      { source: "/p/:path*", headers: unframed },
+      { source: "/join/:path*", headers: unframed },
       {
         source: "/f/:path*",
         headers: [noIndex, noReferrer, { key: "Content-Security-Policy", value: "frame-ancestors *" }],

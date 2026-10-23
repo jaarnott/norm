@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+{% if shadow_original_to %}<p style="background:#fff7e6;border:1px solid #f0c36d;padding:8px 12px;border-radius:6px;font-size:13px;">Shadow mode: this email was meant for <strong>{{ shadow_original_to }}</strong> and was sent to you instead.</p>{% endif %}
+<h1>Open entertainer items at {{ venue_name }}</h1>
+<p>Hi {{ first_name }},</p>
+{% if awaiting %}<h2 style="font-size:15px;margin:16px 0 4px">Awaiting approval after four emails to the closing manager</h2>
+<ul>{% for i in awaiting %}<li>{{ i.date_text }} — {{ i.performer_name }} ({{ i.time_text }}){% if i.closing_manager %}, closing manager {{ i.closing_manager }}{% endif %} — <a href="{{ i.url }}">open</a></li>{% endfor %}</ul>{% endif %}
+{% if no_closing_manager %}<h2 style="font-size:15px;margin:16px 0 4px">No closing manager found in Loaded</h2>
+<ul>{% for i in no_closing_manager %}<li>{{ i.date_text }} — {{ i.performer_name }} ({{ i.time_text }}) — <a href="{{ i.url }}">approve</a></li>{% endfor %}</ul>
+<p style="font-size:13px;color:#666;">Nobody in the closing-manager roles clocked in or was rostered that day, or Loaded could not be read.</p>{% endif %}
+{% if no_login %}<h2 style="font-size:15px;margin:16px 0 4px">Closing manager has no Norm login</h2>
+<ul>{% for i in no_login %}<li>{{ i.date_text }} — {{ i.performer_name }}: {{ i.closing_manager }} needs a Norm login with access to the venue — <a href="{{ i.url }}">approve</a></li>{% endfor %}</ul>{% endif %}
+{% if unconfirmed %}<h2 style="font-size:15px;margin:16px 0 4px">Performer times still unconfirmed after four reminders</h2>
+<ul>{% for i in unconfirmed %}<li>{{ i.date_text }} — {{ i.performer_name }} ({{ i.time_text }}) — <a href="{{ i.url }}">open</a></li>{% endfor %}</ul>{% endif %}
+<p><a class="btn" href="{{ roster_url }}">Open the entertainer roster</a></p>
+<p style="font-size:12px;color:#888;margin-top:24px;">This email was sent by Norm on behalf of {{ org_name }}.</p>
+{% endblock %}

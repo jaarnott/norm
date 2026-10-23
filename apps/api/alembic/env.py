@@ -18,6 +18,7 @@ if config.config_file_name is not None:
 from app.db.models import Base
 from app.db import mcp_models  # noqa: F401 — register MCP tables on Base.metadata
 from app.db import functions_models  # noqa: F401 — Norm Functions (fn_*) tables
+from app.db import payroll_models, entertainers_models, finance_models  # noqa: F401 — finance: pay_*/ent_*/fin_* tables
 
 target_metadata = Base.metadata
 
