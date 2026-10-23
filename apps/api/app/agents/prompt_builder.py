@@ -154,6 +154,13 @@ def _collect_tools(
         if _reachable is not None
         else set()
     )
+    # Staff access (Oct 2026): the person's ROLE narrows the App Map per
+    # person, after the organisation's switches. A role names the AI agents
+    # and the apps it reaches (NULL = everything); Norm Core's tools are for
+    # everyone but venue staff (a role with no AI agent at all). Platform
+    # admins, people with no membership and NULL/NULL roles are unchanged.
+    # project_tools() inherits this too, through this same function.
+    _owner_blocked |= _role_blocked_tools(db, user_id, _cdb, users, _reachable)
 
     # The person's own scopes, for rows that carry `requires` (Oct 2026): a
     # payroll tool is not in a manager's menu at all. Read once; None means
@@ -266,6 +273,70 @@ def _collect_tools(
             seen.add(key)
             unique_tools.append(t)
     return unique_tools
+
+
+def _role_blocked_tools(
+    db: Session,
+    user_id: str | None,
+    config_db: Session,
+    users: dict[str, set[str]],
+    reachable: set[str] | None = None,
+) -> set[str]:
+    """The ``connector.action`` keys the user's role does not reach
+    (services/role_access.py). ``users`` is tool_users(): every App that gives
+    the tool (a tool can belong to more than one App since 23 Oct 2026). A
+    tool passes iff one of those Apps — among the ones the organisation
+    reaches, when ``reachable`` is known — passes the role: Norm Core iff
+    ``core_allowed``; any other App iff ``allows_app`` on its key — the
+    org-built app it fronts (``training``) when it fronts one, else its
+    catalog slug — with the App's AI agent as ``member``."""
+    from app.services import role_access
+    from app.services.entitlements import ALL_MEMBERS, app_index
+
+    access = role_access.for_user(db, user_id)
+    if access == role_access.EVERYTHING:
+        return set()
+    index = app_index(config_db)
+
+    def _app_allowed(slug: str) -> bool:
+        info = index.get(slug)
+        member = info.member if info else None
+        # Norm Core: the one App bound to every AI agent ("*").
+        if slug == role_access.CORE_APP_SLUG or member == ALL_MEMBERS:
+            return role_access.core_allowed(access)
+        app_key = info.key if info else slug
+        return role_access.allows_app(access, app_key, member=member)
+
+    blocked: set[str] = set()
+    for key, apps in users.items():
+        giving = apps & reachable if reachable is not None else apps
+        if not any(_app_allowed(slug) for slug in giving):
+            blocked.add(key)
+    return blocked
+
+
+def who_guidance(db: Session, user_id: str | None, viewer, venues: list) -> str:
+    """``## Who you're talking to`` — only when the person is venue staff (a
+    role with no AI agent). Says who they are and what Norm can reach, and
+    nothing else about how to behave."""
+    from app.services import active_org, role_access
+
+    if not user_id or not role_access.for_user(db, user_id).staff:
+        return ""
+    name = (getattr(viewer, "full_name", None) or "").strip() or "This person"
+    where = ", ".join(v.name for v in venues if getattr(v, "name", None))
+    membership = active_org.membership_for(db, user_id)
+    role = (
+        membership.role_obj.display_name
+        if membership is not None and membership.role_obj is not None
+        else "venue staff"
+    )
+    works = f"works at {where}" if where else "works here"
+    return (
+        "\n\n## Who you're talking to\n"
+        f"{name} {works} ({role}). Keep answers short. Use only your tools; "
+        "if something isn't available to you, say a manager can help.\n"
+    )
 
 
 def build_venue_property(configured_venues: list[str], allow_all: bool = False) -> dict:
@@ -1005,6 +1076,10 @@ When you need to retrieve multiple independent pieces of data (e.g., sales data 
     if read_tool:
         system_prompt += menu
         anthropic_tools.append(read_tool)
+
+    # Venue staff: who this is and what Norm can reach for them. Nothing else
+    # in the prompt changes for a staff chat.
+    system_prompt += who_guidance(db, user_id, _viewer, user_venues)
 
     logger.info(
         "Built %d Anthropic tool definitions for domain=%s",

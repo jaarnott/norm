@@ -120,6 +120,23 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_SECRET: str = ""
     APP_URL: str = ""  # Auto-derived from ENVIRONMENT if not set
 
+    # ── Staff access (docs/plans/staff-access.md, section 11.1) ─────────
+    # Venue staff sign in with an emailed code and chat through the tools of
+    # their role's AI agents and apps. A role with no AI agent at all runs on
+    # a cheaper model and under a monthly cap per person, which an owner can
+    # change (or set to 0 to switch staff chat off).
+    STAFF_CHAT_MODEL: str = "claude-sonnet-5-5"
+    STAFF_CHAT_DEFAULT_CAP_CENTS: int = 200
+    # Token lives: a staff member's phone stays signed in for a month; a
+    # kitchen tablet (venue device) for a year; a PIN'd token on the tablet
+    # lasts ten minutes on the server (the tablet locks itself after two idle).
+    STAFF_TOKEN_DAYS: int = 30
+    DEVICE_TOKEN_DAYS: int = 365
+    TABLET_PIN_TTL_MINUTES: int = 10
+    # The hourly Loaded staff sync rides the 5-minute tick in routers/internal.py
+    # on a thread of its own (services/staff_sync.py); tests switch it off.
+    STAFF_SYNC_ENABLED: bool = True
+
     # ── MCP server ──────────────────────────────────────────────────────
     # Norm's outward-facing MCP surface, for external AI clients (Claude)
     # acting on behalf of an authenticated user. Off by default: it stays

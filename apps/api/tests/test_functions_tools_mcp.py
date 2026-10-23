@@ -328,7 +328,7 @@ class TestWorkflowApprovals:
 
         calls = []
 
-        def llm(system_prompt, messages, tools, db, thread_id, call_type):
+        def llm(system_prompt, messages, tools, db, thread_id, call_type, model=None):
             calls.append(1)
             if len(calls) == 1:
                 return _Response(

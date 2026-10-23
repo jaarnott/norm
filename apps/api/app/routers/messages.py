@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.db.engine import get_db, get_config_db, SessionLocal, _ConfigSessionLocal
 from app.db.models import User
-from app.auth.dependencies import get_current_user
+from fastapi.security import HTTPAuthorizationCredentials
+from jose import JWTError
+
+from app.auth.dependencies import bearer_scheme, get_current_user
+from app.auth.security import decode_access_token
 from app.services.supervisor import handle_message
 from app.services.venue_service import user_can_access_venue
 
@@ -156,12 +160,34 @@ class MessageRequest(BaseModel):
     suggestion_id: str | None = None
 
 
+#: Token types a kitchen tablet holds (routers/staff.py, routers/tablet.py).
+TABLET_TOKEN_TYPES = ("device", "pin")
+
+
+def _no_chat_for_tablets(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> None:
+    """A kitchen tablet never chats (docs/plans/staff-access.md, section 5):
+    a device token or a PIN'd person's short token is refused here, so one
+    person's question never lands in another's history on a shared screen.
+    The shell hides the composer on a tablet; this is the rule itself."""
+    try:
+        payload = decode_access_token(credentials.credentials)
+    except JWTError:
+        return  # get_current_user answers the 401
+    if payload.get("type") in TABLET_TOKEN_TYPES:
+        raise HTTPException(
+            403, "Ask Norm isn't available on the kitchen tablet. Use your own phone."
+        )
+
+
 @router.post("/messages")
 async def post_message(
     req: MessageRequest,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
+    _tablet: None = Depends(_no_chat_for_tablets),
 ):
     _assert_venue_access(db, user, req.venue_id)
     _assert_thread_access(db, user, req.thread_id)
@@ -205,6 +231,7 @@ async def post_message_stream(
     req: MessageRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    _tablet: None = Depends(_no_chat_for_tablets),
 ):
     """SSE endpoint that streams thinking steps as they happen, then the final result."""
     # Validate before the stream opens — a 403 here is a clean HTTP error, not
@@ -253,9 +280,34 @@ async def post_message_stream(
                 on_event({"type": "complete", "data": result})
             except Exception as exc:
                 from app.services.billing_service import QuotaExceededError
+                from app.services.staff_cap import StaffCapExceeded
 
                 err_msg = str(exc).lower()
-                if isinstance(exc, QuotaExceededError):
+                if isinstance(exc, StaffCapExceeded):
+                    # A venue staff member's own monthly cap, or staff chat
+                    # switched off (services/staff_cap.py). The refusal is a
+                    # sentence for the person, saved in the thread like any
+                    # other failed turn; it is not the organisation's quota,
+                    # so the web's billing notice must not appear.
+                    persisted_id = _persist_failed_turn(
+                        req.thread_id or turn_thread.get("id"),
+                        req.message,
+                        user.id,
+                        req.venue_id,
+                        exc.message,
+                    )
+                    if persisted_id and persisted_id != req.thread_id:
+                        on_event({"type": "thread_created", "thread_id": persisted_id})
+                    on_event(
+                        {
+                            "type": "error",
+                            "reason": "staff_cap",
+                            "message": exc.message,
+                            "used_cents": exc.used_cents,
+                            "cap_cents": exc.cap_cents,
+                        }
+                    )
+                elif isinstance(exc, QuotaExceededError):
                     quota_text = (
                         "Norm is paused: this organisation's plan isn't active. "
                         "An owner can sort it out in Settings → Billing."

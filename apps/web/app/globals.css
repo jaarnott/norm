@@ -179,3 +179,159 @@ button, input, select, textarea {
 @media (max-width: 767px) {
   .n-composer-dock { padding: 8px 12px calc(12px + env(safe-area-inset-bottom, 0px)); }
 }
+
+/* ── Staff access: the apps section, the phone's bottom bar, sign-in codes
+   and the kitchen tablet (docs/plans/staff-access.md 11.7) ── */
+/* The rail's divider between the AI agents and the team's apps. */
+.n-rail-divider { width: 26px; height: 1px; margin: 6px 0; background: var(--line-strong); }
+/* The phone menu's swipe row: a thin vertical divider before the app tiles. */
+.n-swipe-divider { flex: 0 0 auto; align-self: center; width: 1px; height: 40px; margin: 0 4px; background: var(--line-strong); }
+
+/* The bottom bar: Today · apps · Ask Norm · Me. The active tab is a tan pill
+   around its icon, the icon in the accent colour. */
+.n-teambar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-around;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-top: 1px solid var(--line);
+  background: var(--canvas);
+}
+.n-teambar-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+.n-teambar-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 30px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 0.12s;
+}
+.n-teambar-tab[aria-current="page"] { color: var(--text); font-weight: 600; }
+.n-teambar-tab[aria-current="page"] .n-teambar-pill { background: var(--accent-soft); }
+.n-teambar-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 14px; }
+/* While the bar shows, the docked composer stays away; a thread keeps it. */
+.n-teambar-on .n-composer-dock { display: none; }
+
+/* Home's Today block: the rows of what is due today. */
+.n-today { margin: 0 0 20px; padding: 4px 0; }
+.n-today-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+.n-today-row:first-of-type { border-top: none; }
+.n-today-row:hover { background: var(--surface-alt); }
+.n-today-row:focus-visible { outline-offset: -2px; }
+
+/* Sign-in code: six boxes drawn over one real input, so a paste or a
+   keyboard's one-time-code suggestion fills them all. */
+.n-code-boxes { position: relative; display: flex; gap: 8px; justify-content: space-between; }
+.n-code-box {
+  flex: 1 1 0;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--field);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.n-code-box[data-active="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.n-code-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: none;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  font-size: 16px;
+  letter-spacing: 1em;
+}
+/* The black pill: the one primary action on the sign-in and tablet screens. */
+.n-pill-btn {
+  display: flex;
+  width: 100%;
+  height: 48px;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+.n-pill-btn:hover:not(:disabled) { background: var(--primary-hover); }
+.n-pill-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* The kitchen tablet's PIN pad: five big digit boxes and a keypad. */
+.n-pin-boxes { display: flex; gap: 12px; justify-content: center; }
+.n-pin-box {
+  width: 52px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--field);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  font-size: 30px;
+  font-weight: 600;
+  color: var(--text);
+}
+.n-pin-box[data-filled="true"] { border-color: var(--text); }
+.n-keypad { display: grid; grid-template-columns: repeat(3, 84px); gap: 12px; justify-content: center; }
+.n-key {
+  height: 68px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  font-family: inherit;
+  font-size: 26px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+}
+.n-key:hover:not(:disabled) { background: var(--surface-alt); }
+.n-key:active:not(:disabled) { background: var(--selected); }
+.n-key:disabled { opacity: 0.45; cursor: default; }
+.n-key--quiet { border-color: transparent; background: transparent; font-size: var(--fs-base); color: var(--text-soft); }
+/* The shell inside the tablet frame fills what is left under the header. */
+.n-tablet-shell > div { height: 100% !important; }

@@ -152,6 +152,14 @@ def _active(person):
 #: holding HR write or org manage. The default Owner, Manager and Payroll
 #: Administrator roles qualify; Team Member does not.
 _HR_ADMIN_PERMISSIONS = ("hr:write", "org:manage")
+#: Who may see other people's training — the management views (people,
+#: overview, tracker, programs, plans, sign-offs) and another person's
+#: ``member`` page. Venue staff (a role with none of these, docs/plans/
+#: staff-access.md section 4) see only their own ``member`` view and the
+#: content they are reading; everything else answers an error.
+_HR_READ_PERMISSIONS = ("hr:read",) + _HR_ADMIN_PERMISSIONS
+#: What a person with no HR permission may still ask for.
+_SELF_OPS = ("content", "member")
 
 
 def _viewer(params):
@@ -164,6 +172,13 @@ def _is_hr_admin(viewer):
         return True
     held = viewer.get("permissions") or []
     return any(p in held for p in _HR_ADMIN_PERMISSIONS)
+
+
+def _can_see_people(viewer):
+    if viewer.get("system") or viewer.get("is_admin"):
+        return True
+    held = viewer.get("permissions") or []
+    return any(p in held for p in _HR_READ_PERMISSIONS)
 
 
 def _me(viewer, people):
@@ -280,6 +295,21 @@ def run(params, call_api, log):
             if viewer.get("user_id")
             else [],
         )
+
+    if not _can_see_people(viewer):
+        # Venue staff: their own training only. The Today block on Home asks
+        # for their own ``member`` view this way.
+        if op not in _SELF_OPS:
+            return {"error": "Only a manager can see other people's training."}
+        if op == "member":
+            own = _me(
+                viewer,
+                store.list("people", where={"norm_user_id": viewer.get("user_id")})
+                if viewer.get("user_id")
+                else [],
+            )
+            if own is None or params.get("person_id") != own["id"]:
+                return {"error": "Only a manager can see other people's training."}
 
     if op == "locate":
         """Where Norm asked the app to open (its component's inputs, see

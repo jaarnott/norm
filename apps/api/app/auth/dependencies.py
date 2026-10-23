@@ -30,6 +30,25 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
 
+    if payload.get("type") == "device":
+        # A kitchen tablet's token (docs/plans/staff-access.md, 11.5): it is
+        # good only while its VenueDevice stands, so revoking the device on
+        # the People page ends the tablet's session at its next request.
+        from app.db.models import VenueDevice
+
+        device_id = payload.get("device")
+        device = (
+            db.query(VenueDevice)
+            .filter(VenueDevice.id == device_id, VenueDevice.revoked_at.is_(None))
+            .first()
+            if device_id
+            else None
+        )
+        if device is None or device.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Device revoked"
+            )
+
     user = db.query(User).filter(User.id == user_id).first()
     if not user or not user.is_active:
         raise HTTPException(

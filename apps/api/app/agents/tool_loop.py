@@ -131,6 +131,7 @@ def run_tool_loop(
     messages_override: list[dict] | None = None,
     max_iterations: int | None = None,
     turn_budget_seconds: float | None = None,
+    model: str | None = None,
 ) -> dict:
     """Run the agentic tool loop for a user message.
 
@@ -140,7 +141,9 @@ def run_tool_loop(
     If max_iterations is given, it overrides MAX_ITERATIONS for this run — a
     delegated sub-run gets a lower ceiling so one user turn can't stack two
     full-length loops. turn_budget_seconds does the same for the wall-clock
-    budget.
+    budget. ``model`` overrides the model for every call this turn makes (a
+    venue staff chat runs on the cheaper STAFF_CHAT_MODEL); None lets
+    call_llm_with_tools pick.
     """
     # Build initial messages list from conversation history
     messages = messages_override or _build_messages(task, message, context, db=db)
@@ -156,6 +159,7 @@ def run_tool_loop(
         config_db=config_db,
         max_iterations=max_iterations,
         turn_budget_seconds=turn_budget_seconds,
+        model=model,
     )
 
 
@@ -165,6 +169,7 @@ def resume_tool_loop(
     system_prompt: str,
     anthropic_tools: list[dict],
     config_db: Session | None = None,
+    model: str | None = None,
 ) -> dict:
     """Resume the tool loop after write-tool approval.
 
@@ -285,12 +290,39 @@ def resume_tool_loop(
         anthropic_tools,
         start_iteration=iteration + 1,
         config_db=config_db,
+        model=model,
     )
 
 
 # ---------------------------------------------------------------------------
 # Core loop
 # ---------------------------------------------------------------------------
+
+
+def _model_for_turn(db: Session, thread_id: str, model: str | None) -> str | None:
+    """The model this turn's calls ask for.
+
+    None means call_llm_with_tools picks: the organisation's default, or the
+    light model once the month's allowance is used. An explicit override (a
+    venue staff chat's STAFF_CHAT_MODEL) switches that light-mode check off
+    inside call_llm_with_tools — an explicit choice is the caller's — so it is
+    made here instead: light mode must never pick a dearer model than the
+    override, and the override must never cost more than light mode would.
+    Whichever is cheaper wins; a billing lookup failing keeps the override.
+    """
+    if model is None:
+        return None
+    try:
+        from app.services.billing_service import FALLBACK_MODEL, light_mode_for_thread
+        from app.services.llm_cost import price_for
+
+        if light_mode_for_thread(db, thread_id) and (
+            price_for(FALLBACK_MODEL).output < price_for(model).output
+        ):
+            return FALLBACK_MODEL
+    except Exception:  # pragma: no cover — billing must never stop a turn
+        logger.exception("Light-mode check failed for thread %s", thread_id)
+    return model
 
 
 def _execute_loop(
@@ -304,12 +336,17 @@ def _execute_loop(
     config_db: Session | None = None,
     max_iterations: int | None = None,
     turn_budget_seconds: float | None = None,
+    model: str | None = None,
 ) -> dict:
     """Run the agentic loop up to MAX_ITERATIONS and TURN_BUDGET_SECONDS."""
     limit = max_iterations or MAX_ITERATIONS
     budget = turn_budget_seconds or TURN_BUDGET_SECONDS
     turn_started = time.monotonic()
     from app.interpreter.llm_interpreter import call_llm_with_tools
+
+    # None = the usual model; venue staff get settings.STAFF_CHAT_MODEL
+    # (agents/norm.py model_override, docs/plans/staff-access.md 11.4).
+    model = _model_for_turn(db, task.id, model)
 
     # Build a lookup from tool name -> tool metadata
     tool_meta = _build_tool_meta(anthropic_tools, db)
@@ -414,6 +451,7 @@ def _execute_loop(
                 db=db,
                 thread_id=task.id,
                 call_type="tool_use",
+                model=model,
             )
         except Exception as exc:
             err_msg = str(exc).lower()
@@ -1532,6 +1570,7 @@ def _execute_loop(
             db=db,
             thread_id=task.id,
             call_type="tool_use",
+            model=model,
         )
         # An empty wrap-up reply gets the silent-end note like any other
         # empty ending — this was the one exit with no words for it.

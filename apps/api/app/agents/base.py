@@ -91,10 +91,13 @@ class BaseDomainAgent(ABC):
         page_context: dict | None = None,
         automated_task: dict | None = None,
         insight: dict | None = None,
+        model: str | None = None,
     ) -> dict:
         """Process a message using the agentic tool loop.
 
         Creates or loads a task, runs the tool loop, and returns the result.
+        ``model`` overrides the model for the turn (a venue staff chat runs on
+        STAFF_CHAT_MODEL, see app/agents/norm.py); None keeps the default.
         """
         from app.agents.tool_loop import (
             run_tool_loop,
@@ -189,4 +192,5 @@ class BaseDomainAgent(ABC):
             anthropic_tools,
             context=ctx,
             config_db=config_db,
+            model=model,
         )

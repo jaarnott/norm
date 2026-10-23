@@ -22,9 +22,16 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def create_access_token(data: dict) -> str:
+def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
+    """A signed session token. Lives ``JWT_EXPIRE_HOURS`` unless the caller
+    gives ``expires_delta`` (a staff phone stays signed in for a month, a
+    kitchen tablet for a year; docs/plans/staff-access.md, 11.5)."""
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
+    expire = datetime.now(timezone.utc) + (
+        expires_delta
+        if expires_delta is not None
+        else timedelta(hours=JWT_EXPIRE_HOURS)
+    )
     to_encode["exp"] = expire
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

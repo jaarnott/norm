@@ -544,6 +544,7 @@ def _decide_tool_calls(
     (approved, or declined for a venue the approver can't act on), then resumed:
     approved writes run, and the model is told about the rest.
     """
+    from app.agents.norm import model_override
     from app.agents.prompt_builder import build_tool_definitions
     from app.agents.tool_loop import resume_tool_loop
     from app.services import approvals
@@ -566,8 +567,15 @@ def _decide_tool_calls(
     )
     thread_id = thread.id
     try:
+        # A venue staff member's approved write carries on at their model
+        # (docs/plans/staff-access.md 11.4), as the turn it resumes did.
         result = resume_tool_loop(
-            thread, db, system_prompt, anthropic_tools, config_db=config_db
+            thread,
+            db,
+            system_prompt,
+            anthropic_tools,
+            config_db=config_db,
+            model=model_override(db, user.id),
         )
     except Exception:  # noqa: BLE001 — the decision must land where the person can see it
         logger.exception("approval_resume_failed", extra={"thread_id": thread_id})

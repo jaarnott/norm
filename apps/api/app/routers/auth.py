@@ -112,6 +112,7 @@ async def me(user: User = Depends(get_current_user), db: Session = Depends(get_d
 
     memberships = active_org.memberships_for(db, user.id)
     active = active_org.membership_for(db, user.id)
+    role_obj: Role | None = None
     if user.role == "admin":
         # Platform admins get all org permissions
         permissions = list(ALL_ORG_PERMISSIONS)
@@ -144,6 +145,36 @@ async def me(user: User = Depends(get_current_user), db: Session = Depends(get_d
         for m in memberships
     ]
     resp["active_organization_id"] = active.organization_id if active else None
+
+    # Staff access (docs/plans/staff-access.md, 11.5): what the role reaches
+    # in the active organisation, whether this is a kitchen tablet's account,
+    # and the person's staff record there, if any (claimed by them, or an
+    # unclaimed one with their email — a manager who is also on the roster).
+    from app.services import role_access
+    from app.services.staff_directory import staff_record_for
+
+    access = (
+        role_access.EVERYTHING
+        if user.role == "admin"
+        else role_access.for_role(role_obj)
+    )
+    resp["access"] = {
+        "agents": None if access.agents is None else sorted(access.agents),
+        "apps": None if access.apps is None else sorted(access.apps),
+        "staff": access.staff,
+    }
+    resp["is_device"] = bool(user.is_device)
+    staff = staff_record_for(db, user, active.organization_id if active else None)
+    resp["staff"] = (
+        {
+            "organization_id": staff.organization_id,
+            "staff_member_id": staff.id,
+            "venue_ids": list(staff.venue_ids or []),
+            "has_pin": bool(staff.pin_hash),
+        }
+        if staff
+        else None
+    )
     return resp
 
 

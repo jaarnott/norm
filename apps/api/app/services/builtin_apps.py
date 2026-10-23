@@ -57,6 +57,10 @@ class BuiltinApp:
     ui_source: str
     logic_source: str | None
     build: str  # short hash of the code: what "version" means for a built-in
+    #: Where it shows: under its agent (``agent``, the default), in the apps
+    #: section a role's apps list reaches (``team``), or ``both``. Staff
+    #: access, docs/plans/staff-access.md section 11.4.
+    audience: str = "agent"
 
 
 @functools.lru_cache(maxsize=1)
@@ -85,8 +89,17 @@ def builtin_apps() -> dict[str, BuiltinApp]:
             ui_source=ui,
             logic_source=logic,
             build=digest,
+            audience=_audience(meta.get("audience")),
         )
     return out
+
+
+AUDIENCES = ("agent", "team", "both")
+
+
+def _audience(value) -> str:
+    v = str(value or "").strip().lower()
+    return v if v in AUDIENCES else "agent"
 
 
 def get_builtin(slug: str | None) -> BuiltinApp | None:
@@ -127,6 +140,7 @@ def bind(
         description=b.description,
         purpose=b.purpose,
         agent=b.agent,
+        audience=b.audience,
         created_by=None,
         created_at=None,
         archived_at=None,

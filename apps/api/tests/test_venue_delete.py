@@ -22,10 +22,12 @@ from app.db.models import (
     Connection,
     Thread,
     ToolCall,
+    User,
     UserVenueAccess,
     Venue,
+    VenueDevice,
 )
-from tests.conftest import _make_organization, _make_venue
+from tests.conftest import _make_organization, _make_user, _make_venue
 
 
 @pytest.fixture
@@ -162,12 +164,33 @@ class TestDeleteVenue:
                 refresh_token="secret-refresh",
             )
         )
+        # A kitchen tablet signed in as this venue (staff access, 11.6).
+        device_user = _make_user(db_session, full_name="Kitchen tablet")
+        device_user.is_device = True
+        db_session.add(
+            VenueDevice(
+                organization_id=venue.organization_id,
+                venue_id=venue.id,
+                name="Kitchen tablet",
+                user_id=device_user.id,
+            )
+        )
         db_session.flush()
 
         resp = client.delete(f"/api/venues/{venue.id}", headers=admin_headers)
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
 
         db_session.expire_all()
+        assert (
+            db_session.query(VenueDevice)
+            .filter(VenueDevice.venue_id == venue.id)
+            .count()
+            == 0
+        ), "a tablet signed in as the venue goes with it"
+        assert (
+            db_session.query(User).filter(User.id == device_user.id).one().is_active
+            is False
+        ), "the tablet's own account is switched off"
         assert (
             db_session.query(UserVenueAccess)
             .filter(UserVenueAccess.venue_id == venue.id)
@@ -175,9 +198,7 @@ class TestDeleteVenue:
             == 0
         )
         assert (
-            db_session.query(Connection)
-            .filter(Connection.venue_id == venue.id)
-            .count()
+            db_session.query(Connection).filter(Connection.venue_id == venue.id).count()
             == 0
         ), "OAuth tokens must not outlive the venue"
 

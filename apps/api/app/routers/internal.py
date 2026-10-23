@@ -107,6 +107,26 @@ async def run_due_tasks_endpoint(
             logger.exception("unit check failed")
 
     threading.Thread(target=_unit_check, name="unit-check", daemon=True).start()
+
+    # The hourly copy of venue staff from Loaded rides the same tick
+    # (services/staff_sync.py): each organisation claims its (org, hour) slot
+    # first, so overlapping ticks and instances never repeat one. Its own
+    # thread: a group's venues are a Loaded call each.
+    def _staff_sync() -> None:
+        from app.config import settings
+
+        if not getattr(settings, "STAFF_SYNC_ENABLED", True):
+            return
+        try:
+            from app.services.staff_sync import run_due
+
+            ran = run_due()
+            if ran:
+                logger.info("staff sync ran for %d organisation(s)", ran)
+        except Exception:  # noqa: BLE001
+            logger.exception("staff sync failed")
+
+    threading.Thread(target=_staff_sync, name="staff-sync", daemon=True).start()
     if result["claimed"]:
         logger.info(
             "run-due-tasks claimed %d task(s): %s",

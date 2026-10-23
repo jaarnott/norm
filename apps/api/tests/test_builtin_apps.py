@@ -156,10 +156,39 @@ class TestTheSwitch:
 
 
 class TestAnyoneInTheOrg:
-    def test_a_member_with_no_role_can_change_data_through_the_app(self, db_session):
+    def test_a_member_can_change_data_through_the_app(self, db_session):
+        """Nothing but the app's own rules stand between a member and its
+        data — here Training's: managing programs is for someone holding
+        hr:read (a Team Member sees only their own training, plan section 4),
+        and with that the write goes through the app."""
+        from app.db.models import Role
+
         org = _make_organization(db_session)
         user = _member(db_session, org)
         app, version = load_for_user(db_session, db_session, "training", user)
+        refused = AR.run_logic(
+            db_session,
+            db_session,
+            app=app,
+            version=version,
+            user=user,
+            venue_id=None,
+            params={"op": "save_program", "fields": {"name": "Barista basics"}},
+        )
+        assert refused["success"] is True and "manager" in refused["data"]["error"]
+        role = Role(
+            id=str(uuid.uuid4()),
+            organization_id=org.id,
+            name="trainer",
+            display_name="Trainer",
+            is_system=False,
+            permissions=["hr:read"],
+        )
+        db_session.add(role)
+        db_session.flush()
+        membership = next(m for m in user.memberships if m.organization_id == org.id)
+        membership.role_id = role.id
+        db_session.flush()
         out = AR.run_logic(
             db_session,
             db_session,

@@ -164,6 +164,15 @@ app.include_router(entertainers_router.router, prefix="/api")
 app.include_router(entertainers_public_router.router, prefix="/api")
 app.include_router(email_events_router.router, prefix="/api")
 app.include_router(mcp_oauth.router, prefix="/api")
+from app.routers import staff as staff_router  # noqa: E402
+from app.routers import staff_auth as staff_auth_router  # noqa: E402
+from app.routers import tablet as tablet_router  # noqa: E402
+
+# Staff access (docs/plans/staff-access.md, section 11). staff_auth carries its
+# own /api/auth/staff prefix; staff and tablet use full paths.
+app.include_router(staff_auth_router.router)
+app.include_router(staff_router.router)
+app.include_router(tablet_router.router)
 
 # finance: Loaded Payroll + Norm Finance routers (each module agent appends its line)
 from app.routers import payroll_xero as payroll_xero_router  # noqa: E402

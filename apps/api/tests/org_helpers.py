@@ -64,6 +64,8 @@ def seed_system_roles(db):
             description=defn["description"],
             is_system=True,
             permissions=defn["permissions"],
+            agents=defn["agents"],
+            apps=defn["apps"],
             organization_id=None,
         )
         db.add(role)

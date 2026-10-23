@@ -139,7 +139,7 @@ def _turn(db, w, monkeypatch, tool, inputs):
     """One model turn that calls ``tool`` once with ``inputs``."""
     seen = []
 
-    def llm(system_prompt, messages, tools, db, thread_id, call_type):
+    def llm(system_prompt, messages, tools, db, thread_id, call_type, model=None):
         seen.append(messages[-1])
         if len(seen) == 1:
             return (

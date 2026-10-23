@@ -3,6 +3,7 @@
   "name": "Training",
   "icon": "🎓",
   "agent": "hr",
+  "audience": "agent",
   "description": "Programs, enrolments and completion across the group — who has been trained on what.",
   "purpose": "The management surface for staff training: the program catalogue and its module/section/content structure, who is enrolled on which instance (program + variant + venue), and a member × program tracker showing where everyone is. Ported from Orbit, with Norm as the system of record. Also keeps the team's people (and who manages whom), which Norm Hiring and Norm Performance share.",
   "spec": {

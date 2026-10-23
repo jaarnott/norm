@@ -52,13 +52,18 @@ def send_system_email(
     thread_id: str | None = None,
     from_name: str | None = None,
     reply_to: str | None = None,
+    log_body: bool = True,
 ) -> str | None:
     """Send a system email via Resend. Returns the email log ID or None on failure.
 
     Always from Norm's own address (``EMAIL_FROM_ADDRESS``); ``from_name``
     replaces the display name (an organisation's emails carry its name, as
     app and Functions emails do) and ``reply_to`` sends a reply to a person
-    rather than the no-reply address."""
+    rather than the no-reply address.
+
+    ``log_body=False`` leaves ``EmailLog.html_body`` empty: for a sign-in code,
+    whose body would otherwise sit in the log in clear.
+    """
     from app.db.models import EmailLog
     from app.services.email_templates import render_template
 
@@ -72,7 +77,7 @@ def send_system_email(
         to_addresses=to,
         subject=subject,
         template_name=template_name,
-        html_body=html_body,
+        html_body=html_body if log_body else "",
         provider="resend",
         status="queued",
     )

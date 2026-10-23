@@ -3,6 +3,7 @@
   "name": "Hiring",
   "icon": "🧑‍🍳",
   "agent": "hr",
+  "audience": "agent",
   "description": "Job openings and the candidate pipeline — from application to hired and onboarding.",
   "purpose": "The management surface for recruitment: open roles, a per-job pipeline of candidates through user-defined stages, candidate detail with answers, notes and activity, and the talent pool. Hiring someone creates their person record in the shared HR namespace, so the Training app can enrol them immediately.",
   "spec": {

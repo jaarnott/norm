@@ -28,6 +28,25 @@ _NO_TOOLS = (
     "I don't have any Apps to work with yet. Hire an AI agent in Settings → "
     "AI team — that switches its Apps on — and ask me again."
 )
+# Venue staff whose role names no app with tools: hiring an agent is not
+# theirs to do, and the fix is on their role.
+_NO_TOOLS_STAFF = (
+    "I don't have anything I can look up for you yet. A manager can add apps "
+    "to your role in Settings."
+)
+
+
+def model_override(db: Session, user_id: str | None) -> str | None:
+    """The model a chat runs on when the person's role reaches little: venue
+    staff (a role with no AI agent at all) get ``settings.STAFF_CHAT_MODEL``;
+    everyone else gets the usual model (None = no override).
+    docs/plans/staff-access.md section 4."""
+    from app.config import settings
+    from app.services import role_access
+
+    if role_access.for_user(db, user_id).staff:
+        return settings.STAFF_CHAT_MODEL
+    return None
 
 
 class NormAgent(BaseDomainAgent):
@@ -79,6 +98,7 @@ class NormAgent(BaseDomainAgent):
             page_context=page_context,
             automated_task=automated_task,
             insight=insight,
+            model=model_override(db, user_id),
         )
 
     def _no_tools(
@@ -109,8 +129,11 @@ class NormAgent(BaseDomainAgent):
             )
             db.add(thread)
             db.flush()
+        from app.services import role_access
+
+        text = _NO_TOOLS_STAFF if role_access.for_user(db, user_id).staff else _NO_TOOLS
         db.add(Message(thread_id=thread.id, role="user", content=message))
-        db.add(Message(thread_id=thread.id, role="assistant", content=_NO_TOOLS))
+        db.add(Message(thread_id=thread.id, role="assistant", content=text))
         db.commit()
         db.refresh(thread)
         return {

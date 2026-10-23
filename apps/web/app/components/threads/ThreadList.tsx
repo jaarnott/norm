@@ -20,6 +20,8 @@ interface ThreadListProps {
   // Dynamic page entries (pinned apps) appended after the static list.
   extraPages?: FunctionalPageConfig[];
   onNewChat: () => void;
+  /** false on a kitchen tablet: no New chat row (a tablet never chats). */
+  newChat?: boolean;
   onCollapsePanel?: () => void;
   onSelectPage?: (pageId: string) => void;
   /** App slugs that are ON for the org (hierarchy v2). null/undefined = show
@@ -42,6 +44,13 @@ interface ThreadListProps {
   activePage?: string | null;
   /** The Norm name block at the top (off on mobile, whose top bar shows it). */
   showBrand?: boolean;
+  /** The apps section's pages (activeAgent 'apps'): one row per team app,
+   *  already gated by the server, so neither the member nor the App switch
+   *  filter applies to them (docs/plans/staff-access.md 11.7). */
+  sectionPages?: FunctionalPageConfig[];
+  /** Venue staff (a role with no AI agent): the empty list suggests what
+   *  Norm can answer for them, not stock or rosters. */
+  staff?: boolean;
 }
 
 /** A page with a `permission` shows only to a viewer holding it. No
@@ -52,7 +61,7 @@ export function pageAllowed(page: FunctionalPageConfig, permissions?: string[] |
   return !page.permission || !permissions || permissions.includes(page.permission);
 }
 
-export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, onNewChat, onCollapsePanel, onSelectPage, extraPages, appsOn, pagesHidden, pageMember, permissions, activePage, showBrand = true }: ThreadListProps) {
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, onNewChat, newChat = true, onCollapsePanel, onSelectPage, extraPages, appsOn, pagesHidden, pageMember, permissions, activePage, showBrand = true, sectionPages, staff = false }: ThreadListProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const searchBtnRef = useRef<HTMLButtonElement>(null);
@@ -60,18 +69,23 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
   // Closing the box clears it, so no hidden query keeps filtering the list.
   const closeSearch = () => { setSearchOpen(false); setQuery(''); };
 
+  // The apps section is not an AI agent: it lists the team's apps and the
+  // person's own recent threads, whoever answered them.
+  const appsMode = activeAgent === 'apps';
   // A member's section shows the threads that used its Apps (or, from before
   // there was one agent, were handled by it).
-  const agentFiltered = activeAgent === 'home' ? threads : threads.filter(t => threadMembers(t).includes(activeAgent));
+  const agentFiltered = activeAgent === 'home' || appsMode ? threads : threads.filter(t => threadMembers(t).includes(activeAgent));
   // Then the search box (titles, first prompts, Apps).
   const searching = searchOpen && query.trim() !== '';
   const filtered = agentFiltered.filter(t => !searching || matchesQuery(t, query));
 
-  const pages = [...FUNCTIONAL_PAGES, ...(extraPages ?? [])]
-    .filter(p => (pageMember?.[p.id] ?? p.agent) === activeAgent)
-    .filter(p => !p.app || !appsOn || appsOn.has(p.app))
-    .filter(p => !pagesHidden?.has(p.id))
-    .filter(p => pageAllowed(p, permissions));
+  const pages = appsMode
+    ? (sectionPages ?? [])
+    : [...FUNCTIONAL_PAGES, ...(extraPages ?? [])]
+      .filter(p => (pageMember?.[p.id] ?? p.agent) === activeAgent)
+      .filter(p => !p.app || !appsOn || appsOn.has(p.app))
+      .filter(p => !pagesHidden?.has(p.id))
+      .filter(p => pageAllowed(p, permissions));
 
   return (
     <div style={{
@@ -93,9 +107,11 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
           </div>
         )}
         <nav aria-label="Menu" style={{ display: 'flex', flexDirection: 'column', gap: 2, margin: showBrand ? '14px -8px 0' : '0 -8px' }}>
-          <button type="button" data-testid="new-chat-btn" className="n-row" onClick={onNewChat}>
-            <Icon icon={SquarePen} size="menu" tone="muted" /> New chat
-          </button>
+          {newChat && (
+            <button type="button" data-testid="new-chat-btn" className="n-row" onClick={onNewChat}>
+              <Icon icon={SquarePen} size="menu" tone="muted" /> New chat
+            </button>
+          )}
           <button
             ref={searchBtnRef}
             type="button"
@@ -146,7 +162,7 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
           })}
         </nav>
         <div style={{ margin: '14px 0 8px', fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)' }}>
-          {activeAgent === 'home' ? 'Recent threads' : `${memberName(activeAgent)} threads`}
+          {activeAgent === 'home' || appsMode ? 'Recent threads' : `${memberName(activeAgent)} threads`}
         </div>
       </div>
 
@@ -162,7 +178,9 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
           }}>
             {searching
               ? 'No matching chats'
-              : 'No threads yet. Try asking me to order stock, check a roster, or generate a report.'}
+              : staff
+                ? 'No conversations yet. Ask Norm about a recipe, your training or what is due today.'
+                : 'No threads yet. Try asking me to order stock, check a roster, or generate a report.'}
           </div>
         ) : (
           filtered.map(thread => (
@@ -173,7 +191,7 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
               isSelected={selectedId === thread.id}
               onClick={() => onSelectThread(thread.id)}
               onRemove={() => onRemoveThread(thread.id)}
-              compact={activeAgent === 'home'}
+              compact={activeAgent === 'home' || appsMode}
             />
           ))
         )}

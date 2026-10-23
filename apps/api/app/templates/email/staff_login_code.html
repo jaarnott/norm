@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Your sign-in code</h1>
+<p>Hi {{ first_name }},</p>
+<p>Enter this code to sign in to Norm:</p>
+<p style="text-align: center; margin: 24px 0;">
+  <span style="display: inline-block; font-size: 32px; font-weight: 700; letter-spacing: 8px; padding: 12px 20px; background: #f5f3f0; border-radius: 8px; color: #1a1a1a;">{{ code }}</span>
+</p>
+<p>The code works for {{ minutes }} minutes and can only be used once.</p>
+<p style="font-size: 13px; color: #999; margin-top: 16px;">If you did not ask to sign in, you can ignore this email. Nobody can sign in without the code.</p>
+{% endblock %}

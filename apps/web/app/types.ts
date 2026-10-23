@@ -555,6 +555,52 @@ export interface OrgMember {
   is_active?: boolean;
 }
 
+/** A role, as GET/POST/PUT /api/organizations/{org}/roles return and accept
+ *  it (docs/plans/staff-access.md 11.3). `agents` and `apps` are null for
+ *  "everything the organisation has" and a list for "only these"; an empty
+ *  list means none at all (venue staff). `loaded_roles` are the Loaded role
+ *  names that land new staff in this role. */
+export interface Role {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string | null;
+  is_system: boolean;
+  permissions: string[];
+  agents: string[] | null;
+  apps: string[] | null;
+  loaded_roles: string[];
+  member_count?: number;
+}
+
+/** What the person's role reaches in the active organisation (staff access,
+ *  docs/plans/staff-access.md 11.5). null = everything the organisation has;
+ *  a list = only those. `staff` is a role with no AI agent at all. */
+export interface AccessInfo {
+  agents: string[] | null;
+  apps: string[] | null;
+  staff: boolean;
+}
+
+/** The person's staff record in the active organisation, when they have one. */
+export interface StaffInfo {
+  organization_id: string;
+  staff_member_id: string;
+  venue_ids: string[];
+  has_pin: boolean;
+}
+
+/** One line of Home's Today block (GET /api/me/today). */
+export interface TodayItem {
+  kind: string;
+  title: string;
+  detail?: string | null;
+  due_at?: string | null;
+  tone?: 'overdue' | 'due' | 'info' | string | null;
+  app_slug?: string | null;
+  page_id?: string | null;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -565,6 +611,10 @@ export interface User {
   /** Every organisation the person belongs to (the switcher shows when 2+). */
   organizations?: { id: string; name: string | null }[];
   active_organization_id?: string | null;
+  access?: AccessInfo | null;
+  /** A kitchen tablet's own account, not a person. */
+  is_device?: boolean;
+  staff?: StaffInfo | null;
 }
 
 /** One file in a conversation's notebook (Anthropic's memory tool, backed by Norm). */

@@ -3,6 +3,7 @@
   "name": "Reviews",
   "icon": "📈",
   "agent": "hr",
+  "audience": "agent",
   "description": "Performance reviews, review cycles and capability frameworks — runs on Norm.",
   "purpose": "The management surface for performance: each review's manager side, the review meeting, the goals email and the pay decision; every review for HR admins; review cycles that create each round's reviews; the managers' daily digest; and the capability frameworks reviews rate against. Ported from Orbit. Its data sits in the shared HR namespace beside Norm Training's people, whose managers decide who completes each review.",
   "spec": {

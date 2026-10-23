@@ -80,6 +80,9 @@ settings.INSIGHTS_ENABLED = False
 # 2026 19:30 UTC — then found today's slot taken (19 Oct 2026, 19:47 UTC).
 # Off for the suite; test_unit_check.py switches it on for its own runs.
 settings.UNIT_CHECK_ENABLED = False
+# The Loaded staff sync (services/staff_sync.py) rides the same tick on its own
+# thread with real sessions, for the same reason.
+settings.STAFF_SYNC_ENABLED = False
 
 # The Claude connector is off unless switched on, and test_mcp_protocol.py
 # checks exactly that default. A local .env that switches it on for testing
@@ -145,6 +148,15 @@ from app.routers import mcp_oauth as _mcp_oauth  # noqa: E402
 from app.routers import well_known as _well_known  # noqa: E402
 
 _test_app.include_router(_internal.router)
+# Staff access (docs/plans/staff-access.md section 11): staff_auth carries its
+# own /api/auth/staff prefix; staff and tablet use full paths, as in main.py.
+from app.routers import staff as _staff  # noqa: E402
+from app.routers import staff_auth as _staff_auth  # noqa: E402
+from app.routers import tablet as _tablet  # noqa: E402
+
+_test_app.include_router(_staff_auth.router)
+_test_app.include_router(_staff.router)
+_test_app.include_router(_tablet.router)
 # No prefix — mirrors the real mount in main.py. The MCP endpoint lives at the
 # host root so its OAuth discovery documents resolve.
 _test_app.include_router(_mcp.router)

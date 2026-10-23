@@ -11,6 +11,7 @@ from app.auth.permissions import (
     PERMISSION_SCOPES,
     PERMISSION_GROUPS,
 )
+from app.services import role_access
 
 router = APIRouter()
 
@@ -52,9 +53,51 @@ def _role_to_dict(role: Role) -> dict:
         "description": role.description,
         "is_system": role.is_system,
         "permissions": role.permissions or [],
+        # What the role reaches (staff access): None = everything the
+        # organisation has, a list = only those. Loaded role names map new
+        # starters into this role.
+        "agents": None if role.agents is None else list(role.agents),
+        "apps": None if role.apps is None else list(role.apps),
+        "loaded_roles": list(role.loaded_roles or []),
         "organization_id": role.organization_id,
         "created_at": role.created_at.isoformat() if role.created_at else None,
     }
+
+
+def _clean_keys(values: list[str] | None) -> list[str] | None:
+    """An agents/apps list: trimmed, empty strings dropped, order kept, no
+    duplicates. None stays None (no limit)."""
+    if values is None:
+        return None
+    out: list[str] = []
+    for v in values:
+        key = str(v or "").strip()
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+def _clean_loaded_roles(values: list[str] | None) -> list[str]:
+    """Loaded role names: trimmed, de-duplicated case-insensitively (the first
+    spelling wins), order kept."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in values or []:
+        name = " ".join(str(v or "").split())
+        if name and name.casefold() not in seen:
+            seen.add(name.casefold())
+            out.append(name)
+    return out
+
+
+def _check_loaded_roles(
+    db: Session, org_id: str, names: list[str], *, exclude_role_id: str | None = None
+) -> None:
+    conflict = role_access.loaded_role_conflict(
+        db, org_id, names, exclude_role_id=exclude_role_id
+    )
+    if conflict:
+        raise HTTPException(400, conflict)
 
 
 # --- Permission catalog ---
@@ -96,6 +139,10 @@ class CreateRoleBody(BaseModel):
     display_name: str
     description: str | None = None
     permissions: list[str] = []
+    #: None = every hired agent / every app that is on; a list = only those.
+    agents: list[str] | None = None
+    apps: list[str] | None = None
+    loaded_roles: list[str] = []
 
 
 @router.post("/organizations/{org_id}/roles")
@@ -123,6 +170,9 @@ async def create_role(
     if existing:
         raise HTTPException(400, f"Role '{body.name}' already exists in this org")
 
+    loaded_roles = _clean_loaded_roles(body.loaded_roles)
+    _check_loaded_roles(db, org_id, loaded_roles)
+
     role = Role(
         organization_id=org_id,
         name=body.name,
@@ -130,6 +180,9 @@ async def create_role(
         description=body.description,
         is_system=False,
         permissions=body.permissions,
+        agents=_clean_keys(body.agents),
+        apps=_clean_keys(body.apps),
+        loaded_roles=loaded_roles,
     )
     db.add(role)
     db.commit()
@@ -138,9 +191,15 @@ async def create_role(
 
 
 class UpdateRoleBody(BaseModel):
+    """Fields left out are kept. ``agents``/``apps`` tell "not sent" from
+    "set to no limit" by whether the key is in the body (model_fields_set)."""
+
     display_name: str | None = None
     description: str | None = None
     permissions: list[str] | None = None
+    agents: list[str] | None = None
+    apps: list[str] | None = None
+    loaded_roles: list[str] | None = None
 
 
 @router.put("/organizations/{org_id}/roles/{role_id}")
@@ -174,6 +233,14 @@ async def update_role(
         role.display_name = body.display_name
     if body.description is not None:
         role.description = body.description
+    if "agents" in body.model_fields_set:
+        role.agents = _clean_keys(body.agents)
+    if "apps" in body.model_fields_set:
+        role.apps = _clean_keys(body.apps)
+    if body.loaded_roles is not None:
+        loaded_roles = _clean_loaded_roles(body.loaded_roles)
+        _check_loaded_roles(db, org_id, loaded_roles, exclude_role_id=role.id)
+        role.loaded_roles = loaded_roles
 
     db.commit()
     db.refresh(role)

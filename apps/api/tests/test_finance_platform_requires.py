@@ -171,7 +171,10 @@ def _menu(db, user) -> set[str]:
 class TestMenus:
     def test_a_managers_thread_menu_omits_the_payroll_tools(self, db_session, world):
         assert _menu(db_session, world.manager) == {"get_thing"}
-        assert _menu(db_session, world.team_member) == {"get_thing"}
+        # The system Team Member is venue staff (staff access, Oct 2026): a
+        # role with no AI agent reaches no tool at all, so `requires` never
+        # gets a turn (test_staff_exposure has the role rules).
+        assert _menu(db_session, world.team_member) == set()
 
     def test_an_owner_and_a_payroll_admin_see_them(self, db_session, world):
         assert _menu(db_session, world.owner) == {
@@ -323,8 +326,12 @@ class TestDoors:
                 params={},
             )
 
+        # A manager holds reports:read (the app's scope) but not payroll:read
+        # (D8) — the one missing piece is the tool's own `requires`. (The
+        # system Team Member is venue staff since staff access and holds
+        # neither, so it would be refused on the app's scope first.)
         with pytest.raises(HTTPException) as refused:
-            run_as(world.team_member, world.team_member)
+            run_as(world.manager, world.manager)
         assert refused.value.status_code == 403
         assert (
             "permission" in refused.value.detail

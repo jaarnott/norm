@@ -40,6 +40,7 @@ on counts as having both (services/functions/catalog.py declares them).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 from app.services import active_org
@@ -253,6 +254,39 @@ def tool_users(config_db: Session) -> dict[str, set[str]]:
             for key in app_tools(a):
                 users.setdefault(key, set()).add(a.slug)
     return users
+
+
+@dataclass(frozen=True)
+class AppInfo:
+    """What a role check needs to know about one catalog App: its slug, the
+    org-built app it fronts (``composition.app_slug``, e.g. ``training``) and
+    the AI agent it belongs to (``composition.member``)."""
+
+    slug: str
+    app_slug: str | None
+    member: str | None
+
+    @property
+    def key(self) -> str:
+        """The name a role's ``apps`` list reaches this App by: the app it
+        fronts when it fronts one, else its own catalog slug."""
+        return self.app_slug or self.slug
+
+
+def app_index(config_db: Session) -> dict[str, AppInfo]:
+    """Catalog App slug -> AppInfo, for every App that can own tools (the
+    ``app`` and ``user`` tiers). The role filter in prompt_builder looks a
+    tool's owner up here (services/role_access.py)."""
+    out: dict[str, AppInfo] = {}
+    for a in _catalog(config_db):
+        if a.tier in ("app", "user"):
+            comp = a.composition or {}
+            out[a.slug] = AppInfo(
+                slug=a.slug,
+                app_slug=(comp.get("app_slug") or None),
+                member=app_member(a),
+            )
+    return out
 
 
 def tool_owners(config_db: Session) -> dict[str, str]:

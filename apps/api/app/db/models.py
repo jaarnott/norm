@@ -56,9 +56,18 @@ class User(Base):
     # ("connector.action"): {"always": true}, or for a tool with levels
     # {"level": "autopilot", "options": {...}}. See services/approvals.py.
     approval_preferences = Column(JSON, nullable=True)
+    # Staff access (Oct 2026). A venue device is the account a kitchen tablet
+    # signs in as; ``password_set`` is false for the accounts Norm makes for
+    # staff and tablets, which hold a random hash because hashed_password is
+    # NOT NULL. They sign in with an emailed code or a PIN, never a password.
+    is_device = Column(Boolean, nullable=False, default=False, server_default="false")
+    password_set = Column(Boolean, nullable=False, default=True, server_default="true")
 
     threads = relationship("Thread", back_populates="user")
     memberships = relationship("OrganizationMembership", back_populates="user")
+    staff_records = relationship(
+        "StaffMember", back_populates="user", foreign_keys="StaffMember.user_id"
+    )
 
 
 class Organization(Base):
@@ -126,12 +135,23 @@ class Organization(Base):
     #: Where shadow-mode payroll and entertainer emails go instead of staff
     #: and performers (no address: nothing is sent, the log says suppressed).
     payroll_contact_email = Column(String, nullable=True)
+    # Staff access (Oct 2026): venue staff from Loaded (or added by hand) can
+    # sign in with an emailed code. Switching it on creates the venue roles
+    # and starts the hourly copy from Loaded. ``staff_chat_cap_cents`` is the
+    # monthly Ask Norm cap per person for roles with no AI agent; NULL means
+    # settings.STAFF_CHAT_DEFAULT_CAP_CENTS, 0 switches staff chat off.
+    staff_access_enabled = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    staff_chat_cap_cents = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     venues = relationship("Venue", back_populates="organization")
     memberships = relationship("OrganizationMembership", back_populates="organization")
     roles = relationship("Role", back_populates="organization")
+    staff_members = relationship("StaffMember", back_populates="organization")
+    devices = relationship("VenueDevice", back_populates="organization")
 
 
 class Role(Base):
@@ -149,6 +169,16 @@ class Role(Base):
     description = Column(String, nullable=True)
     is_system = Column(Boolean, nullable=False, default=False)
     permissions = Column(JSON, nullable=False, default=list)
+    # What the role reaches (staff access, Oct 2026; services/role_access.py).
+    # ``agents``: the agent keys this role sees in the menu — NULL means every
+    # hired agent, [] means none at all (venue staff). ``apps``: the apps in
+    # the apps section — NULL means every app that is on, a list names them
+    # (built-in slugs, ``custom:<slug>``, or a catalog app slug). Norm's tools
+    # in a chat follow from these. none_as_null so NULL stays SQL NULL.
+    agents = Column(JSON(none_as_null=True), nullable=True)
+    apps = Column(JSON(none_as_null=True), nullable=True)
+    #: Loaded role names that land a new starter in this role.
+    loaded_roles = Column(JSON, nullable=False, default=list, server_default="[]")
     created_at = Column(DateTime(timezone=True), default=_now)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -214,6 +244,153 @@ class Venue(Base):
     is_trading = Column(Boolean, nullable=False, default=True, server_default="true")
 
     organization = relationship("Organization", back_populates="venues")
+
+
+# ── Staff access (Oct 2026; docs/plans/staff-access.md, section 11.2) ───────
+
+
+class StaffMember(Base):
+    """One person who works at an organisation's venues: the directory row.
+
+    Copied from Loaded every hour (``source`` "loadedhub", keyed by Loaded's
+    staff id in ``external_id``) or added by hand ("manual"). Signing in with
+    an emailed code claims it: ``user_id`` is set and a membership made with
+    ``role_id`` (chosen by hand; wins) or the role the Loaded role names map
+    to, or the system Team Member. ``pin_hash`` is the tablet PIN, scrambled
+    and unique within the organisation; the plain PIN is shown once.
+    """
+
+    __tablename__ = "staff_members"
+    __table_args__ = (
+        Index(
+            "uq_staff_member_external",
+            "organization_id",
+            "source",
+            "external_id",
+            unique=True,
+            postgresql_where=sa_text("external_id IS NOT NULL"),
+        ),
+        Index("ix_staff_members_org_email", "organization_id", "email"),
+        Index(
+            "uq_staff_member_pin",
+            "organization_id",
+            "pin_hash",
+            unique=True,
+            postgresql_where=sa_text("pin_hash IS NOT NULL"),
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    #: loadedhub | manual
+    source = Column(String, nullable=False, default="manual")
+    external_id = Column(String, nullable=True)
+    name = Column(String, nullable=False)
+    #: Stored lower-case.
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    #: Loaded role names, as Loaded spells them.
+    loaded_roles = Column(JSON, nullable=False, default=list, server_default="[]")
+    #: Norm venue ids this person works at.
+    venue_ids = Column(JSON, nullable=False, default=list, server_default="[]")
+    #: A role chosen by hand; wins over the Loaded mapping at claim time.
+    role_id = Column(String, ForeignKey("roles.id"), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    #: Set when a manager switched the person off or removed them in Norm
+    #: (``staff_directory.update``/``remove``); NULL when the hourly copy did
+    #: it. The copy only switches a Loaded person back on when this is NULL,
+    #: so a manager's "Remove" is not undone within the hour.
+    held_at = Column(DateTime(timezone=True), nullable=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    #: True when the directory made this person's membership
+    #: (``staff_access.ensure_membership``); ``revoke`` removes a membership
+    #: only in that case — an owner who is also on the roster keeps theirs.
+    granted_membership = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    pin_hash = Column(String, nullable=True)
+    pin_set_at = Column(DateTime(timezone=True), nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    removed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    organization = relationship("Organization", back_populates="staff_members")
+    role = relationship("Role", foreign_keys=[role_id])
+    user = relationship("User", back_populates="staff_records", foreign_keys=[user_id])
+
+
+class StaffLoginCode(Base):
+    """The emailed sign-in code for one email address, hashed: six digits,
+    ten minutes, five tries, and a send window so an address can't be
+    flooded. One row per email, rewritten on each send."""
+
+    __tablename__ = "staff_login_codes"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    #: Lower-case.
+    email = Column(String, nullable=False, unique=True)
+    code_hash = Column(String, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    sends_in_window = Column(Integer, nullable=False, default=0, server_default="0")
+    window_started_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+class VenueDevice(Base):
+    """A shared tablet signed in as a venue ("La Zeppa kitchen"). It has a
+    User of its own (``is_device``) whose token lives a year; a staff member
+    taps a PIN to act as themselves, unless ``pin_required`` is off. Revoked
+    by setting ``revoked_at`` — every request checks it."""
+
+    __tablename__ = "venue_devices"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    venue_id = Column(String, ForeignKey("venues.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    #: The device's own user.
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    pin_required = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_by = Column(String, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+
+    organization = relationship("Organization", back_populates="devices")
+    venue = relationship("Venue")
+    user = relationship("User", foreign_keys=[user_id])
+    creator = relationship("User", foreign_keys=[created_by])
+
+
+class StaffSyncRun(Base):
+    """One hourly copy of an organisation's staff from Loaded. ``slot`` is the
+    UTC hour (``YYYY-MM-DDTHH``); the unique pair means two API instances
+    can't both run the same hour."""
+
+    __tablename__ = "staff_sync_runs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "slot", name="uq_staff_sync_run_slot"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    organization_id = Column(
+        String, ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    slot = Column(String, nullable=False)
+    started_at = Column(DateTime(timezone=True), default=_now)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    #: {added, updated, deactivated, reactivated, error?}
+    summary = Column(JSON, nullable=True)
+
+    organization = relationship("Organization")
 
 
 class Supplier(Base):
@@ -1476,6 +1653,9 @@ class App(Base):
     #: it's shared with uses it as it is or makes their own copy. Changed only
     #: as a deliberate step (save_app's change_kind), never by an edit.
     kind = Column(String, nullable=False, default="app", server_default="app")
+    #: agent | team | both — where a custom app shows: under its agent (as
+    #: before), in the apps section a role's apps list reaches, or both.
+    audience = Column(String, nullable=False, default="agent", server_default="agent")
     #: Plain String, not an FK: apps and app_versions reference each other, and
     #: a circular FK pair costs a use_alter dance for no protection we need.
     current_version_id = Column(String, nullable=True)

@@ -7,6 +7,9 @@ import { colors } from '../../lib/theme';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import Icon from '../ui/Icon';
 import Avatar from '../ui/Avatar';
+import { resolveAppIcon } from '../ui/appIcons';
+import { navLabelFor, visibleAgentsFor } from '../../hooks/useAccess';
+import type { AccessInfo } from '../../types';
 
 export interface AgentTab {
   id: string;
@@ -48,16 +51,36 @@ function hasPermission(user: SidebarUser | null | undefined, ...perms: string[])
   return perms.some(p => user.permissions?.includes(p));
 }
 
+/** An app in the apps section of the rail (from /api/apps). */
+export interface RailApp {
+  slug: string;
+  name: string;
+  icon?: string | null;
+}
+
 interface SidebarProps {
   selected: string;
   onSelect: (id: string) => void;
   threadCounts: Record<string, number>;
   user?: SidebarUser | null;
   onLogout?: () => void;
+  /** false on a kitchen tablet: no Settings tile (the PIN'd person's
+   *  settings are theirs, not the tablet's). */
+  settings?: boolean;
   /** Hired team-member slugs (hierarchy v2). null/undefined = show every tab
    *  (gating inactive — fail-open). AGENTS stays the icon registry; this only
    *  decides which tabs render. */
   hired?: Set<string> | null;
+  /** What the person's role reaches: narrows the agent tabs further. */
+  access?: AccessInfo | null;
+  /** The apps section: one tile per app after a divider from the agents
+   *  (docs/plans/staff-access.md 11.7). Empty = no section. */
+  apps?: RailApp[];
+  /** The page open in the content area — an app tile is current when its
+   *  page is open. */
+  activePage?: string | null;
+  /** Choosing an app tile: the caller sets activeAgent 'apps' + its page. */
+  onSelectApp?: (slug: string) => void;
 }
 
 /** A 42px rail tile: icon only, named by its label (tooltip + screen readers). */
@@ -77,16 +100,17 @@ function tileStyle(active: boolean, extra?: CSSProperties): CSSProperties {
   };
 }
 
-export default function Sidebar({ selected, onSelect, user, onLogout, hired }: SidebarProps) {
+export default function Sidebar({ selected, onSelect, user, onLogout, settings = true, hired, access, apps = [], activePage, onSelectApp }: SidebarProps) {
   const { isMobile } = useBreakpoint();
-  const showSettings = hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read', 'org:members', 'org:venues', 'billing:read');
+  const showSettings = settings && hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read', 'org:members', 'org:venues', 'billing:read');
+  const agents = visibleAgentsFor(AGENTS, hired, access);
 
   // On mobile, Sidebar is not rendered — navigation is handled by page.tsx
   if (isMobile) return null;
 
   return (
     <nav
-      aria-label="AI agents"
+      aria-label={navLabelFor(agents, apps.length)}
       style={{
         width: 60,
         minWidth: 60,
@@ -106,7 +130,7 @@ export default function Sidebar({ selected, onSelect, user, onLogout, hired }: S
 
       {/* AI agents */}
       <div style={{ padding: '12px 0', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-        {AGENTS.filter((a) => a.id === 'home' || !hired || hired.has(a.id)).map((agent) => {
+        {agents.map((agent) => {
           const isActive = selected === agent.id;
           return (
             <button
@@ -124,6 +148,33 @@ export default function Sidebar({ selected, onSelect, user, onLogout, hired }: S
             </button>
           );
         })}
+
+        {/* The apps section: the team's apps, after a divider from the AI
+            agents. A staff member with no agents sees Home, the divider and
+            their apps. */}
+        {apps.length > 0 && (
+          <>
+            <div className="n-rail-divider" role="separator" aria-label="Apps" data-testid="rail-apps-divider" />
+            {apps.map((app) => {
+              const isActive = selected === 'apps' && activePage === `app:${app.slug}`;
+              return (
+                <button
+                  key={app.slug}
+                  type="button"
+                  className="n-rail-tile"
+                  data-testid={`rail-app-${app.slug}`}
+                  onClick={() => onSelectApp?.(app.slug)}
+                  title={app.name}
+                  aria-label={app.name}
+                  aria-current={isActive ? 'page' : undefined}
+                  style={tileStyle(isActive)}
+                >
+                  <Icon icon={resolveAppIcon({ slug: app.slug, icon: app.icon })} size="nav" duo={isActive} />
+                </button>
+              );
+            })}
+          </>
+        )}
       </div>
 
       {/* Bottom: settings, who you are, sign out */}

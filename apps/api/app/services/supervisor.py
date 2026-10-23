@@ -50,6 +50,12 @@ def handle_message(
     from app.services.billing_service import check_quota_for_user
 
     check_quota_for_user(db, user_id)
+    # Venue staff have a monthly cap of their own, and an owner can set it to
+    # zero to switch staff chat off (services/staff_cap.py). Nothing for
+    # anyone whose role has an AI agent.
+    from app.services import staff_cap
+
+    staff_cap.check(db, user_id)
 
     thread = (
         db.query(Thread).filter(Thread.id == thread_id).first() if thread_id else None

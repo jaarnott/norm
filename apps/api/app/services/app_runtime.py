@@ -380,6 +380,29 @@ def _tool_read_only(config_db: Session, connector: str, action: str) -> bool:
     return False
 
 
+def _check_role_reach(
+    db: Session, config_db: Session, user, connector: str, action: str
+) -> None:
+    """403 when the viewer's role reaches none of the Apps that give
+    ``connector.action`` (owner and users alike, tool_users) — the same filter
+    the chat's tool list applies (prompt_builder._role_blocked_tools). A tool
+    no App gives is left to the declaration check above; platform admins and
+    the system actor pass."""
+    if is_system(user) or getattr(user, "role", None) == "admin":
+        return
+    from app.agents.prompt_builder import _role_blocked_tools
+    from app.services.entitlements import tool_users
+
+    key = f"{connector}.{action}"
+    giving = tool_users(config_db).get(key)
+    if not giving:
+        return
+    if key in _role_blocked_tools(db, user.id, config_db, {key: giving}):
+        raise HTTPException(
+            403, f"your role does not reach {connector}.{action} — a manager can help"
+        )
+
+
 def _check_venue(db: Session, user, venue_id: str | None) -> None:
     """Explicit venue access, or nothing.
 
@@ -448,6 +471,13 @@ def call_action(
             "you do not have the permissions this app needs: "
             + ", ".join(sorted(missing)),
         )
+
+    # The role's reach (services/role_access.py): a tool whose owning App the
+    # viewer's role does not reach is refused here too, not only in the chat
+    # menu. Scopes are optional on an app, so without this a team app that
+    # declared ``get_sales`` with no scopes would hand a Kitchen viewer the
+    # sales figures through /call.
+    _check_role_reach(db, config_db, user, connector, action)
 
     # `method` is also what the audit row records, so resolve it once. An
     # action marked read_only is a read whatever its transport says.

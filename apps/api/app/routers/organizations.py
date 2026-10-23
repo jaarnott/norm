@@ -17,6 +17,8 @@ from app.db.models import (
     Connection,
 )
 from app.auth.dependencies import get_current_user, require_permission
+from app.auth.org_scope import require_org_permission
+from app.config import settings
 from app.services.oauth_service import needs_reconnect
 from app.services import active_org
 
@@ -39,6 +41,10 @@ class UpdateOrgBody(BaseModel):
     name: str | None = None
     billing_email: str | None = None
     plan: str | None = None
+    #: Ask Norm for venue staff: cents of usage per person per month. 0
+    #: switches staff chat off; null goes back to the platform default. Only
+    #: applied when sent (services/staff_cap.py).
+    staff_chat_cap_cents: int | None = None
 
 
 class AddMemberBody(BaseModel):
@@ -74,6 +80,11 @@ def _org_to_dict(org: Organization, db: Session, include_details: bool = False) 
         "venue_count": len(org.venues),
         "member_count": len(org.memberships),
         "created_at": org.created_at.isoformat() if org.created_at else None,
+        # Staff access (docs/plans/staff-access.md): whether venue staff can
+        # sign in, and the monthly Ask Norm cap for roles with no AI agent.
+        "staff_access_enabled": bool(org.staff_access_enabled),
+        "staff_chat_cap_cents": org.staff_chat_cap_cents,
+        "staff_chat_cap_default_cents": int(settings.STAFF_CHAT_DEFAULT_CAP_CENTS),
     }
     if include_details:
         d["venues"] = [
@@ -131,27 +142,10 @@ def _require_org_permission(
     organisation being acted on. So a manager of one organisation could edit,
     delete or join another's, and PUT /venues/{id} had no check at all — any
     signed-in user, a Team Member included, could rename any venue or change
-    its timezone (which moves its business-day boundary). Oct 2026.
+    its timezone (which moves its business-day boundary). Oct 2026. The check
+    itself lives in ``auth/org_scope`` so the staff routes share it.
     """
-    if user.role == "admin":
-        return
-    membership = (
-        db.query(OrganizationMembership)
-        .filter(
-            OrganizationMembership.organization_id == org_id,
-            OrganizationMembership.user_id == user.id,
-        )
-        .first()
-        if org_id
-        else None
-    )
-    if not membership:
-        raise HTTPException(403, "Not a member of this organization")
-    if scope is None:
-        return
-    role = membership.role_obj
-    if not role or scope not in (role.permissions or []):
-        raise HTTPException(403, f"Missing permissions: {scope}")
+    require_org_permission(db, user, org_id, scope)
 
 
 def _orgs_where(db: Session, user_id: str, scope: str | None = None) -> set[str]:
@@ -270,7 +264,15 @@ async def update_organization(
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(404, "Organization not found")
-    _require_org_permission(db, user, org_id, "org:manage")
+    sent = body.model_fields_set
+    # The staff chat cap is a billing setting: whoever manages billing may
+    # change it on its own, without the right to rename the organisation.
+    if sent == {"staff_chat_cap_cents"}:
+        _require_org_permission(db, user, org_id, None)
+        if not _holds_any(db, user, org_id, ("billing:manage", "org:manage")):
+            raise HTTPException(403, "Missing permissions: billing:manage")
+    else:
+        _require_org_permission(db, user, org_id, "org:manage")
 
     if body.name is not None:
         org.name = body.name
@@ -278,9 +280,37 @@ async def update_organization(
         org.billing_email = body.billing_email
     if body.plan is not None:
         org.plan = body.plan
+    if "staff_chat_cap_cents" in sent:
+        cap = body.staff_chat_cap_cents
+        if cap is not None and cap < 0:
+            raise HTTPException(
+                400, "staff_chat_cap_cents must be 0 or more, or null for the default"
+            )
+        org.staff_chat_cap_cents = cap
 
     db.commit()
     return _org_to_dict(org, db, include_details=True)
+
+
+def _holds_any(db: Session, user: User, org_id: str, scopes: tuple[str, ...]) -> bool:
+    """Whether the caller holds one of ``scopes`` in ``org_id`` (platform
+    admins always do)."""
+    if user.role == "admin":
+        return True
+    membership = (
+        db.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.organization_id == org_id,
+            OrganizationMembership.user_id == user.id,
+        )
+        .first()
+    )
+    held = set(
+        (membership.role_obj.permissions or [])
+        if membership and membership.role_obj
+        else []
+    )
+    return bool(held & set(scopes))
 
 
 # --- Company settings ---
@@ -667,6 +697,7 @@ async def delete_venue(
         ToolCall,
         UnitCheckProposal,
         UploadedDocument,
+        VenueDevice,
         WorkingDocument,
     )
 
@@ -700,6 +731,14 @@ async def delete_venue(
     db.query(HrSetup).filter(HrSetup.venue_id == venue_id).delete(
         synchronize_session=False
     )
+    # A kitchen tablet is signed in AS this venue (venue_id NOT NULL), so the
+    # venue going means the device goes: its own account is switched off, the
+    # way revoking it does (routers/staff.py revoke_device), and the row deleted.
+    for device in db.query(VenueDevice).filter(VenueDevice.venue_id == venue_id):
+        if device.user is not None:
+            device.user.is_active = False
+        db.delete(device)
+    db.flush()
     # Pre-warm bookkeeping is cache state about THIS venue's invoices —
     # meaningless without it, and venue_id is NOT NULL. Delete, never null.
     db.query(InvoicePrewarmAttempt).filter(

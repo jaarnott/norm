@@ -27,15 +27,19 @@ import Icon from '../components/ui/Icon';
 import Avatar from '../components/ui/Avatar';
 import IconButton from '../components/ui/IconButton';
 import { AGENTS } from '../components/layout/Sidebar';
+import TeamBar, { type TeamBarActive } from '../components/layout/TeamBar';
 import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useActiveVenue, readActiveVenue } from '../hooks/useActiveVenue';
 import { useTeam } from '../hooks/useTeam';
+import { useToday } from '../hooks/useToday';
+import { NON_AGENT, allowsAgent, navLabelFor, sectionAppsFor, visibleAgentsFor } from '../hooks/useAccess';
+import { resolveAppIcon } from '../components/ui/appIcons';
 import { threadMembers } from '../lib/threadApps';
-import type { Thread, WidgetAction, VenueDetail } from '../types';
+import type { Thread, WidgetAction, VenueDetail, AccessInfo, StaffInfo, TodayItem } from '../types';
 
-type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null; kind?: 'app' | 'dashboard'; mine?: boolean };
+type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null; kind?: 'app' | 'dashboard'; mine?: boolean; audience?: 'agent' | 'team' | 'both' | null };
 
-type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null; organizations?: { id: string; name: string | null }[]; active_organization_id?: string | null };
+type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null; organizations?: { id: string; name: string | null }[]; active_organization_id?: string | null; access?: AccessInfo | null; is_device?: boolean; staff?: StaffInfo | null };
 
 // True once a re-fetched thread's turn has settled with a final answer — the
 // backend worker commits the answer even when the send's stream was cut, so
@@ -86,18 +90,30 @@ export default function Home() {
     // token exists, and without the dep a fresh login showed no app pages at
     // all until something happened to re-trigger it.
   }, [token]);
+  // Staff access (docs/plans/staff-access.md 11.7): what the person's role
+  // reaches. Unknown (an older payload) = everything, like the App Map.
+  const access = user?.access ?? null;
+  const isStaff = !!access?.staff;
+  // The apps section: the team's apps (audience team or both) and, for venue
+  // staff, every app they can open. Each gets a page under the 'apps'
+  // pseudo-agent, so the rail, the menu and the bottom bar open the same thing.
+  const sectionApps = useMemo(() => sectionAppsFor(appRows, access), [appRows, access]);
+  const sectionPages = useMemo<FunctionalPageConfig[]>(
+    () => sectionApps.map(r => ({ ...appPageConfig(r), agent: 'apps', app: undefined })),
+    [sectionApps],
+  );
   const findPage = (id: string | null) =>
-    id ? (FUNCTIONAL_PAGES.find(p => p.id === id) ?? appPages.find(p => p.id === id)) : undefined;
+    id ? (FUNCTIONAL_PAGES.find(p => p.id === id) ?? appPages.find(p => p.id === id) ?? sectionPages.find(p => p.id === id)) : undefined;
   // An app page can stop existing under you — archived, unshared, or unpinned
   // in another tab. Both render sites bail with `return null` on a missing
   // config, which paints an empty panel with no way out, so drop back to the
-  // conversation instead. Guarded on appPages having loaded, or this would
-  // clear a valid page during the first render pass.
+  // conversation instead. Guarded on the app pages having loaded, or this
+  // would clear a valid page during the first render pass.
   useEffect(() => {
     if (!activePage?.startsWith('app:')) return;
-    if (appPages.length === 0) return;
-    if (!appPages.some(p => p.id === activePage)) setActivePage(null);
-  }, [activePage, appPages]);
+    if (appPages.length === 0 && sectionPages.length === 0) return;
+    if (!appPages.some(p => p.id === activePage) && !sectionPages.some(p => p.id === activePage)) setActivePage(null);
+  }, [activePage, appPages, sectionPages]);
   const [venues, setVenues] = useState<VenueDetail[]>([]);
   // Shared, persisted "which venue am I looking at" for the functional pages.
   // Page-scoped only — never passed into sendMessage, so conversations keep
@@ -177,15 +193,18 @@ export default function Home() {
   // Snap navigation home when its owner leaves the hired set (retire in
   // another tab, or a stale restore): state-driven nav makes this the whole
   // direct-access guard surface.
+  // …and the same when the role doesn't reach the agent (venue staff have
+  // none): a deep link to an agent's page lands on Home.
   useEffect(() => {
-    if (!team.hired) return;
-    const NON_AGENT = new Set(['home', 'settings']);
-    if (!NON_AGENT.has(activeAgent) && !team.hired.has(activeAgent)) {
+    if (NON_AGENT.has(activeAgent)) return;
+    if ((team.hired && !team.hired.has(activeAgent)) || !allowsAgent(access, activeAgent)) {
       setActiveAgent('home');
       setActivePage(null);
-      return;
     }
-    if (activePage && team.appsOn) {
+  }, [team.hired, access, activeAgent]);
+  useEffect(() => {
+    if (!team.hired) return;
+    if (activePage && team.appsOn && !NON_AGENT.has(activeAgent)) {
       const cfg = FUNCTIONAL_PAGES.find(pg => pg.id === activePage);
       if (cfg?.app && !team.appsOn.has(cfg.app)) setActivePage(null);
       else if (cfg && !pageAllowed(cfg, viewerPermissions)) setActivePage(null);
@@ -193,6 +212,27 @@ export default function Home() {
     // A screen switched off, or for a system this organisation doesn't have.
     if (activePage && team.pagesHidden?.has(activePage)) setActivePage(null);
   }, [team.hired, team.appsOn, team.pagesHidden, activeAgent, activePage, viewerPermissions]);
+  // The AI agents this person gets: hired by the organisation and allowed by
+  // their role. The rail, the phone menu and the Today block all use it.
+  const visibleAgents = useMemo(() => visibleAgentsFor(AGENTS, team.hired, access), [team.hired, access]);
+  // What is due today, for Home's Today block.
+  const today = useToday(token);
+  // The phone's bottom bar. "Ask Norm" and a new chat put Home in ask mode
+  // (the Ask Norm pill); Today puts it back. Settings opened from the bar's
+  // Me tab keeps the bar while Settings is open.
+  const [askMode, setAskMode] = useState(false);
+  const [barMe, setBarMe] = useState(false);
+  // A kitchen tablet (app/tablet/page.tsx keeps its device sign-in in
+  // norm_device): no chat on it in the first release, so one person's
+  // question never lands in another's history — no composer, no Ask Norm
+  // tab, no New chat, and no Settings or Sign out, which would leave the
+  // tablet signed out of the shell. The API refuses tablet tokens on the
+  // messages routes as well; this is only what the screen shows.
+  const [onTablet, setOnTablet] = useState(false);
+  useEffect(() => {
+    try { setOnTablet(!!localStorage.getItem('norm_device')); } catch { /* storage blocked: an ordinary shell */ }
+  }, []);
+  useEffect(() => { if (activeAgent !== 'settings') setBarMe(false); }, [activeAgent]);
 
   // Check for existing auth on mount
   useEffect(() => {
@@ -820,7 +860,9 @@ export default function Home() {
             setQuotaExceeded(true);
             streamErrored = true;
           } else if (event.type === 'error') {
-            console.error('Stream error:', event.message);
+            // A venue staff member's monthly Ask Norm cap (reason staff_cap)
+            // is a refusal sentence saved in the thread, not a fault.
+            if (event.reason !== 'staff_cap') console.error('Stream error:', event.message);
             streamErrored = true;
           } else if (event.type === 'stream_dropped') {
             // The socket was cut mid-turn (not a real failure). The worker keeps
@@ -952,12 +994,49 @@ export default function Home() {
     // (reachable from the phone's top bar) gives way.
     setActiveAgent(a => (a === 'settings' ? 'home' : a));
     setMobileView('home');
+    setAskMode(true);
   }, []);
 
   const handleSelectPage = useCallback((pageId: string) => {
     setActivePage(pageId);
     setSelectedThreadId(null);
   }, []);
+
+  // A tile in the apps section (rail, phone menu or bottom bar) opens that
+  // app under the 'apps' pseudo-agent.
+  const handleSelectApp = useCallback((slug: string) => {
+    setActiveAgent('apps');
+    setActivePage(`app:${slug}`);
+    setSelectedThreadId(null);
+    setMobileView('detail');
+  }, []);
+
+  // A row in Home's Today block opens the app it came from: in the apps
+  // section when it is there, else its agent's page, else the app's own page.
+  const visibleAgentIds = useMemo(() => new Set(visibleAgents.map(a => a.id)), [visibleAgents]);
+  const openTodayItem = useCallback((item: TodayItem) => {
+    const slug = item.app_slug || null;
+    const sectionId = slug ? `app:${slug}` : null;
+    const cfg = item.page_id ? FUNCTIONAL_PAGES.find(p => p.id === item.page_id) : undefined;
+    const pinned = sectionId ? effectiveAppPages.find(p => p.id === sectionId) : undefined;
+    if (sectionId && sectionPages.some(p => p.id === sectionId)) {
+      setActiveAgent('apps');
+      setActivePage(sectionId);
+    } else if (cfg && visibleAgentIds.has(cfg.agent)) {
+      setActiveAgent(cfg.agent);
+      setActivePage(cfg.id);
+    } else if (pinned) {
+      setActiveAgent(team.pageMember?.[pinned.id] ?? pinned.agent);
+      setActivePage(pinned.id);
+    } else if (slug) {
+      window.location.assign(`/apps/${encodeURIComponent(slug)}`);
+      return;
+    } else {
+      return;
+    }
+    setSelectedThreadId(null);
+    setMobileView('detail');
+  }, [sectionPages, visibleAgentIds, effectiveAppPages, team.pageMember]);
 
   const handleAction = useCallback(async (threadId: string, action: string, body?: Record<string, unknown>) => {
     // Reload just re-fetches the thread detail
@@ -1188,16 +1267,22 @@ export default function Home() {
   const memberRowRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!isMobile || mobileView !== 'list') return;
-    const el = memberRowRef.current?.querySelector<HTMLElement>(`[data-member="${activeAgent}"]`);
+    // In the apps section the open app's tile (or the first app) is the one
+    // to show — "Apps" in the bottom bar opens the menu there.
+    const target = activeAgent === 'apps'
+      ? (activePage?.startsWith('app:') ? activePage : sectionApps[0] ? `app:${sectionApps[0].slug}` : 'home')
+      : activeAgent;
+    const el = memberRowRef.current?.querySelector<HTMLElement>(`[data-member="${target}"]`);
     el?.scrollIntoView({ inline: 'center', block: 'nearest' });
-  }, [isMobile, mobileView, activeAgent]);
+  }, [isMobile, mobileView, activeAgent, activePage, sectionApps]);
 
   // Tablet (768–1023px): the menu panel is a drawer over the content, not a
   // column beside it — at 820px a fixed 360px column left the page about
   // 400px. It starts closed; a rail member or "Show panel" opens it, and
   // choosing something in it, the scrim or Escape closes it. Settings has no
-  // panel at all.
-  const panelHidden = activeAgent === 'settings';
+  // panel at all, and nor does a kitchen tablet: it has no chat, and its
+  // apps are on the rail.
+  const panelHidden = activeAgent === 'settings' || onTablet;
   const drawerOpen = isTablet && !panelCollapsed && !panelHidden;
   useEffect(() => { setPanelCollapsed(isTablet); }, [isTablet]);
   // Focus moves into the drawer when it opens, so the next Tab is its first
@@ -1287,12 +1372,50 @@ export default function Home() {
       <QuotaExceededModal onClose={() => setQuotaExceeded(false)} onOpenBilling={openBilling} />
     );
 
+    // The bottom bar comes with the apps section: venue staff always have it,
+    // a manager inside a team app (or in Settings from its Me tab). Never
+    // over the menu. The docked composer stays away while it shows, except in
+    // a thread (.n-teambar-on, globals.css).
+    const barOn = isStaff || activeAgent === 'apps' || (barMe && activeAgent === 'settings');
+    const inThread = mobileView === 'detail' && !activePage && !!selectedThread;
+    const barActive: TeamBarActive = mobileView === 'settings' ? 'me'
+      : activePage?.startsWith('app:') ? (activePage as `app:${string}`)
+      : inThread || askMode ? 'ask'
+      : 'today';
+    const teamBar = barOn ? (
+      <TeamBar
+        apps={sectionApps}
+        ask={!onTablet}
+        active={barActive}
+        onToday={() => {
+          setActivePage(null);
+          setSelectedThreadId(null);
+          setAskMode(false);
+          setActiveAgent(a => (a === 'settings' ? (isStaff ? 'home' : 'apps') : a));
+          setMobileView('home');
+        }}
+        onApp={handleSelectApp}
+        onApps={() => { setActiveAgent('apps'); setMobileView('list'); }}
+        // The apps-section switch runs first: handleNewChat's own updater
+        // turns Settings into Home, after which this one would see 'home' and
+        // leave it — and a manager who came from the bar's Me tab lost the
+        // bar (barOn needs 'apps' or Settings-from-Me).
+        onAsk={() => { setActiveAgent(a => (a === 'settings' ? (isStaff ? 'home' : 'apps') : a)); handleNewChat(); }}
+        onMe={() => {
+          setBarMe(true);
+          setSettingsTab('preferences');
+          setActiveAgent('settings');
+          setMobileView('settings');
+        }}
+      />
+    ) : null;
+
     // Every mobile screen but the menu: a top bar (menu, the screen's title,
     // new chat) above the content. It replaces the floating menu button that
     // sat over page titles. The bar names the screen, so the page's own large
     // title is hidden under .n-mobile-shell (globals.css).
     const mobileShell = (title: string, content: React.ReactNode) => (
-      <div className="full-height n-mobile-shell" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: 'var(--canvas)' }}>
+      <div className={`full-height n-mobile-shell${barOn && !inThread ? ' n-teambar-on' : ''}`} style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', backgroundColor: 'var(--canvas)' }}>
         {mobileQuotaModal}
         <header style={{
           flex: '0 0 auto', boxSizing: 'content-box', height: 52, paddingTop: 'env(safe-area-inset-top, 0px)',
@@ -1305,11 +1428,14 @@ export default function Home() {
           <h1 style={{ flex: 1, minWidth: 0, margin: 0, fontSize: 'var(--fs-lg)', fontWeight: 700, letterSpacing: '-0.01em', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>
             {title}
           </h1>
-          <button type="button" aria-label="New chat" onClick={() => { handleNewChat(); setMobileView('home'); }} className="n-icon-btn" style={{ width: 44, height: 44 }}>
-            <Icon icon={SquarePen} size={20} />
-          </button>
+          {!onTablet && (
+            <button type="button" aria-label="New chat" onClick={() => { handleNewChat(); setMobileView('home'); }} className="n-icon-btn" style={{ width: 44, height: 44 }}>
+              <Icon icon={SquarePen} size={20} />
+            </button>
+          )}
         </header>
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>{content}</div>
+        {teamBar}
       </div>
     );
 
@@ -1322,7 +1448,7 @@ export default function Home() {
       })() : selectedThread ? (
         <ThreadDetail thread={selectedThread} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} onRetry={retryFailedSend} loading={loading} openThread={openThread || null} />
       ) : (
-        <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} />
+        <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} staff={isStaff} userName={user.full_name} today={today.items} onOpenToday={openTodayItem} chat={!onTablet} />
       );
 
       const title = connectPanel ? 'Reconnect'
@@ -1339,7 +1465,9 @@ export default function Home() {
 
     // List view (hamburger destination) — AI agents + menu + user footer
     if (mobileView === 'list') {
-      const members = AGENTS.filter(a => a.id === 'home' || !team.hired || team.hired.has(a.id));
+      // Venue staff have no AI agents: their swipe row is only their apps
+      // (the bottom bar's Today stands in for the Home tile).
+      const members = isStaff ? [] : visibleAgents;
       const footerButton = (testId: string, label: string, icon: LucideIcon, onClick: () => void) => (
         <button
           type="button"
@@ -1367,7 +1495,7 @@ export default function Home() {
 
           {/* AI agents: a row you swipe sideways — full-size icons, no
               scrollbar. Items spread out when few are hired. */}
-          <nav aria-label="AI agents" style={{ flex: '0 0 auto', position: 'relative', borderBottom: '1px solid var(--line)' }}>
+          <nav aria-label={navLabelFor(members, sectionApps.length)} style={{ flex: '0 0 auto', position: 'relative', borderBottom: '1px solid var(--line)' }}>
             <div
               ref={memberRowRef}
               className="no-scrollbar"
@@ -1398,28 +1526,63 @@ export default function Home() {
                   </button>
                 );
               })}
+              {/* The apps section: a thin divider, then one tile per team app.
+                  Venue staff, with no agents, see only the app tiles. */}
+              {sectionApps.length > 0 && members.length > 1 && (
+                <div className="n-swipe-divider" role="separator" aria-label="Apps" data-testid="rail-apps-divider" />
+              )}
+              {sectionApps.map((app) => {
+                const isActive = activeAgent === 'apps' && activePage === `app:${app.slug}`;
+                return (
+                  <button
+                    key={`app:${app.slug}`}
+                    type="button"
+                    data-testid={`rail-app-${app.slug}`}
+                    data-member={`app:${app.slug}`}
+                    aria-current={isActive ? 'page' : undefined}
+                    onClick={() => handleSelectApp(app.slug)}
+                    style={{
+                      flex: '1 0 auto', minWidth: 72, height: 64, padding: '6px 8px',
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
+                      border: 'none', borderRadius: 'var(--radius-lg)',
+                      backgroundColor: isActive ? 'var(--selected)' : 'transparent',
+                      scrollSnapAlign: 'start', cursor: 'pointer',
+                    }}
+                  >
+                    <Icon icon={resolveAppIcon({ slug: app.slug, icon: app.icon })} size="mobileNav" tone={isActive ? 'strong' : 'muted'} duo={isActive} />
+                    <span style={{ fontSize: 12, lineHeight: '16px', whiteSpace: 'nowrap', maxWidth: 96, overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: isActive ? 600 : 500, color: isActive ? 'var(--text)' : 'var(--text-soft)' }}>
+                      {app.name}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
             <div aria-hidden style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 36, pointerEvents: 'none', background: 'linear-gradient(to right, rgba(250, 248, 245, 0), var(--canvas))' }} />
           </nav>
 
-          {/* Thread list */}
+          {/* Thread list — not on a kitchen tablet, which has no chat: its
+              apps are the tiles above. */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <ThreadList
-              threads={threads}
-              selectedId={selectedThreadId}
-              onSelectThread={handleSelectThreadMobile}
-              onRemoveThread={removeThread}
-              activeAgent={activeAgent}
-              onNewChat={() => { handleNewChat(); setMobileView('home'); }}
-              onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
-              extraPages={effectiveAppPages}
-              appsOn={team.appsOn}
-              pagesHidden={team.pagesHidden}
-              pageMember={team.pageMember}
-              permissions={viewerPermissions}
-              activePage={activePage}
-              showBrand={false}
-            />
+            {!onTablet && (
+              <ThreadList
+                threads={threads}
+                selectedId={selectedThreadId}
+                onSelectThread={handleSelectThreadMobile}
+                onRemoveThread={removeThread}
+                activeAgent={activeAgent}
+                onNewChat={() => { handleNewChat(); setMobileView('home'); }}
+                onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
+                extraPages={effectiveAppPages}
+                sectionPages={sectionPages}
+                appsOn={team.appsOn}
+                pagesHidden={team.pagesHidden}
+                pageMember={team.pageMember}
+                permissions={viewerPermissions}
+                activePage={activePage}
+                showBrand={false}
+                staff={isStaff}
+              />
+            )}
           </div>
 
           {/* User footer */}
@@ -1431,8 +1594,8 @@ export default function Home() {
               <Avatar name={user.full_name} />
               <OrgSwitcher organizations={user.organizations} activeId={user.active_organization_id} variant="row" />
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--fs-base)', color: 'var(--text-soft)' }}>{user.full_name}</span>
-              {showSettings && footerButton('sidebar-settings', 'Settings', Settings, () => { setActiveAgent('settings'); setMobileView('settings'); })}
-              {footerButton('sidebar-logout', 'Sign out', LogOut, handleLogout)}
+              {showSettings && !onTablet && footerButton('sidebar-settings', 'Settings', Settings, () => { setActiveAgent('settings'); setMobileView('settings'); })}
+              {!onTablet && footerButton('sidebar-logout', 'Sign out', LogOut, handleLogout)}
             </div>
           )}
         </div>
@@ -1440,7 +1603,7 @@ export default function Home() {
     }
 
     // Home view (default)
-    return mobileShell('Norm', <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} />);
+    return mobileShell(isStaff && !askMode ? 'Today' : 'Norm', <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} staff={isStaff} userName={user.full_name} today={today.items} onOpenToday={openTodayItem} chat={!onTablet} />);
   }
 
   // Choosing something in the tablet drawer closes it.
@@ -1463,8 +1626,13 @@ export default function Home() {
         }}
         threadCounts={threadCounts}
         user={user}
-        onLogout={handleLogout}
+        onLogout={onTablet ? undefined : handleLogout}
+        settings={!onTablet}
         hired={team.hired}
+        access={access}
+        apps={sectionApps}
+        activePage={activePage}
+        onSelectApp={(slug) => { handleSelectApp(slug); closeDrawer(); }}
       />
 
       {/* Center Panel — a column beside the content on desktop; on a tablet a
@@ -1502,14 +1670,17 @@ export default function Home() {
           onRemoveThread={removeThread}
           activeAgent={activeAgent}
           onNewChat={() => { handleNewChat(); closeDrawer(); }}
+          newChat={!onTablet}
           onCollapsePanel={() => setPanelCollapsed(true)}
           extraPages={effectiveAppPages}
+          sectionPages={sectionPages}
           onSelectPage={(pageId) => { handleSelectPage(pageId); closeDrawer(); }}
           appsOn={team.appsOn}
           pagesHidden={team.pagesHidden}
           pageMember={team.pageMember}
           permissions={viewerPermissions}
           activePage={activePage}
+          staff={isStaff}
         />
       </div>
 
@@ -1578,6 +1749,11 @@ export default function Home() {
               member={activeAgent}
               venueId={activeVenueId}
               suggestions={isMobile ? 2 : 4}
+              staff={isStaff}
+              userName={user.full_name}
+              today={today.items}
+              onOpenToday={openTodayItem}
+              chat={!onTablet}
             />
           )}
         </div>

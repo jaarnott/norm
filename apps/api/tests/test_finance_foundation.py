@@ -377,11 +377,13 @@ class TestTenancyMetadata:
                 else set()
             )
         heads = set(revs) - downs
-        assert heads == {"ne9h1j3l5n7p"}, heads
+        assert heads == {"bi4k6m8o0q2t"}, heads
         chain = {
             "lc7f9h1j3l5n": "kb6e8g0i2k4m",
             "md8g0i2k4m6o": "lc7f9h1j3l5n",
             "ne9h1j3l5n7p": "md8g0i2k4m6o",
+            # Staff access (docs/plans/staff-access.md 11.2) follows Finance.
+            "bi4k6m8o0q2t": "ne9h1j3l5n7p",
         }
         for rev, down in chain.items():
             text = (versions / revs[rev]).read_text()

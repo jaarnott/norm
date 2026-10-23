@@ -34,7 +34,40 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _app_key(app) -> str:
+    """The name a role's ``apps`` list reaches this app by
+    (services/role_access.allows_app): a built-in by its slug (``training``),
+    anything else as ``custom:<slug>``."""
+    from app.services.builtin_apps import is_builtin
+    from app.services.entitlements import CUSTOM_PREFIX
+
+    return app.slug if is_builtin(app) else f"{CUSTOM_PREFIX}{app.slug}"
+
+
+def _role_allows(db: Session, app, user: User) -> bool:
+    """Whether the viewer's role reaches this app: named in the role's apps
+    list, or belonging to one of the role's AI agents. Platform admins and
+    roles with no limits pass (services/role_access.py)."""
+    from app.services import role_access
+    from app.services.entitlements import custom_app_owner
+
+    if user.role == "admin":
+        return True
+    access = role_access.for_user(db, user.id)
+    return role_access.allows_app(access, _app_key(app), member=custom_app_owner(app))
+
+
 def _load(db: Session, slug: str, user: User, config_db: Session):
+    """Resolve an app + the version to run: 404 when there is no such app for
+    this viewer, 403 when there is but their role doesn't reach it (staff
+    access, docs/plans/staff-access.md section 11.4)."""
+    app, version = _resolve(db, slug, user, config_db)
+    if not _role_allows(db, app, user):
+        raise HTTPException(403, "Your role doesn't include this app.")
+    return app, version
+
+
+def _resolve(db: Session, slug: str, user: User, config_db: Session):
     """Resolve an app + the version to run, or 404.
 
     A viewer always runs the app's CURRENT version. Sharing pins a version by
@@ -207,11 +240,23 @@ def list_apps(
     # on the user's own preferences blob under a reserved key.
     pinned = set((user.dashboard_preferences or {}).get("_pinned_apps") or [])
 
+    from app.services import role_access
     from app.services.builtin_apps import builtin_apps, is_on
+
+    # The viewer's role narrows the list per person (staff access): an app
+    # the role doesn't name, and whose AI agent the role doesn't have, is
+    # left out. Platform admins and roles with no limits see everything.
+    access = (
+        role_access.EVERYTHING
+        if user.role == "admin"
+        else role_access.for_user(db, user.id)
+    )
 
     out = []
     for b in builtin_apps().values():
         if not is_on(b.slug, membership.organization_id, db, config_db):
+            continue
+        if not role_access.allows_app(access, b.slug, member=b.agent):
             continue
         out.append(
             {
@@ -226,6 +271,7 @@ def list_apps(
                 "pinned": b.slug in pinned,
                 "agent": b.agent or "app_builder",
                 "kind": "app",
+                "audience": b.audience,
             }
         )
     for app in (
@@ -239,8 +285,12 @@ def list_apps(
     ):
         if app.slug in builtin_apps():
             continue  # a leftover per-org copy; the built-in is listed above
-        access = resolve_access(db, app, user)
-        if not access.can_run:
+        share = resolve_access(db, app, user)
+        if not share.can_run:
+            continue
+        if not role_access.allows_app(
+            access, _app_key(app), member=app.agent or "app_builder"
+        ):
             continue
         out.append(
             {
@@ -251,11 +301,13 @@ def list_apps(
                 "visibility": app.visibility,
                 "kind": app.kind,
                 "mine": app.created_by == user.id,
-                "access": access.role,
+                "access": share.role,
                 "pinned": app.slug in pinned,
                 # Where this app's pages live. Defaulted here rather than in
                 # the column so existing apps keep their old home.
                 "agent": app.agent or "app_builder",
+                # Where it shows: under its agent, in the apps section, or both.
+                "audience": app.audience or "agent",
             }
         )
     return {"apps": out}
@@ -289,6 +341,7 @@ def get_app(
         "description": app.description,
         "icon": app.icon,
         "agent": app.agent or "app_builder",
+        "audience": getattr(app, "audience", None) or "agent",
         "purpose": app.purpose,
         "visibility": app.visibility,
         # app | dashboard; one of Norm's templates is a dashboard anyone uses
@@ -324,6 +377,9 @@ class SaveRequest(BaseModel):
     icon: str | None = None
     #: The AI agent whose Dashboard page or menu it joins (required when new).
     agent: str | None = None
+    #: Where it shows: agent (under its agent, as before) | team (the apps
+    #: section a role's apps list reaches) | both. Kept when not sent.
+    audience: str | None = None
     #: dashboard | app (required when new); changes only with change_kind.
     kind: str | None = None
     change_kind: bool | None = None
@@ -349,7 +405,66 @@ def save_app_endpoint(
     from app.services.app_runtime import save_app
 
     # Only what was sent: an unsent ui_source must carry over, never be wiped.
-    return save_app(db, user, body.model_dump(exclude_unset=True))
+    payload = body.model_dump(exclude_unset=True)
+    audience = payload.pop("audience", None)
+    if audience is not None:
+        audience = _valid_audience(audience)
+    out = save_app(db, user, payload)
+    if audience is not None:
+        _set_audience(db, out.get("slug") or body.slug, user, audience)
+    return out
+
+
+def _valid_audience(value) -> str:
+    from app.services.builtin_apps import AUDIENCES
+
+    v = str(value or "").strip().lower()
+    if v not in AUDIENCES:
+        raise HTTPException(400, "audience must be agent, team or both")
+    return v
+
+
+def _set_audience(db: Session, slug: str | None, user: User, audience: str) -> None:
+    """Record where an org-built app shows. The caller has just saved it (or
+    holds edit access, checked by the PUT below)."""
+    from app.db.models import App
+
+    membership = active_org.membership_for(db, user.id)
+    if not membership or not slug:
+        return
+    app = (
+        db.query(App)
+        .filter(App.slug == slug, App.organization_id == membership.organization_id)
+        .first()
+    )
+    if app is not None and app.audience != audience:
+        app.audience = audience
+        db.commit()
+
+
+class AppSettingsRequest(BaseModel):
+    audience: str | None = None
+
+
+@router.put("/apps/{slug}")
+def update_app_settings(
+    slug: str,
+    body: AppSettingsRequest,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(require_permission("apps:build")),
+):
+    """An app's settings that are not a new version of its code: for now,
+    ``audience`` — whether it shows under its agent, in the apps section a
+    role's apps list reaches, or both."""
+    app, _ = _load(db, slug, user, config_db)
+    _refuse_builtin(app)
+    if resolve_access(db, app, user).role not in ("owner", "edit"):
+        raise HTTPException(403, "you can't change this app's settings")
+    if body.audience is not None:
+        app.audience = _valid_audience(body.audience)
+    db.commit()
+    return {"slug": app.slug, "audience": app.audience or "agent"}
 
 
 class HandEditRequest(BaseModel):

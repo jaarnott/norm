@@ -120,6 +120,7 @@ class ScriptedLlm:
         thread_id=None,
         call_type=None,
         tool_choice=None,
+        model=None,
     ):
         self.calls.append([dict(m) for m in messages])
         wrap_up = is_wrap_up(tools, tool_choice)
