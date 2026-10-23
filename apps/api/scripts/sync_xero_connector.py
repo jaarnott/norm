@@ -363,7 +363,10 @@ TOOLS = [
             "amount due, overdue, due in 7 days), by_supplier, and bills (number, "
             "supplier, date, due date, status, amounts, currency, a link into "
             "Xero). The bills view renders this result — reply with what the "
-            "tiles don't say, not a re-typed table."
+            "tiles don't say, not a re-typed table. Never quote an amount, due "
+            "date or account you haven't read from the xero tools. If a tool "
+            "says a venue isn't connected to Xero, show the connect card "
+            "(norm.show_connect, connector_name 'xero')."
         ),
         "required_fields": [],
         "optional_fields": list(_BILLS_FIELDS),

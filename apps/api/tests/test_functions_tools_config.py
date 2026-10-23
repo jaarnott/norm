@@ -152,23 +152,6 @@ class TestRows:
 
 
 class TestTheApp:
-    def test_the_note_says_tools_not_open_app_and_fits(self):
-        from app.services.agent_config_service import (
-            APP_NOTE_MAX_CHARS,
-            APP_NOTES_TOTAL_MAX_CHARS,
-        )
-
-        note = catalog.APP["note"]
-        assert "norm_functions" in note and "open_app" in note
-        assert len(note) <= APP_NOTE_MAX_CHARS
-        seed = _script("sync_marketplace_catalog")
-        total = sum(
-            len((a["composition"].get("note") or "").strip())
-            for a in seed.APPS
-            if a["tier"] == "app"
-        )
-        assert total <= APP_NOTES_TOTAL_MAX_CHARS
-
     def test_the_app_claims_the_skills_and_the_seed_writes_them(self):
         seed = {a["slug"]: a for a in _script("sync_marketplace_catalog").APPS}
         comp = seed["functions"]["composition"]

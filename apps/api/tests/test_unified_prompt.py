@@ -1,8 +1,7 @@
 """One Norm prompt (Apps v3 prompt consolidation, 28 Sep 2026).
 
 Every conversation gets ONE Norm prompt (the base row) + its member's light
-personality + short notes for the Apps that are on. A member's old per-agent
-system prompt is never read."""
+personality. A member's old per-agent system prompt is never read."""
 
 import uuid
 
@@ -39,7 +38,10 @@ def _app(db, slug, member, note=None, tools=None):
 
 
 class TestAssembly:
-    def test_norm_prompt_plus_persona_plus_notes(self, db_session):
+    def test_norm_prompt_plus_persona_and_no_app_notes(self, db_session):
+        """Apps' notes rode in a capped "## Your Apps" section that silently
+        dropped the Functions rule for Cook Brothers (23 Oct 2026). Each rule
+        now sits on its tool, so an App's note never reaches the prompt."""
         _agent(db_session, "base", prompt="You are Norm.")
         _agent(
             db_session,
@@ -51,29 +53,8 @@ class TestAssembly:
         out = build_unified_prompt("procurement", db_session)
         assert out.startswith("You are Norm.")
         assert "In here you're the buyer." in out
-        assert "**Stock**: Never guess item ids." in out
         assert "OLD PROCUREMENT PROMPT" not in out
-
-    def test_notes_only_for_apps_that_are_on(self, db_session):
-        _agent(db_session, "base", prompt="You are Norm.")
-        _app(db_session, "stock", "procurement", note="Stock note.")
-        _app(db_session, "kitchen", "executive_chef", note="Kitchen note.")
-        out = build_unified_prompt("procurement", db_session, apps_on={"stock"})
-        assert "Stock note." in out and "Kitchen note." not in out
-
-    def test_other_members_notes_still_apply_when_on(self, db_session):
-        # One agent holds every tool its org's Apps allow, so a Loaded Kitchen
-        # note applies in a Procurement conversation too — that's the fix for
-        # "recipe tools, no recipe guidance".
-        _agent(db_session, "base", prompt="You are Norm.")
-        _app(db_session, "kitchen", "executive_chef", note="Kitchen note.")
-        assert "Kitchen note." in build_unified_prompt("procurement", db_session)
-
-    def test_long_notes_are_capped(self, db_session):
-        _agent(db_session, "base", prompt="You are Norm.")
-        _app(db_session, "wordy", "procurement", note="x" * 900)
-        out = build_unified_prompt("procurement", db_session)
-        assert "x" * 301 not in out
+        assert "Never guess item ids." not in out and "Your Apps" not in out
 
 
 class TestBuildToolDefinitionsUsesIt:
@@ -126,17 +107,35 @@ class TestBuildToolDefinitionsUsesIt:
         assert "{{today}}" not in prompt  # date still substituted
 
 
-class TestNoteCaps:
-    def test_validator_flags_long_and_total(self):
-        from types import SimpleNamespace
+class TestTheRulesLiveOnTheirTools:
+    def test_each_moved_rule_is_in_its_tools_installer(self):
+        """The rules that left the prompt are on their tools' descriptions in
+        the installers too, so re-running one keeps them."""
+        import importlib.util
+        import pathlib
 
-        from app.services.config_validator import check_app_notes
+        scripts = pathlib.Path(__file__).resolve().parents[1] / "scripts"
 
-        rows = [
-            SimpleNamespace(slug=f"a{i}", composition={"note": "y" * 290})
-            for i in range(6)
-        ]
-        rows.append(SimpleNamespace(slug="big", composition={"note": "z" * 400}))
-        issues = check_app_notes(rows)
-        assert any("big" in i.where for i in issues)
-        assert any(i.where == "catalog.notes" for i in issues)
+        def load(name):
+            spec = importlib.util.spec_from_file_location(name, scripts / f"{name}.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+
+        def strings(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for v in value.values():
+                    yield from strings(v)
+            elif isinstance(value, (list, tuple)):
+                for v in value:
+                    yield from strings(v)
+
+        for (connector, action), (rule, installer) in load(
+            "sync_app_rules_into_tools"
+        ).RULES.items():
+            mod = load(installer)
+            assert any(
+                rule in s for v in vars(mod).values() for s in strings(v)
+            ), f"{connector}.{action}: rule missing from {installer}.py"

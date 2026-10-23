@@ -135,7 +135,9 @@ NORM_ROWS = {
             "the page send edits [{find, replace}] (and logic_edits), not the "
             "whole ui_source; name, spec and page carry over. Every save is a "
             "new version. Kind changes only with change_kind: true, when the "
-            "person asks. A dashboard can be changed only by its owner."
+            "person asks. A dashboard can be changed only by its owner. Before "
+            "building or changing one, open its skill: build_a_dashboard for a "
+            "dashboard, build_an_app for an app."
         ),
         "required_fields": ["slug"],
         "field_descriptions": {

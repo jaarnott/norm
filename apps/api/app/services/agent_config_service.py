@@ -6,28 +6,18 @@ from app.db.models import AgentConfig, AgentConnectionBinding
 from app.connectors import spec_rows
 
 
-# App notes are standing rules for one App, added to every conversation while
-# that App is on — so they must stay short (validator enforces both caps).
-APP_NOTE_MAX_CHARS = 300
-APP_NOTES_TOTAL_MAX_CHARS = 1500
-
-
-def build_unified_prompt(
-    domain: str,
-    db: Session,
-    apps_on: set[str] | None = None,
-) -> str:
+def build_unified_prompt(domain: str, db: Session) -> str:
     """The unified system prompt (Apps v3 prompt consolidation, 28 Sep 2026):
 
         Norm prompt (the base row: identity, shared rules, calendar, formatting)
       + the member's light personality (tone only)
-      + a short note for each App that's ON (standing rules for that App)
 
     Tool know-how rides on tool descriptions and workflows on skills, so
-    neither is repeated here. ``apps_on`` None = every App counts as on
-    (gating inactive / no org)."""
-    from app.services.entitlements import _catalog
-
+    neither is repeated here. Apps' standing rules did ride here as a
+    "## Your Apps" section until 23 Oct 2026: capped at 1,500 characters and
+    unordered, it silently dropped the Functions rule for Cook Brothers. Each
+    rule now sits on the tool it governs (scripts/sync_app_rules_into_tools.py),
+    which reaches Norm whenever that tool does."""
     rows = {r.agent_slug: r for r in db.query(AgentConfig).all()}
     base = rows.get("base")
     parts = [(base.system_prompt or "").strip() if base else ""]
@@ -36,23 +26,6 @@ def build_unified_prompt(
     persona = (getattr(member, "persona", None) or "").strip() if member else ""
     if persona:
         parts.append(f"## This conversation\n{persona}")
-
-    notes = []
-    for a in _catalog(db):
-        if a.tier not in ("app", "user"):
-            continue
-        note = ((a.composition or {}).get("note") or "").strip()
-        if not note or (apps_on is not None and a.slug not in apps_on):
-            continue
-        notes.append(f"- **{a.name}**: {note[:APP_NOTE_MAX_CHARS]}")
-    if notes:
-        block, used = [], 0
-        for n in notes:
-            if used + len(n) > APP_NOTES_TOTAL_MAX_CHARS:
-                break
-            block.append(n)
-            used += len(n)
-        parts.append("## Your Apps\n" + "\n".join(block))
     return "\n\n".join(p for p in parts if p)
 
 

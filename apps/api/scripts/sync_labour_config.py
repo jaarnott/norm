@@ -53,7 +53,8 @@ TOOL = {
         "(default) — ask only for what you need. staff_name narrows every view but "
         "vs_actual. Ask ONCE for the whole period. On attendance, flag no-shows "
         "(rostered, never clocked in), unrostered clock-ins, and hours more than 20% "
-        "over roster."
+        "over roster. Answer roster questions grouped by day and sorted by start "
+        "time: staff, role, start–end, hours."
     ),
     # A read: it reaches the agent and MCP without an approval card.
     "effect": "read",

@@ -653,42 +653,6 @@ def check_app_pages_reachable(app_rows: list) -> list[ConfigIssue]:
     return issues
 
 
-def check_app_notes(app_rows: list) -> list[ConfigIssue]:
-    """App notes ride in every conversation while their App is on, so they
-    must stay short: each under APP_NOTE_MAX_CHARS, all together under
-    APP_NOTES_TOTAL_MAX_CHARS. Longer know-how belongs on a tool description
-    (sent only with its tool) or in a skill (loaded on demand)."""
-    from app.services.agent_config_service import (
-        APP_NOTE_MAX_CHARS,
-        APP_NOTES_TOTAL_MAX_CHARS,
-    )
-
-    issues: list[ConfigIssue] = []
-    total = 0
-    for a in app_rows:
-        note = ((a.composition or {}).get("note") or "").strip()
-        total += len(note)
-        if len(note) > APP_NOTE_MAX_CHARS:
-            issues.append(
-                ConfigIssue(
-                    severity="error",
-                    where=f"catalog.{a.slug}.note",
-                    problem=f"App note is {len(note)} characters (max {APP_NOTE_MAX_CHARS}) — it is truncated in every conversation",
-                    fix="Move tool know-how to the tool's description, or a workflow into a skill.",
-                )
-            )
-    if total > APP_NOTES_TOTAL_MAX_CHARS:
-        issues.append(
-            ConfigIssue(
-                severity="error",
-                where="catalog.notes",
-                problem=f"App notes total {total} characters (max {APP_NOTES_TOTAL_MAX_CHARS}) — some are dropped from conversations",
-                fix="Shorten the notes; move know-how to tool descriptions or skills.",
-            )
-        )
-    return issues
-
-
 def check_app_ownership(findings: dict) -> list[ConfigIssue]:
     """Apps v3 ownership (agent_catalog.ownership_findings): every agent-
     visible tool, library component and enabled skill belongs to exactly one
@@ -1361,7 +1325,6 @@ def validate_config(db=None, config_db=None) -> dict:
             from app.services.agent_catalog import ownership_findings
 
             issues.extend(check_app_ownership(ownership_findings(config_db)))
-            issues.extend(check_app_notes(app_rows))
             issues.extend(check_priced_rows_have_stripe_keys(active_rows))
 
         # Tools vs API endpoints (Sep 2026): endpoints never reach an LLM.

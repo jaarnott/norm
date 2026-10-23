@@ -829,7 +829,11 @@ TOOL_ROWS: list[dict] = [
             "booking_type and stage — stage first_reply = a new enquiry, follow_up = "
             "a reply in a conversation already going. date adds the venue's Loaded "
             "budget and last year's same-weekday sales for that trading day (for "
-            "deriving a minimum spend)."
+            "deriving a minimum spend). Never quote a minimum spend, price or "
+            "date you haven't read from Functions; drafts and proposals are "
+            "free, and a customer email or proposal goes only from an approval "
+            "card. Functions is worked with these norm_functions tools, not "
+            "open_app."
         ),
         "required_fields": [],
         "optional_fields": ["venue", "booking_type", "stage", "date"],

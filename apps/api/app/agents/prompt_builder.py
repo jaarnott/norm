@@ -589,14 +589,10 @@ def build_tool_definitions(
         own_actions = set(_all_actions)
 
     # System prompt: ONE Norm prompt (the base row) + this member's
-    # personality + notes for Apps that are on (Apps v3, 28 Sep 2026).
+    # personality (Apps v3, 28 Sep 2026).
     from app.services.agent_config_service import build_unified_prompt
-    from app.services.entitlements import apps_on as _apps_on_fn
-    from app.services.entitlements import org_id_for_user as _org_for
 
-    system_prompt = build_unified_prompt(
-        domain, _cdb, _apps_on_fn(_org_for(user_id, db), db, _cdb)
-    )
+    system_prompt = build_unified_prompt(domain, _cdb)
     if not system_prompt:
         system_prompt = (
             f"You are the {domain} agent for Norm, a hospitality operations platform."
