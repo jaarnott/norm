@@ -100,7 +100,9 @@ def insight(
         prompt="Over the last 4 weeks, Tuesdays …",
         value=value,
         as_of="2026-10-18",
-        expires_at=MONDAY_MORNING + timedelta(days=5),
+        # The routes read the real clock, so a fixed expiry made the route tests
+        # fail from 23 Oct 2026, 21:00 UTC (the tests here pass `now` instead).
+        expires_at=max(MONDAY_MORNING, datetime.now(timezone.utc)) + timedelta(days=5),
     )
     db_session.add(row)
     db_session.flush()
