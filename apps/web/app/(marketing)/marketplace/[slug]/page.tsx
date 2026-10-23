@@ -2,19 +2,19 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import Photo from '../../_components/Photo';
-import { ALL_APPS, CONNECTIONS, findApp } from '../../_components/apps';
+import { CONNECTIONS, findApp } from '../../_components/apps';
 import { ConnectionMark } from '../../_components/AppParts';
 import { LOGIN_HREF, SIGNUP_HREF } from '../../_components/links';
 import { findPublished } from '../../_components/published';
 
 type Params = { params: Promise<{ slug: string }> };
 
-// Norm's own apps are built ahead; one a venue published renders when asked.
-const find = async (slug: string) => findApp(slug) ?? (await findPublished(slug));
+// Rendered on each visit: an app a venue published is looked up from this
+// site's own address, which needs the request, and a page built ahead can't
+// switch to that at run time (it failed with a 500 in production).
+export const dynamic = 'force-dynamic';
 
-export function generateStaticParams() {
-  return ALL_APPS.map(({ app }) => ({ slug: app.slug }));
-}
+const find = async (slug: string) => findApp(slug) ?? (await findPublished(slug));
 
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const found = await find((await params).slug);
