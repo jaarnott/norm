@@ -18,6 +18,8 @@ import VenueSelect, { type VenueOption } from '../../ui/VenueSelect';
 import {
   ChangeDialog, ItemEditDialog, MergeDialog, SupplierEditDialog, UnitEditDialog,
 } from './CatalogueDialogs';
+import CatalogueJobBanner, { type CatalogueJob } from './CatalogueJobBanner';
+import { isActive } from '../backgroundJob';
 import {
   baseUnit, itemMergeTargets, itemUnitType, search, supplierMergeTargets, unitMergeTargets,
   type Catalogue, type CatalogueItem, type CatalogueSupplier, type CatalogueUnit, type Change,
@@ -42,6 +44,25 @@ type Dialog =
 
 /** Rows a table shows before "Show more". */
 const PAGE = 100;
+/** How often a running merge is checked. */
+const POLL_MS = 3000;
+/** Finished merges the person dismissed, so their banner stays gone. */
+const DISMISSED_KEY = 'norm_catalogue_dismissed_jobs';
+
+function dismissedJobs(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]');
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberDismissed(id: string) {
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissedJobs(), id].slice(-50)));
+  } catch { /* a banner coming back is fine */ }
+}
 
 const TITLE = 'Catalogue';
 const nowrap: React.CSSProperties = { whiteSpace: 'nowrap' };
@@ -95,6 +116,7 @@ export default function StockCatalogue({ props }: DisplayBlockProps) {
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [jobs, setJobs] = useState<CatalogueJob[]>([]);
   const { isMobile } = useBreakpoint();
 
   useEffect(() => {
@@ -123,6 +145,50 @@ export default function StockCatalogue({ props }: DisplayBlockProps) {
     }
     setLoading(false);
   }, []);
+
+  // Merges run in the background (they finish even if this page is closed):
+  // show the venue's running ones, and recent ones not yet dismissed.
+  useEffect(() => {
+    if (!venueId) return;
+    let live = true;
+    apiFetch(`/api/stock-catalogue/jobs?venue_id=${encodeURIComponent(venueId)}`)
+      .then(r => (r.ok ? r.json() : { jobs: [] }))
+      .then(d => {
+        if (!live) return;
+        const gone = new Set(dismissedJobs());
+        setJobs(((d.jobs ?? []) as CatalogueJob[]).filter(j => isActive(j.status) || !gone.has(j.id)));
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [venueId]);
+
+  const anyActive = jobs.some(j => isActive(j.status));
+  useEffect(() => {
+    if (!anyActive) return;
+    const t = setInterval(async () => {
+      const next = await Promise.all(jobs.map(async j => {
+        if (!isActive(j.status)) return j;
+        try {
+          const r = await apiFetch(`/api/jobs/${j.id}`);
+          return r.ok ? ((await r.json()) as CatalogueJob) : j;
+        } catch {
+          return j;
+        }
+      }));
+      // A merge just ended: the catalogue changed under the page.
+      if (next.some((j, k) => isActive(jobs[k].status) && !isActive(j.status)) && venueId) {
+        load(venueId, showDeactivated);
+      }
+      setJobs(next);
+    }, POLL_MS);
+    return () => clearInterval(t);
+  }, [anyActive, jobs, venueId, showDeactivated, load]);
+
+  const updateJob = (job: CatalogueJob) => setJobs(js => js.map(j => (j.id === job.id ? job : j)));
+  const dismissJob = (id: string) => {
+    rememberDismissed(id);
+    setJobs(js => js.filter(j => j.id !== id));
+  };
 
   // Deactivated records are fetched only when asked for (Loaded's older item
   // list is a second, bigger read).
@@ -393,7 +459,10 @@ export default function StockCatalogue({ props }: DisplayBlockProps) {
     const close = () => setDialog(null);
     switch (dialog.kind) {
       case 'change':
-        return <ChangeDialog change={dialog.change} venueId={venueId} onClose={close} onDone={done} />;
+        return (
+          <ChangeDialog change={dialog.change} venueId={venueId} onClose={close} onDone={done}
+            onJob={job => { setDialog(null); setJobs(js => [job, ...js.filter(j => j.id !== job.id)]); }} />
+        );
       case 'edit-item':
         return <ItemEditDialog item={dialog.item} catalogue={catalogue} onClose={close} onChange={run} />;
       case 'edit-unit':
@@ -438,6 +507,9 @@ export default function StockCatalogue({ props }: DisplayBlockProps) {
       <PageHeader title={TITLE} meta={meta} actions={actions}>
         <Tabs items={tabs} value={tab} onChange={id => { setTab(id as TabId); setQuery(''); }} label="Catalogue" />
       </PageHeader>
+      {jobs.map(j => (
+        <CatalogueJobBanner key={j.id} job={j} onChange={updateJob} onDismiss={() => dismissJob(j.id)} />
+      ))}
       <div style={{ marginBottom: 12 }}>{toolbar}</div>
       {message && (
         <div role="status" style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 'var(--radius)', background: 'var(--ok-bg, var(--surface-alt))', color: 'var(--text)', fontSize: 'var(--fs-sm)', display: 'flex', justifyContent: 'space-between', gap: 8 }}>

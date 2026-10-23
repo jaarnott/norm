@@ -6,6 +6,7 @@ import { apiFetch } from '../../../lib/api';
 import Button from '../../ui/Button';
 import Dialog from '../../ui/Dialog';
 import IconButton from '../../ui/IconButton';
+import type { CatalogueJob } from './CatalogueJobBanner';
 import {
   baseUnit, draftOf, draftProblem, itemUnitType, itemUpdateParams, movedText, resultSentence,
   type Catalogue, type CatalogueItem, type CatalogueSupplier, type CatalogueUnit,
@@ -13,6 +14,10 @@ import {
 } from './catalogueLogic';
 
 // ---------------------------------------------------------- the change ----
+
+/** Merges run as background jobs (services/catalogue_job.py LONG_OPS). */
+const isBackground = (c: Change) =>
+  c.tool === 'manage_stock_item' && (c.params.op === 'merge' || c.params.op === 'merge_units');
 //
 // Every change runs through the tool twice, the way an approval does in
 // chat: /preview reads and returns the tool's own card (writing nothing);
@@ -72,11 +77,13 @@ function CardRows({ card }: { card: PreviewCard }) {
 }
 
 /** Preview → Confirm → (carry on) → done. `onDone` gets the sentence to show. */
-export function ChangeDialog({ change, venueId, onClose, onDone }: {
+export function ChangeDialog({ change, venueId, onClose, onDone, onJob }: {
   change: Change;
   venueId: string;
   onClose: () => void;
   onDone: (message: string) => void;
+  /** A merge is handed to a background job: the page shows it in a banner. */
+  onJob: (job: CatalogueJob) => void;
 }) {
   const [card, setCard] = useState<PreviewCard | null>(null);
   const [nothing, setNothing] = useState<string | null>(null);
@@ -104,8 +111,12 @@ export function ChangeDialog({ change, venueId, onClose, onDone }: {
       let fingerprint = card?.fingerprint ?? null;
       for (let run = 0; run < 40; run++) {
         const d = await post('/api/stock-catalogue/run', {
-          venue_id: venueId, tool: change.tool, params: change.params, fingerprint,
+          venue_id: venueId, tool: change.tool, params: change.params, fingerprint, title: card?.target,
         });
+        if (d.job) {
+          onJob(d.job as CatalogueJob);
+          return;
+        }
         if (d.changed) {
           // The records moved since the preview: show them as they are now.
           setCard(d.changed);
@@ -141,6 +152,11 @@ export function ChangeDialog({ change, venueId, onClose, onDone }: {
       {busy && !card && !error && <div style={soft}>Working out what this changes…</div>}
       {nothing && <div style={soft}>{nothing}</div>}
       {card && <CardRows card={card} />}
+      {card && isBackground(change) && (
+        <div style={{ ...soft, marginTop: 12 }}>
+          This runs in the background. You can leave the page — it shows at the top while it runs, and you&apos;ll get an email when it&apos;s done.
+        </div>
+      )}
       {progress && <div style={{ ...soft, marginTop: 12 }}>{progress}</div>}
       {error && <div role="alert" style={errorBox}>{error}</div>}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap', marginTop: 20 }}>

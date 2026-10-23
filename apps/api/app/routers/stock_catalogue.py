@@ -15,6 +15,11 @@ A change is two calls, the way an approval works in chat:
   (``changed``) when the records moved since the person looked. Pressing
   Confirm is the approval (services/card_actions.py), and it is recorded.
 
+A merge (items or units) can need many runs of the tool — a staple sits on
+hundreds of received invoices — so /run hands it to a background job
+(services/catalogue_job.py) and answers at once with the job; the page shows
+it in a banner, and it finishes even if the page is closed.
+
 Owner, 23 Oct 2026: anyone who can open Loaded Stock may make these changes.
 So the checks are the venue (one the person may open) and the App (Loaded
 Stock on for the venue's organisation) — no role scope.
@@ -31,7 +36,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_config_db, get_db
 from app.db.models import User, Venue
-from app.services import card_actions
+from app.services import background_jobs, card_actions, catalogue_job
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +67,11 @@ class WriteRequest(BaseModel):
     tool: str
     params: dict = Field(default_factory=dict)
     #: The card's fingerprint from /preview: the run refuses if the records
-    #: no longer match it. None on a continuation of a long merge.
+    #: no longer match it.
     fingerprint: str | None = None
+    #: What the change is called on the page's banner ("Lemons into Lemon"),
+    #: for a change that runs as a background job.
+    title: str | None = None
 
 
 def _venue(db: Session, config_db: Session, user: User, venue_id: str) -> Venue:
@@ -185,6 +193,8 @@ def run(
 
     op = _checked(body)
     venue = _venue(db, config_db, user, body.venue_id)
+    if body.tool == "manage_stock_item" and op in catalogue_job.LONG_OPS:
+        return _start_job(body, op, venue, user, db)
     tool_def = _tool_def(config_db, body.tool)
     cfg = {**tool_def["consolidator_config"], "action": body.tool}
     if body.fingerprint:
@@ -217,3 +227,64 @@ def run(
     if not result.get("success", True) or error:
         raise HTTPException(400, str(error or "Loaded refused the change"))
     return {"data": data}
+
+
+def _start_job(body: WriteRequest, op: str, venue: Venue, user: User, db: Session):
+    title = (body.title or "").strip()[:120] or (
+        "Merge stock items" if op == "merge" else "Merge units"
+    )
+    job, created = catalogue_job.enqueue(
+        db,
+        user=user,
+        venue=venue,
+        tool=body.tool,
+        tool_params=_params(body, venue),
+        fingerprint=body.fingerprint,
+        title=f"Merge {title}" if body.title else title,
+    )
+    if not created:
+        raise HTTPException(
+            409,
+            f"Another merge is running at {venue.name} ({job.title}) — wait for it "
+            "to finish, then try again.",
+        )
+    card_actions.record(
+        db, user, venue.id, f"Catalogue: {body.tool} {op}", detail="started as a job"
+    )
+    db.commit()
+    db.refresh(job)
+    return {"job": background_jobs.serialize(job)}
+
+
+@router.get("/stock-catalogue/jobs")
+def jobs(
+    venue_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+):
+    """The venue's catalogue merges for the page's banner: any running, and
+    those that ended in the last day."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import or_
+
+    from app.db.models import BackgroundJob
+
+    venue = _venue(db, config_db, user, venue_id)
+    since = datetime.now(timezone.utc) - timedelta(days=1)
+    rows = (
+        db.query(BackgroundJob)
+        .filter(
+            BackgroundJob.kind == catalogue_job.JOB_KIND,
+            BackgroundJob.venue_id == venue.id,
+            or_(
+                BackgroundJob.status.in_(background_jobs.ACTIVE),
+                BackgroundJob.finished_at >= since,
+            ),
+        )
+        .order_by(BackgroundJob.created_at.desc())
+        .limit(5)
+        .all()
+    )
+    return {"jobs": [background_jobs.serialize(j) for j in rows]}

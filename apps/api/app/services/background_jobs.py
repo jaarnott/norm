@@ -429,6 +429,7 @@ def worker_tick(worker: str | None = None) -> bool:
 
 def _load_handlers() -> None:
     # Handlers register on import.
+    from app.services import catalogue_job  # noqa: F401 — Catalogue page merges
     from app.services import invoice_receive_job  # noqa: F401
     from app.services import task_scheduler  # noqa: F401 — scheduled task runs
 

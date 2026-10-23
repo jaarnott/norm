@@ -926,3 +926,154 @@ def test_loaded_legacy_carries_the_catalogue_endpoints():
         "update_stock_unit",
         "merge_suppliers",
     } <= actions
+
+
+# ------------------------------------------------------ background merges ----
+
+
+from tests.test_background_jobs import sessions  # noqa: E402,F401 — the fixture
+
+
+@pytest.mark.usefixtures("sessions")
+class TestBackgroundMerge:
+    """A merge runs as a background job, pass after pass, so it finishes even
+    if the page is closed (owner, 23 Oct 2026: like the invoice batches)."""
+
+    def _passes(self, monkeypatch, results):
+        from app.services import catalogue_job
+
+        calls = []
+
+        def fake_run_once(params, fingerprint):
+            calls.append(fingerprint)
+            return results[len(calls) - 1]
+
+        monkeypatch.setattr(catalogue_job, "_run_once", fake_run_once)
+        monkeypatch.setattr(catalogue_job, "email_summary", lambda job_id: None)
+        return calls
+
+    def _start(self, db_session, admin_user, venue):
+        from app.services import catalogue_job
+
+        job, created = catalogue_job.enqueue(
+            db_session,
+            user=admin_user,
+            venue=venue,
+            tool="manage_stock_item",
+            tool_params={"op": "merge", "item_id": LEMONS, "into_item_id": LEMON},
+            fingerprint="fp1",
+            title="Merge Lemons into Lemon",
+        )
+        db_session.flush()
+        assert created
+        return job
+
+    def test_it_runs_until_done_checking_the_fingerprint_once(
+        self, db_session, monkeypatch, admin_user, venue
+    ):
+        from app.services import background_jobs as bj
+
+        calls = self._passes(
+            monkeypatch,
+            [
+                {
+                    "result": "in progress",
+                    "moved": {"invoice_lines": 90, "invoices": 90},
+                    "remaining": {"invoices": 14},
+                },
+                {
+                    "result": "merged",
+                    "moved": {"invoice_lines": 14, "invoices": 14, "variants": 1},
+                },
+            ],
+        )
+        job = self._start(db_session, admin_user, venue)
+        assert bj.worker_tick("w1")
+        db_session.refresh(job)
+        assert job.status == "done" and job.result["result"] == "merged"
+        assert job.result["moved"] == {
+            "invoice_lines": 104,
+            "invoices": 104,
+            "variants": 1,
+        }
+        assert calls == ["fp1", None]  # the person's view guards the first pass only
+
+    def test_a_save_that_failed_once_is_tried_again(
+        self, db_session, monkeypatch, admin_user, venue
+    ):
+        """A dropped connection on one invoice left a merge "partly merged"
+        on the test company (23 Oct 2026); the next pass finished it."""
+        from app.services import background_jobs as bj
+
+        calls = self._passes(
+            monkeypatch,
+            [
+                {
+                    "result": "partly merged",
+                    "moved": {"invoice_lines": 2},
+                    "failed": [{"invoice": "1", "error": "Server disconnected"}],
+                    "error": "1 change(s) failed",
+                },
+                {"result": "merged", "moved": {"invoice_lines": 1}},
+            ],
+        )
+        job = self._start(db_session, admin_user, venue)
+        bj.worker_tick("w1")
+        db_session.refresh(job)
+        assert job.status == "done" and job.result["result"] == "merged"
+        assert job.result["moved"] == {"invoice_lines": 3} and len(calls) == 2
+
+    def test_records_that_moved_since_the_check_stop_it_before_anything_moves(
+        self, db_session, monkeypatch, admin_user, venue
+    ):
+        from app.services import background_jobs as bj
+
+        self._passes(monkeypatch, [{"changed": True}])
+        job = self._start(db_session, admin_user, venue)
+        bj.worker_tick("w1")
+        db_session.refresh(job)
+        assert job.status == "failed" and "changed since" in job.error
+
+    def test_a_stopped_merge_says_the_old_item_is_still_active(
+        self, db_session, monkeypatch, admin_user, venue
+    ):
+        from app.services import background_jobs as bj
+        from app.services import catalogue_job
+
+        calls = self._passes(monkeypatch, [])
+        job = self._start(db_session, admin_user, venue)
+        job.cancel_requested = True
+        job.status = "running"
+        job.claimed_by = "w1"
+        db_session.flush()
+        ctx = bj.JobContext(job.id, "w1", dict(job.params), {})
+        bj.run(ctx)
+        db_session.refresh(job)
+        assert job.status == "cancelled" and calls == []
+        assert "still active" in catalogue_job.summary_text(job)
+
+    def test_the_page_hands_a_merge_to_a_job_one_at_a_time(
+        self, client, admin_headers, venue, db_session
+    ):
+        body = {
+            "venue_id": venue.id,
+            "tool": "manage_stock_item",
+            "params": {"op": "merge", "item_id": LEMONS, "into_item_id": LEMON},
+            "fingerprint": "fp1",
+            "title": "Lemons into Lemon",
+        }
+        r = client.post("/api/stock-catalogue/run", json=body, headers=admin_headers)
+        assert r.status_code == 200, r.text
+        job = r.json()["job"]
+        assert job["status"] == "queued" and job["title"] == "Merge Lemons into Lemon"
+        again = client.post(
+            "/api/stock-catalogue/run", json=body, headers=admin_headers
+        )
+        assert (
+            again.status_code == 409
+            and "Another merge is running" in again.json()["detail"]
+        )
+        listed = client.get(
+            f"/api/stock-catalogue/jobs?venue_id={venue.id}", headers=admin_headers
+        ).json()["jobs"]
+        assert [j["id"] for j in listed] == [job["id"]]
