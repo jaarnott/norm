@@ -2457,6 +2457,33 @@ class TestAutopilotWillNotInventADuplicateSupplier:
 
         assert [w[2]["name"] for w in writes] == ["Blue Seas Food Services"]
 
+    def test_a_trading_name_is_checked_under_both_names(self, monkeypatch):
+        # Created as 'Sea 2 You', printed 'Lambert Ltd T/A Sea 2 You': the near
+        # records Norm ruled out were found with the printed name.
+        payload = {
+            "supplier_name": "Sea 2 You",
+            "printed_name": "Lambert Ltd T/A Sea 2 You",
+            "not_these": ["sup-1"],
+        }
+        writes = self._lh(monkeypatch, [{"id": "sup-1", "name": "Lambert Engineering"}])
+        data, settings = self._data()
+        data["suggestions"][0]["payload"] = dict(payload)
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
+        assert [w[2]["name"] for w in writes] == ["Sea 2 You"]
+        # A record the PRINTED name fits, never checked, still stops it — the
+        # shorter trading name alone would have let it through.
+        writes = self._lh(
+            monkeypatch,
+            [
+                {"id": "sup-1", "name": "Lambert Engineering"},
+                {"id": "sup-2", "name": "Lambert Holdings"},
+            ],
+        )
+        data, settings = self._data()
+        data["suggestions"][0]["payload"] = dict(payload)
+        IR.autopilot_accept(None, None, "v-1", "inv-1", data, settings)
+        assert writes == []
+
     def test_a_genuinely_new_supplier_is_created(self, monkeypatch):
         writes = self._lh(
             monkeypatch, [{"id": "sup-9", "name": "Hancocks Wine & Spirits"}]

@@ -28,6 +28,8 @@ Everything here is pure — no DB, no HTTP. Callers supply the rows.
 
 from __future__ import annotations
 
+import re
+
 # Legal/registration suffixes carry no identity: 'SERVICE FOODS LTD' and
 # 'Service Foods Limited' are one business. Kept deliberately short — a word
 # that distinguishes two real businesses must never be in here ('Foods' and
@@ -101,6 +103,39 @@ def identity_name(text: object) -> str | None:
         if has_identity(line):
             return line.strip()
     return None
+
+
+#: 'Lambert Ltd T/A Sea 2 You', 'Komulla Pty Ltd trading as Far Meadow Lodge'.
+_TRADING_AS = re.compile(r"\s(?:t/a|t\.a\.|trading\s+as)\s", re.I)
+#: Legal suffixes at the END of a name ('Reward Supply Co. Pty Ltd').
+_LEGAL_TAIL = re.compile(
+    r"(?:[\s,]+\(?(?:pty|ltd|limited|proprietary|inc|incorporated|nz)\.?\)?)+[\s.,]*$",
+    re.I,
+)
+
+
+def trading_name(printed: object) -> str:
+    """The name a business trades under, for a supplier record Norm creates:
+    the part after 'T/A' or 'trading as' when the invoice prints one, with
+    legal suffixes dropped from the end. 'Lambert Ltd T/A Sea 2 You' is Sea 2
+    You, 'Reward Supply Co. Pty Ltd' is Reward Supply Co, as the venues' own
+    lists name them (onboarding comparison, 21 Oct 2026). Never a name with
+    no business in it: the printed name stands when nothing else is left.
+    A letterhead over two lines names the business twice, legal name above
+    trading name ('M H Luxe Holdings Pty Ltd' / 'Luxe Bakery Sydney'): the
+    line that isn't the legal name is the trading name."""
+    lines = [ln.strip() for ln in str(printed or "").splitlines() if has_identity(ln)]
+    plain = [ln for ln in lines if not _LEGAL_TAIL.search(ln)]
+    name = (
+        plain[0]
+        if len(lines) > 1 and plain
+        else identity_name(printed) or str(printed or "").strip()
+    )
+    parts = _TRADING_AS.split(f" {name} ")
+    if len(parts) > 1 and has_identity(parts[-1]):
+        name = parts[-1].strip()
+    short = _LEGAL_TAIL.sub("", name).strip(" ,.-")
+    return short if has_identity(short) else name.strip()
 
 
 def same_name(a: object, b: object) -> bool:

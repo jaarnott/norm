@@ -19,6 +19,7 @@ from app.services.supplier_identity import (
     match_spec,
     norm,
     resolve_supplier,
+    trading_name,
     words,
 )
 
@@ -488,3 +489,30 @@ class TestSupplierPlaceholder:
         # breaks the tie via its own exact match
         s, by = resolve_supplier(["Bidfood", "Bidfood South"], pool)
         assert s["id"] == "sup-b" and by == "exact"
+
+
+class TestTradingName:
+    """The name a new supplier record gets: what the business trades as, as
+    the venues' own lists name it (onboarding comparison, 21 Oct 2026)."""
+
+    def test_the_name_after_trading_as(self):
+        assert trading_name("Lambert Ltd T/A Sea 2 You") == "Sea 2 You"
+        assert (
+            trading_name("Komulla Pty Ltd trading as Far Meadow Lodge")
+            == "Far Meadow Lodge"
+        )
+
+    def test_legal_suffixes_are_dropped_from_the_end(self):
+        assert trading_name("Reward Supply Co. Pty Ltd") == "Reward Supply Co"
+        assert trading_name("Pembroke Patisserie Limited") == "Pembroke Patisserie"
+        assert trading_name("CITY MEATS (N.S.W.) PTY. LIMITED") == "CITY MEATS (N.S.W.)"
+
+    def test_a_letterhead_over_two_lines_takes_the_trading_line(self):
+        assert (
+            trading_name("M H Luxe Holdings Pty Ltd\nLuxe Bakery Sydney")
+            == "Luxe Bakery Sydney"
+        )
+
+    def test_never_a_name_with_no_business_in_it(self):
+        assert trading_name("ECOFRY") == "ECOFRY"
+        assert trading_name("PTY LTD") == "PTY LTD"

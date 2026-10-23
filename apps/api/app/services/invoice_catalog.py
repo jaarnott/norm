@@ -301,11 +301,15 @@ def get_or_create_unit(
             422,
             f"couldn't work out the size of '{name}' — enter its type and size",
         )
+    # Spelt as Loaded spells its own units ('720 Grams', '5x3 KG'), not as
+    # the invoice printed it ('720g'), unless a person named it.
+    from app.services.unit_resolver import unit_name_for
+
     unit = lh.request(
         "POST",
         "/1.0/stock/internal/units",
         {
-            "name": name,
+            "name": name if manual else (unit_name_for(name) or name),
             "ratio": spec["ratio"],
             "stockUnitType": spec["stock_unit_type"],
         },
@@ -434,9 +438,11 @@ def _line_source(
 ) -> tuple[dict, dict]:
     """(line, header) the new item is described from: the draft first — it
     holds lines Loaded's scan missed, and the supplier the person picked —
-    else Loaded's invoice. Each as {code, description, unit_cost} (ex tax) and
-    {supplier_id}. ``doc_data`` is a draft the caller already holds (autopilot
-    mid-pass); otherwise the invoice's open draft is read."""
+    else Loaded's invoice. Each as {code, description, unit_cost (ex tax),
+    tax_rate} and {supplier_id}. ``tax_rate`` is the line's rate as Norm
+    decided it from the invoice, or None: Loaded's own line rate is its
+    default, not the invoice's. ``doc_data`` is a draft the caller already
+    holds (autopilot mid-pass); otherwise the invoice's open draft is read."""
     from app.services.received_invoice import open_drafts
 
     if doc_data is None:
@@ -463,6 +469,7 @@ def _line_source(
                 "code": ln.get("code"),
                 "description": ln.get("description"),
                 "unit_cost": cost,
+                "tax_rate": rate,
             },
             {"supplier_id": doc_data.get("linked_supplier_id")},
         )
@@ -480,9 +487,28 @@ def _line_source(
                 if ln.get("unitCostExclTax") is not None
                 else ln.get("unitCost")
             ),
+            "tax_rate": None,
         },
         {"supplier_id": inv.get("linkedSupplierId")},
     )
+
+
+def tax_sort_order(lh, rate: object) -> int:
+    """The venue's tax setting (Loaded's ``globalSalesTaxSortOrder``) for a
+    line charged at ``rate``: the setting with that rate in the venue's own tax
+    table, so a GST-free line makes a GST-free item. GST (1) when the rate or
+    the table is unknown — what every new item got before (21 Oct 2026: 138
+    Grange Gully Bistro food items were set to GST; basic food in Australia is
+    GST-free)."""
+    from app.services.invoice_replica import sales_tax_rates
+
+    try:
+        wanted = float(rate)
+    except (TypeError, ValueError):
+        return 1
+    table = sales_tax_rates(lh)
+    hits = [order for order, r in table.items() if abs(r - wanted) < 0.0005]
+    return min(hits) if hits else 1
 
 
 def create_item(
@@ -569,7 +595,7 @@ def create_item(
         "countingUnitRatio": base.get("ratio") or 1.0,
         "orderingUnitId": unit_id,
         "orderingUnitRatio": unit.get("ratio") or 1.0,
-        "globalSalesTaxSortOrder": 1,
+        "globalSalesTaxSortOrder": tax_sort_order(lh, line.get("tax_rate")),
         "defaultSupplierId": supplier_id,
         "defaultBrandId": brand_id,
         "itemType": "Default",

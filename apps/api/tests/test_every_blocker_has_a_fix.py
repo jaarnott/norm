@@ -276,6 +276,15 @@ class TestSupplierBlockers:
         assert issue["fix"] == [s["id"]]
         assert issue["gate"] == VA.AUTO_CREATE_SUPPLIERS  # the switch that acts
 
+    def test_a_new_supplier_is_created_under_its_trading_name(self):
+        """Hawea, 21 Oct 2026: Norm created 'Lambert Ltd T/A Sea 2 You'; the
+        venue's own list calls it Sea 2 You. The printed name still travels,
+        for Autopilot's duplicate check."""
+        _issue, [s] = self._decide(self._replica("Lambert Ltd T/A Sea 2 You"), [])
+        assert s["payload"]["supplier_name"] == "Sea 2 You"
+        assert s["payload"]["printed_name"] == "Lambert Ltd T/A Sea 2 You"
+        assert "create it as 'Sea 2 You'" in s["explanation"]
+
     SF = [{"id": "sup-sf", "name": "SERVICE FOODS AUCKLAND"}]
 
     def test_norm_decides_a_near_supplier_is_the_business(self):
@@ -328,7 +337,10 @@ class TestSupplierBlockers:
         )
         [s] = suggestions
         assert s["kind"] == "create_supplier"
-        assert s["payload"] == {"supplier_name": "Tickety-Boo Liquor Ltd"}
+        assert s["payload"] == {
+            "supplier_name": "Tickety-Boo Liquor",
+            "printed_name": "Tickety-Boo Liquor Ltd",
+        }
         assert s["gate"] == VA.AUTO_CREATE_SUPPLIERS
         assert issue["fix"] == [s["id"]]
 
@@ -352,7 +364,8 @@ class TestSupplierBlockers:
         assert asked == ["Tickety-Boo Liquor Ltd"]
         assert replica["supplier_details"] == details
         assert s["payload"] == {
-            "supplier_name": "Tickety-Boo Liquor Ltd",
+            "supplier_name": "Tickety-Boo Liquor",
+            "printed_name": "Tickety-Boo Liquor Ltd",
             "details": details,
         }
         # The card says what the record will hold before anyone accepts it.
@@ -367,7 +380,10 @@ class TestSupplierBlockers:
             [],
             read_details=lambda name: {},
         )
-        assert s["payload"] == {"supplier_name": "Tickety-Boo Liquor Ltd"}
+        assert s["payload"] == {
+            "supplier_name": "Tickety-Boo Liquor",
+            "printed_name": "Tickety-Boo Liquor Ltd",
+        }
 
 
 class _OrdersLoaded:

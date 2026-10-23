@@ -167,16 +167,17 @@ class TestGetOrCreateUnit:
         assert lh.writes == []
 
     @pytest.mark.parametrize(
-        "name,ratio,unit_type",
+        "name,ratio,unit_type,created_as",
         [
-            ("49.5L", 49.5, "Volume"),
+            ("49.5L", 49.5, "Volume", "49.5 L"),
             # An OUTER multipack is created with the size read off the name
-            # (5 x 3kg = 15 kg).
-            ("5x3kg", 15.0, "Weight"),
+            # (5 x 3kg = 15 kg), spelt as Loaded spells its own units — the
+            # human-built lists' '5x3 KG', not the print's '5x3kg' (21 Oct 2026).
+            ("5x3kg", 15.0, "Weight", "5x3 KG"),
         ],
     )
     def test_a_name_that_reads_is_created_without_the_llm(
-        self, monkeypatch, name, ratio, unit_type
+        self, monkeypatch, name, ratio, unit_type, created_as
     ):
         monkeypatch.setattr(CAT, "llm_unit_spec", _no_llm)
         lh = _CreatingUnits(UNITS)
@@ -187,7 +188,7 @@ class TestGetOrCreateUnit:
             (
                 "POST",
                 "/1.0/stock/internal/units",
-                {"name": name, "ratio": ratio, "stockUnitType": unit_type},
+                {"name": created_as, "ratio": ratio, "stockUnitType": unit_type},
             )
         ]
 

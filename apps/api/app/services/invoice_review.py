@@ -1162,6 +1162,10 @@ def _header_suggestions(data: dict, replica: dict, suggestions: list[dict]) -> N
             or f"no Loaded supplier is called '{name}' — create it"
         )
         payload = {"supplier_name": name}
+        if replica.get("supplier_printed_name"):
+            # The name the close records were checked against: autopilot's
+            # duplicate guard asks with it as well as the trading name.
+            payload["printed_name"] = replica["supplier_printed_name"]
         if replica.get("supplier_not_these"):
             # Close names Norm checked and ruled out: autopilot's duplicate
             # guard lets the create through past them.
@@ -2594,6 +2598,9 @@ def autopilot_accept(
         # matches — past the close names Norm checked and ruled out.
         payload = s.get("payload") or {}
         name = payload.get("supplier_name") or ""
+        # The printed name too: the close records Norm ruled out were found
+        # with it, and the record is created under the shorter trading name.
+        names = [n for n in (payload.get("printed_name"), name) if n]
         try:
             rows = _client().get("/1.0/stock/internal/suppliers")
         except Exception as exc:  # noqa: BLE001 — then it is not created
@@ -2610,7 +2617,8 @@ def autopilot_accept(
         ruled_out = {str(i) for i in payload.get("not_these") or []}
         if [
             m
-            for m in supplier_identity.plausible_matches(name, live)
+            for n in names
+            for m in supplier_identity.plausible_matches(n, live)
             if str(m.get("id")) not in ruled_out
         ]:
             logger.info(

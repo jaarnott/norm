@@ -100,6 +100,14 @@ class TestSchema:
         assert "credit note" in text
         assert "exactly as printed" in text  # never invent or drop a minus
 
+    def test_whole_pieces_by_the_carton_are_a_pack_of_eaches(self):
+        # Grange Gully Bistro, 21 Oct 2026: buns 72X95GM went in as '72 pack'
+        # and buns 80X80GM as '80x80g' — two rules pulled each way. One rule
+        # now, as for drinks sold whole.
+        text = ie.BUILTIN_MAIN_PROMPT
+        assert "72X95GM → '72 pack'" in text
+        assert "chips 5X3KG → '5x3kg'" in text  # weighed food keeps its pack
+
 
 class TestComposer:
     def test_full_composition_text(self, db_session):

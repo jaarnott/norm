@@ -83,8 +83,9 @@ _SYSTEM_PROMPT = (
     "items. It is what ONE unit of the line's quantity is, at the line's price. "
     "These are the rules Norm uses when it reads invoices, and they decide:\n"
     "- A discrete item used whole (a bun, a roll, a loaf, a focaccia slab, a "
-    "slice of cake, a pie, a mop head) is 'each', even when its weight is "
-    "known.\n"
+    "slice of cake, a pie, an ice-cream cup, a patty, a mop head) is 'each', "
+    "even when its weight is known; a carton of them is counted: 72 buns is "
+    "'72 each', never '72x95g'.\n"
     "- A whole piece of cured meat or cheese priced each (a salami, a "
     "mortadella, a cheese wheel or block) is its nominal size, e.g. '2.25 kg'.\n"
     "- Herbs and leafy greens sold by the bunch are the weight of ONE bunch, "
@@ -180,11 +181,17 @@ def _measure(text: object) -> tuple[str, float] | None:
 
 def unit_name_for(size: object) -> str | None:
     """A unit name for a size the venue doesn't have yet, in the venues' own
-    style ('454 Grams', '2.5 KG', '750 mL', '4.5 L', '24 Pack')."""
+    style ('454 Grams', '2.5 KG', '750 mL', '4.5 L', '24 Pack', '5x3 KG')."""
     raw = str(size or "").replace("×", "x").strip()
     if is_multipack(raw):
-        # Created as the pack it is, count first ('700ml x 6' → '6x700ml').
-        return count_first(raw)
+        # Created as the pack it is, count first ('700ml x 6' → '6x700ml'),
+        # each item's size spelt the venues' way ('150x35g' → '150x35 Grams').
+        packed = count_first(raw)
+        m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*x\s*(.+)$", packed, re.I)
+        inner = unit_name_for(m.group(2)) if m else None
+        if not inner or inner == "Each":
+            return packed
+        return f"{float(m.group(1)):g}x{inner}"
     m = _measure(raw)
     if m is None:
         return None

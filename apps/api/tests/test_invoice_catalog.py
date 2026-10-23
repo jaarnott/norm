@@ -259,6 +259,59 @@ class TestCreateItem:
         [(_, _, body)] = _post_items(lh)
         assert body["defaultSupplierId"] == "sup-just-made"
 
+    @pytest.mark.parametrize("line_rate, expected", [(0.0, 0), (0.1, 1), (None, 1)])
+    def test_the_item_takes_the_tax_its_invoice_line_carries(
+        self, db_session, vid, no_catalogue, monkeypatch, line_rate, expected
+    ):
+        """Grange Gully Bistro, 21 Oct 2026: 138 food items were created as
+        GST in Australia, where basic food is GST-free — every new item got
+        the GST setting whatever its invoice line said."""
+        from app.services import invoice_replica
+
+        monkeypatch.setattr(
+            invoice_replica, "sales_tax_rates", lambda lh: {0: 0.0, 1: 0.1}
+        )
+        held = {
+            "linked_supplier_id": "sup-1",
+            "lines": [{"id": "rep-3", "unit_cost": 4.0, "sale_tax_rate": line_rate}],
+        }
+        lh = FakeLoaded()
+        CAT.create_item(
+            lh,
+            db_session,
+            None,
+            venue_id=vid,
+            invoice_id="inv-1",
+            line_id="rep-3",
+            name="Chick Peas",
+            group_id="g-1",
+            unit_id="u-each",
+            doc_data=held,
+        )
+        [(_, _, body)] = _post_items(lh)
+        assert body["globalSalesTaxSortOrder"] == expected
+
+    def test_loadeds_own_line_rate_never_sets_the_tax(
+        self, db_session, vid, no_catalogue, monkeypatch
+    ):
+        # Loaded's draft says its default rate on every line; only the rate
+        # Norm decided from the invoice counts.
+        from app.services import invoice_replica
+
+        monkeypatch.setattr(
+            invoice_replica, "sales_tax_rates", lambda lh: {0: 0.0, 1: 0.1}
+        )
+        lh = FakeLoaded(
+            invoice={
+                "id": "inv-1",
+                "linkedSupplierId": "sup-loaded",
+                "lines": [{"id": "ln-1", "unitCostExclTax": 4.5, "saleTaxRate": 0.0}],
+            }
+        )
+        self._create(db_session, lh, vid, line_id="ln-1")
+        [(_, _, body)] = _post_items(lh)
+        assert body["globalSalesTaxSortOrder"] == 1
+
 
 class TestBrand:
     def test_an_existing_brand_is_returned(self):

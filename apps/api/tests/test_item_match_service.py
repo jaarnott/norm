@@ -218,6 +218,16 @@ class TestItemMatch:
     """The LLM match-before-create step: classify → department-filtered match →
     suggest a link (existing item) or a normalized name+group (create)."""
 
+    def test_the_matcher_is_told_a_foods_form_is_part_of_it(self):
+        # Hawea, 21 Oct 2026: tinned whole-peeled and crushed tomatoes went on
+        # the fresh 'Tomatoes' item — the food rule said to ignore packaging,
+        # and a tin was taken for packaging.
+        text = IM._MATCH_SYSTEM_PROMPT
+        assert "never the product's FORM" in text
+        assert "are not the fresh 'Tomatoes'" in text
+        # New items are named as people say them (the human lists' style).
+        assert "'Tomato Sauce'" in text and "Flour All Purpose" not in text
+
     def test_classify_labels_lines(self, monkeypatch):
         def fake(**kw):
             assert "Classify each supplier invoice line" in kw["system_prompt"]

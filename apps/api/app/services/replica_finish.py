@@ -491,15 +491,23 @@ def settle_supplier(
             f"no Loaded supplier is called '{name}' — the closest is '{best.get('name')}'"
         )
     else:
-        replica["supplier_create_name"] = name
-        replica["supplier_why"] = f"no Loaded supplier is called '{name}' — create it"
+        # Created under the name it trades as ('Sea 2 You'), not the legal
+        # name printed with it ('Lambert Ltd T/A Sea 2 You'). Later invoices
+        # still find the record: the printed name contains it.
+        create = supplier_identity.trading_name(name)
+        as_ = f" as '{create}'" if create != name else ""
+        replica["supplier_create_name"] = create
+        replica["supplier_printed_name"] = name
+        replica["supplier_why"] = (
+            f"no Loaded supplier is called '{name}' — create it{as_}"
+        )
         if close:
             replica["supplier_not_these"] = sorted(by_id)
             replica["supplier_why"] = (
                 f"no Loaded supplier is called '{name}', and "
                 + ", ".join(f"'{s.get('name')}'" for s in close)
                 + f" {'is' if len(close) == 1 else 'are'} another business: "
-                + f"{verdict.get('why')} — create it"
+                + f"{verdict.get('why')} — create it{as_}"
             )
         if details:
             replica["supplier_details"] = details

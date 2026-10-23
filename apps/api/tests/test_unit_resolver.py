@@ -217,5 +217,9 @@ class TestCodeFindsTheUnit:
         assert unit_name_for("4.5 L") == "4.5 L"
         assert unit_name_for("24 each") == "24 Pack"
         assert unit_name_for("each") == "Each"
-        assert unit_name_for("6x750mL") == "6x750mL"
+        # A pack keeps its count, its item spelt the same way (Loaded's
+        # own '5x3 KG' style, not the invoice's '5x3kg').
+        assert unit_name_for("6x750mL") == "6x750 mL"
+        assert unit_name_for("5x3kg") == "5x3 KG"
+        assert unit_name_for("150x35g") == "150x35 Grams"
         assert unit_name_for("a bag") is None
