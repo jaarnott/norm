@@ -279,28 +279,37 @@ class _Spec:
 
 
 class TestInstaller:
-    def test_installs_one_endpoint_and_one_tool_then_is_idempotent(self):
+    def test_installs_its_endpoints_and_one_tool_then_is_idempotent(self):
         spec = _Spec([{"action": "get_invoices"}], [{"action": "get_supplier_aliases"}])
         tools, endpoints, changes = installer.plan(spec)
         assert sorted(changes) == [
             "added endpoint delete_supplier_alias_raw",
+            "added endpoint get_invoiced_for_supplier_raw",
+            "added endpoint update_supplier_raw",
             "added tool manage_supplier",
         ]
         assert [e["action"] for e in endpoints] == [
             "get_supplier_aliases",
             "delete_supplier_alias_raw",
+            "update_supplier_raw",
+            "get_invoiced_for_supplier_raw",
         ]
         assert installer.plan(_Spec(tools, endpoints))[2] == []
 
-    def test_the_tool_asks_before_removing_and_may_be_always_allowed(self):
+    def test_the_tool_asks_before_changing_and_may_be_always_allowed(self):
         (tool,) = installer.plan(_Spec([], []))[0]
         assert tool["effect"] == "write"
         assert tool["approval"] == {
             "default": "ask",
             "allow_auto": True,
-            "label": "remove supplier aliases in Loaded",
+            "label": "change suppliers in Loaded",
         }
         cc = tool["consolidator_config"]
-        assert cc["allowed_write_actions"] == ["delete_supplier_alias_raw"]
+        # Each write the code makes is declared — the sandbox refuses any other.
+        assert cc["allowed_write_actions"] == [
+            "delete_supplier_alias_raw",
+            "update_supplier_raw",
+            "loaded_legacy.merge_suppliers",
+        ]
         assert cc["function_code"] == TOOL
         assert "Don't ask" in tool["description"]

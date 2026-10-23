@@ -11,6 +11,7 @@ nobody saw.
 """
 
 import copy
+import json
 import pathlib
 
 from app.agents import internal_tools as IT
@@ -63,6 +64,9 @@ STOCK_ENDPOINTS = [
     {"action": "update_stock_item_raw", "method": "PUT", "path_template": "//i"},
     {"action": "create_stock_item_raw", "method": "POST", "path_template": "//i"},
     {"action": "update_variant_unit_raw", "method": "PATCH", "path_template": "//v"},
+    {"action": "get_invoice_detail", "method": "GET", "path_template": "//inv"},
+    {"action": "get_received_invoices", "method": "GET", "path_template": "//rec"},
+    {"action": "update_invoice_raw", "method": "PUT", "path_template": "//inv"},
 ]
 STOCK_READS = {
     "get_stock_item_full": ITEM,
@@ -73,12 +77,69 @@ STOCK_READS = {
     ],
 }
 STOCK_CONFIG = {
-    "max_api_calls": 3,
+    "max_api_calls": 60,
     "allowed_write_actions": [
         "create_stock_item_raw",
         "update_stock_item_raw",
         "update_variant_unit_raw",
+        "update_invoice_raw",
     ],
+}
+
+# The bun of thread bf840172 (18 Oct 2026): a Count item received in "80 Grams".
+BUN_ID = "1eeee634-b848-4b84-a733-62696afb1c0f"
+EACH = "54db3be3-3274-4f6b-9ca0-eedae3b40a28"
+GRAMS80 = "c54e5f20-471b-4595-8b92-fb5a455e1ca3"
+BUN_VAR = "88c9daf9-30d2-405b-98da-08df2bb4bf94"
+BUN_INVOICE = "38fa479b-53c2-41c2-6e00-08dee1dab56a"
+BUN_DETAIL = {
+    "id": BUN_INVOICE,
+    "referenceNumber": "OMO1060033",
+    "isReceived": True,
+    "issuedAt": "2026-07-21T00:00:00",
+    "subtotal": 18.0,
+    "taxAmount": 1.8,
+    "total": 19.8,
+    "lines": [
+        {
+            "id": "l-bun",
+            "description": "80g Potato Bun",
+            "unit": "80 Grams",
+            "quantityReceived": 20,
+            "unitCostExclTax": 0.9,
+            "totalCostExclTax": 18.0,
+            "linkedUnitId": GRAMS80,
+            "linkedUnitRatio": 0.08,
+            "linkedItemId": BUN_ID,
+        }
+    ],
+}
+BUN_READS = {
+    "get_stock_item_full": {
+        "id": BUN_ID,
+        "name": "80g Potato Bun",
+        "suppliers": [
+            {
+                "id": BUN_VAR,
+                "supplierId": SUP_OLD,
+                "stockCode": "BAK3007",
+                "unitId": GRAMS80,
+            }
+        ],
+    },
+    "get_stock_units": [
+        {"id": EACH, "name": "Each", "ratio": 1.0},
+        {"id": GRAMS80, "name": "80 Grams", "ratio": 0.08},
+    ],
+    "get_suppliers": [{"id": SUP_OLD, "name": "M H Luxe"}],
+    "get_invoice_detail": BUN_DETAIL,
+}
+FIX_BUN = {
+    "venue": "Somewhere North",
+    "op": "fix_received_unit",
+    "item_id": BUN_ID,
+    "unit_id": EACH,
+    "invoice_ids": [BUN_INVOICE],
 }
 
 UPDATE = {
@@ -322,6 +383,93 @@ class TestStockItemPreview:
         )
         assert "update_stock_item_raw" not in calls
         assert result["changed"]["target"] == "SAUCE TOMATO CATERING"
+
+    def test_a_variant_unit_change_survives_its_own_approval(
+        self, monkeypatch, db_session
+    ):
+        # 4 of 4 set_variant_unit calls in production failed "changed after it
+        # was approved" (thread bf840172, 18 Oct 2026): the card carried unit
+        # NAMES, looked up only while previewing, and was itself the
+        # fingerprint. The basis is now the raw ids.
+        params = {
+            "venue": "Freeman & Grey",
+            "op": "set_variant_unit",
+            "variant_id": VAR,
+            "unit_id": UNIT_KG,
+        }
+        _stock(monkeypatch)
+        out = _preview(STOCK, params, db_session, STOCK_CONFIG)
+        assert "Kilo" in json.dumps(out["preview"]["card"])  # the person sees names
+        calls = _stock(monkeypatch)
+        result = execute_function(
+            STOCK,
+            dict(params),
+            db_session,
+            None,
+            options={
+                **STOCK_CONFIG,
+                "expect_fingerprint": out["preview"]["fingerprint"],
+            },
+        )
+        assert result["success"], result
+        assert "update_variant_unit_raw" in calls
+        assert "get_stock_units" not in calls  # names were only for the card
+
+    def test_fixing_a_received_unit_is_one_approval_for_every_line(
+        self, monkeypatch, db_session
+    ):
+        calls = _stock(monkeypatch, BUN_READS)
+        out = _preview(STOCK, FIX_BUN, db_session, STOCK_CONFIG)
+        card = out["preview"]["card"]
+        assert card["title"] == "Fix the unit on received invoice lines"
+        assert card["target"] == "80g Potato Bun"
+        assert _rows(card) == {
+            "Invoice OMO1060033 · 2026-07-21": (
+                "20 × 80 Grams @ $0.90",
+                "20 × Each @ $0.90",
+            ),
+            "Supplier variant · M H Luxe BAK3007": ("80 Grams", "Each"),
+        }
+        assert "update_invoice_raw" not in calls
+        # Approved, with nothing moved: the invoice is re-PUT and read back,
+        # then the variant follows — one approval, every write.
+        calls = _stock(monkeypatch, BUN_READS)
+        result = execute_function(
+            STOCK,
+            dict(FIX_BUN),
+            db_session,
+            None,
+            options={
+                **STOCK_CONFIG,
+                "expect_fingerprint": out["preview"]["fingerprint"],
+            },
+        )
+        assert result["success"], result
+        assert calls.count("update_invoice_raw") == 1
+        assert calls.count("update_variant_unit_raw") == 1
+        assert "get_suppliers" not in calls
+        assert result["data"]["invoices"][0]["invoice"] == "OMO1060033"
+
+    def test_a_received_line_that_moved_since_approval_is_not_rewritten(
+        self, monkeypatch, db_session
+    ):
+        _stock(monkeypatch, BUN_READS)
+        fp = _preview(STOCK, FIX_BUN, db_session, STOCK_CONFIG)["preview"][
+            "fingerprint"
+        ]
+        moved = copy.deepcopy(BUN_DETAIL)
+        moved["lines"][0]["unitCostExclTax"] = 0.95
+        calls = _stock(monkeypatch, {**BUN_READS, "get_invoice_detail": moved})
+        result = execute_function(
+            STOCK,
+            dict(FIX_BUN),
+            db_session,
+            None,
+            options={**STOCK_CONFIG, "expect_fingerprint": fp},
+        )
+        assert "update_invoice_raw" not in calls
+        assert "update_variant_unit_raw" not in calls
+        assert result["changed"]["target"] == "80g Potato Bun"
 
     def test_a_zero_cost_new_variant_is_flagged(self, monkeypatch, db_session):
         _stock(monkeypatch)

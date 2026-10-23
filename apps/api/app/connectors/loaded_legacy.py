@@ -84,6 +84,15 @@ LIST_STOCK_GROUPS = "list_stock_groups"
 LIST_POS_ITEM_LINKS = "list_pos_item_links"
 LIST_TENDERS = "list_tenders"
 GET_TENDER = "get_tender"
+# The Catalogue page's writes (manage_stock_item / manage_supplier, 23 Oct
+# 2026; docs/plans/stock-catalogue-page.md) — each proven on Loaded's test
+# company first.
+PATCH_STOCK_ITEM = "patch_stock_item"
+FIND_PURCHASE_ORDER_LINES = "find_purchase_order_lines"
+UPDATE_POS_ITEM_LINK = "update_pos_item_link"
+FIND_STOCK_UNITS = "find_stock_units"
+UPDATE_STOCK_UNIT = "update_stock_unit"
+MERGE_SUPPLIERS = "merge_suppliers"
 REVIEW_TENDER = "review_tender"
 UPDATE_TENDER = "update_tender"
 
@@ -257,6 +266,65 @@ SPEC = {
                 "exclude_credit_notes": "Leave credit notes out",
             },
             optional=("exclude_credit_notes",),
+        ),
+        _endpoint(
+            PATCH_STOCK_ITEM,
+            "Change fields of one stock item (JSON Patch, Loaded's names: "
+            "DatestampRemoved retires / restores it, CountingUnitId …) — what "
+            "Loaded's own item screen sends. Nothing else on the item is touched.",
+            _WAPI + "/StockItems/{{ item_id }}",
+            method="PATCH",
+            fields={
+                "item_id": "The stock item's id",
+                "patch": 'JSON Patch, e.g. [{"op": "replace", "path": '
+                '"DatestampRemoved", "value": "<iso>"}]',
+            },
+            body="{{ patch | tojson }}",
+        ),
+        _endpoint(
+            FIND_PURCHASE_ORDER_LINES,
+            "Purchase-order lines matching an OData filter (StockItemId eq <id>), "
+            "each with its order's id, number, supplier and received/deleted dates.",
+            _WAPI + "/StockPurchaseOrderLines?$filter={{ filter | urlencode }}",
+            fields={"filter": "OData filter, e.g. StockItemId eq <id>"},
+        ),
+        _endpoint(
+            UPDATE_POS_ITEM_LINK,
+            "Change a POS item's link in place (its stock item, unit, quantity) — "
+            "the link as list_pos_item_links reads it, edited.",
+            _WAPI + "/StockPositemLinks/{{ link_id }}",
+            method="PUT",
+            fields={"link_id": "The link's id", "link": "The whole link"},
+            body="{{ link | tojson }}",
+        ),
+        _endpoint(
+            FIND_STOCK_UNITS,
+            "Units matching an OData filter (Id eq <id>) — the record a unit "
+            "change sends back.",
+            _WAPI + "/StockUnits?$filter={{ filter | urlencode }}",
+            fields={"filter": "OData filter, e.g. Id eq <id>"},
+        ),
+        _endpoint(
+            UPDATE_STOCK_UNIT,
+            "Store a unit: name, unitType, ratio and datestampDeleted (set = "
+            "deleted, null = restored). Loaded refuses its standard units.",
+            _WAPI + "/StockUnits/{{ unit_id }}",
+            method="PUT",
+            fields={"unit_id": "The unit's id", "unit": "The whole unit record"},
+            body="{{ unit | tojson }}",
+        ),
+        _endpoint(
+            MERGE_SUPPLIERS,
+            "Loaded's own supplier merge: moves the source's item variants, item "
+            "defaults, orders, invoices and statements to the destination, then "
+            "retires the source. Aliases and tenders stay behind.",
+            "//loadedhub.com/api/stock/suppliers/Merge?sourceId={{ source_id }}"
+            "&destId={{ dest_id }}",
+            method="PUT",
+            fields={
+                "source_id": "The supplier merged away",
+                "dest_id": "The supplier kept",
+            },
         ),
         _endpoint(
             UPDATE_TENDER,

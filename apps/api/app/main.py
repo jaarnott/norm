@@ -50,6 +50,7 @@ from app.routers import (  # noqa: E402
     playbooks,
     supplier_specs,
     supplier_tenders,
+    stock_catalogue,
     supplier_spec_dojo,
     catalog_hygiene,
     templates,
@@ -120,6 +121,7 @@ app.include_router(memories.router, prefix="/api")
 app.include_router(playbooks.router, prefix="/api")
 app.include_router(supplier_specs.router, prefix="/api")
 app.include_router(supplier_tenders.router, prefix="/api")
+app.include_router(stock_catalogue.router, prefix="/api")
 app.include_router(supplier_spec_dojo.router, prefix="/api")
 app.include_router(catalog_hygiene.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")

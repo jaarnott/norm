@@ -2,7 +2,7 @@
 #
 # Canonical function_code for `loadedhub.manage_supplier` — a venue's Loaded
 # supplier records. Installed by scripts/sync_manage_supplier_config.py,
-# Oct 2026. Two ops:
+# Oct 2026. Six ops:
 #
 #   review_aliases  reads; never asks. Every supplier's aliases (the other
 #                   names Loaded files a scanned invoice under a supplier by),
@@ -10,6 +10,22 @@
 #   remove_alias    a write; asks first unless the person always allows it.
 #                   DELETE /suppliers/{id}/aliases/{aliasId} -> 204 (seen in
 #                   Loaded's own app, 18 Oct 2026).
+#   update          a write: name, contact, phone, email, customer number,
+#                   address. PUT /suppliers/{id} with the whole record (emails
+#                   are replace-all, so the others are sent back as they are).
+#   retire /        a write: the same PUT with removedAt set / null. Loaded
+#   restore         hides a retired supplier's item variants, so a retire says
+#                   which items buy from it.
+#   merge           a write: Loaded's OWN merge (PUT loadedhub.com/api/stock/
+#                   suppliers/Merge, through the venue's Loaded Legacy login —
+#                   what Loaded's supplier screen calls). It moves item
+#                   variants, item defaults, orders, invoices and statements to
+#                   into_supplier and retires supplier. Aliases and tenders stay
+#                   behind; Loaded has no way to add an alias.
+#
+# The Catalogue page's four (update, retire, restore, merge) came on 23 Oct
+# 2026 (docs/plans/stock-catalogue-page.md), each tried on Loaded's test
+# company first.
 #
 # Why it exists: St. Malo Bakery at Somewhere North carried the alias "St.",
 # and Loaded filed 19 Sydney Waste Services bills ($12,170) under the bakery
@@ -45,10 +61,47 @@
 # changed since. After deleting it reads the aliases back.
 #
 # Requires consolidator_config:
-#   {"max_api_calls": 200, "allowed_write_actions": ["delete_supplier_alias_raw"]}
+#   {"max_api_calls": 200, "allowed_write_actions": ["delete_supplier_alias_raw",
+#    "update_supplier_raw", "loaded_legacy.merge_suppliers"]}
 #   (review: the supplier list + one alias read per supplier.)
 
-OPS = ("review_aliases", "remove_alias")
+OPS = ("review_aliases", "remove_alias", "update", "retire", "restore", "merge")
+
+_LL = "loaded_legacy"
+#: Received invoices are counted back to here.
+_HISTORY_FROM = "2000-01-01T00:00:00Z"
+
+#: What op 'update' may change: the name it is given -> Loaded's field.
+_EDITABLE = {
+    "name": "name",
+    "contact": "contactName",
+    "contactName": "contactName",
+    "contact_name": "contactName",
+    "phone": "phone1",
+    "phone1": "phone1",
+    "phone2": "phone2",
+    "fax": "fax",
+    "customer_number": "customerNumber",
+    "customerNumber": "customerNumber",
+    "address1": "address1",
+    "address2": "address2",
+    "address3": "address3",
+    "city": "city",
+    "postcode": "postcode",
+}
+_FIELD_LABELS = {
+    "name": "Name",
+    "contactName": "Contact",
+    "phone1": "Phone",
+    "phone2": "Second phone",
+    "fax": "Fax",
+    "customerNumber": "Customer number",
+    "address1": "Address",
+    "address2": "Address line 2",
+    "address3": "Address line 3",
+    "city": "City",
+    "postcode": "Postcode",
+}
 
 #: Words that never tell one business from another.
 GENERIC = {
@@ -517,6 +570,429 @@ def _remove(params, call_api, venue, suppliers):
     return result
 
 
+# ------------------------------------------------- the catalogue's ops ----
+
+
+def _now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _tomorrow_iso():
+    t = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+    return t.isoformat()[:19] + "Z"
+
+
+def _obj(value):
+    v = _parse(value)
+    return v if isinstance(v, dict) else None
+
+
+def _rows(value):
+    if isinstance(value, dict):
+        for key in ("data", "items", "results", "value"):
+            if isinstance(value.get(key), list):
+                return value[key]
+    return value if isinstance(value, list) else []
+
+
+def _primary_email(rec):
+    emails = [e for e in rec.get("emails") or [] if isinstance(e, dict)]
+    for e in emails:
+        if e.get("isPrimary"):
+            return e.get("email")
+    return emails[0].get("email") if emails else None
+
+
+def _with_email(rec, email):
+    """The record's emails with the primary one set to ``email`` (blank
+    removes it). Loaded's emails are replace-all: the others go back as they
+    are."""
+    emails = [dict(e) for e in rec.get("emails") or [] if isinstance(e, dict)]
+    primary = None
+    for e in emails:
+        if e.get("isPrimary"):
+            primary = e
+            break
+    if primary is None and emails:
+        primary = emails[0]
+    email = str(email or "").strip()
+    if not email:
+        return [e for e in emails if e is not primary]
+    if primary is None:
+        emails.append({"email": email, "isPrimary": True})
+    else:
+        primary["email"] = email
+        primary["isPrimary"] = True
+    return emails
+
+
+def _re_read(call_api, venue, supplier_id):
+    rows = call_api(
+        "loadedhub", "get_suppliers", {"venue": venue, "include_deleted": "true"}
+    )
+    for r in _rows(rows):
+        if isinstance(r, dict) and r.get("id") == supplier_id:
+            return r
+    return None
+
+
+def _items_buying(call_api, venue, supplier_id):
+    """(items with a variant from the supplier, items defaulting to it) — live
+    items; None, None when Loaded didn't answer."""
+    raw = call_api("loadedhub", "get_stock_items_detail_raw", {"venue": venue})
+    if _err(raw) or not isinstance(_rows(raw), list):
+        return None, None
+    with_variant, defaulting = [], []
+    for it in _rows(raw):
+        if not isinstance(it, dict) or it.get("datestampRemoved"):
+            continue
+        if any(
+            isinstance(v, dict) and v.get("supplierId") == supplier_id
+            for v in it.get("suppliers") or []
+        ):
+            with_variant.append(it)
+        if it.get("defaultSupplierId") == supplier_id:
+            defaulting.append(it)
+    return with_variant, defaulting
+
+
+def _open_orders(call_api, venue, supplier_id):
+    raw = call_api("loadedhub", "list_purchase_orders", {"venue": venue})
+    return [
+        po
+        for po in _rows(raw)
+        if isinstance(po, dict)
+        and po.get("supplierId") == supplier_id
+        and not po.get("isReceived")
+    ]
+
+
+def _names_of(items, n=6):
+    names = sorted(str(i.get("name")) for i in items)
+    return ", ".join(names[:n]) + (
+        f" and {len(names) - n} more" if len(names) > n else ""
+    )
+
+
+def _update(params, call_api, venue, all_rows):
+    live = _live(all_rows)
+    rec, problem = _find_supplier(params.get("supplier"), live)
+    if problem:
+        return problem
+    changes = _obj(params.get("changes"))
+    if not changes:
+        return {
+            "error": "op 'update' needs `changes` — e.g. {'name': ..., 'email': ..., "
+            "'phone': ..., 'contact': ..., 'customer_number': ...}"
+        }
+    sent = dict(rec)
+    rows = []
+    unknown = []
+    for key, value in changes.items():
+        if key == "email":
+            before = _primary_email(rec)
+            if str(value or "").strip() != str(before or "").strip():
+                sent["emails"] = _with_email(rec, value)
+                rows.append(
+                    {"field": "Email", "before": before, "after": value or "(none)"}
+                )
+            continue
+        field = _EDITABLE.get(key)
+        if not field:
+            unknown.append(key)
+            continue
+        value = None if value is None else str(value).strip()
+        if field == "name" and not value:
+            return {"error": "a supplier needs a name — nothing changed"}
+        if (rec.get(field) or None) != (value or None):
+            sent[field] = value or None
+            rows.append(
+                {
+                    "field": _FIELD_LABELS[field],
+                    "before": rec.get(field),
+                    "after": value,
+                }
+            )
+    if unknown:
+        return {
+            "error": f"can't change {', '.join(unknown)} — the fields are name, contact, "
+            "phone, phone2, fax, email, customer_number, address1-3, city, postcode. "
+            "Nothing changed."
+        }
+    if not rows:
+        return {
+            "result": "no differences — nothing written",
+            "supplier": rec.get("name"),
+        }
+    if sent.get("name") != rec.get("name"):
+        clash = [
+            s.get("name")
+            for s in live
+            if s.get("id") != rec.get("id")
+            and _norm(s.get("name")) == _norm(sent["name"])
+        ]
+        if clash:
+            return {
+                "error": f"another supplier is already called {clash[0]!r} — merge the "
+                "two instead (op 'merge'). Nothing changed."
+            }
+    preview(
+        lambda: {
+            "title": "Change a supplier",
+            "target": rec.get("name"),
+            "venue": venue,
+            "changes": rows,
+        },
+        basis={
+            "supplier": rec.get("id"),
+            "before": {f: rec.get(f) for f in _FIELD_LABELS},
+            "emails": rec.get("emails"),
+        },
+    )
+    out = call_api(
+        "loadedhub",
+        "update_supplier_raw",
+        {"venue": venue, "supplier_id": rec.get("id"), "supplier": sent},
+    )
+    if _err(out):
+        return {"error": f"Loaded refused: {_err(out)}", "supplier": rec.get("name")}
+    after = _re_read(call_api, venue, rec.get("id"))
+    result = {
+        "result": "updated",
+        "supplier": sent.get("name"),
+        "supplier_id": rec.get("id"),
+    }
+    if after is None:
+        result["read_back"] = "couldn't re-read the supplier to confirm"
+    else:
+        lost = [
+            _FIELD_LABELS[f]
+            for f in _FIELD_LABELS
+            if (after.get(f) or None) != (sent.get(f) or None)
+        ]
+        if "emails" in sent and _primary_email(after) != _primary_email(sent):
+            lost.append("Email")
+        if lost:
+            result["not_kept_by_loaded"] = lost
+    return result
+
+
+def _retire_restore(params, call_api, venue, all_rows, retire):
+    pool = (
+        _live(all_rows)
+        if retire
+        else [
+            r
+            for r in all_rows
+            if isinstance(r, dict) and r.get("id") and r.get("removedAt")
+        ]
+    )
+    rec, problem = _find_supplier(params.get("supplier"), pool)
+    if problem:
+        if not retire and "no supplier" in str(problem.get("error")):
+            problem["error"] = (
+                f"no retired supplier here is called '{params.get('supplier')}'. "
+                "Nothing changed."
+            )
+        return problem
+    name = rec.get("name")
+    warnings = []
+    if retire:
+        with_variant, defaulting = _items_buying(call_api, venue, rec.get("id"))
+        if with_variant:
+            warnings.append(
+                f"{len(with_variant)} item(s) buy from {name} ({_names_of(with_variant)}). "
+                f"Loaded hides a retired supplier's codes and prices on them — merge "
+                f"{name} into another supplier instead to keep them."
+            )
+        if defaulting:
+            warnings.append(
+                f"{len(defaulting)} item(s) have {name} as their default supplier."
+            )
+        if with_variant is None:
+            warnings.append("Norm couldn't check which items buy from it.")
+        orders = _open_orders(call_api, venue, rec.get("id"))
+        if orders:
+            warnings.append(
+                f"{len(orders)} open order(s) are with {name}: "
+                + ", ".join(str(o.get("orderNumber")) for o in orders[:8])
+            )
+    preview(
+        lambda: {
+            "title": "Retire a supplier" if retire else "Restore a supplier",
+            "target": name,
+            "venue": venue,
+            "changes": [
+                {
+                    "field": "Status",
+                    "before": "active" if retire else "retired",
+                    "after": "retired" if retire else "active",
+                }
+            ],
+            "warnings": warnings,
+        },
+        basis={"supplier": rec.get("id"), "removed": rec.get("removedAt")},
+    )
+    sent = dict(rec)
+    sent["removedAt"] = _now_iso() if retire else None
+    out = call_api(
+        "loadedhub",
+        "update_supplier_raw",
+        {"venue": venue, "supplier_id": rec.get("id"), "supplier": sent},
+    )
+    if _err(out):
+        return {"error": f"Loaded refused: {_err(out)}", "supplier": name}
+    after = _re_read(call_api, venue, rec.get("id"))
+    result = {
+        "result": "retired" if retire else "restored",
+        "supplier": name,
+        "supplier_id": rec.get("id"),
+    }
+    if after is None or bool(after.get("removedAt")) != retire:
+        result["warning"] = (
+            "Loaded answered, but the supplier doesn't read back changed"
+        )
+    return result
+
+
+def _merge(params, call_api, venue, all_rows):
+    live = _live(all_rows)
+    src, p1 = _find_supplier(params.get("supplier"), live)
+    if p1:
+        return p1
+    dst, p2 = _find_supplier(params.get("into_supplier"), live)
+    if p2:
+        p2["error"] = "into_supplier: " + str(p2.get("error"))
+        return p2
+    if src.get("id") == dst.get("id"):
+        return {"error": "a supplier can't be merged into itself"}
+    sname, dname = src.get("name"), dst.get("name")
+
+    with_variant, defaulting = _items_buying(call_api, venue, src.get("id"))
+    if with_variant is None:
+        return {
+            "error": "couldn't read the stock items, so nothing changed — try again"
+        }
+    orders = _open_orders(call_api, venue, src.get("id"))
+    invoiced = call_api(
+        "loadedhub",
+        "get_invoiced_for_supplier_raw",
+        {
+            "venue": venue,
+            "supplier_id": src.get("id"),
+            "from": _HISTORY_FROM,
+            "to": _tomorrow_iso(),
+        },
+    )
+    invoices = [i for i in _rows(invoiced) if isinstance(i, dict) and i.get("id")]
+    aliases, _problem = _aliases(call_api, venue, src.get("id"))
+    tenders = [
+        t
+        for t in _rows(call_api(_LL, "list_tenders", {"venue": venue}))
+        if isinstance(t, dict)
+        and t.get("supplierId") == src.get("id")
+        and not t.get("datestampDeleted")
+    ]
+
+    def card():
+        changes = []
+        if with_variant:
+            changes.append(
+                {
+                    "field": "Item variants",
+                    "before": f"{len(with_variant)} item(s) buy from {sname}",
+                    "after": f"they buy from {dname}",
+                }
+            )
+        if defaulting:
+            changes.append(
+                {
+                    "field": "Default supplier",
+                    "before": f"{len(defaulting)} item(s): {sname}",
+                    "after": dname,
+                }
+            )
+        for o in orders[:20]:
+            changes.append(
+                {
+                    "field": f"Open order {o.get('orderNumber')}",
+                    "before": sname,
+                    "after": dname,
+                }
+            )
+        if invoices:
+            changes.append(
+                {
+                    "field": "Invoices",
+                    "before": f"{len(invoices)} from {sname}",
+                    "after": f"from {dname}",
+                }
+            )
+        changes.append({"field": sname, "before": "active", "after": "retired"})
+        warnings = []
+        if invoices:
+            warnings.append(
+                f"Loaded files new documents by name: it adds {sname}'s name to "
+                f"{dname} as it moves the invoices. Review {dname}'s aliases "
+                "afterwards."
+            )
+        if aliases:
+            warnings.append(
+                f"{sname}'s {len(aliases)} alias(es) stay on the retired record: "
+                + ", ".join(_shown(a.get("name")) for a in aliases[:8])
+            )
+        if tenders:
+            warnings.append(
+                f"{len(tenders)} tender(s) with {sname} stay with it — make them again "
+                f"for {dname}."
+            )
+        return {
+            "title": "Merge suppliers",
+            "target": f"{sname} into {dname}",
+            "venue": venue,
+            "changes": changes,
+            "warnings": warnings,
+        }
+
+    preview(
+        card,
+        basis={
+            "supplier": src.get("id"),
+            "into": dst.get("id"),
+            "items": sorted(i.get("id") for i in with_variant),
+            "orders": sorted(o.get("id") for o in orders),
+            "invoices": sorted(i.get("id") for i in invoices),
+        },
+    )
+    out = call_api(
+        _LL,
+        "merge_suppliers",
+        {"venue": venue, "source_id": src.get("id"), "dest_id": dst.get("id")},
+    )
+    if _err(out):
+        return {"error": f"Loaded refused the merge: {_err(out)}", "supplier": sname}
+    after = _re_read(call_api, venue, src.get("id"))
+    result = {
+        "result": "merged",
+        "supplier": sname,
+        "into": dname,
+        "moved": {
+            "items": len(with_variant),
+            "defaults": len(defaulting),
+            "orders": len(orders),
+            "invoices": len(invoices),
+        },
+    }
+    if invoices:
+        result["note"] = (
+            f"Review {dname}'s aliases (op review_aliases): Loaded adds the moved "
+            "invoices' printed names."
+        )
+    if not (after and after.get("removedAt")):
+        result["warning"] = f"Loaded answered, but {sname} doesn't read back as retired"
+    return result
+
+
 def run(params, call_api, log):
     venue = params.get("venue")
     if not venue:
@@ -524,7 +1000,11 @@ def run(params, call_api, log):
     op = str(params.get("op") or "review_aliases").strip().lower()
     if op not in OPS:
         return {"error": f"op must be one of {', '.join(OPS)} — got '{op}'"}
-    rows = call_api("loadedhub", "get_suppliers", {"venue": venue})
+    # Retired ones too: restore needs them, and they must never be picked by
+    # name for anything else (_live below).
+    rows = call_api(
+        "loadedhub", "get_suppliers", {"venue": venue, "include_deleted": "true"}
+    )
     if not isinstance(rows, list):
         return {
             "error": _err(rows) or f"Loaded didn't return the suppliers for {venue}"
@@ -532,4 +1012,10 @@ def run(params, call_api, log):
     suppliers = _live(rows)
     if op == "review_aliases":
         return _review(params, call_api, venue, suppliers)
-    return _remove(params, call_api, venue, suppliers)
+    if op == "remove_alias":
+        return _remove(params, call_api, venue, suppliers)
+    if op == "update":
+        return _update(params, call_api, venue, rows)
+    if op in ("retire", "restore"):
+        return _retire_restore(params, call_api, venue, rows, op == "retire")
+    return _merge(params, call_api, venue, rows)

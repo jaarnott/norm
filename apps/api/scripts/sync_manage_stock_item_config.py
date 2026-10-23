@@ -26,6 +26,16 @@ What this does, each step idempotent:
    path — which scanned get_stock_items_raw, whose transform has no
    suppliers, so a code could never match.
 6. validate_config.
+7. (18 Oct 2026) Installs the endpoint `update_invoice_raw` — a whole-invoice
+   PUT — for op 'fix_received_unit', which rewrites an item's lines on
+   RECEIVED invoices to the right unit (thread bf840172: a Count item
+   received in a Weight unit priced a bun at $11.25). The same run raises
+   max_api_calls and declares the new write.
+8. (23 Oct 2026) The Catalogue page's operations — retire, restore, merge,
+   and the unit operations (docs/plans/stock-catalogue-page.md): four more
+   stock-API endpoints (ENDPOINTS) and the Loaded Legacy writes they need
+   (those endpoints are Loaded Legacy's own, installed by
+   sync_loaded_legacy_spec.py — run that first).
 
 Replays kept honest in the same commit: sync_stock_item_write_actions.py and
 sync_stock_item_consolidators.py preserve the demotion; the executive_chef
@@ -55,6 +65,12 @@ RETIRING = {
 }
 
 
+def _now() -> str:
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
 def demoted_prefix(action: str) -> str:
     return f"[consolidator-only] Superseded by {NEW} — {RETIRING[action][1]}. "
 
@@ -65,6 +81,17 @@ TOOL = {
     # deterministic merge decides what is actually written.
     "method": "PUT",
     "read_only": False,
+    # Owned by the approvals installers (sync_approval_labels.py,
+    # sync_approval_preferences.py) and carried here too: a re-run of this
+    # script on 18 Oct 2026 replaced the row and dropped both, which failed
+    # validation (an App-claimed tool must declare its effect) and lost the
+    # per-person "always allow" policy until the next run put them back.
+    "effect": "write",
+    "approval": {
+        "default": "ask",
+        "allow_auto": True,
+        "label": "change stock items and units",
+    },
     # Tightened 7 Oct 2026: each rule stated once (the tool list is ~65% of
     # every prompt).
     "description": (
@@ -76,9 +103,19 @@ TOOL = {
         "op 'update': item_id plus ONLY the deltas — `changes`, `variant_changes`, "
         "`add_suppliers`; Norm merges, writes the whole item and reports anything "
         "Loaded didn't keep — never resend the item. op 'set_variant_unit': variant_id "
-        "+ unit_id. A changed unit needs its ratio, and each supplier keeps exactly "
-        "one defaultForSupplier — both checked before writing. Ids and units come from "
-        "get_stock."
+        "+ unit_id. op 'fix_received_unit': item_id + unit_id (+ period or invoice_ids) "
+        "rewrites the item's lines on RECEIVED invoices to that unit — quantity and "
+        "cost unchanged, so the cost per base unit changes — and moves its supplier "
+        "variants out of the old unit; one approval covers every invoice. It is the "
+        "only way to change a received invoice. A changed unit needs its ratio, and "
+        "each supplier keeps exactly one defaultForSupplier — both checked before "
+        "writing. op 'retire' / 'restore': item_id. op 'merge': item_id INTO "
+        "into_item_id — its invoices, variants, open orders, recipes and POS links "
+        "move, then it is retired (same unit type only). Units: 'update_unit' "
+        "(unit_id + name / ratio), 'delete_unit' (refused while in use), "
+        "'restore_unit', 'merge_units' (unit_id INTO into_unit_id, same type and "
+        "size). A merge that says 'in progress' is run again to finish. Ids and "
+        "units come from get_stock."
     ),
     "required_fields": ["op"],
     "optional_fields": [
@@ -89,11 +126,36 @@ TOOL = {
         "add_suppliers",
         "variant_id",
         "unit_id",
+        "from_unit",
+        "period",
+        "invoice_ids",
+        "include_reconciled",
+        "also_variants",
+        "remove_variants",
+        "into_item_id",
+        "into_unit_id",
+        "name",
+        "ratio",
     ],
     "field_descriptions": {
-        "op": "create | update | set_variant_unit. No default.",
+        "op": (
+            "create | update | set_variant_unit | fix_received_unit | retire | "
+            "restore | merge | update_unit | delete_unit | restore_unit | "
+            "merge_units. No default."
+        ),
         "item": "create: the full stock item.",
-        "item_id": "update: the stock item id (from get_stock).",
+        "item_id": (
+            "update / fix_received_unit / retire / restore: the stock item id "
+            "(from get_stock). merge: the item merged AWAY."
+        ),
+        "into_item_id": "merge: the item kept.",
+        "into_unit_id": "merge_units: the unit kept.",
+        "remove_variants": "update: suppliers[] entry ids (variant_id) to remove.",
+        "name": "update_unit: the unit's new name.",
+        "ratio": (
+            "update_unit: the unit's new size in its base unit (kg, L or each) — "
+            "everything already recorded in the unit is read at the new size."
+        ),
         "changes": (
             "update: top-level fields to set, in Loaded's names (e.g. "
             "{'minimumStockOnHandQuantity': 6}); deltas only."
@@ -110,28 +172,194 @@ TOOL = {
             "defaultForSupplier."
         ),
         "variant_id": "set_variant_unit: the suppliers[] entry id (36 characters).",
-        "unit_id": "set_variant_unit: the new unit id (36 characters).",
+        "unit_id": (
+            "set_variant_unit / fix_received_unit / the unit ops: the unit id (36 "
+            "characters; get_stock view 'reference', kind 'units'). merge_units: "
+            "the unit merged AWAY."
+        ),
+        "from_unit": (
+            "fix_received_unit: only lines and variants in this unit (id or name); "
+            "default: every unit other than unit_id."
+        ),
+        "period": (
+            "fix_received_unit: which received invoices to look through, in plain "
+            "English ('last 12 months' by default) — or pass invoice_ids instead."
+        ),
+        "invoice_ids": (
+            "fix_received_unit: the Loaded invoice ids to fix (from get_invoices), "
+            "instead of a period."
+        ),
+        "include_reconciled": (
+            "fix_received_unit: also change invoices reconciled against a statement "
+            "(default false — they are skipped and listed)."
+        ),
+        "also_variants": (
+            "fix_received_unit: also move the item's supplier variants out of the old "
+            "unit so future receives are right (default true)."
+        ),
     },
     # Real JSON types: shown as strings, the model wrapped them in quotes and
     # the old consolidator silently ignored them (27 Aug 2026).
     "field_schema": {
-        "op": {"type": "string", "enum": ["create", "update", "set_variant_unit"]},
+        "op": {
+            "type": "string",
+            "enum": [
+                "create",
+                "update",
+                "set_variant_unit",
+                "fix_received_unit",
+                "retire",
+                "restore",
+                "merge",
+                "update_unit",
+                "delete_unit",
+                "restore_unit",
+                "merge_units",
+            ],
+        },
         "item": {"type": "object"},
         "changes": {"type": "object"},
         "variant_changes": {"type": "array", "items": {"type": "object"}},
         "add_suppliers": {"type": "array", "items": {"type": "object"}},
+        "invoice_ids": {"type": "array", "items": {"type": "string"}},
+        "include_reconciled": {"type": "boolean"},
+        "also_variants": {"type": "boolean"},
+        "remove_variants": {"type": "array", "items": {"type": "string"}},
+        "ratio": {"type": "number"},
     },
     "consolidator_config": {
         # function_code injected at sync time. create 1, update 2 (read +
-        # PUT), set_variant_unit 1.
-        "max_api_calls": 3,
+        # PUT), set_variant_unit 1; fix_received_unit reads units, the item,
+        # the period and the feed, then per invoice a detail + PUT + read-back,
+        # plus one PATCH per variant — about 4 + 3n + v (6 invoices ≈ 26).
+        # A merge (23 Oct 2026) can need hundreds: it stops itself at _BUDGET
+        # (180) and is run again, so this is the sandbox's own cap.
+        "max_api_calls": 200,
         "allowed_write_actions": [
             "create_stock_item_raw",
             "update_stock_item_raw",
             "update_variant_unit_raw",
+            "update_invoice_raw",
+            "move_variant_raw",
+            "update_purchase_order_raw",
+            "loaded_legacy.patch_stock_item",
+            "loaded_legacy.update_pos_item_link",
+            "loaded_legacy.update_stock_unit",
+            "loaded_legacy.save_recipe_version",
         ],
     },
 }
+
+_HEADERS = {
+    "Content-Type": "application/json",
+    "x-loaded-company-id": "{{ creds.x_loaded_company_id }}",
+}
+_STOCK = "//api.loadedhub.com/1.0/stock/internal"
+
+
+def _endpoint(action, description, method, path, fields, body=None, ok=(200,)):
+    row = {
+        "action": action,
+        "engine_only": True,
+        "read_only": method == "GET",
+        "description": "[consolidator-only] " + description + " Called by "
+        "manage_stock_item; never bind this to an agent.",
+        "method": method,
+        "path_template": path,
+        "headers": dict(_HEADERS),
+        "required_fields": list(fields),
+        "field_mapping": {k: k for k in fields},
+        "field_descriptions": fields,
+        "success_status_codes": list(ok),
+        "response_ref_path": "",
+        "timeout_seconds": 60,
+        "response_transform": None,
+    }
+    if body:
+        row["request_body_template"] = body
+    return row
+
+
+#: The whole-invoice PUT behind op 'fix_received_unit'. Loaded has no line
+#: edit: a received invoice is changed by sending the complete detail back
+#: (it stays received — the 16 Oct 2026 GST repair did 64 this way).
+INVOICE_PUT = _endpoint(
+    "update_invoice_raw",
+    "Re-PUT a whole Loaded invoice (the complete detail from get_invoice_detail, "
+    "edited).",
+    "PUT",
+    _STOCK + "/invoices/{{ invoice_id }}",
+    {
+        "invoice_id": "The Loaded invoice id.",
+        "invoice": "The complete invoice detail to store.",
+    },
+    body="{{ invoice | tojson }}",
+    ok=(200, 204),
+)
+INVOICE_PUT["timeout_seconds"] = 30
+
+#: Engine-only endpoints this tool calls, written into spec.endpoints. The
+#: Catalogue page's four (23 Oct 2026) were each tried on Loaded's test
+#: company before use (docs/plans/stock-catalogue-page.md).
+ENDPOINTS = [
+    INVOICE_PUT,
+    _endpoint(
+        "get_stock_item_any_raw",
+        "One stock item, retired or not, with its supplier variants "
+        "(get_stock_item_full 404s on a retired item).",
+        "GET",
+        _STOCK + "/items/{{ item_id }}?includeDeleted=true",
+        {"item_id": "The stock item's id."},
+    ),
+    _endpoint(
+        "move_variant_raw",
+        "Move a supplier variant to another stock item (it keeps its id; Loaded "
+        "sorts out both items' default flags).",
+        "PATCH",
+        _STOCK + "/item-supplier-variant/{{ variant_id }}",
+        {
+            "variant_id": "The variant's id.",
+            "item_id": "The stock item it moves to.",
+        },
+        body='{"stockItemId": {{ item_id | tojson }}}',
+    ),
+    _endpoint(
+        "get_received_for_item_raw",
+        "Every received invoice holding a stock item, between two datetimes.",
+        "GET",
+        _STOCK + "/stock-received?from={{ from }}&to={{ to }}&property=Received"
+        "&itemId={{ item_id }}",
+        {
+            "item_id": "The stock item's id.",
+            "from": "ISO datetime.",
+            "to": "ISO datetime.",
+        },
+    ),
+    _endpoint(
+        "update_purchase_order_raw",
+        "Re-PUT a whole purchase order (the complete detail from "
+        "get_purchase_order_detail, edited; a line left out is deleted).",
+        "PUT",
+        _STOCK + "/purchase-orders/{{ order_id }}",
+        {
+            "order_id": "The purchase order's id.",
+            "order": "The complete purchase order to store.",
+        },
+        body="{{ order | tojson }}",
+        ok=(200, 204),
+    ),
+]
+
+
+def build_tool() -> dict:
+    """TOOL with its function_code, as installed."""
+    tool = dict(TOOL)
+    tool["consolidator_config"] = {
+        **TOOL["consolidator_config"],
+        "function_code": (_DIR / "manage_stock_item.py").read_text(encoding="utf-8"),
+    }
+    return tool
+
 
 #: The purchase-order resolver's stock-code path needs the codes.
 CODES_TOOL = {
@@ -189,6 +417,17 @@ def main(dry_run: bool = False) -> None:
             "update_stock_item_raw",
             "get_stock_item_full",
             "get_stock_items_raw",
+            "get_stock_units",
+            "get_suppliers",
+            "get_invoice_detail",
+            "get_received_invoices",
+            # The catalogue ops' reads: get_stock_items_detail_raw is installed by
+            # sync_stock_config.py, get_all_recipes and the purchase-order reads
+            # were there before.
+            "get_stock_items_detail_raw",
+            "get_all_recipes",
+            "get_purchase_order_detail",
+            "list_purchase_orders",
         ):
             if needed not in by_action:
                 raise SystemExit(
@@ -218,19 +457,38 @@ def main(dry_run: bool = False) -> None:
             by_action[raw_name] = raw
             changes.append(f"spec: added {raw_name}")
 
+        # ── 1b. The endpoints (never shown to a model) ───────────────────
+        endpoints = [dict(e) for e in (spec.endpoints or [])]
+        for ep in ENDPOINTS:
+            have = next((e for e in endpoints if e.get("action") == ep["action"]), None)
+            want = dict(ep)
+            if have and have.get("added_at"):
+                want["added_at"] = have["added_at"]
+            if have is None:
+                want.setdefault("added_at", _now())
+                endpoints.append(want)
+                changes.append(f"spec endpoints: added {ep['action']}")
+            elif have != want:
+                endpoints[endpoints.index(have)] = want
+                changes.append(f"spec endpoints: updated {ep['action']}")
+            by_action[ep["action"]] = want
+        if not dry_run and endpoints != [dict(e) for e in (spec.endpoints or [])]:
+            spec.endpoints = endpoints
+            flag_modified(spec, "endpoints")
+
         # ── 2. The consolidator ───────────────────────────────────────────
-        tool = dict(TOOL)
-        tool["consolidator_config"] = {
-            **TOOL["consolidator_config"],
-            "function_code": (_DIR / "manage_stock_item.py").read_text(
-                encoding="utf-8"
-            ),
-        }
+        tool = build_tool()
         if NEW in by_action:
-            keep = by_action[NEW].get("added_at")
+            live = by_action[NEW]
+            keep = live.get("added_at")
             if keep:
                 tool["added_at"] = keep
-            if by_action[NEW] != tool:
+            # Keys another installer owns (approval policy, levels, …) are kept
+            # as they are, never silently dropped by this one.
+            for k, v in live.items():
+                if k not in tool:
+                    tool[k] = v
+            if live != tool:
                 tools[[t.get("action") for t in tools].index(NEW)] = tool
                 changes.append(f"spec: updated {NEW}")
         else:

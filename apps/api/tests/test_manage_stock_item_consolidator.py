@@ -1,4 +1,5 @@
-"""manage_stock_item — one stock write tool: create, update, set_variant_unit.
+"""manage_stock_item — one stock write tool: create, update, set_variant_unit,
+fix_received_unit.
 
 Exec'd under the REAL sandbox namespace. The facts pinned, each from
 production:
@@ -17,6 +18,11 @@ production:
 - a variant field Loaded doesn't have is skipped, not counted as a change;
   a unit needs its ratio; a supplier keeps exactly one default variant;
   an update is read back and anything Loaded didn't keep is reported.
+- fix_received_unit (18 Oct 2026, thread bf840172): a Count item received six
+  times in a Weight unit priced a bun at $11.25; the op re-PUTs each received
+  invoice with ONLY the line's unit fields changed, reads it back, and moves
+  the variants out of the old unit — unreceived and reconciled invoices are
+  skipped with a reason, never silently.
 """
 
 import copy
@@ -416,3 +422,317 @@ class TestReviewFixes:
             "update_stock_item_raw",
             "get_stock_item_full",
         ]
+
+
+# ------------------------------------------------------- fix_received_unit ----
+
+ITEM_ID = "1eeee634-b848-4b84-a733-62696afb1c0f"
+EACH = "54db3be3-3274-4f6b-9ca0-eedae3b40a28"
+GRAMS80 = "c54e5f20-471b-4595-8b92-fb5a455e1ca3"
+KILO = "78b83be4-099a-4b0a-8ac2-e223073764a3"
+BUN_VAR1 = "834915dc-a186-4461-98d9-08df2bb4bf94"
+BUN_VAR2 = "88c9daf9-30d2-405b-98da-08df2bb4bf94"
+INV_A = "38fa479b-53c2-41c2-6e00-08dee1dab56a"
+INV_B = "4b4b4b4b-4b4b-4b4b-8b4b-4b4b4b4b4b4b"
+INV_OPEN = "5c5c5c5c-5c5c-4c5c-8c5c-5c5c5c5c5c5c"
+INV_RECON = "6d6d6d6d-6d6d-4d6d-8d6d-6d6d6d6d6d6d"
+INV_EACH = "7e7e7e7e-7e7e-4e7e-8e7e-7e7e7e7e7e7e"
+
+UNITS = [
+    {"id": EACH, "name": "Each", "ratio": 1.0},
+    {"id": GRAMS80, "name": "80 Grams", "ratio": 0.08},
+    {"id": KILO, "name": "Kilo", "ratio": 1.0},
+]
+
+BUN_ITEM = {
+    "id": ITEM_ID,
+    "name": "80g Potato Bun",
+    "unitType": 2,
+    "countingUnitId": EACH,
+    "suppliers": [
+        {"id": BUN_VAR1, "supplierId": "sup-mhl", "unitId": GRAMS80, "unitCost": 0.9},
+        {
+            "id": BUN_VAR2,
+            "supplierId": "sup-mhl",
+            "stockCode": "BAK3007",
+            "unitId": GRAMS80,
+            "unitCost": 0.9,
+            "defaultForSupplier": True,
+        },
+    ],
+}
+
+
+def _detail(inv_id, number, received=True, reconciled=False, bun_unit=GRAMS80):
+    bun_name = {GRAMS80: "80 Grams", EACH: "Each"}[bun_unit]
+    return {
+        "id": inv_id,
+        "referenceNumber": number,
+        "isReceived": received,
+        "reconciled": reconciled,
+        "issuedAt": "2026-07-21T00:00:00",
+        "subtotal": 118.0,
+        "taxAmount": 11.8,
+        "total": 129.8,
+        "lines": [
+            {
+                "id": "l-bun",
+                "description": "80g Potato Bun",
+                "unit": bun_name,
+                "quantityOrdered": 20,
+                "quantityReceived": 20,
+                "unitCostExclTax": 0.9,
+                "totalCostExclTax": 18.0,
+                "linkedUnitId": bun_unit,
+                "linkedUnitRatio": 0.08 if bun_unit == GRAMS80 else 1.0,
+                "linkedItemId": ITEM_ID,
+            },
+            {
+                "id": "l-bacon",
+                "description": "Bacon",
+                "unit": "Kilo",
+                "quantityReceived": 5,
+                "unitCostExclTax": 20.0,
+                "totalCostExclTax": 100.0,
+                "linkedUnitId": KILO,
+                "linkedUnitRatio": 1.0,
+                "linkedItemId": "item-bacon",
+            },
+        ],
+    }
+
+
+def _feed_row(inv_id, item_id=ITEM_ID, unit_name="80 Grams"):
+    return {
+        "id": inv_id,
+        "lines": [{"itemId": item_id, "unitName": unit_name, "quantityReceived": 20}],
+    }
+
+
+class InvoiceApi(Api):
+    """Loaded keeps what was PUT; the read-back sees the write."""
+
+    def __init__(self, details=None, feed=None):
+        super().__init__()
+        self.details = details or {
+            INV_A: _detail(INV_A, "OMO1060033"),
+            INV_B: _detail(INV_B, "OMO1044189"),
+            INV_OPEN: _detail(INV_OPEN, "OMO1070000", received=False),
+            INV_RECON: _detail(INV_RECON, "OMO1035255", reconciled=True),
+            INV_EACH: _detail(INV_EACH, "OMO1017922", bun_unit=EACH),
+        }
+        self.feed = (
+            feed
+            if feed is not None
+            else [
+                _feed_row(INV_A),
+                _feed_row(INV_B),
+                _feed_row(INV_EACH, unit_name="Each"),  # already right
+                _feed_row("other", item_id="item-bacon", unit_name="Kilo"),
+            ]
+        )
+        self.puts = []
+        self.patches = []
+        self.window = None
+
+    def call_api(self, connector, action, params=None):
+        p = dict(params or {})
+        if connector == "norm" and action == "resolve_dates":
+            self.calls.append((action, p))
+            return {
+                "window": {
+                    "start": "2025-10-18T07:00:00+11:00",
+                    "end": "2026-10-18T06:59:59+11:00",
+                }
+            }
+        if action == "get_stock_units":
+            self.calls.append((action, p))
+            return copy.deepcopy(UNITS)
+        if action == "get_suppliers":
+            self.calls.append((action, p))
+            return [{"id": "sup-mhl", "name": "M H Luxe"}]
+        if action == "get_stock_item_full":
+            self.calls.append((action, p))
+            return copy.deepcopy(BUN_ITEM)
+        if action == "get_received_invoices":
+            self.calls.append((action, p))
+            self.window = (p.get("from"), p.get("to"))
+            return copy.deepcopy(self.feed)
+        if action == "get_invoice_detail":
+            self.calls.append((action, p))
+            d = self.details.get(p.get("invoice_id"))
+            return copy.deepcopy(d) if d else {"error": "404 not found"}
+        if action == "update_invoice_raw":
+            self.calls.append((action, p))
+            self.puts.append(p)
+            self.details[p["invoice_id"]] = copy.deepcopy(p["invoice"])
+            return {"ok": True}
+        if action == "update_variant_unit_raw":
+            self.calls.append((action, p))
+            self.patches.append(p)
+            return {"ok": True}
+        return super().call_api(connector, action, params)
+
+
+def fix(api, **params):
+    return run(api, op="fix_received_unit", item_id=ITEM_ID, unit_id=EACH, **params)
+
+
+class TestFixReceivedUnit:
+    def test_the_period_path_rewrites_only_the_unit_fields(self):
+        api = InvoiceApi()
+        out = fix(api, period="last 12 months")
+        assert out["result"] == "updated"
+        # The feed decides which invoices: the two in "80 Grams" — not the one
+        # already in Each, not the bacon-only invoice.
+        assert api.window == ("2025-10-18T07:00:00+11:00", "2026-10-18T06:59:59+11:00")
+        assert [p["invoice_id"] for p in api.puts] == [INV_A, INV_B]
+        body = api.puts[0]["invoice"]
+        bun, bacon = body["lines"]
+        assert bun["unit"] == "Each"
+        assert bun["linkedUnitId"] == EACH
+        assert bun["linkedUnitRatio"] == 1.0
+        # the money does not move — the price per base unit does
+        assert (bun["quantityReceived"], bun["unitCostExclTax"]) == (20, 0.9)
+        assert bun["totalCostExclTax"] == 18.0
+        assert bacon == _detail(INV_A, "OMO1060033")["lines"][1]
+        assert (body["subtotal"], body["taxAmount"], body["total"]) == (
+            118.0,
+            11.8,
+            129.8,
+        )
+        assert body["isReceived"] is True
+        # read back: still received, totals add up, the line is in the unit
+        assert out["invoices"] == [
+            {
+                "invoice": "OMO1060033",
+                "date": "2026-07-21",
+                "lines_changed": 1,
+                "still_received": True,
+                "adds_up": True,
+                "lines_now_in_unit": 1,
+            },
+            {
+                "invoice": "OMO1044189",
+                "date": "2026-07-21",
+                "lines_changed": 1,
+                "still_received": True,
+                "adds_up": True,
+                "lines_now_in_unit": 1,
+            },
+        ]
+        # both variants in the old unit follow, so the next receive is right
+        assert [(p["variant_id"], p["unit_id"]) for p in api.patches] == [
+            (BUN_VAR1, EACH),
+            (BUN_VAR2, EACH),
+        ]
+        assert (
+            out["variants"][1]["supplier"] == "Supplier BAK3007"
+        )  # no names: not previewing
+        assert out["skipped"] == []
+        actions = [a for a, _ in api.calls]
+        assert actions[:4] == [
+            "get_stock_units",
+            "get_stock_item_full",
+            "resolve_dates",
+            "get_received_invoices",
+        ]
+        assert "get_suppliers" not in actions  # names only while previewing
+
+    def test_explicit_ids_skip_open_and_reconciled_invoices_with_a_reason(self):
+        api = InvoiceApi()
+        out = fix(api, invoice_ids=[INV_A, INV_OPEN, INV_RECON, INV_EACH, "nope"])
+        assert [p["invoice_id"] for p in api.puts] == [INV_A]
+        assert out["skipped"] == [
+            {
+                "invoice": "OMO1070000",
+                "why": "not received — open it with the receive tool instead",
+            },
+            {
+                "invoice": "OMO1035255",
+                "why": "reconciled against a statement — pass include_reconciled to change it",
+            },
+            {"invoice": "OMO1017922", "why": "no line of this item in another unit"},
+            {"invoice_id": "nope", "why": "404 not found"},
+        ]
+        assert "resolve_dates" not in [a for a, _ in api.calls]
+
+    def test_include_reconciled_writes_the_reconciled_one_too(self):
+        api = InvoiceApi()
+        out = fix(api, invoice_ids=f"{INV_A},{INV_RECON}", include_reconciled=True)
+        assert [p["invoice_id"] for p in api.puts] == [INV_A, INV_RECON]
+        assert out["skipped"] == []
+
+    def test_from_unit_by_name_limits_lines_and_variants(self):
+        api = InvoiceApi()
+        out = fix(api, invoice_ids=[INV_A], from_unit="Kilo")
+        # the bun lines are in 80 Grams, the variants too: nothing in Kilo
+        assert out["result"] == "nothing to fix"
+        assert api.puts == [] and api.patches == []
+        assert "no line of this item" in out["skipped"][0]["why"]
+        api = InvoiceApi()
+        out = fix(api, invoice_ids=[INV_A], from_unit="80 grams")
+        assert [p["invoice_id"] for p in api.puts] == [INV_A]
+        assert len(api.patches) == 2
+        bad = fix(InvoiceApi(), from_unit="Pallet")
+        assert "not one of this venue's units" in bad["error"]
+
+    def test_nothing_in_the_period_writes_nothing(self):
+        api = InvoiceApi(feed=[_feed_row(INV_EACH, unit_name="Each")])
+        out = fix(api, period="last month")
+        assert out["result"] == "nothing to fix"
+        assert "no received invoice in the period" in out["note"]
+        assert api.puts == [] and api.patches == []
+
+    def test_also_variants_false_leaves_the_variants(self):
+        api = InvoiceApi()
+        out = fix(api, invoice_ids=[INV_A], also_variants=False)
+        assert out["result"] == "updated"
+        assert api.patches == [] and out["variants"] == []
+
+    def test_short_or_missing_ids_are_refused_before_any_call(self):
+        api = InvoiceApi()
+        assert (
+            "36-character"
+            in run(api, op="fix_received_unit", item_id="1eeee634")["error"]
+        )
+        assert (
+            "36-character" in run(api, op="fix_received_unit", item_id=ITEM_ID)["error"]
+        )
+        assert api.calls == []
+        unknown = run(api, op="fix_received_unit", item_id=ITEM_ID, unit_id=INV_A)
+        assert "not one of this venue's units" in unknown["error"]
+
+    def test_a_read_back_that_lost_the_change_is_flagged(self):
+        class Forgetful(InvoiceApi):
+            def call_api(self, connector, action, params=None):
+                if action == "update_invoice_raw":
+                    self.calls.append((action, dict(params or {})))
+                    self.puts.append(dict(params or {}))
+                    return {"ok": True}  # but Loaded kept the old detail
+                return super().call_api(connector, action, params)
+
+        api = Forgetful()
+        out = fix(api, invoice_ids=[INV_A])
+        entry = out["invoices"][0]
+        assert entry["lines_now_in_unit"] == 0
+        assert "check it" in entry["warning"]
+
+    def test_a_failed_put_is_reported_per_invoice_and_the_rest_continue(self):
+        class Flaky(InvoiceApi):
+            def call_api(self, connector, action, params=None):
+                if action == "update_invoice_raw" and params["invoice_id"] == INV_A:
+                    self.calls.append((action, dict(params or {})))
+                    return {"error": "500 from Loaded"}
+                return super().call_api(connector, action, params)
+
+        api = Flaky()
+        out = fix(api, invoice_ids=[INV_A, INV_B])
+        assert out["invoices"][0] == {
+            "invoice": "OMO1060033",
+            "date": "2026-07-21",
+            "lines_changed": 1,
+            "error": "500 from Loaded",
+        }
+        assert out["invoices"][1]["still_received"] is True
+        assert [p["invoice_id"] for p in api.puts] == [INV_B]

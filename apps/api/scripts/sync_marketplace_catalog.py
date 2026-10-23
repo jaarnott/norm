@@ -421,6 +421,16 @@ APPS = [
                 connections=["loaded_legacy"],
             ),
             _c(
+                "stock_catalogue",
+                page=_p("stock-catalogue", "Catalogue", "Package"),
+                full_width=True,
+                description="The venue's stock items, units and suppliers: edit, "
+                "retire, restore and merge them.",
+                # Unit changes and item merges go through Loaded's older web API
+                # (docs/plans/stock-catalogue-page.md).
+                connections=["loadedhub", "loaded_legacy"],
+            ),
+            _c(
                 "purchase_order_editor",
                 description="Editable purchase-order draft; Place Order submits to Loaded.",
             ),

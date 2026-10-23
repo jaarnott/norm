@@ -1,4 +1,4 @@
-import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, LayoutGrid, Grid2x2, Gavel, ClipboardList, CalendarDays, Inbox, Contact, Settings, type LucideIcon } from 'lucide-react';
+import { Calendar, Users, Timer, BarChart3, ShoppingCart, Receipt, LayoutDashboard, BookOpen, ChefHat, LayoutGrid, Grid2x2, Gavel, ClipboardList, CalendarDays, Inbox, Contact, Settings, Package, type LucideIcon } from 'lucide-react';
 import { resolveAppIcon } from '../ui/appIcons';
 import { tradingMonday, tradingWeekRange } from '../../lib/rosterTime';
 
@@ -235,6 +235,21 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     icon: Gavel,
     agent: 'procurement',
     component: 'supplier_tenders',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    // Loaded Stock → Catalogue (docs/plans/stock-catalogue-page.md): a venue's
+    // stock items, units and suppliers — edit, retire/delete, restore, merge.
+    // Self-loading via /api/stock-catalogue (routers/stock_catalogue.py), which
+    // runs get_stock / manage_stock_item / manage_supplier. Unit changes and
+    // item merges also need the venue's Loaded Legacy login.
+    id: 'stock-catalogue',
+    app: 'loaded-stock',
+    connections: ['loadedhub', 'loaded_legacy'],
+    label: 'Catalogue',
+    icon: Package,
+    agent: 'procurement',
+    component: 'stock_catalogue',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   // Norm Functions (native module — app 'functions', member 'functions'). Each page loads its own

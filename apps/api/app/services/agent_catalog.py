@@ -206,6 +206,7 @@ REGISTERED_COMPONENTS = frozenset(
         "recipe_editor",
         "menu_engineering",
         "supplier_tenders",
+        "stock_catalogue",
         "tool_approval",
         "receive_invoice_editor",
         "venue_picker",

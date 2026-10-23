@@ -17,6 +17,11 @@
 #   reference            kind = units | suppliers | groups | templates, as
 #                        slim rows with a name filter.
 #   minimums             par levels, converted into counting units.
+#   catalogue            the Catalogue page (Loaded Stock): every item with
+#                        its units and supplier variants, every unit and
+#                        supplier with how many items use it, and the groups —
+#                        one call. include_deleted adds the deactivated ones,
+#                        marked. Too big for a chat answer; for the page.
 #
 # It absorbs, on the agent surface, get_stock_items, get_stock_on_hand_for_item,
 # get_stock_on_hand, get_stock_units, get_suppliers, get_stock_item_groups,
@@ -37,7 +42,7 @@
 #
 # Requires consolidator_config: {"max_api_calls": 8}
 
-_VIEWS = ("items", "on_hand", "reference", "minimums")
+_VIEWS = ("items", "on_hand", "reference", "minimums", "catalogue")
 _KINDS = ("units", "suppliers", "groups", "templates")
 
 #: Category words a caller may use for template= ; the value is Loaded's
@@ -862,6 +867,227 @@ def _minimums(params, venue, call_api):
     )
 
 
+# ------------------------------------------------------------ catalogue ----
+#
+# The Catalogue page's one read (23 Oct 2026). Loaded keeps a retired item out
+# of its stock API's item list whatever the query says (includeDeleted,
+# includeRemoved: 1,123 either way at La Zeppa); its older list returns all of
+# them, 1,304 of 2,421 carrying datestampRemoved — but without their supplier
+# variants. So live items come from the stock API with their variants, and
+# retired ones from the older list, marked. Suppliers are always read with the
+# retired ones, so a variant still naming one shows its name.
+#
+# Units: Norm marks every non-measurement unit (Box, Bunch …) deleted on the
+# way in (invoice_units.HIDDEN_UNIT_MARK, 1970-01-01). In Loaded those are
+# live, so here they are live too, flagged hidden_by_norm.
+
+_HIDDEN_UNIT_MARK = "1970-01-01T00:00:00+00:00"
+
+
+def _unit_deleted_at(u):
+    at = u.get("datestampDeleted")
+    if not at or str(at) == _HIDDEN_UNIT_MARK:
+        return None
+    return at
+
+
+def _catalogue(params, venue, call_api, call_api_parallel):
+    include_deleted = _flag(params.get("include_deleted"))
+    calls = [
+        ("loadedhub", "get_stock_items_detail_raw", {"venue": venue}),
+        ("loadedhub", "get_stock_units", {"venue": venue}),
+        ("loadedhub", "get_suppliers", {"venue": venue, "include_deleted": "true"}),
+        ("loadedhub", "get_stock_item_groups", {"venue": venue}),
+    ]
+    if include_deleted:
+        calls.append(("loadedhub", "get_stock_items_with_codes", {"venue": venue}))
+    got = _fetch(call_api, call_api_parallel, calls)
+    raw_items, raw_units, raw_suppliers, raw_groups = got[:4]
+    for what, raw in (
+        ("the stock items", raw_items),
+        ("the units", raw_units),
+        ("the suppliers", raw_suppliers),
+    ):
+        if _api_error(raw) or not isinstance(raw, list):
+            return {"error": _loaded_failed(what, raw)}
+
+    units = {u.get("id"): u for u in raw_units if isinstance(u, dict) and u.get("id")}
+    suppliers = {
+        s.get("id"): s for s in raw_suppliers if isinstance(s, dict) and s.get("id")
+    }
+
+    def unit_name(uid):
+        return (units.get(uid) or {}).get("name")
+
+    def supplier_name(sid):
+        return (suppliers.get(sid) or {}).get("name")
+
+    unit_uses = {}
+    supplier_uses = {}
+
+    def used(counter, key, item_id):
+        if key:
+            counter.setdefault(key, set()).add(item_id)
+
+    items = []
+    live_ids = set()
+    for it in raw_items:
+        if not isinstance(it, dict) or not it.get("id") or it.get("datestampRemoved"):
+            continue
+        live_ids.add(it["id"])
+        variants = []
+        for v in it.get("suppliers") or []:
+            if not isinstance(v, dict):
+                continue
+            used(unit_uses, v.get("unitId"), it["id"])
+            used(supplier_uses, v.get("supplierId"), it["id"])
+            variants.append(
+                {
+                    "variant_id": v.get("id"),
+                    "supplier_id": v.get("supplierId"),
+                    "supplier": supplier_name(v.get("supplierId")),
+                    "stock_code": v.get("stockCode"),
+                    "unit_id": v.get("unitId"),
+                    "unit": unit_name(v.get("unitId")),
+                    "unit_cost": v.get("unitCost"),
+                    "default": bool(v.get("defaultForSupplier")),
+                }
+            )
+        for key in ("countingUnitId", "orderingUnitId"):
+            used(unit_uses, it.get(key), it["id"])
+        used(supplier_uses, it.get("defaultSupplierId"), it["id"])
+        items.append(
+            {
+                "id": it["id"],
+                "name": it.get("name"),
+                "group_id": it.get("groupId"),
+                "group": it.get("groupName"),
+                "unit_type": it.get("unitType"),
+                "counting_unit_id": it.get("countingUnitId"),
+                "counting_unit": it.get("countingUnitName")
+                or unit_name(it.get("countingUnitId")),
+                "counting_unit_ratio": it.get("countingUnitRatio"),
+                "ordering_unit_id": it.get("orderingUnitId"),
+                "ordering_unit": it.get("orderingUnitName")
+                or unit_name(it.get("orderingUnitId")),
+                "ordering_unit_ratio": it.get("orderingUnitRatio"),
+                "default_supplier_id": it.get("defaultSupplierId"),
+                "default_supplier": supplier_name(it.get("defaultSupplierId")),
+                "sales_tax": it.get("globalSalesTaxSortOrder"),
+                "system_item": bool(it.get("systemItem")),
+                "deactivated": False,
+                "variants": variants,
+            }
+        )
+
+    retired_unread = None
+    if include_deleted:
+        legacy = got[4]
+        if _api_error(legacy) or not isinstance(legacy, list):
+            retired_unread = _loaded_failed("the deactivated stock items", legacy)
+        else:
+            for it in legacy:
+                if not isinstance(it, dict) or not it.get("datestampRemoved"):
+                    continue
+                if it.get("id") in live_ids:
+                    continue
+                items.append(
+                    {
+                        "id": it.get("id"),
+                        "name": it.get("name"),
+                        "group_id": it.get("groupId"),
+                        "group": it.get("groupName"),
+                        "counting_unit_id": it.get("countingUnitId"),
+                        "counting_unit": it.get("countingUnitName"),
+                        "counting_unit_ratio": it.get("countingUnitRatio"),
+                        "ordering_unit_id": it.get("orderingUnitId"),
+                        "ordering_unit": it.get("orderingUnitName"),
+                        "ordering_unit_ratio": it.get("orderingUnitRatio"),
+                        "default_supplier_id": it.get("defaultSupplierId"),
+                        "default_supplier": it.get("defaultSupplierName")
+                        or supplier_name(it.get("defaultSupplierId")),
+                        "deactivated": True,
+                        "deactivated_at": it.get("datestampRemoved"),
+                        "variants": [],
+                    }
+                )
+    items.sort(key=lambda x: (_lower(x["name"]), str(x["id"])))
+
+    unit_rows = []
+    for uid, u in units.items():
+        gone = _unit_deleted_at(u)
+        if gone and not include_deleted:
+            continue
+        row = {
+            "id": uid,
+            "name": u.get("name"),
+            "type": u.get("stockUnitType"),
+            "ratio": u.get("ratio"),
+            "items": len(unit_uses.get(uid) or ()),
+            "deactivated": bool(gone),
+        }
+        if gone:
+            row["deactivated_at"] = gone
+        if str(u.get("datestampDeleted")) == _HIDDEN_UNIT_MARK:
+            row["hidden_by_norm"] = True
+        unit_rows.append(row)
+    unit_rows.sort(
+        key=lambda x: (_lower(x["type"]), _num(x["ratio"]) or 0, _lower(x["name"]))
+    )
+
+    supplier_rows = []
+    for sid, s in suppliers.items():
+        if s.get("removedAt") and not include_deleted:
+            continue
+        row = {
+            "id": sid,
+            "name": s.get("name"),
+            "contact": s.get("contactName"),
+            "email": _primary_email(s),
+            "phone": s.get("phone1"),
+            "customer_number": s.get("customerNumber"),
+            "last_order_at": s.get("lastOrderAt"),
+            "items": len(supplier_uses.get(sid) or ()),
+            "deactivated": bool(s.get("removedAt")),
+        }
+        if s.get("removedAt"):
+            row["deactivated_at"] = s.get("removedAt")
+        supplier_rows.append(row)
+    supplier_rows.sort(key=lambda x: _lower(x["name"]))
+
+    groups = []
+    for g in _as_list(raw_groups, "groups"):
+        if isinstance(g, dict) and g.get("id"):
+            groups.append(
+                {
+                    "id": g.get("id"),
+                    "name": g.get("name"),
+                    "category": g.get("categoryName"),
+                }
+            )
+    groups.sort(key=lambda x: (_lower(x["category"]), _lower(x["name"])))
+
+    out = {
+        "venue": venue,
+        "include_deleted": include_deleted,
+        "items": items,
+        "units": unit_rows,
+        "suppliers": supplier_rows,
+        "groups": groups,
+        "counts": {
+            "items": sum(1 for i in items if not i["deactivated"]),
+            "items_deactivated": sum(1 for i in items if i["deactivated"]),
+            "units": sum(1 for u in unit_rows if not u["deactivated"]),
+            "units_deactivated": sum(1 for u in unit_rows if u["deactivated"]),
+            "suppliers": sum(1 for s in supplier_rows if not s["deactivated"]),
+            "suppliers_deactivated": sum(1 for s in supplier_rows if s["deactivated"]),
+        },
+    }
+    if retired_unread:
+        out["warning"] = retired_unread
+    return out
+
+
 # ------------------------------------------------------------------ run ----
 
 
@@ -878,4 +1104,6 @@ def run(params, call_api, log, call_api_parallel=None):
         return _on_hand(params, venue, call_api, call_api_parallel, log)
     if view == "reference":
         return _reference(params, venue, call_api, call_api_parallel)
+    if view == "catalogue":
+        return _catalogue(params, venue, call_api, call_api_parallel)
     return _minimums(params, venue, call_api)

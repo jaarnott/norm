@@ -35,6 +35,33 @@ FUNCTION_CODE_PATH = (
 )
 SHAPES_PATH = FUNCTION_CODE_PATH.parent / "shapes.json"
 
+#: Engine-only endpoints the tool reads (merged into the spec by action).
+ENDPOINTS = [
+    {
+        # The Catalogue page's item list (view 'catalogue', 23 Oct 2026): the
+        # stock API's whole list, each item with its supplier variants, raw.
+        # get_stock_item_minimums is the same URL but shaped down to par levels.
+        "action": "get_stock_items_detail_raw",
+        "description": (
+            "Every live stock item with its units and supplier variants "
+            "(suppliers[]). Loaded leaves retired items out whatever the query."
+        ),
+        "method": "GET",
+        "path_template": "//api.loadedhub.com/1.0/stock/internal/items",
+        "headers": {
+            "Content-Type": "application/json",
+            "x-loaded-company-id": "{{ creds.x_loaded_company_id }}",
+        },
+        "required_fields": [],
+        "field_mapping": {},
+        "field_descriptions": {},
+        "success_status_codes": [200],
+        "timeout_seconds": 60,
+        "read_only": True,
+        "engine_only": True,
+    },
+]
+
 TOOL = {
     "action": "get_stock",
     "method": "GET",  # read-only consolidator: auto-executes
@@ -50,8 +77,10 @@ TOOL = {
         "exactly like a missing item. 'on_hand': stock and value for an item_id or a "
         "whole template ('Food' / 'Beverage' / 'Other Stock' or a title; top rows plus "
         "'(others)'). 'reference': units | suppliers | groups | templates. 'minimums': "
-        "par levels in counting units. Before manage_stock_item (op 'update'), fetch "
-        "the item here and change only what's needed. Never guess an item id."
+        "par levels in counting units. 'catalogue' is the Catalogue page's whole "
+        "list — too big for a chat answer, never use it here. Before manage_stock_item "
+        "(op 'update'), fetch the item here and change only what's needed. Never "
+        "guess an item id."
     ),
     "required_fields": [],
     "optional_fields": [
@@ -71,7 +100,10 @@ TOOL = {
         "include_deleted",
     ],
     "field_descriptions": {
-        "view": "'items' (default) | 'on_hand' | 'reference' | 'minimums'.",
+        "view": (
+            "'items' (default) | 'on_hand' | 'reference' | 'minimums' | 'catalogue' "
+            "(the Catalogue page only)."
+        ),
         "item_id": (
             "One stock item — items: that item; on_hand: its count; minimums: its par."
         ),
@@ -97,7 +129,10 @@ TOOL = {
         "top": "on_hand template: rows before '(others)' (default 50).",
         "sort_by": "on_hand template: 'value' (default) | 'quantity' | 'name'.",
         "kind": "reference: 'units' | 'suppliers' | 'groups' | 'templates'.",
-        "include_deleted": "reference: include deleted units / removed suppliers.",
+        "include_deleted": (
+            "reference / catalogue: include deactivated units, suppliers (and, in "
+            "catalogue, items)."
+        ),
     },
     # A full-catalogue listing (~1,000 slim {id, name} rows) must survive the
     # tool-result slimmer when explicitly requested via limit.
@@ -111,6 +146,7 @@ TOOL = {
     },
     "max_result_chars": 80_000,
     "read_only": True,
+    "effect": "read",
     "consolidator_config": {
         # function_code injected at sync time. Budget: the heaviest path is a
         # bulk read at detail 'summary' — 2 lookup lists + one call per item,
@@ -164,26 +200,43 @@ def main(dry_run: bool = False) -> None:
         )
         if not spec:
             raise SystemExit("loadedhub ConnectionSpec not found")
+        endpoints = [dict(e) for e in (spec.endpoints or [])]
+        have = {e.get("action"): i for i, e in enumerate(endpoints)}
+        endpoint_changes = []
+        for ep in ENDPOINTS:
+            i = have.get(ep["action"])
+            if i is None:
+                endpoints.append(dict(ep))
+                endpoint_changes.append(f"added {ep['action']}")
+            elif {**endpoints[i], **ep} != endpoints[i]:
+                endpoints[i] = {**endpoints[i], **ep}
+                endpoint_changes.append(f"updated {ep['action']}")
         tools = [dict(t) for t in (spec.tools or [])]
         idx = next(
             (i for i, t in enumerate(tools) if t.get("action") == tool["action"]),
             None,
         )
-        if idx is not None and tools[idx] == tool:
+        if idx is not None:
+            # Keep what other installers own on the live row (approval labels,
+            # added_at …): replacing the whole row used to drop them.
+            for key, value in tools[idx].items():
+                tool.setdefault(key, value)
+        if idx is not None and tools[idx] == tool and not endpoint_changes:
             print("get_stock: already up to date")
             return
         if idx is None:
             tools.append(tool)
             what = "added"
         else:
-            keep = tools[idx].get("added_at")
-            if keep:
-                tool["added_at"] = keep
             tools[idx] = tool
             what = "updated"
+        if endpoint_changes:
+            what += " (endpoints: " + ", ".join(endpoint_changes) + ")"
         if dry_run:
             print(f"DRY RUN — would have {what} get_stock")
             return
+        spec.endpoints = endpoints
+        flag_modified(spec, "endpoints")
         spec.tools = tools
         flag_modified(spec, "tools")
         spec.version = (spec.version or 0) + 1

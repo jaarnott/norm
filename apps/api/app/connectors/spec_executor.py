@@ -286,7 +286,9 @@ def execute_http(
             method=rendered.method,
             url=rendered.url,
             headers=rendered.headers,
-            json=rendered.body if isinstance(rendered.body, dict) else None,
+            # A list is a JSON body too (a JSON Patch is one): until Oct 2026 a
+            # list body was dropped, and the request went out empty.
+            json=rendered.body if isinstance(rendered.body, (dict, list)) else None,
             content=rendered.body if isinstance(rendered.body, str) else None,
             auth=httpx_auth,
             timeout=float(timeout),

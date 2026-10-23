@@ -14,6 +14,12 @@ What this puts in the shared config DB, idempotently, on the loadedhub spec:
             remove_alias (a write: asks first; each person may switch it to
             "always allow") — config/consolidators/manage_supplier.py
 
+23 Oct 2026, for the Catalogue page (docs/plans/stock-catalogue-page.md):
+ops update, retire, restore and merge, and two more endpoints —
+update_supplier_raw (the whole-record PUT) and get_invoiced_for_supplier_raw
+(the supplier's invoices, for the merge card). The merge itself is Loaded
+Legacy's merge_suppliers (sync_loaded_legacy_spec.py — run that first).
+
 The App claim (Loaded Stock → manage_supplier) lives in
 sync_marketplace_catalog.py — land it with `--only loaded-stock` AFTER this,
 since its validator wants the tool row to exist.
@@ -58,6 +64,61 @@ ENDPOINTS = [
             "supplier. A write — called by manage_supplier; never bind to an agent."
         ),
     },
+    {
+        "action": "update_supplier_raw",
+        "method": "PUT",
+        "path_template": (
+            "//api.loadedhub.com/1.0/stock/internal/suppliers/{{ supplier_id }}"
+        ),
+        "headers": {
+            "Content-Type": "application/json",
+            "x-loaded-company-id": "{{ creds.x_loaded_company_id }}",
+        },
+        "required_fields": ["supplier_id", "supplier"],
+        "field_mapping": {"supplier_id": "supplier_id", "supplier": "supplier"},
+        "field_descriptions": {
+            "supplier_id": "The supplier record's id.",
+            "supplier": "The whole record (emails are replace-all); removedAt set "
+            "retires it, null restores it.",
+        },
+        "request_body_template": "{{ supplier | tojson }}",
+        "success_status_codes": [200, 204],
+        "timeout_seconds": 30,
+        "engine_only": True,
+        "read_only": False,
+        "description": (
+            "[consolidator-only] Store a whole supplier record. A write — called by "
+            "manage_supplier; never bind to an agent."
+        ),
+    },
+    {
+        "action": "get_invoiced_for_supplier_raw",
+        "method": "GET",
+        "path_template": (
+            "//api.loadedhub.com/1.0/stock/internal/stock-received?from={{ from }}"
+            "&to={{ to }}&property=Invoiced&supplierId={{ supplier_id }}"
+        ),
+        "headers": {
+            "Content-Type": "application/json",
+            "x-loaded-company-id": "{{ creds.x_loaded_company_id }}",
+        },
+        "required_fields": ["supplier_id", "from", "to"],
+        "field_mapping": {"supplier_id": "supplier_id", "from": "from", "to": "to"},
+        "field_descriptions": {
+            "supplier_id": "The supplier record's id.",
+            "from": "ISO datetime.",
+            "to": "ISO datetime.",
+        },
+        "request_body_template": "",
+        "success_status_codes": [200],
+        "timeout_seconds": 60,
+        "engine_only": True,
+        "read_only": True,
+        "description": (
+            "[consolidator-only] A supplier's invoices between two datetimes (Loaded "
+            "applies supplierId only with property=Invoiced)."
+        ),
+    },
 ]
 
 TOOL = {
@@ -69,7 +130,7 @@ TOOL = {
     "approval": {
         "default": "ask",
         "allow_auto": True,
-        "label": "remove supplier aliases in Loaded",
+        "label": "change suppliers in Loaded",
     },
     "description": (
         "A venue's Loaded supplier records. Loaded files a scanned invoice under "
@@ -83,25 +144,48 @@ TOOL = {
         "record's aliases. op 'remove_alias' (a write): supplier (name or id) and "
         "aliases (as review_aliases lists them, or their alias_id); an alias "
         "that isn't on that record stops the call. Remove what's advised remove; "
-        "for a check, look at what the supplier's invoices print first. Don't ask "
-        "the person first: the approval asks when it needs to."
+        "for a check, look at what the supplier's invoices print first. op "
+        "'update': supplier + changes (name, contact, phone, email, "
+        "customer_number, address). op 'retire' / 'restore': supplier. op 'merge': "
+        "supplier INTO into_supplier — Loaded's own merge moves its items, orders "
+        "and invoices and retires it. Don't ask the person first: the approval "
+        "asks when it needs to."
     ),
     "required_fields": ["venue"],
-    "optional_fields": ["op", "supplier", "aliases"],
+    "optional_fields": ["op", "supplier", "aliases", "changes", "into_supplier"],
     "field_descriptions": {
         "venue": "The venue name.",
-        "op": "review_aliases (default) or remove_alias.",
+        "op": (
+            "review_aliases (default), remove_alias, update, retire, restore or merge."
+        ),
+        "changes": "update: the fields to set, e.g. {'email': ..., 'phone': ...}.",
+        "into_supplier": "merge: the supplier kept (name or id).",
         "supplier": "A supplier's name or id: review one record, or the record to remove aliases from.",
         "aliases": "remove_alias: the aliases to remove, as review_aliases lists them, or their alias_id.",
     },
     "field_schema": {
-        "op": {"type": "string", "enum": ["review_aliases", "remove_alias"]},
+        "op": {
+            "type": "string",
+            "enum": [
+                "review_aliases",
+                "remove_alias",
+                "update",
+                "retire",
+                "restore",
+                "merge",
+            ],
+        },
+        "changes": {"type": "object"},
         "aliases": {"type": "array", "items": {"type": "string"}},
     },
     "consolidator_config": {
         # review: the supplier list + one alias read per supplier
         "max_api_calls": 200,
-        "allowed_write_actions": ["delete_supplier_alias_raw"],
+        "allowed_write_actions": [
+            "delete_supplier_alias_raw",
+            "update_supplier_raw",
+            "loaded_legacy.merge_suppliers",
+        ],
     },
 }
 
@@ -115,6 +199,10 @@ def _tool_row(tool: dict, filename: str) -> dict:
         "function_code": (_DIR / filename).read_text(encoding="utf-8"),
     }
     return row
+
+
+def build_tool() -> dict:
+    return _tool_row(TOOL, "manage_supplier.py")
 
 
 def plan(spec) -> tuple[list[dict], list[dict], list[str]]:
