@@ -144,14 +144,14 @@ interface Detail {
 function InvoiceDetail({ row }: { row: ActivityRow }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The copy on its own (no card kept): shown on request, and the side
-  // menu folds away for the width, as the card's own copy button does.
+  // The copy on its own (no card kept): shown on request.
   const [copyOpen, setCopyOpen] = useState(false);
+  // An open invoice needs the width: the Settings menu folds away while it is
+  // open, as it does for the receive card's copy (owner, 24 Oct 2026).
   useEffect(() => {
-    if (!copyOpen) return;
     requestSidePanel(true);
     return () => requestSidePanel(false);
-  }, [copyOpen]);
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -220,7 +220,7 @@ function InvoiceDetail({ row }: { row: ActivityRow }) {
           </div>
           {copyOpen && (
             <InvoicePdfPane onClose={() => setCopyOpen(false)}
-              src={`/api/invoice-fixes/file?venue_id=${encodeURIComponent(row.venue_id)}&invoice_id=${encodeURIComponent(row.invoice_id)}`} />
+              src={`/api/invoice-fixes/file?venue_id=${encodeURIComponent(row.venue_id)}&invoice_id=${encodeURIComponent(row.invoice_id)}&or_norm_copy=true`} />
           )}
         </>
       )}

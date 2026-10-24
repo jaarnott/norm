@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { FileText } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import { requestSidePanel } from '../../lib/sidePanel';
 import Badge, { type BadgeTone } from '../ui/Badge';
 import Button from '../ui/Button';
 import InvoicePdfPane from './InvoicePdfPane';
@@ -24,7 +25,8 @@ import InvoicePdfPane from './InvoicePdfPane';
  * Each line says where the unit it is booked in came from (a person's change
  * on the card, a decision on Norm's suggestion, Norm's reading, Loaded's
  * draft), and each invoice's copy opens beside its lines, as on the receive
- * card (owner, 24 Oct 2026).
+ * card (owner, 24 Oct 2026). An invoice with no copy (an Ordermentum order)
+ * opens the one Norm draws from its data instead.
  */
 
 export interface Proposal {
@@ -245,15 +247,19 @@ export function ProposalCard({ p, onDone, onSettled }: { p: Proposal; onDone: (p
 }
 
 /** An invoice's copy beside its lines, as on the receive card: half the width
- *  each, the copy sticky while the lines scroll; narrower, it stacks above. */
-function CopyBeside({ venueId, fileId, label, onClose, children }: {
-  venueId: string;
-  fileId: string;
+ *  each, the copy sticky while the lines scroll; narrower, it stacks above.
+ *  The Settings menu folds away while it is open, as the card's copy does. */
+function CopyBeside({ src, title, label, onClose, children }: {
+  src: string;
+  title: string;
   label: string;
   onClose: () => void;
   children: React.ReactNode;
 }) {
-  const src = `/api/invoice-fixes/file?venue_id=${encodeURIComponent(venueId)}&file_id=${encodeURIComponent(fileId)}`;
+  useEffect(() => {
+    requestSidePanel(true);
+    return () => requestSidePanel(false);
+  }, []);
   const rowRef = useRef<HTMLDivElement>(null);
   const [sideBySide, setSideBySide] = useState(true);
   useEffect(() => {
@@ -275,7 +281,7 @@ function CopyBeside({ venueId, fileId, label, onClose, children }: {
       else {
         const a = document.createElement('a');
         a.href = url;
-        a.download = `invoice-${label || fileId}.pdf`;
+        a.download = `invoice-${label || 'copy'}.pdf`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -288,7 +294,7 @@ function CopyBeside({ venueId, fileId, label, onClose, children }: {
   return (
     <div ref={rowRef} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       <div style={{ flex: '1 1 420px', minWidth: 0, ...(sideBySide ? { position: 'sticky' as const, top: 8 } : {}) }}>
-        <InvoicePdfPane src={src} onClose={onClose} onPopOut={popOut} />
+        <InvoicePdfPane src={src} title={title} onClose={onClose} onPopOut={popOut} />
       </div>
       <div style={{ flex: '1 1 420px', minWidth: 0 }}>{children}</div>
     </div>
@@ -328,7 +334,14 @@ export function UnitCheckLines({ proposals, onReplace, onReload }: {
           <h4 style={{ margin: '14px 0 8px', fontSize: 'var(--fs-base)', fontWeight: 600 }}>{g.venue}</h4>
           {g.invoices.map((inv) => {
             const first = inv.items[0];
-            const canView = !!(first.file_id && first.venue_id);
+            const venue = encodeURIComponent(first.venue_id || '');
+            const src = !first.venue_id
+              ? null
+              : first.file_id
+                ? `/api/invoice-fixes/file?venue_id=${venue}&file_id=${encodeURIComponent(first.file_id)}`
+                : `/api/invoice-fixes/norm-copy?venue_id=${venue}&invoice_id=${encodeURIComponent(first.invoice_id)}`;
+            const what = first.file_id ? 'the invoice copy' : 'Norm’s copy';
+            const canView = !!src;
             const open = canView && copyFor === inv.key;
             const cards = inv.items.map((p) => <ProposalCard key={p.id} p={p} onDone={onReplace} onSettled={onReload} />);
             return (
@@ -337,13 +350,14 @@ export function UnitCheckLines({ proposals, onReplace, onReload }: {
                   <div style={{ flex: '1 1 200px', minWidth: 0, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>{inv.label}</div>
                   {canView && (
                     <Button size="sm" variant="quiet" icon={FileText} aria-pressed={open}
+                      title={first.file_id ? undefined : 'No invoice copy came with this order: Norm rebuilt one from its data'}
                       onClick={() => setCopyFor(open ? null : inv.key)}>
-                      {open ? 'Hide the invoice copy' : 'View invoice copy'}
+                      {open ? `Hide ${what}` : `View ${what}`}
                     </Button>
                   )}
                 </div>
                 {open ? (
-                  <CopyBeside venueId={first.venue_id!} fileId={first.file_id!} label={first.invoice_number || ''} onClose={() => setCopyFor(null)}>
+                  <CopyBeside src={src!} title={first.file_id ? 'Invoice copy' : 'Norm’s copy'} label={first.invoice_number || ''} onClose={() => setCopyFor(null)}>
                     {cards}
                   </CopyBeside>
                 ) : cards}

@@ -494,6 +494,7 @@ def invoice_file(
     venue_id: str,
     invoice_id: str | None = None,
     file_id: str | None = None,
+    or_norm_copy: bool = False,
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
@@ -504,6 +505,8 @@ def invoice_file(
     same source the PO-extraction path uses). Already-RECEIVED invoices 404 on
     that detail route, so their copies are requested by ``file_id`` directly —
     the review captures it off the received feed (duplicate_of_file_id).
+    ``or_norm_copy``: an invoice with no copy (an Ordermentum order) gets the one
+    Norm draws from its data instead of a 404.
     """
     card_actions.venue_for(db, user, venue_id)
     import base64
@@ -515,6 +518,8 @@ def invoice_file(
     if not file_id:
         inv = lh.invoice(invoice_id)
         file_id = inv.get("fileId")
+        if not file_id and or_norm_copy:
+            return invoice_norm_copy(venue_id, invoice_id, db, config_db, user)
         if not file_id:
             raise HTTPException(404, "no invoice copy attached")
         ref = inv.get("referenceNumber") or invoice_id
@@ -526,6 +531,36 @@ def invoice_file(
         media_type=ctype or "application/pdf",
         headers={
             "Content-Disposition": f'inline; filename="invoice-{ref}.{ext}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/invoice-fixes/norm-copy")
+def invoice_norm_copy(
+    venue_id: str,
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(get_current_user),
+):
+    """A copy Norm draws from the invoice's data in Loaded, for an invoice that
+    came with none — an Ordermentum order (services/invoice_copy). It says on
+    every page that Norm rebuilt it; nothing reads it back."""
+    from app.db.models import Venue
+    from app.services import invoice_copy
+
+    card_actions.venue_for(db, user, venue_id)
+    venue = db.query(Venue).filter(Venue.id == venue_id).first()
+    detail = _Loaded(db, config_db, venue_id).invoice(invoice_id)
+    if not isinstance(detail, dict) or not detail.get("id"):
+        raise HTTPException(404, "invoice not found")
+    ref = str(detail.get("referenceNumber") or invoice_id).replace('"', "")
+    return Response(
+        content=invoice_copy.render(detail, venue_name=getattr(venue, "name", None)),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="norm-copy-{ref}.pdf"',
             "Cache-Control": "no-store",
         },
     )

@@ -35,11 +35,14 @@ const MAX_ZOOM = 6;
 export default function InvoicePdfPane({
   sampleId,
   src,
+  title = 'Invoice copy',
   onClose,
   onPopOut,
 }: {
   /** A dojo sample's copy. */
   sampleId?: string;
+  /** The pane's heading: "Norm's copy" for one Norm rebuilt from the data. */
+  title?: string;
   /** Any copy, fetched through the API (takes precedence over sampleId). */
   src?: string;
   onClose?: () => void;
@@ -248,7 +251,7 @@ export default function InvoicePdfPane({
   return (
     <div className="n-card" style={{ overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 46, boxSizing: 'border-box', padding: '6px 12px 6px 16px', borderBottom: '1px solid var(--line)' }}>
-        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>Invoice copy</span>
+        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap' }}>{title}</span>
         {pageCount > 1 && (
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{pageCount} pages</span>
         )}

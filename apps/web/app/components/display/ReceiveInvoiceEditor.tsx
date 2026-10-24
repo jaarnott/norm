@@ -1314,8 +1314,11 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   // Opens THIS draft's copy by default. Pass fileId to open another invoice's
   // copy (the already-received duplicate sibling — its file id rides on the
   // delete suggestion because received invoices can't be resolved by id).
+  // An invoice with no copy of its own (an Ordermentum order) opens the one
+  // Norm draws from its data (invoice_copy.py, 24 Oct 2026).
   const openCopy = async (opts?: { fileId?: string; nameHint?: string }) => {
     if (!venueId) return;
+    const normCopy = !opts?.fileId && !doc.file_id;
     const query = opts?.fileId
       ? `venue_id=${venueId}&file_id=${encodeURIComponent(opts.fileId)}`
       : `venue_id=${venueId}&invoice_id=${doc.invoice_id}`;
@@ -1324,7 +1327,7 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
     // Navigate the pre-opened tab once the blob arrives.
     const w = window.open('about:blank', '_blank');
     try {
-      const r = await apiFetch(`/api/invoice-fixes/file?${query}`);
+      const r = await apiFetch(`/api/invoice-fixes/${normCopy ? 'norm-copy' : 'file'}?${query}`);
       if (!r.ok) throw new Error(r.status === 404 ? 'No invoice attached' : `Error ${r.status}`);
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
@@ -2251,10 +2254,12 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
                 Open in Loaded<Icon icon={ExternalLink} size={14} />
               </a>
             )}
-            {doc.file_id && (
+            {(doc.file_id || doc.invoice_id) && (
               <IconButton
                 icon={FileText}
-                label={copyOpen ? 'Hide the invoice copy' : 'View invoice copy'}
+                label={doc.file_id
+                  ? (copyOpen ? 'Hide the invoice copy' : 'View invoice copy')
+                  : (copyOpen ? 'Hide Norm’s copy' : 'View Norm’s copy (rebuilt from the invoice’s data: there is no invoice copy)')}
                 aria-pressed={copyOpen}
                 onClick={() => setCopyOpen((v) => !v)}
               />
@@ -3046,11 +3051,13 @@ export default function ReceiveInvoiceEditor({ data, props, threadId }: DisplayB
   const copySrc =
     copyOpen && venueId && doc.file_id
       ? `/api/invoice-fixes/file?venue_id=${venueId}&file_id=${encodeURIComponent(doc.file_id)}`
-      : null;
+      : copyOpen && venueId && doc.invoice_id
+        ? `/api/invoice-fixes/norm-copy?venue_id=${venueId}&invoice_id=${encodeURIComponent(doc.invoice_id)}`
+        : null;
   const view = copySrc ? (
     <div ref={copyRowRef} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       <div style={{ flex: '1 1 420px', minWidth: 320, ...(copySideBySide ? { position: 'sticky' as const, top: 8 } : {}) }}>
-        <InvoicePdfPane src={copySrc} onClose={() => setCopyOpen(false)} onPopOut={() => openCopy()} />
+        <InvoicePdfPane src={copySrc} title={doc.file_id ? 'Invoice copy' : 'Norm’s copy'} onClose={() => setCopyOpen(false)} onPopOut={() => openCopy()} />
       </div>
       <div style={{ flex: '1 1 420px', minWidth: 320 }}>{card}</div>
     </div>
