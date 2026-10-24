@@ -112,3 +112,61 @@ def test_the_routes(client, admin_headers, venue, monkeypatch):
     assert client.get(url, headers=admin_headers).status_code == 404
     r = client.get(url + "&or_norm_copy=true", headers=admin_headers)
     assert r.status_code == 200 and "Rebuilt by Norm" in _text(r.content)
+
+
+def test_an_invoice_gone_from_loaded_is_drawn_from_norms_record(
+    client, admin_headers, venue, db_session, monkeypatch
+):
+    """Sonoma OMI1112847 was removed from Loaded an hour after the unit check
+    flagged it, and its copy failed with a server error (24 Oct 2026)."""
+    import app.routers.invoice_fixes as IF
+    from app.db.models import WorkingDocument
+
+    class GoneLh:
+        def invoice(self, invoice_id):
+            raise RuntimeError("Loaded GET /1.0/stock/invoices/x → 404: not found")
+
+    monkeypatch.setattr(IF, "_Loaded", lambda db, cdb, vid: GoneLh())
+    url = f"/api/invoice-fixes/norm-copy?venue_id={venue.id}&invoice_id=inv-9"
+    assert client.get(url, headers=admin_headers).status_code == 404
+    db_session.add(
+        WorkingDocument(
+            doc_type="received_invoice",
+            connector_name="loadedhub",
+            venue_id=venue.id,
+            external_ref={"invoice_id": "inv-9"},
+            data={
+                "invoice_id": "inv-9",
+                "loaded_snapshot": {
+                    "header": {
+                        "reference_number": "OMI1112847",
+                        "issued_at": "2026-10-25",
+                        "supplier_name": "Sonoma Baking Company",
+                        "subtotal": 14.96,
+                        "tax_amount": 1.5,
+                        "total": 16.46,
+                    },
+                    "lines": [
+                        {
+                            "description": "Croissant Plain",
+                            "code": "30132",
+                            "quantity_received": 1.0,
+                            "unit_cost": 14.96,
+                            "total_cost": 14.96,
+                            "tax_amount": 1.5,
+                        }
+                    ],
+                },
+            },
+        )
+    )
+    db_session.flush()
+    text = _text(client.get(url, headers=admin_headers).content)
+    assert "OMI1112847" in text and "* Croissant Plain" in text and "$16.46" in text
+    assert "The invoice is no longer in Loaded" in text
+    # The activity page's request lands on the same copy.
+    r = client.get(
+        f"/api/invoice-fixes/file?venue_id={venue.id}&invoice_id=inv-9&or_norm_copy=true",
+        headers=admin_headers,
+    )
+    assert r.status_code == 200 and "no longer in Loaded" in _text(r.content)

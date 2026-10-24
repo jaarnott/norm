@@ -516,7 +516,13 @@ def invoice_file(
     lh = _Loaded(db, config_db, venue_id)
     ref = invoice_id
     if not file_id:
-        inv = lh.invoice(invoice_id)
+        try:
+            inv = lh.invoice(invoice_id)
+        except RuntimeError:
+            if not or_norm_copy:
+                raise
+            # Gone from Loaded (deleted since): Norm's copy draws on its record.
+            return invoice_norm_copy(venue_id, invoice_id, db, config_db, user)
         file_id = inv.get("fileId")
         if not file_id and or_norm_copy:
             return invoice_norm_copy(venue_id, invoice_id, db, config_db, user)
@@ -546,15 +552,33 @@ def invoice_norm_copy(
 ):
     """A copy Norm draws from the invoice's data in Loaded, for an invoice that
     came with none — an Ordermentum order (services/invoice_copy). It says on
-    every page that Norm rebuilt it; nothing reads it back."""
-    from app.db.models import Venue
+    every page that Norm rebuilt it; nothing reads it back. An invoice Loaded
+    no longer returns (deleted since) is drawn from Norm's own record of it."""
+    from app.db.models import Venue, WorkingDocument
     from app.services import invoice_copy
 
     card_actions.venue_for(db, user, venue_id)
     venue = db.query(Venue).filter(Venue.id == venue_id).first()
-    detail = _Loaded(db, config_db, venue_id).invoice(invoice_id)
+    try:
+        detail = _Loaded(db, config_db, venue_id).invoice(invoice_id)
+    except RuntimeError:
+        detail = None
     if not isinstance(detail, dict) or not detail.get("id"):
-        raise HTTPException(404, "invoice not found")
+        doc = (
+            db.query(WorkingDocument)
+            .filter(
+                WorkingDocument.venue_id == venue_id,
+                WorkingDocument.external_ref["invoice_id"].as_string()
+                == str(invoice_id),
+            )
+            .order_by(WorkingDocument.updated_at.desc())
+            .first()
+        )
+        detail = invoice_copy.detail_from_record(doc.data if doc else None)
+    if not detail:
+        raise HTTPException(
+            404, "this invoice isn't in Loaded, and Norm has no record of it"
+        )
     ref = str(detail.get("referenceNumber") or invoice_id).replace('"', "")
     return Response(
         content=invoice_copy.render(detail, venue_name=getattr(venue, "name", None)),

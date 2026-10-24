@@ -103,6 +103,11 @@ def lines_of(detail: dict) -> list[dict]:
 
 def provenance(detail: dict) -> str:
     """What the copy was rebuilt from, said on every page."""
+    if detail.get("_from_record"):
+        return (
+            "Rebuilt by Norm from Loaded's data as Norm last read it. The invoice is no "
+            "longer in Loaded."
+        )
     ordermentum = str(detail.get("source") or "").lower() == "ordermentum"
     said = (
         "Rebuilt by Norm from the order data Ordermentum sent."
@@ -114,6 +119,45 @@ def provenance(detail: dict) -> str:
     if ordermentum:
         return f"{said} The supplier sent no invoice copy."
     return f"{said} There is no invoice copy."
+
+
+def detail_from_record(data: dict | None) -> dict | None:
+    """A Loaded-shaped detail from Norm's own record of the invoice (the
+    working document's ``loaded_snapshot``), for an invoice Loaded no longer
+    returns — one deleted since, such as a duplicate removed (Sonoma
+    OMI1112847, 24 Oct 2026)."""
+    snap = (data or {}).get("loaded_snapshot")
+    if not isinstance(snap, dict) or not isinstance(snap.get("header"), dict):
+        return None
+    h = snap["header"]
+    lines = [
+        {
+            "description": ln.get("description") or ln.get("item_name"),
+            "code": ln.get("code"),
+            "quantityReceived": ln.get("quantity_received"),
+            "quantityOrdered": ln.get("quantity_ordered"),
+            "unitCostExclTax": ln.get("unit_cost"),
+            "totalCostExclTax": ln.get("total_cost"),
+            "taxAmount": ln.get("tax_amount"),
+        }
+        for ln in snap.get("lines") or []
+        if isinstance(ln, dict)
+    ]
+    return {
+        "id": (data or {}).get("invoice_id"),
+        "referenceNumber": h.get("reference_number"),
+        "issuedAt": h.get("issued_at"),
+        "dueAt": h.get("due_at"),
+        "receivedAt": h.get("received_at"),
+        "subtotal": h.get("subtotal"),
+        "discountAmount": h.get("discount_amount"),
+        "taxAmount": h.get("tax_amount"),
+        "total": h.get("total"),
+        "supplierName": h.get("supplier_name"),
+        "purchaseOrderNumber": h.get("purchase_order_number"),
+        "lines": lines,
+        "_from_record": True,
+    }
 
 
 class _Copy(FPDF):
