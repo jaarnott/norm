@@ -3915,6 +3915,12 @@ def _thread_user(db: Session, thread_id: str | None):
     return db.query(User).filter(User.id == thread.user_id).first()
 
 
+#: Connectors the app builder may offer an app. Xero is read-only here: its
+#: reads (P&L, bills, contacts, accounts) are app material, `create_bill` is not.
+APP_CONNECTORS = ("loadedhub", "norm", "norm_reports", "xero")
+APP_READ_ONLY_CONNECTORS = frozenset({"xero"})
+
+
 @register("norm", "list_app_capabilities")
 def _list_app_capabilities(params: dict, db: Session, thread_id: str | None) -> dict:
     """The catalogue an app may declare from: connector actions + the scope
@@ -3926,7 +3932,7 @@ def _list_app_capabilities(params: dict, db: Session, thread_id: str | None) -> 
 
     # The connectors an app may currently draw on. Deliberately curated rather
     # than "every spec row": email senders and admin tools are not app material.
-    connectors = ("loadedhub", "norm", "norm_reports")
+    connectors = APP_CONNECTORS
 
     cdb = _ConfigSessionLocal()
     try:
@@ -3940,6 +3946,11 @@ def _list_app_capabilities(params: dict, db: Session, thread_id: str | None) -> 
             # Apps are built on TOOLS (Sep 2026) — never an endpoint.
             for t in spec_rows.tools(spec):
                 if not isinstance(t, dict) or not t.get("action"):
+                    continue
+                if (
+                    cn in APP_READ_ONLY_CONNECTORS
+                    and str(t.get("method") or "GET").upper() != "GET"
+                ):
                     continue
                 actions.append(
                     {

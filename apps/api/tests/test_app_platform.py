@@ -832,6 +832,18 @@ class TestBuilderTools:
         names = {s["name"] for s in out["data"]["scopes"]}
         assert "mcp:reports:read" in names and "mcp:orders:draft" in names
 
+    def test_the_builder_is_offered_xero_reads_but_not_its_writes(self):
+        """The builder's catalogue was a hard-coded three connectors, so a P&L
+        app could not see Xero's profit_and_loss and fell back to a
+        Loaded-only version (24 Oct 2026)."""
+        from app.agents.internal_tools import (
+            APP_CONNECTORS,
+            APP_READ_ONLY_CONNECTORS,
+        )
+
+        assert "xero" in APP_CONNECTORS
+        assert APP_READ_ONLY_CONNECTORS == {"xero"}
+
     def test_a_person_in_two_organisations_reads_their_app_beside_another_tool(
         self, db_session, org, author, monkeypatch
     ):
