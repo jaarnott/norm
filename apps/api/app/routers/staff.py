@@ -374,89 +374,12 @@ def clear_my_pin(user: User = Depends(get_current_user), db: Session = Depends(g
     return {"ok": True}
 
 
-def _today_items(db: Session, config_db: Session, user: User) -> list[dict]:
-    """What's due for this person today: their outstanding training, read
-    through the Training app's own logic (its ``member`` view), when the app
-    is on and they have a people record. Anything that goes wrong reads as
-    nothing due — Home must never fail over its Today block."""
-    from app.db.models import AppRecord
-    from app.services.app_runtime import run_logic
-    from app.services.builtin_apps import bind, get_builtin, is_on
+def _my_venue_ids(db: Session, user: User) -> list[str]:
+    """The venues this person may see (their UserVenueAccess rows, inside
+    their organisation) — never every venue: get_user_venues fails closed."""
+    from app.services.venue_service import get_user_venues
 
-    org_id = active_org.org_id_for(db, user.id)
-    if not org_id or not is_on("training", org_id, db, config_db):
-        return []
-    person = (
-        db.query(AppRecord)
-        .filter(
-            AppRecord.namespace == staff_directory.PEOPLE_NAMESPACE,
-            AppRecord.collection == staff_directory.PEOPLE_COLLECTION,
-            AppRecord.organization_id == org_id,
-            AppRecord.data["norm_user_id"].astext == user.id,
-        )
-        .first()
-    )
-    if person is None:
-        return []
-    b = get_builtin("training")
-    if b is None:
-        return []
-    app, version = bind(b, org_id)
-    venues = [
-        {"id": v.id, "name": v.name}
-        for v in db.query(Venue).filter(Venue.organization_id == org_id).all()
-    ]
-    out = run_logic(
-        db,
-        config_db,
-        app=app,
-        version=version,
-        user=user,
-        venue_id=None,
-        params={"op": "member", "person_id": person.id, "venues": venues},
-    )
-    if not out.get("success"):
-        logger.warning("today: training member view failed: %s", out.get("error"))
-        return []
-    data = out.get("data") or {}
-    today = datetime.now(timezone.utc).date().isoformat()
-    items: list[dict] = []
-    for a in data.get("assignments") or []:
-        if a.get("status") == "completed":
-            continue
-        percent = a.get("percent") or 0
-        detail = (f"{percent}% done" if percent else "Not started") + (
-            f" · {a['instance']}" if a.get("instance") else ""
-        )
-        items.append(
-            {
-                "kind": "training",
-                "title": a.get("program") or "Training",
-                "detail": detail,
-                "due_at": None,
-                "tone": "info",
-                "app_slug": "training",
-                "page_id": "training",
-            }
-        )
-    for plan in data.get("plans") or []:
-        for section in plan.get("sections") or []:
-            if section.get("status") == "completed":
-                continue
-            due = section.get("due_date")
-            items.append(
-                {
-                    "kind": "training",
-                    "title": section.get("name") or "Training section",
-                    "detail": plan.get("program") or "Training plan",
-                    "due_at": due,
-                    "tone": "overdue" if due and due < today else "due",
-                    "app_slug": "training",
-                    "page_id": "training",
-                }
-            )
-    items.sort(key=lambda i: (i["due_at"] is None, i["due_at"] or ""))
-    return items
+    return [v.id for v in get_user_venues(db, user.id)]
 
 
 @router.get("/api/me/today")
@@ -465,9 +388,20 @@ def my_today(
     db: Session = Depends(get_db),
     config_db: Session = Depends(get_config_db),
 ):
+    """What is due for this person today, from every Today provider
+    (services/today.py: Training, and the team apps' modules as they
+    arrive). Never fails — anything that goes wrong reads as nothing due,
+    because Home must never fail over its Today block."""
+    from app.services.today import items_for
+
     try:
-        return {"items": _today_items(db, config_db, user)}
-    except Exception:  # noqa: BLE001 — see _today_items
+        org_id = active_org.org_id_for(db, user.id)
+        if not org_id:
+            return {"items": []}
+        return {
+            "items": items_for(db, config_db, user, org_id, _my_venue_ids(db, user))
+        }
+    except Exception:  # noqa: BLE001 — see the docstring
         logger.exception("today items failed for user %s", user.id)
         return {"items": []}
 

@@ -12,7 +12,9 @@ The rule:
   support rely on this).
 - **A scheduled task's threads** — its conversation, and each run's own thread —
   are shared with the task creator's organisation, because the task board shows
-  the task to the whole team.
+  the task to the whole team. Not with venue staff (a role with no AI agent):
+  a run holds what its creator's tools read (sales, wages), and acting in it
+  would approve the creator's writes. Staff see only their own.
 
 Anyone else gets "not found", never "forbidden", so a thread id can't be probed.
 """
@@ -33,6 +35,12 @@ def _org_of(db: Session, user_id: str | None) -> str | None:
 
     membership = active_org.membership_for(db, user_id)
     return membership.organization_id if membership else None
+
+
+def _is_staff(db: Session, user: User) -> bool:
+    from app.services import role_access
+
+    return role_access.for_user(db, user.id).staff
 
 
 def _task_creator(db: Session, thread: Thread) -> str | None:
@@ -70,6 +78,8 @@ def can_access(db: Session, thread: Thread, user: User) -> bool:
     if creator:
         if creator == user.id:
             return True
+        if _is_staff(db, user):
+            return False
         mine = _org_of(db, user.id)
         return mine is not None and mine == _org_of(db, creator)
     return False
@@ -77,11 +87,13 @@ def can_access(db: Session, thread: Thread, user: User) -> bool:
 
 def can_manage_task(db: Session, task, user: User | None) -> bool:
     """A scheduled task is its creator's organisation's: the same people who
-    may open its threads may change it."""
+    may open its threads may change it (venue staff: only their own)."""
     if user is None:
         return False
     if getattr(user, "role", None) == "admin" or task.created_by == user.id:
         return True
+    if _is_staff(db, user):
+        return False
     mine = _org_of(db, user.id)
     return mine is not None and mine == _org_of(db, task.created_by)
 

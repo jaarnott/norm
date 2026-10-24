@@ -38,6 +38,43 @@ export interface TeamScreen {
   available: boolean;
   switched_on: boolean;
   visible: boolean;
+  /** The team apps this screen is also placed in — the same screen in each,
+   *  switched per team app (docs/plans/team-apps-skeleton.md). */
+  teams?: string[];
+  /** Shows only in its team apps, never in its agent's menu. */
+  team_only?: boolean;
+}
+
+/** One screen as a team app lists it: a job app's screen placed on the team
+ *  app, already gated by the organisation (its App on, its system connected,
+ *  not switched off) — services/screens.py team_apps(). */
+export interface TeamAppScreen {
+  page_id: string;
+  label: string;
+  component: string;
+  connection: string | null;
+  connection_name: string | null;
+  /** The job app it belongs to, and that app's AI agent. */
+  app_slug: string;
+  app_name: string;
+  member: string | null;
+  /** Every team app the screen is placed in (this one among them). */
+  teams?: string[];
+  team_only: boolean;
+}
+
+/** A team app (Kitchen, Front of house, Managers): a `tier='team'` catalog
+ *  row. Who sees it is the role (`allowsTeam`); what it holds is its screens,
+ *  gathered from the job apps; `tools` are what Norm may use for a person
+ *  whose role reaches only this team app. The names `TeamApp` / `TeamScreen`
+ *  were already taken by the catalog Apps above, hence these. */
+export interface TeamAppInfo {
+  slug: string;
+  name: string;
+  icon?: string | null;
+  tagline: string;
+  tools: { key: string; label: string }[];
+  screens: TeamAppScreen[];
 }
 
 /** A system an organisation can have — connected, or (built in) switched on. */
@@ -138,6 +175,15 @@ export interface TeamState {
    *  owner switched them off. null = hide nothing. */
   pagesHidden: Set<string> | null;
   systems: TeamSystem[];
+  /** The team apps, org-wide (the shell narrows them to the role). Empty
+   *  until the catalog has team rows. */
+  teamApps: TeamAppInfo[];
+  /** Page ids of screens that show only in their team apps: the agents'
+   *  menus leave them out. */
+  teamOnlyPages: Set<string>;
+  /** Placements an owner switched off, as "page_id@team" — one screen, off
+   *  in that one team app (the agent-menu switch is `pagesHidden`). */
+  placementsOff: Set<string>;
   refresh: () => void;
 }
 
@@ -169,6 +215,9 @@ export function useTeam(token: string | null): TeamState {
     pageMember: {},
     pagesHidden: null,
     systems: [],
+    teamApps: [],
+    teamOnlyPages: new Set<string>(),
+    placementsOff: new Set<string>(),
   });
 
   const load = useCallback(() => {
@@ -189,6 +238,9 @@ export function useTeam(token: string | null): TeamState {
             pageMember: pageMemberOf(d?.apps ?? []),
             pagesHidden: null,
             systems: d?.systems ?? [],
+            teamApps: d?.team_apps ?? [],
+            teamOnlyPages: new Set<string>(d?.team_only_pages ?? []),
+            placementsOff: new Set<string>(d?.placements_off ?? []),
           }));
           return;
         }
@@ -206,6 +258,9 @@ export function useTeam(token: string | null): TeamState {
           pageMember: pageMemberOf(apps),
           pagesHidden: new Set<string>(d.pages_hidden ?? []),
           systems: d.systems ?? [],
+          teamApps: d.team_apps ?? [],
+          teamOnlyPages: new Set<string>(d.team_only_pages ?? []),
+          placementsOff: new Set<string>(d.placements_off ?? []),
           members,
           included: d.included ?? [],
           apps,

@@ -384,20 +384,39 @@ def _check_role_reach(
     db: Session, config_db: Session, user, connector: str, action: str
 ) -> None:
     """403 when the viewer's role reaches none of the Apps that give
-    ``connector.action`` (owner and users alike, tool_users) — the same filter
-    the chat's tool list applies (prompt_builder._role_blocked_tools). A tool
-    no App gives is left to the declaration check above; platform admins and
-    the system actor pass."""
+    ``connector.action`` (owner and users alike, tool_users) and no team app
+    it reaches lists it — the same filter the chat's tool list applies
+    (prompt_builder._role_blocked_tools, entitlements.team_tools). A tool
+    no App gives (an API endpoint, an unclaimed built-in) is left to the
+    declaration check above — except for venue staff, who reach only what an
+    App or team app gives them (services/screen_access.tool_reachable);
+    platform admins and the system actor pass."""
     if is_system(user) or getattr(user, "role", None) == "admin":
         return
     from app.agents.prompt_builder import _role_blocked_tools
-    from app.services.entitlements import tool_users
+    from app.services import role_access
+    from app.services.entitlements import team_tools, tool_users
 
     key = f"{connector}.{action}"
     giving = tool_users(config_db).get(key)
     if not giving:
+        if role_access.for_user(db, user.id).staff:
+            raise HTTPException(
+                403,
+                f"your role does not reach {connector}.{action} — a manager can help",
+            )
         return
-    if key in _role_blocked_tools(db, user.id, config_db, {key: giving}):
+    # A team app the role reaches (Kitchen, ...) may list the tool too.
+    from app.services.screen_access import team_reachable_apps
+
+    if key in _role_blocked_tools(
+        db,
+        user.id,
+        config_db,
+        {key: giving},
+        team_tools=team_tools(config_db),
+        team_reachable=team_reachable_apps(db, config_db, user),
+    ):
         raise HTTPException(
             403, f"your role does not reach {connector}.{action} — a manager can help"
         )

@@ -44,10 +44,17 @@ interface ThreadListProps {
   activePage?: string | null;
   /** The Norm name block at the top (off on mobile, whose top bar shows it). */
   showBrand?: boolean;
-  /** The apps section's pages (activeAgent 'apps'): one row per team app,
-   *  already gated by the server, so neither the member nor the App switch
-   *  filter applies to them (docs/plans/staff-access.md 11.7). */
+  /** The apps section's pages (activeAgent 'apps'): the open team app's
+   *  screens, or one row per App-platform app — already gated by the
+   *  server, so neither the member nor the App switch filter applies to
+   *  them (docs/plans/staff-access.md 11.7). */
   sectionPages?: FunctionalPageConfig[];
+  /** The team app whose screens `sectionPages` are: its name heads the rows
+   *  (docs/plans/team-apps-skeleton.md 4.2). Null = App-platform apps. */
+  sectionTeam?: { slug: string; name: string } | null;
+  /** Page ids of screens that show only in their team app: an AI agent's
+   *  menu leaves them out (useTeam). */
+  teamOnlyPages?: Set<string> | null;
   /** Venue staff (a role with no AI agent): the empty list suggests what
    *  Norm can answer for them, not stock or rosters. */
   staff?: boolean;
@@ -61,7 +68,7 @@ export function pageAllowed(page: FunctionalPageConfig, permissions?: string[] |
   return !page.permission || !permissions || permissions.includes(page.permission);
 }
 
-export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, onNewChat, newChat = true, onCollapsePanel, onSelectPage, extraPages, appsOn, pagesHidden, pageMember, permissions, activePage, showBrand = true, sectionPages, staff = false }: ThreadListProps) {
+export default function ThreadList({ threads, selectedId, onSelectThread, onRemoveThread, activeAgent, onNewChat, newChat = true, onCollapsePanel, onSelectPage, extraPages, appsOn, pagesHidden, pageMember, permissions, activePage, showBrand = true, sectionPages, sectionTeam, teamOnlyPages, staff = false }: ThreadListProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const searchBtnRef = useRef<HTMLButtonElement>(null);
@@ -85,7 +92,10 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
       .filter(p => (pageMember?.[p.id] ?? p.agent) === activeAgent)
       .filter(p => !p.app || !appsOn || appsOn.has(p.app))
       .filter(p => !pagesHidden?.has(p.id))
+      .filter(p => !teamOnlyPages?.has(p.id))
       .filter(p => pageAllowed(p, permissions));
+  // The rows' test ids: a team app's screens are named by the team app.
+  const rowTestId = (pageId: string) => (appsMode && sectionTeam ? `panel-team-${sectionTeam.slug}-${pageId}` : undefined);
 
   return (
     <div style={{
@@ -145,6 +155,11 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
             />
           )}
           {pages.length > 0 && <div aria-hidden style={{ height: 6 }} />}
+          {appsMode && sectionTeam && pages.length > 0 && (
+            <div data-testid={`panel-team-${sectionTeam.slug}`} style={{ padding: '4px 8px 2px', fontSize: 'var(--fs-xs)', fontWeight: 600, letterSpacing: '0.02em', textTransform: 'uppercase', color: 'var(--muted)' }}>
+              {sectionTeam.name}
+            </div>
+          )}
           {pages.map(page => {
             const current = activePage === page.id;
             return (
@@ -152,6 +167,7 @@ export default function ThreadList({ threads, selectedId, onSelectThread, onRemo
                 key={page.id}
                 type="button"
                 className="n-row"
+                data-testid={rowTestId(page.id)}
                 aria-current={current ? 'page' : undefined}
                 onClick={() => onSelectPage?.(page.id)}
               >

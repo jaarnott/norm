@@ -267,14 +267,25 @@ class TestDoors:
             db_session.flush()
             return report, chart
 
+        # A manager without payroll:read: the tool row's `requires` refuses.
+        report, chart = chart_for(world.manager)
+        out = client.post(
+            f"/api/reports/{report.id}/charts/{chart.id}/refresh",
+            json={},
+            headers=auth_headers(world.manager),
+        )
+        assert out.status_code == 200
+        assert "permission" in out.json().get("error", "")
+
+        # Venue staff (the Team Member role reaches no AI agent) don't reach
+        # reports at all (services/screen_access, staff-access.md §11.9).
         report, chart = chart_for(world.team_member)
         out = client.post(
             f"/api/reports/{report.id}/charts/{chart.id}/refresh",
             json={},
             headers=auth_headers(world.team_member),
         )
-        assert out.status_code == 200
-        assert "permission" in out.json().get("error", "")
+        assert out.status_code == 403
 
         report, chart = chart_for(world.owner)
         out = client.post(

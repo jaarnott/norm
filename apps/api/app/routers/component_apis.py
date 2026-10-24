@@ -107,7 +107,10 @@ def _to_dict(cfg: ComponentApiConfig) -> dict:
 async def list_configs(
     component_key: str | None = None,
     config_db: Session = Depends(get_config_db),
-    user: User = Depends(get_current_user),
+    # Platform admins only, like every other route here: the list is the
+    # Components admin page's, and it shows every screen's request templates
+    # (security ledger S36, 24 Oct 2026).
+    user: User = Depends(require_permission("admin:system")),
 ):
     query = config_db.query(ComponentApiConfig)
     if component_key:
@@ -371,11 +374,16 @@ def execute_component_api(  # sync on purpose — see below
     took any venue_id the browser sent, and with none used whichever venue's
     login came first. A call that writes — Place Order, a menu or roster save
     — is the person's own change, made with a button, and is recorded.
+
+    And only from a screen the person's role reaches (services/screen_access):
+    a venue's login alone let a Kitchen role add shifts, read the staff list
+    with pay and place orders through this route.
     """
     from app.db.config_models import ComponentApiConfig
-    from app.services import card_actions
+    from app.services import card_actions, screen_access
     from app.services.component_api import ComponentApiError, execute_component_action
 
+    screen_access.require_component(db, config_db, user, component_key)
     venue_id = card_actions.venue_for(db, user, body.venue_id)
     cfg = (
         config_db.query(ComponentApiConfig)

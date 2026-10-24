@@ -40,15 +40,26 @@ OPEN_APP = {
         "Training takes view ('programs', 'plans', 'tracker', 'signoffs', "
         "'people'), program (id or name) and person (id or name); Reviews "
         "takes view ('my_team', 'all', 'cycles', 'frameworks', 'emails') and "
-        "review (a review id). Names are fine — the app resolves them. If the "
-        "app or an input isn't valid, the error lists what is."
+        "review (a review id). Names are fine — the app resolves them. It also "
+        "opens a team app (Kitchen, Front of house, Managers) at one of its "
+        "screens: pass the team app's name in `app` and the screen's name in "
+        "`page` ('open the prep list', 'show the kitchen app'); with no "
+        "`page` it opens the first screen. If the app, a screen or an input "
+        "isn't valid, the error lists what is."
     ),
     "required_fields": ["app"],
-    "optional_fields": ["component", "inputs"],
+    "optional_fields": ["component", "inputs", "page"],
     "field_schema": {
         "app": {
             "type": "string",
-            "description": "The app's name or slug, e.g. 'Hiring' or 'hiring'.",
+            "description": "The app's name or slug, e.g. 'Hiring' or 'hiring', "
+            "or a team app's: 'Kitchen', 'Front of house', 'Managers'.",
+        },
+        "page": {
+            "type": "string",
+            "description": "For a team app only: which of its screens to open, "
+            "by name or page id, e.g. 'Prep' or 'recipes'. Leave out for the "
+            "first screen.",
         },
         "component": {
             "type": "string",

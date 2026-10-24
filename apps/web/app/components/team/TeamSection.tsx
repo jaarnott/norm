@@ -14,8 +14,8 @@
  */
 
 import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { CircleUserRound, Info, type LucideIcon } from 'lucide-react';
-import { apiFetch, getToken } from '../../lib/api';
+import { ChefHat, CircleUserRound, HandPlatter, Info, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { apiFetch, getActiveOrg, getToken } from '../../lib/api';
 import { AGENTS } from '../layout/Sidebar';
 import AppRunner from '../apps/AppRunner';
 import AppIcon from '../ui/AppIcon';
@@ -28,10 +28,20 @@ import {
   useTeam,
   type IncludedMember,
   type TeamApp,
+  type TeamAppInfo,
   type TeamMember,
 } from '../../hooks/useTeam';
+import { groupBySystem, placementNote, seenByLine, teamToolsLine, type RoleReach } from './teamApps';
 
 interface PageUser { role: string; permissions?: string[] }
+
+/** A team app's line icon when its catalog row carries none resolveAppIcon
+ *  knows (docs/plans/team-apps-skeleton.md §2 gives each an emoji it maps). */
+const TEAM_FALLBACK_ICON: Record<string, LucideIcon> = {
+  kitchen: ChefHat,
+  front_of_house: HandPlatter,
+  managers: ShieldCheck,
+};
 
 interface CatalogApp {
   slug: string; name: string; description: string; tier: string;
@@ -79,6 +89,20 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
 
   const isAdmin = user?.role === 'admin';
   const isOwner = isAdmin || !!user?.permissions?.includes('billing:manage');
+
+  // The organisation's roles, for "Seen by" on each team app card: a role
+  // sees a team app when its apps are open (null) or name the slug. null =
+  // not loaded (no organisation, no org:read, or the fetch failed) — the
+  // line is left out rather than guessed.
+  const [roles, setRoles] = useState<RoleReach[] | null>(null);
+  useEffect(() => {
+    const orgId = getActiveOrg();
+    if (!orgId) return;
+    apiFetch(`/api/organizations/${encodeURIComponent(orgId)}/roles`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setRoles(d ? ((d.roles ?? []) as RoleReach[]) : null))
+      .catch(() => setRoles(null));
+  }, []);
 
   // Only for what /api/team deliberately omits: pending community submissions
   // (admin approval) and each team app's publish state.
@@ -132,14 +156,35 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
     }
   };
 
-  /** Switch one of an App's screens on or off (owners): an organisation can
-   *  take hiring from BambooHR and reviews from Hospo HR (services/screens.py). */
+  /** Switch one of an App's screens on or off in its AI agent's menu
+   *  (owners): an organisation can take hiring from BambooHR and reviews
+   *  from Hospo HR (services/screens.py). Team placements are separate. */
   const setScreen = async (pageId: string, enabled: boolean, label: string) => {
     if (busy) return;
     setBusy(`screen:${pageId}`);
     setNotice(null);
     try {
       const r = await apiFetch(`/api/marketplace/screens/${encodeURIComponent(pageId)}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' });
+      if (r.ok) changed();
+      else if (r.status === 403) setNotice('Only organisation owners can change the team.');
+      else setNotice((await r.json().catch(() => ({}))).detail || `Couldn't update ${label}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Switch one screen's placement in one team app on or off (owners). The
+   *  same screen can be on in Kitchen and off in Front of house; the agent's
+   *  menu is not touched (docs/plans/team-apps-skeleton.md §3.1). */
+  const setPlacement = async (pageId: string, teamSlug: string, enabled: boolean, label: string) => {
+    if (busy) return;
+    setBusy(`screen:${pageId}@${teamSlug}`);
+    setNotice(null);
+    try {
+      const r = await apiFetch(
+        `/api/marketplace/screens/${encodeURIComponent(pageId)}/teams/${encodeURIComponent(teamSlug)}/${enabled ? 'enable' : 'disable'}`,
+        { method: 'POST' },
+      );
       if (r.ok) changed();
       else if (r.status === 403) setNotice('Only organisation owners can change the team.');
       else setNotice((await r.json().catch(() => ({}))).detail || `Couldn't update ${label}`);
@@ -243,40 +288,121 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
     )
   );
 
-  /** An App's screens, grouped by the system each is for, with a switch per
-   *  screen. A screen for a system this organisation hasn't connected says so. */
+  /** An App's screens, grouped by the system each is for, with the agent-menu
+   *  switch per screen (none for a team-only screen, which isn't in the menu). A screen for a system this organisation hasn't
+   *  connected says so; one placed in team apps says "Also in Kitchen and
+   *  Front of house" or "Kitchen only" (its switches there are on the team
+   *  app cards below). */
   const screenList = (a: TeamApp) => {
-    const screens = a.screens ?? [];
-    const groups = new Map<string, typeof screens>();
-    for (const sc of screens) {
-      const key = sc.connection_name ?? '';
-      groups.set(key, [...(groups.get(key) ?? []), sc]);
-    }
+    const groups = groupBySystem(a.screens ?? []);
     return (
       <div style={{ display: 'grid', gap: 8 }}>
-        {[...groups.entries()].map(([system, items]) => (
+        {groups.map(([system, items]) => (
           <div key={system || 'none'}>
-            {groups.size > 1 && system && (
+            {groups.length > 1 && system && (
               <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 2 }}>With {system}</div>
             )}
             <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-              {items.map((sc) => (
-                <li key={sc.page_id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
-                  <span style={{ ...ELLIPSIS, flex: '1 1 auto' }}>
-                    {sc.label}
-                    {!sc.available && sc.connection_name && (
-                      <span style={{ color: 'var(--muted)' }}> — needs {sc.connection_name}</span>
+              {items.map((sc) => {
+                const placed = placementNote(sc, team.teamApps);
+                return (
+                  <li key={sc.page_id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                    <span style={{ ...ELLIPSIS, flex: '1 1 auto' }}>
+                      {sc.label}
+                      {!sc.available && sc.connection_name && (
+                        <span style={{ color: 'var(--muted)' }}> — needs {sc.connection_name}</span>
+                      )}
+                      {placed && <span style={{ color: 'var(--muted)' }}> · {placed}</span>}
+                    </span>
+                    {/* A team-only screen is not in the agent's menu, so an
+                        agent-menu switch would do nothing: its switches are on
+                        the team app cards below. */}
+                    {!sc.team_only && (
+                      <span style={{ flex: '0 0 auto', display: 'inline-flex' }}>
+                        {toggle(sc.switched_on, sc.label, busy === `screen:${sc.page_id}`, () => setScreen(sc.page_id, !sc.switched_on, sc.label))}
+                      </span>
                     )}
-                  </span>
-                  <span style={{ flex: '0 0 auto', display: 'inline-flex' }}>
-                    {toggle(sc.switched_on, sc.label, busy === `screen:${sc.page_id}`, () => setScreen(sc.page_id, !sc.switched_on, sc.label))}
-                  </span>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         ))}
       </div>
+    );
+  };
+
+  /** The screens the catalog places in a team app, from the job apps that are
+   *  on: the same screen the agent's menu has, each with its own switch for
+   *  this one team app (`placementsOff`). A switched-off placement stays
+   *  listed, off, so it can be turned back on here; a screen whose system the
+   *  organisation lacks says so. */
+  const placedIn = (slug: string) => team.apps.flatMap((a) =>
+    a.kind === 'app' && a.enabled
+      ? (a.screens ?? []).filter((sc) => (sc.teams ?? []).includes(slug)).map((sc) => ({ ...sc, app_name: a.name, member: a.member }))
+      : []);
+
+  /** One team app's card (docs/plans/team-apps-skeleton.md §4.3): icon, name
+   *  and tagline; the screens placed in it by system, each naming the job app
+   *  and AI agent it comes from, with a switch for this team app alone (the
+   *  owner's rule of 24 Oct: one screen, the same in every team app it is in,
+   *  switched per team app — the agent's menu has its own switch in the job
+   *  app's detail); what Norm may use for someone who reaches only this team
+   *  app; and which roles see it. */
+  const teamAppCard = (t: TeamAppInfo) => {
+    const placed = placedIn(t.slug);
+    const groups = groupBySystem(placed);
+    return (
+      <section key={t.slug} className="n-card" aria-labelledby={`team-app-${t.slug}`} data-testid={`team-card-${t.slug}`} style={{ minWidth: 0, padding: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+          <span style={ICON_TILE}><AppIcon app={{ slug: t.slug, icon: t.icon }} size={20} tone="inherit" fallback={TEAM_FALLBACK_ICON[t.slug]} /></span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h3 id={`team-app-${t.slug}`} style={CARD_TITLE}>{t.name}</h3>
+            {t.tagline && <p style={{ margin: '2px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{t.tagline}</p>}
+          </div>
+        </div>
+        <div style={{ marginTop: 12, paddingTop: 8, borderTop: '1px solid var(--line-soft)' }}>
+          <div className="n-eyebrow" style={{ marginBottom: 4 }}>Screens</div>
+          {placed.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No screens yet</p>
+          ) : (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {groups.map(([system, items]) => (
+                <div key={system || 'none'}>
+                  {groups.length > 1 && system && (
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', marginBottom: 2 }}>With {system}</div>
+                  )}
+                  <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                    {items.map((sc) => {
+                      const key = `${sc.page_id}@${t.slug}`;
+                      const on = !team.placementsOff.has(key);
+                      return (
+                        <li key={sc.page_id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
+                          <span style={{ ...ELLIPSIS, flex: '1 1 auto' }}>
+                            {sc.label}
+                            <span style={{ color: 'var(--muted)' }}>
+                              {' '}· from {sc.app_name}{sc.member ? ` (${memberName(sc.member)})` : ''}
+                              {!sc.available && sc.connection_name ? ` — needs ${sc.connection_name}` : ''}
+                              {sc.team_only ? ` · ${placementNote(sc, team.teamApps)}` : ''}
+                            </span>
+                          </span>
+                          <span style={{ flex: '0 0 auto', display: 'inline-flex' }}>
+                            {toggle(on, `${sc.label} in ${t.name}`, busy === `screen:${key}`, () => setPlacement(sc.page_id, t.slug, !on, sc.label))}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <p style={{ margin: '10px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{teamToolsLine(t.tools)}</p>
+        {roles && (
+          <p style={{ margin: '4px 0 0', fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>{seenByLine(roles, t.slug)}</p>
+        )}
+      </section>
     );
   };
 
@@ -524,6 +650,25 @@ export default function TeamSection({ user }: { user?: PageUser | null }) {
               <h2 id="team-available" style={{ ...TITLE, marginBottom: 12 }}>Available to hire</h2>
               <div style={MEMBER_GRID}>
                 {availableMembers.map(memberCard)}
+              </div>
+            </section>
+          )}
+
+          {/* Team apps — what venue staff see in the apps section. Each is a
+              second place a job app's screens show; a screen is the same in
+              every team app it is placed in, and each placement has its own
+              switch here (docs/plans/team-apps-skeleton.md). Absent until the
+              catalog has team rows. */}
+          {team.teamApps.length > 0 && (
+            <section aria-labelledby="team-apps" style={{ marginTop: 32 }} data-testid="team-apps">
+              <h2 id="team-apps" style={TITLE}>Team apps</h2>
+              <p style={{ margin: '2px 0 12px', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+                What venue staff open on a phone or the kitchen tablet. A team app shows screens from the AI agents&apos; apps that are on.
+                The same screen can be in more than one team app; each switch here is for that team app alone, and a role in
+                Settings → Roles decides who sees each team app.
+              </p>
+              <div style={MEMBER_GRID}>
+                {team.teamApps.map(teamAppCard)}
               </div>
             </section>
           )}

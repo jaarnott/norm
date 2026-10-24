@@ -590,15 +590,24 @@ export interface StaffInfo {
   has_pin: boolean;
 }
 
-/** One line of Home's Today block (GET /api/me/today). */
+/** One line of Home's Today block (GET /api/me/today, services/today.py).
+ *  Training's items say `overdue` / `due`; the provider registry's items
+ *  (docs/plans/team-apps-skeleton.md 3.5) say `ok` / `warn` / `error` /
+ *  `neutral`. The block reads both. */
 export interface TodayItem {
   kind: string;
   title: string;
   detail?: string | null;
   due_at?: string | null;
-  tone?: 'overdue' | 'due' | 'info' | string | null;
+  tone?: 'overdue' | 'due' | 'info' | 'ok' | 'warn' | 'error' | 'neutral' | string | null;
+  /** The venue the item is at: a manager's block groups by it. */
+  venue_id?: string | null;
+  /** With `page_id`: the item opens that screen inside this team app. */
+  team?: string | null;
   app_slug?: string | null;
   page_id?: string | null;
+  /** Deep-link params the opened page reads from the address bar. */
+  params?: Record<string, unknown> | null;
 }
 
 export interface User {

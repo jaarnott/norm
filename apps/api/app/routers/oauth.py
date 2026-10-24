@@ -513,12 +513,21 @@ async def oauth_status(
 ):
     """Check whether a connector has valid OAuth tokens.
 
-    If venue_id is provided, returns status for that specific venue.
-    Otherwise returns status for the first matching config (legacy behaviour).
+    With a venue_id: that venue's connection, and only for a venue the caller
+    can open or looks after (connection_scope.can_see_venue_connections). Without one: a connection in the caller's own organisation.
+    Until 24 Oct 2026 this returned the first row in the whole database,
+    oauth_metadata included, to anyone signed in (security ledger S33).
     """
+    from app.services import connection_scope
+    from app.services.entitlements import org_id_for_user
+
     query = db.query(Connection).filter(Connection.connector_name == connector)
     if venue_id:
+        if not connection_scope.can_see_venue_connections(db, user, venue_id):
+            raise HTTPException(403, "You can't see that venue's connections.")
         query = query.filter(Connection.venue_id == venue_id)
+    elif user.role != "admin":
+        query = connection_scope.in_org(query, org_id_for_user(user.id, db))
     config_row = query.first()
 
     if not config_row or not config_row.access_token:

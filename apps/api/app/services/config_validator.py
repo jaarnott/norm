@@ -714,6 +714,20 @@ def check_app_ownership(findings: dict) -> list[ConfigIssue]:
             f"member '{b['member']}': {b['problem']}",
             "Fix composition.member.",
         )
+    # Team apps (Oct 2026). A team app with no screens yet is a finding the
+    # App Map shows, not an error: the three rows exist before the screens do.
+    for ref in findings.get("unknown_team") or []:
+        add(
+            f"app_map.screen.{ref}",
+            "screen is placed on a team app the catalog doesn't have",
+            "Fix the component's teams list, or install the team app row.",
+        )
+    for key in findings.get("team_tools_unowned") or []:
+        add(
+            f"app_map.tool.{key}",
+            "a team app lists a tool no App owns",
+            "Add it to one App's composition.tools, or drop it from the team app.",
+        )
     return issues
 
 

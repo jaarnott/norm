@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_db
 from app.db.models import UploadedDocument, User
+from app.services import screen_access
 from app.services.recipe_extraction import RecipeExtractionError, extract_recipe
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,11 @@ async def upload_document(
     }
 
 
-@router.post("/uploads/{doc_id}/extract-recipe")
+# The recipe editor's (services/screen_access): an extraction is a model call.
+@router.post(
+    "/uploads/{doc_id}/extract-recipe",
+    dependencies=[Depends(screen_access.needs("recipe_editor"))],
+)
 def extract_recipe_from_upload(
     doc_id: str,
     db: Session = Depends(get_db),

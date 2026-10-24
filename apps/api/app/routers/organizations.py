@@ -250,7 +250,15 @@ async def get_organization(
     if not membership and user.role != "admin":
         raise HTTPException(403, "Not a member of this organization")
 
-    return _org_to_dict(org, db, include_details=True)
+    out = _org_to_dict(org, db, include_details=True)
+    from app.services import screen_access
+
+    if screen_access.is_staff(db, user, org_id):
+        # Venue staff don't get the member list: every colleague's email
+        # (GET /people needs org:members for the same reason, staff-access.md
+        # §11.9).
+        out["members"] = []
+    return out
 
 
 @router.put("/organizations/{org_id}")
@@ -957,9 +965,13 @@ _USAGE_FIELDS = (
 
 def _require_usage_access(db: Session, user: User, org_id: str) -> None:
     """Members of the organisation (and platform admins) only — usage showed
-    any organisation's figures to anyone signed in (Oct 2026)."""
+    any organisation's figures to anyone signed in (Oct 2026). Not venue staff:
+    it lists everyone's spend and the costliest chats by title."""
     if user.role == "admin":
         return
+    from app.services import screen_access
+
+    screen_access.require_not_staff(db, user, org_id=org_id)
     member = (
         db.query(OrganizationMembership)
         .filter(

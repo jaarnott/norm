@@ -4,13 +4,37 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.services import caller_scope
+from app.services import caller_scope, screen_access
 
 from app.db.engine import get_db, get_config_db
 from app.db.models import OrganizationMembership, Report, ReportChart, User
 from app.auth.dependencies import get_current_user
 
-router = APIRouter(prefix="/reports", tags=["reports"])
+# Reports and the old tile dashboards, for a role that reaches them
+# (services/screen_access): Saved Reports, or Norm Core's dashboard view —
+# never venue staff by default. A chart's tool is checked against the role
+# again whenever it runs (_tool_refusal), so a report can't be a way round the
+# chat's tool list.
+router = APIRouter(
+    prefix="/reports",
+    tags=["reports"],
+    dependencies=[
+        Depends(
+            screen_access.needs(
+                "saved_reports_board", "report_builder", "dashboard_view"
+            )
+        )
+    ],
+)
+
+
+def _tool_refusal(db: Session, config_db: Session, user: User, script: dict):
+    """Why this chart's tool may not run for this person, or None."""
+    if screen_access.tool_reachable(
+        db, config_db, user, script.get("connector"), script.get("action")
+    ):
+        return None
+    return screen_access.REFUSED_TOOL
 
 
 # ---------------------------------------------------------------------------
@@ -1215,6 +1239,12 @@ async def refresh_report(
         script = chart.script
         if not script or not script.get("connector") or not script.get("action"):
             continue
+        refusal = _tool_refusal(db, config_db, user, script)
+        if refusal:
+            errors.append(
+                {"chart_id": chart.id, "title": chart.title, "error": refusal}
+            )
+            continue
         try:
             raw_params = script.get("params", {})
             resolved = _resolve_params(raw_params)
@@ -1354,6 +1384,9 @@ def run_tile(
     Used by a tile's refresh and by Norm trying a tile before it saves it."""
     from app.connectors.tool_executor import execute_connector_tool
 
+    refusal = _tool_refusal(db, config_db, user, script)
+    if refusal:
+        return [], [refusal], None
     gf = gf or {}
     # The venue whose business calendar applies to these date placeholders.
     gf_venue = gf.get("venue_id")
@@ -1505,6 +1538,9 @@ async def test_chart_script(
             "script": script,
             "accepted_params": [],
         }
+    refusal = _tool_refusal(db, config_db, user, script)
+    if refusal:
+        raise HTTPException(403, refusal)
 
     # Get tool metadata (accepted params, field descriptions)
     tool_info = get_tool_info(script["connector"], script["action"], config_db)

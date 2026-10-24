@@ -77,9 +77,11 @@ def allows_agent(access: Access, agent_key: str) -> bool:
 
 def allows_app(access: Access, app_key: str, *, member: str | None = None) -> bool:
     """Whether the role reaches an app. ``app_key`` is a built-in slug
-    (``training``), ``custom:<slug>`` for an org-built app, or a catalog app
-    slug (``loaded-kitchen``) for an agent-level app; ``member`` is the agent
-    the app belongs to, and an app of an allowed agent is allowed."""
+    (``training``), ``custom:<slug>`` for an org-built app, a catalog app
+    slug (``loaded-kitchen``) for an agent-level app, or a team app slug
+    (``kitchen``, ``front_of_house``, ``managers``; services/screens.
+    TEAM_SLUGS) — asked with no member; ``member`` is the agent the app
+    belongs to, and an app of an allowed agent is allowed."""
     if access.apps is None or app_key in access.apps:
         return True
     return member is not None and allows_agent(access, member)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allowsAgent, firstNameOf, navLabelFor, sectionAppsFor, teamBarTabsFor, timeOfDayWord, visibleAgentsFor } from './useAccess';
+import { allowsAgent, allowsTeam, firstNameOf, navLabelFor, sectionAppsFor, sectionTileKey, teamBarTabsFor, timeOfDayWord, visibleAgentsFor } from './useAccess';
 
 const AGENTS = [{ id: 'home' }, { id: 'reports' }, { id: 'hr' }, { id: 'executive_chef' }];
 
@@ -25,23 +25,78 @@ describe('visibleAgentsFor', () => {
   });
 });
 
+describe('allowsTeam', () => {
+  it('lets a role with every app see every team app', () => {
+    expect(allowsTeam({ agents: null, apps: null, staff: false }, 'kitchen')).toBe(true);
+  });
+  it('narrows to the team apps the role names', () => {
+    const access = { agents: [], apps: ['kitchen', 'training'], staff: true };
+    expect(allowsTeam(access, 'kitchen')).toBe(true);
+    expect(allowsTeam(access, 'managers')).toBe(false);
+  });
+  it('refuses everything to a role with no apps at all', () => {
+    expect(allowsTeam({ agents: [], apps: [], staff: true }, 'kitchen')).toBe(false);
+  });
+  it('allows when access is unknown (an older /me payload)', () => {
+    expect(allowsTeam(undefined, 'kitchen')).toBe(true);
+    expect(allowsTeam(null, 'kitchen')).toBe(true);
+  });
+});
+
 describe('sectionAppsFor', () => {
   const rows = [
-    { slug: 'training', kind: 'app', audience: 'agent' },
-    { slug: 'kitchen', kind: 'app', audience: 'team' },
-    { slug: 'cleaning', kind: 'app', audience: 'both' },
-    { slug: 'cogs', kind: 'dashboard', audience: 'agent' },
+    { slug: 'training', name: 'Training', kind: 'app', audience: 'agent' },
+    { slug: 'kitchen-notes', name: 'Kitchen notes', kind: 'app', audience: 'team' },
+    { slug: 'cleaning', name: 'Cleaning', kind: 'app', audience: 'both' },
+    { slug: 'cogs', name: 'COGS', kind: 'dashboard', audience: 'agent' },
   ];
+  const screen = (page_id: string) => ({ page_id, label: page_id });
+  const teamApps = [
+    { slug: 'kitchen', name: 'Kitchen', icon: '🧑‍🍳', screens: [screen('recipes'), screen('prep')] },
+    { slug: 'front_of_house', name: 'Front of house', icon: null, screens: [] },
+    { slug: 'managers', name: 'Managers', icon: null, screens: [screen('sign-offs')] },
+  ];
+  const manager = { agents: null, apps: null, staff: false };
+
   it('gives a manager only the apps built for the team', () => {
-    const got = sectionAppsFor(rows, { agents: null, apps: null, staff: false }).map(a => a.slug);
-    expect(got).toEqual(['kitchen', 'cleaning']);
+    const got = sectionAppsFor(rows, manager).map(a => a.slug);
+    expect(got).toEqual(['kitchen-notes', 'cleaning']);
   });
   it('gives venue staff every app they can open, except agent dashboards', () => {
     const got = sectionAppsFor(rows, { agents: [], apps: null, staff: true }).map(a => a.slug);
-    expect(got).toEqual(['training', 'kitchen', 'cleaning']);
+    expect(got).toEqual(['training', 'kitchen-notes', 'cleaning']);
   });
   it('treats a missing audience as agent', () => {
-    expect(sectionAppsFor([{ slug: 'x' }], { agents: null, apps: null, staff: false })).toEqual([]);
+    expect(sectionAppsFor([{ slug: 'x', name: 'X' }], manager)).toEqual([]);
+  });
+  it('is unchanged for a manager with no team apps at all', () => {
+    expect(sectionAppsFor(rows, manager, [])).toEqual(sectionAppsFor(rows, manager));
+  });
+  it('lists the team apps with a screen first, in catalog order, then the App-platform apps', () => {
+    const got = sectionAppsFor(rows, manager, teamApps);
+    expect(got.map(a => `${a.kind}:${a.slug}`)).toEqual(['team:kitchen', 'team:managers', 'app:kitchen-notes', 'app:cleaning']);
+    expect(got[0]).toMatchObject({ kind: 'team', name: 'Kitchen', icon: '🧑‍🍳' });
+    expect(got[0].kind === 'team' && got[0].screens.map(s => s.page_id)).toEqual(['recipes', 'prep']);
+  });
+  it('hides a team app with no screens here (nothing to open)', () => {
+    const got = sectionAppsFor(rows, manager, teamApps).map(a => a.slug);
+    expect(got).not.toContain('front_of_house');
+  });
+  it('narrows the team apps to the ones the role names', () => {
+    const chef = { agents: [], apps: ['kitchen'], staff: true };
+    const got = sectionAppsFor(rows, chef, teamApps);
+    expect(got.map(a => `${a.kind}:${a.slug}`)).toEqual(['team:kitchen', 'app:training', 'app:kitchen-notes', 'app:cleaning']);
+  });
+  it('keeps the App-platform row whole behind the tile, dashboards included', () => {
+    const got = sectionAppsFor(rows, manager, teamApps);
+    const cleaning = got.find(a => a.slug === 'cleaning');
+    expect(cleaning?.kind === 'app' && cleaning.row).toEqual(rows[2]);
+    const dash = sectionAppsFor([{ slug: 'board', name: 'Board', kind: 'dashboard', audience: 'team' }], manager);
+    expect(dash[0].kind === 'app' && dash[0].row.kind).toBe('dashboard');
+  });
+  it('keys a team tile apart from an App-platform tile of the same slug', () => {
+    expect(sectionTileKey({ kind: 'team', slug: 'kitchen' })).toBe('team:kitchen');
+    expect(sectionTileKey({ kind: 'app', slug: 'kitchen' })).toBe('app:kitchen');
   });
 });
 

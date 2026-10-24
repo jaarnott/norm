@@ -4,7 +4,7 @@ Hierarchy v2 (plan of 27 Sep 2026):
 
     Organisation -> AI Team Members -> Apps -> Components -> Connections
 
-Three row kinds:
+Four row kinds:
   * ``tier='agent'`` — the hireable team members. ``owns_agents`` joins the
     row to ``agent_configs``; ``unlocks`` names the Apps the member uses.
     Hiring one is the entitlement that turns everything downstream on.
@@ -18,6 +18,19 @@ Three row kinds:
     chat capabilities so switching an App off also removes them
     (kept-while-any-entitled-claimer semantics).
   * ``tier='user'`` — published community apps; never touched here.
+  * ``tier='team'`` — the three team apps venue staff see (Kitchen, Front of
+    house, Managers — docs/plans/team-apps-skeleton.md). A team app owns
+    nothing: it is a second place a job app's screens can show (a component's
+    ``teams`` list and ``team_only`` flag, ``_c`` below) plus the short list
+    of tools Norm may use for a person whose role reaches only that team app
+    (``uses_tools``). The same screen can be placed in several team apps
+    (owner, 24 Oct 2026: a screen is the same in every team app it is in;
+    the organisation switches each placement on its own — ``screen:<page
+    id>@<team>`` in org_app_entitlements, services/screens.py). Who sees one
+    is the role (``roles.apps``). Install them with ``--only
+    kitchen,front_of_house,managers`` once the code that reads them is
+    deployed; until then every reader treats "no team rows" as "no team
+    apps".
 
 Every App has an enabled state: hiring a member enables its bundled Apps by
 default, an org can switch one off, and a priced App ships bundled=false
@@ -82,7 +95,7 @@ from app.services.functions.catalog import (  # noqa: E402 — path set above
     APP as FUNCTIONS_APP,
     MEMBER as FUNCTIONS_MEMBER,
 )
-from app.services.screens import SYSTEMS  # noqa: E402
+from app.services.screens import SYSTEMS, TEAM_SLUGS  # noqa: E402
 
 
 def _c(
@@ -92,7 +105,16 @@ def _c(
     description="",
     connections=None,
     connection=None,
+    teams=(),
+    team=None,
+    team_only=False,
 ):
+    """One component. With a ``page`` it is a screen; ``teams`` lists the
+    team apps the screen is placed in as well as its agent's menu (the same
+    screen in every one of them, switched per team app), and ``team_only``
+    keeps it out of the agent's menu altogether (services/screens.py).
+    ``team="kitchen"`` is sugar for ``teams=["kitchen"]``; the component
+    always stores ``teams`` (a list), never ``team``."""
     entry = {
         "key": key,
         "page": page,
@@ -105,6 +127,11 @@ def _c(
         # the system this screen is for (services/screens.py): it shows only
         # while the organisation has that system
         entry["connection"] = connection
+    placed = list(teams) + ([team] if team else [])
+    if placed:
+        entry["teams"] = placed
+    if team_only:
+        entry["team_only"] = True
     return entry
 
 
@@ -274,6 +301,51 @@ def _shared(key, label, description):
     }
 
 
+def _team(slug, name, icon, tagline, uses_tools=()):
+    """One team app (tier='team'): what a venue role reaches in the apps
+    section. It owns no member, tools, components or skills — screens are
+    placed on it by a job app's components (``_c(teams=[...])``; one screen
+    may be in several team apps) and ``uses_tools`` names the tools Norm may
+    use for a person whose role reaches only this team app
+    (entitlements.team_tools)."""
+    return {
+        "slug": slug,
+        "name": name,
+        "description": tagline,
+        "icon": icon,
+        "tier": "team",
+        "bundled": True,
+        "price_cents": 0,
+        "composition": {"tagline": tagline, "uses_tools": list(uses_tools)},
+    }
+
+
+# The three team apps (docs/plans/team-apps-skeleton.md §2). Order here is
+# the order screens.TEAM_SLUGS keeps everywhere they are listed. Icons are
+# emoji the web's resolveAppIcon maps to a line icon.
+TEAM_APPS = [
+    _team(
+        "kitchen",
+        "Kitchen",
+        "🍲",
+        "What the kitchen does today: prep, food control, recipes, repairs.",
+        uses_tools=["loadedhub.get_recipes"],
+    ),
+    _team(
+        "front_of_house",
+        "Front of house",
+        "🛎",
+        "Checklists, cleaning and the floor's day.",
+    ),
+    _team(
+        "managers",
+        "Managers",
+        "🛡",
+        "Sign-offs, requests and what needs a manager.",
+    ),
+]
+
+
 APPS = [
     # ── AI Team Members (tier='agent') ───────────────────────────────────
     _member(
@@ -371,9 +443,7 @@ APPS = [
             "norm_reports.manage_dashboard",
         ],
         components=[
-            _shared(
-                "dashboard_view", "Dashboard", "Each AI agent's dashboard page."
-            ),
+            _shared("dashboard_view", "Dashboard", "Each AI agent's dashboard page."),
             _shared(
                 "automated_task_board",
                 "Tasks",
@@ -960,7 +1030,11 @@ APPS = [
                 connection="loaded",
             ),
         ],
-        skills=["product_sales_analysis", "sales_comparison", "staff_sales_performance"],
+        skills=[
+            "product_sales_analysis",
+            "sales_comparison",
+            "staff_sales_performance",
+        ],
         works_with=["loaded"],
         listing=_listing(
             "Your best and worst sellers, staff sales and how this week compares.",
@@ -1027,6 +1101,8 @@ APPS = [
             _c("app_runner", description="Runs an App's own screen."),
         ],
     ),
+    # ── Team apps (tier='team'): Kitchen, Front of house, Managers ─────────
+    *TEAM_APPS,
 ]
 
 
@@ -1148,9 +1224,7 @@ def main() -> None:
             for c in comp.get("components", []):
                 sys_ = c.get("connection")
                 if sys_ and sys_ not in SYSTEMS:
-                    errors.append(
-                        f"{app['slug']}/{c['key']}: unknown system '{sys_}'"
-                    )
+                    errors.append(f"{app['slug']}/{c['key']}: unknown system '{sys_}'")
             for sk in comp.get("skills") or []:
                 if sk not in playbook_slugs:
                     errors.append(f"{app['slug']}: skill '{sk}' does not exist")
@@ -1161,9 +1235,70 @@ def main() -> None:
                 skill_claimed[sk] = app["slug"]
         # A shared tool is owned by another App (uses_tools never claims).
         for app in apps:
+            if app["tier"] == "team":
+                continue
             for key in app["composition"].get("uses_tools") or []:
                 if key not in tool_claimed and selected is None:
                     errors.append(f"{app['slug']}: uses '{key}', which no App owns")
+        # Team apps (docs/plans/team-apps-skeleton.md §2). These read the
+        # whole seed, not only --only's rows, so the three team rows can be
+        # installed on their own and a screen placed on a team app can be
+        # landed on its own.
+        team_slugs = {a["slug"] for a in APPS if a["tier"] == "team"}
+        owned_anywhere = {
+            key
+            for a in APPS
+            if a["tier"] == "app"
+            for key in a["composition"].get("tools") or []
+        }
+        for app in apps:
+            comp = app["composition"]
+            if app["tier"] == "team":
+                if app["slug"] not in TEAM_SLUGS:
+                    errors.append(
+                        f"{app['slug']}: not a team app slug "
+                        f"({', '.join(TEAM_SLUGS)} — services/screens.py)"
+                    )
+                for field in ("member", "tools", "components", "skills"):
+                    if comp.get(field):
+                        errors.append(
+                            f"{app['slug']}: a team app owns nothing — remove '{field}'"
+                        )
+                for key in comp.get("uses_tools") or []:
+                    if key not in owned_anywhere:
+                        errors.append(
+                            f"{app['slug']}: team tool '{key}' is owned by no App"
+                        )
+                continue
+            for c in comp.get("components", []):
+                if "team" in c:
+                    errors.append(
+                        f"{app['slug']}/{c['key']}: 'team' is not read any more — "
+                        "place the screen with teams=[...]"
+                    )
+                teams = c.get("teams") or []
+                if not isinstance(teams, list):
+                    errors.append(f"{app['slug']}/{c['key']}: teams must be a list")
+                    teams = []
+                for team in teams:
+                    if team not in team_slugs:
+                        errors.append(
+                            f"{app['slug']}/{c['key']}: unknown team app '{team}'"
+                        )
+                if len(set(teams)) != len(teams):
+                    errors.append(
+                        f"{app['slug']}/{c['key']}: a team app is listed twice "
+                        f"in teams {teams}"
+                    )
+                if c.get("team_only") and not teams:
+                    errors.append(
+                        f"{app['slug']}/{c['key']}: team_only needs a non-empty teams"
+                    )
+                if teams and not c.get("page"):
+                    errors.append(
+                        f"{app['slug']}/{c['key']}: only a screen (a component "
+                        "with a page) can be placed in a team app"
+                    )
         if errors:
             for e in errors:
                 print(f"INVALID: {e}")

@@ -46,7 +46,7 @@ from app.db.models import User
 # service so the web router and the MCP submit tool share ONE implementation.
 # Kept under the old private names here so the endpoints and tests below (and
 # test_invoice_fixes_handler.py) are untouched by the move.
-from app.services import card_actions
+from app.services import card_actions, screen_access
 from app.services import invoice_catalog as catalog
 from app.services.invoice_po_reference import (
     enrich_loaded_snapshot as _enrich_snapshot,
@@ -62,7 +62,14 @@ from app.services.received_invoice import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# The Receive Invoice editor's routes, for a role that reaches its screens
+# (services/screen_access): a venue's login alone let a Kitchen role receive
+# invoices, delete drafts in Loaded and read every supplier's prices.
+router = APIRouter(
+    dependencies=[
+        Depends(screen_access.needs("receive_invoice_editor", "invoices_dashboard"))
+    ]
+)
 
 
 def _catalog(fn, *args, **kwargs):

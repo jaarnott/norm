@@ -137,7 +137,12 @@ def _collect_tools(
     # project_tools() gates through this same function, so the MCP surface
     # follows hires with no second code path. apps_reachable None (no org, or
     # no tier='agent' rows) = gating inactive = every owned tool stays on.
-    from app.services.entitlements import apps_reachable, org_id_for_user, tool_users
+    from app.services.entitlements import (
+        apps_reachable,
+        org_id_for_user,
+        team_tools,
+        tool_users,
+    )
 
     users = tool_users(_cdb)
     if not users:
@@ -160,7 +165,12 @@ def _collect_tools(
     # everyone but venue staff (a role with no AI agent at all). Platform
     # admins, people with no membership and NULL/NULL roles are unchanged.
     # project_tools() inherits this too, through this same function.
-    _owner_blocked |= _role_blocked_tools(db, user_id, _cdb, users, _reachable)
+    # A team app (Kitchen, Front of house, Managers) hands Norm a short list
+    # of tools for a person whose role reaches it (team-apps skeleton, Oct
+    # 2026): entitlements.team_tools, read by the same rule.
+    _owner_blocked |= _role_blocked_tools(
+        db, user_id, _cdb, users, _reachable, team_tools(_cdb)
+    )
 
     # The person's own scopes, for rows that carry `requires` (Oct 2026): a
     # payroll tool is not in a manager's menu at all. Read once; None means
@@ -281,6 +291,8 @@ def _role_blocked_tools(
     config_db: Session,
     users: dict[str, set[str]],
     reachable: set[str] | None = None,
+    team_tools: dict[str, set[str]] | None = None,
+    team_reachable: set[str] | None = None,
 ) -> set[str]:
     """The ``connector.action`` keys the user's role does not reach
     (services/role_access.py). ``users`` is tool_users(): every App that gives
@@ -289,7 +301,18 @@ def _role_blocked_tools(
     reaches, when ``reachable`` is known — passes the role: Norm Core iff
     ``core_allowed``; any other App iff ``allows_app`` on its key — the
     org-built app it fronts (``training``) when it fronts one, else its
-    catalog slug — with the App's AI agent as ``member``."""
+    catalog slug — with the App's AI agent as ``member``.
+
+    A team app (``team_tools``: entitlements.team_tools, slug -> its
+    ``uses_tools``) is a second way through: a tool also passes when a team
+    app the role reaches (``allows_app(access, slug)``, no member) lists it,
+    and at least one App giving it is reachable for the organisation — the
+    tool still comes with its App's AI agent's hire, the team app only says
+    which of that App's tools a kitchen role may use. ``team_reachable``
+    is that set of Apps for a caller that passes no ``reachable`` (the
+    direct routes, screen_access.tool_reachable and app_runtime's role
+    check), so the team rule asks it without narrowing the App rule.
+    ``Access(None, None)`` is unchanged either way."""
     from app.services import role_access
     from app.services.entitlements import ALL_MEMBERS, app_index
 
@@ -307,11 +330,20 @@ def _role_blocked_tools(
         app_key = info.key if info else slug
         return role_access.allows_app(access, app_key, member=member)
 
+    team_allowed: set[str] = set()
+    for team_slug, keys in (team_tools or {}).items():
+        if role_access.allows_app(access, team_slug):
+            team_allowed |= keys
+
     blocked: set[str] = set()
     for key, apps in users.items():
         giving = apps & reachable if reachable is not None else apps
-        if not any(_app_allowed(slug) for slug in giving):
-            blocked.add(key)
+        if any(_app_allowed(slug) for slug in giving):
+            continue
+        team_giving = apps & team_reachable if team_reachable is not None else giving
+        if key in team_allowed and team_giving:
+            continue
+        blocked.add(key)
     return blocked
 
 

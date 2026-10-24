@@ -9,6 +9,9 @@
  *   matters through `staff`).
  * - `staff` = a role with no AI agent at all. Such a person has only the apps
  *   section, so every app they can see sits there, whatever its audience.
+ * - A team app (Kitchen, Front of house, Managers — docs/plans/team-apps-
+ *   skeleton.md) is in the section when the role allows it (`allowsTeam`)
+ *   and it has at least one screen here.
  */
 import type { AccessInfo } from '../types';
 
@@ -21,10 +24,32 @@ export const NON_AGENT: ReadonlySet<string> = new Set(['home', 'settings', 'apps
 /** An app as /api/apps lists it, as far as the shell needs. */
 export interface SectionAppLike {
   slug: string;
+  name: string;
+  icon?: string | null;
   kind?: 'app' | 'dashboard' | string;
   /** agent (under its AI agent), team (the apps section) or both. */
   audience?: 'agent' | 'team' | 'both' | string | null;
 }
+
+/** A team app's screen, as far as the section needs it. */
+export interface TeamScreenLike { page_id: string; label: string }
+
+/** A team app as /api/team lists it (useTeam's TeamAppInfo), as far as the
+ *  section needs it. */
+export interface TeamAppLike<S extends TeamScreenLike = TeamScreenLike> {
+  slug: string;
+  name: string;
+  icon?: string | null;
+  screens: S[];
+}
+
+/** One tile of the apps section: a team app with its screens, or an
+ *  App-platform app (`row` is the /api/apps row it came from, untouched —
+ *  the row's own `kind` says app or dashboard). Both carry what a tile draws:
+ *  slug, name and icon. */
+export type SectionApp<T extends SectionAppLike = SectionAppLike, S extends TeamScreenLike = TeamScreenLike> =
+  | { kind: 'team'; slug: string; name: string; icon?: string | null; screens: S[] }
+  | { kind: 'app'; slug: string; name: string; icon?: string | null; row: T };
 
 /** Does the role let this person see this AI agent? Home always shows. */
 export function allowsAgent(access: AccessInfo | null | undefined, agentId: string): boolean {
@@ -48,18 +73,45 @@ export function navLabelFor(agents: AgentLike[], appCount: number): string {
   return appCount > 0 ? 'AI agents and apps' : 'AI agents';
 }
 
-/** The apps that make up the apps section: those built for the team (audience
- *  team or both), and for venue staff every app they can open at all. Apps
- *  with audience agent or both keep their place under their agent as well. */
-export function sectionAppsFor<T extends SectionAppLike>(rows: T[], access: AccessInfo | null | undefined): T[] {
+/** Does the role let this person see this team app? `apps: null` = every
+ *  app the organisation has; unknown access (an older /me payload) = yes. */
+export function allowsTeam(access: AccessInfo | null | undefined, slug: string): boolean {
+  if (!access || access.apps === null || access.apps === undefined) return true;
+  return access.apps.includes(slug);
+}
+
+/** The apps that make up the apps section, in the order the rail and the
+ *  bottom bar show them: the team apps the role allows that have at least
+ *  one screen here (catalog order), then the App-platform apps as before —
+ *  those built for the team (audience team or both), and for venue staff
+ *  every app they can open at all. Apps with audience agent or both keep
+ *  their place under their agent as well. A team app with no screens is not
+ *  a tile (nothing to open), though the Roles form still lists it. */
+export function sectionAppsFor<T extends SectionAppLike, S extends TeamScreenLike = TeamScreenLike>(
+  rows: T[],
+  access: AccessInfo | null | undefined,
+  teamApps: TeamAppLike<S>[] = [],
+): SectionApp<T, S>[] {
   const staff = !!access?.staff;
-  return rows.filter(r => {
-    const audience = r.audience || 'agent';
-    if (audience === 'team' || audience === 'both') return true;
-    // A dashboard lives on its agent's Dashboard page; it only joins the
-    // section when it was built for the team.
-    return staff && r.kind !== 'dashboard';
-  });
+  const teams: SectionApp<T, S>[] = teamApps
+    .filter(t => t.screens.length > 0 && allowsTeam(access, t.slug))
+    .map(t => ({ kind: 'team', slug: t.slug, name: t.name, icon: t.icon, screens: t.screens }));
+  const apps: SectionApp<T, S>[] = rows
+    .filter(r => {
+      const audience = r.audience || 'agent';
+      if (audience === 'team' || audience === 'both') return true;
+      // A dashboard lives on its agent's Dashboard page; it only joins the
+      // section when it was built for the team.
+      return staff && r.kind !== 'dashboard';
+    })
+    .map(r => ({ kind: 'app', slug: r.slug, name: r.name, icon: r.icon, row: r }));
+  return [...teams, ...apps];
+}
+
+/** The rail's and the phone menu's key for a tile (`data-member`): a team
+ *  app and an App-platform app never share one. */
+export function sectionTileKey(app: { kind: 'team' | 'app'; slug: string }): string {
+  return `${app.kind === 'team' ? 'team' : 'app'}:${app.slug}`;
 }
 
 export type TeamBarTab =

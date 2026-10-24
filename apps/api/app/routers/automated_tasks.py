@@ -4,6 +4,12 @@ A task belongs to its creator's organisation (services/thread_access.
 can_manage_task): every route here 404s on anyone else's — until Oct 2026 any
 signed-in user could list, run, edit or delete any organisation's tasks by id.
 Platform admins see all.
+
+Venue staff (a role with no AI agent) see only their own tasks and cannot
+make, change, run or talk to one: a task runs an AI agent, and a manager's
+task ran with the manager's tools — editing its prompt and pressing Run would
+have handed staff the manager's reach. A kitchen tablet never talks to one
+either (the chat rule, routers/messages._no_chat_for_tablets).
 """
 
 import logging
@@ -22,7 +28,8 @@ from app.db.models import (
     User,
 )
 from app.auth.dependencies import get_current_user
-from app.services import active_org
+from app.routers.messages import _no_chat_for_tablets
+from app.services import active_org, screen_access
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +79,25 @@ def _task_for(db: Session, task_id: str, user: User) -> AutomatedTask:
     return task
 
 
+#: Why venue staff can't make or run a task.
+NO_AGENT = "Scheduled tasks run an AI agent, and your role doesn't include one."
+
+
+def _not_for_staff(db: Session, user: User) -> None:
+    screen_access.require_not_staff(db, user, NO_AGENT)
+
+
 def _visible(query, db: Session, user: User):
-    """Narrow a task query to what ``user`` may see: their organisation's."""
+    """Narrow a task query to what ``user`` may see: their organisation's
+    (venue staff: their own)."""
     from sqlalchemy import or_
 
     from app.db.models import OrganizationMembership
 
     if getattr(user, "role", None) == "admin":
         return query
+    if screen_access.is_staff(db, user):
+        return query.filter(AutomatedTask.created_by == user.id)
     membership = active_org.membership_for(db, user.id)
     if membership is None:
         return query.filter(AutomatedTask.created_by == user.id)
@@ -253,7 +271,9 @@ async def create_task(
     body: CreateBody,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    _tablet: None = Depends(_no_chat_for_tablets),
 ):
+    _not_for_staff(db, user)
     task = AutomatedTask(
         title=body.title,
         description=body.description,
@@ -278,6 +298,7 @@ async def update_task(
     user: User = Depends(get_current_user),
 ):
     task = _task_for(db, task_id, user)
+    _not_for_staff(db, user)
 
     for field in (
         "title",
@@ -307,8 +328,10 @@ async def run_task(
     body: RunBody,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    _tablet: None = Depends(_no_chat_for_tablets),
 ):
     _task_for(db, task_id, user)
+    _not_for_staff(db, user)
 
     from app.services.task_scheduler import execute_task_now
 
@@ -340,6 +363,7 @@ async def resume_task(
     task_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
     task = _task_for(db, task_id, user)
+    _not_for_staff(db, user)
     task.status = "active"
 
     from app.services.task_scheduler import apply_schedule
@@ -484,6 +508,7 @@ async def ensure_conversation(
 ):
     """Create the conversation task if it doesn't exist. Lightweight — no LLM call."""
     task = _task_for(db, task_id, user)
+    _not_for_staff(db, user)
 
     from app.services.task_scheduler import _ensure_conversation_task
 
@@ -503,9 +528,11 @@ async def send_message(
     body: MessageBody,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    _tablet: None = Depends(_no_chat_for_tablets),
 ):
     """Send a user message to the automated task's conversation."""
     task = _task_for(db, task_id, user)
+    _not_for_staff(db, user)
 
     # Ensure conversation task exists
     from app.services.task_scheduler import _ensure_conversation_task

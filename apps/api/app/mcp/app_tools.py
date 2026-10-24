@@ -389,11 +389,30 @@ def _authorize_venue_id(principal: McpPrincipal, venue_id: str, db: Session) -> 
         raise AppToolError("No access to this venue.")
 
 
+def _authorize_screen(
+    principal: McpPrincipal, component_key: str, db: Session, config_db: Session
+) -> None:
+    """The person's role must reach the screen whose actions an app runs
+    (services/screen_access), as on the web's /component-api route. The MCP
+    scopes these tools need (orders:read) are not a venue role's, so this is
+    the second lock, for a custom role that holds them."""
+    from app.db.models import User
+    from app.services import active_org, screen_access
+
+    user = db.query(User).filter(User.id == principal.user_id).first()
+    with active_org.use(principal.organization_id):
+        if user is None or not screen_access.component_reachable(
+            db, config_db, user, component_key
+        ):
+            raise AppToolError("This screen isn't available to your role.")
+
+
 def _load_owned_doc(
     principal: McpPrincipal,
     doc_id: str,
     db: Session,
     allowed_doc_types: frozenset[str],
+    config_db: Session,
 ):
     """The working document, if this principal owns it AND may open its kind.
 
@@ -408,6 +427,11 @@ def _load_owned_doc(
 
     A wrong-kind draft reads as missing, like a wrong-owner one: telling the
     caller a document exists but is off-limits is itself an oracle.
+
+    And the person's role must reach the screen that edits the kind
+    (_authorize_screen), as on the web's working-document routes: owning
+    the thread alone let a role without the screen edit a draft that syncs
+    to Loaded (24 Oct 2026).
     """
     from app.db.models import Thread, WorkingDocument
 
@@ -419,6 +443,15 @@ def _load_owned_doc(
     thread = db.query(Thread).filter(Thread.id == doc.thread_id).first()
     if thread is None or thread.user_id != principal.user_id:
         raise AppToolError("Draft not found.")
+    from app.services.screen_access import DOC_COMPONENTS
+
+    # ORDER_DOC_TYPES' "purchase_order" is the same editor as "order".
+    _authorize_screen(
+        principal,
+        DOC_COMPONENTS.get(doc.doc_type, "purchase_order_editor"),
+        db,
+        config_db,
+    )
     return doc
 
 
@@ -446,9 +479,9 @@ def execute_app_tool(
 ) -> dict:
     """Run one app-support tool. Raises AppToolError for refusals."""
     if name == "norm__get_working_document":
-        return _get_working_document(params, principal, db)
+        return _get_working_document(params, principal, db, config_db)
     if name == "norm__update_working_document":
-        return _update_working_document(params, principal, db)
+        return _update_working_document(params, principal, db, config_db)
     if name == "norm__component_api":
         return _component_api(params, principal, db, config_db)
     if name == "norm__menu_component_api":
@@ -468,27 +501,37 @@ def execute_app_tool(
     raise AppToolError(f"Unknown app tool: {name}")
 
 
-def _get_working_document(params: dict, principal: McpPrincipal, db: Session) -> dict:
-    return _get_doc(params, principal, db, ORDER_DOC_TYPES)
+def _get_working_document(
+    params: dict, principal: McpPrincipal, db: Session, config_db: Session
+) -> dict:
+    return _get_doc(params, principal, db, ORDER_DOC_TYPES, config_db)
 
 
 def _get_doc(
-    params: dict, principal: McpPrincipal, db: Session, allowed: frozenset[str]
+    params: dict,
+    principal: McpPrincipal,
+    db: Session,
+    allowed: frozenset[str],
+    config_db: Session,
 ) -> dict:
     doc = _load_owned_doc(
-        principal, str(params.get("working_document_id") or ""), db, allowed
+        principal, str(params.get("working_document_id") or ""), db, allowed, config_db
     )
     return _doc_payload(doc)
 
 
 def _update_working_document(
-    params: dict, principal: McpPrincipal, db: Session
+    params: dict, principal: McpPrincipal, db: Session, config_db: Session
 ) -> dict:
-    return _update_doc(params, principal, db, ORDER_DOC_TYPES)
+    return _update_doc(params, principal, db, ORDER_DOC_TYPES, config_db)
 
 
 def _update_doc(
-    params: dict, principal: McpPrincipal, db: Session, allowed: frozenset[str]
+    params: dict,
+    principal: McpPrincipal,
+    db: Session,
+    allowed: frozenset[str],
+    config_db: Session,
 ) -> dict:
     # The patch mechanics live in the working-documents router; imported so an
     # MCP edit and a web edit are the same code path (ops semantics, pending
@@ -501,7 +544,7 @@ def _update_doc(
     )
 
     doc = _load_owned_doc(
-        principal, str(params.get("working_document_id") or ""), db, allowed
+        principal, str(params.get("working_document_id") or ""), db, allowed, config_db
     )
 
     ops = params.get("ops")
@@ -602,6 +645,7 @@ def _component_api(
 
     venue_id = str(params.get("venue_id") or "")
     _authorize_venue_id(principal, venue_id, db)
+    _authorize_screen(principal, component_key, db, config_db)
 
     call_params = params.get("params") if isinstance(params.get("params"), dict) else {}
     try:
@@ -643,6 +687,7 @@ def _save_menu(
 
     venue_id = str(params.get("venue_id") or "")
     _authorize_venue_id(principal, venue_id, db)
+    _authorize_screen(principal, "menu_editor", db, config_db)
 
     menu = params.get("menu")
     if not isinstance(menu, dict) or not str(menu.get("name") or "").strip():
@@ -698,6 +743,7 @@ def _save_recipe(
 
     venue_id = str(params.get("venue_id") or "")
     _authorize_venue_id(principal, venue_id, db)
+    _authorize_screen(principal, "recipe_editor", db, config_db)
 
     # An update carries recipe_id; a create omits it (or sets create:true). Let
     # save_recipe own the update-vs-create validation — it needs a version_id for
@@ -738,6 +784,7 @@ def _place_stock_order(
 
     venue_id = str(params.get("venue_id") or "")
     _authorize_venue_id(principal, venue_id, db)
+    _authorize_screen(principal, SUBMIT_COMPONENT[0], db, config_db)
 
     orders = params.get("orders")
     if not isinstance(orders, list) or not orders:

@@ -26,9 +26,10 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_config_db, get_db
 from app.db.models import User, Venue
-from app.services import card_actions
+from app.services import card_actions, screen_access
 
-router = APIRouter()
+# For a role that reaches the Sales Analysis screen (services/screen_access).
+router = APIRouter(dependencies=[Depends(screen_access.needs("sales_analysis"))])
 
 #: The App the page belongs to.
 APP = "sales-analysis"

@@ -47,10 +47,11 @@ async def get_document(
     thread_id: str,
     doc_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     doc = _find_doc(db, thread_id, doc_id)
-    _check_doc_access(db, user, doc)
+    _check_doc_access(db, user, doc, config_db)
     return _doc_to_dict(doc)
 
 
@@ -226,7 +227,7 @@ def patch_document(
     user: User = Depends(get_current_user),
 ):
     doc = _find_doc(db, thread_id, doc_id, lock=True)
-    _check_doc_access(db, user, doc)
+    _check_doc_access(db, user, doc, config_db)
 
     # Optimistic concurrency check
     if doc.version != body.version:
@@ -303,10 +304,11 @@ async def submit_document(
     thread_id: str,
     doc_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     doc = _find_doc(db, thread_id, doc_id)
-    _check_doc_access(db, user, doc)
+    _check_doc_access(db, user, doc, config_db)
 
     if not doc.pending_ops:
         return {"status": "no_changes", "message": "No pending changes to submit."}
@@ -332,10 +334,11 @@ async def retry_sync(
     thread_id: str,
     doc_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     doc = _find_doc(db, thread_id, doc_id)
-    _check_doc_access(db, user, doc)
+    _check_doc_access(db, user, doc, config_db)
     if doc.sync_status != "error":
         raise HTTPException(status_code=400, detail="Document is not in error state")
 
@@ -375,24 +378,44 @@ def _is_admin(user) -> bool:
     return getattr(user, "role", None) == "admin"
 
 
-def _check_doc_access(db: Session, user, doc: WorkingDocument) -> None:
+def _check_doc_access(
+    db: Session, user, doc: WorkingDocument, config_db: Session
+) -> None:
     """A working document is its venue's, or its conversation's. Every route
     found a document by id alone and let any signed-in user read it, patch it
-    — and a patch syncs, i.e. writes to the venue's Loaded (Oct 2026)."""
+    — and a patch syncs, i.e. writes to the venue's Loaded (Oct 2026).
+
+    A document also needs the screen that edits it (services/screen_access):
+    a Kitchen role could open the venue's roster document and patch shifts
+    into Loaded. Only a document of the person's own conversation that has
+    no venue and whose type no screen syncs (screen_access.DOC_COMPONENTS)
+    skips that check — from-connector let a role stamp ``roster`` on a read
+    in its own thread, and the own-thread pass then let it write shifts
+    (24 Oct 2026)."""
     from app.db.models import Thread
+    from app.services import screen_access
     from app.services.venue_service import user_can_access_venue
 
     if _is_admin(user):
         return
-    if doc.venue_id:
-        if user_can_access_venue(db, user.id, doc.venue_id):
-            return
-        raise HTTPException(status_code=404, detail="Working document not found")
+    own_thread = False
     if doc.thread_id:
         thread = db.query(Thread).filter(Thread.id == doc.thread_id).first()
-        if thread is not None and thread.user_id == user.id:
-            return
+        own_thread = thread is not None and thread.user_id == user.id
+    if doc.venue_id:
+        if not user_can_access_venue(db, user.id, doc.venue_id):
+            raise HTTPException(status_code=404, detail="Working document not found")
+    elif doc.thread_id and not own_thread:
         raise HTTPException(status_code=404, detail="Working document not found")
+    thread_only = (
+        own_thread
+        and not doc.venue_id
+        and doc.doc_type not in screen_access.DOC_COMPONENTS
+    )
+    if not thread_only and not screen_access.doc_reachable(
+        db, config_db, user, doc.doc_type
+    ):
+        raise HTTPException(status_code=403, detail=screen_access.REFUSED)
 
 
 @router.post("/working-documents/from-connector")
@@ -413,13 +436,20 @@ async def create_from_connector(
     """
     from app.agents.internal_tools import get_handler
     from app.db.models import Thread
-    from app.services import caller_scope
+    from app.services import caller_scope, screen_access
     from app.services.venue_service import user_can_access_venue
 
     if body.venue_id and not (
         _is_admin(user) or user_can_access_venue(db, user.id, body.venue_id)
     ):
         raise HTTPException(403, "You don't have access to that venue")
+    # Only a read the person's role reaches, into a document of a screen it
+    # reaches (services/screen_access): the venue alone let a Kitchen role
+    # load the staff list with pay, and a free doc_type let any role load a
+    # "roster" and patch shifts into Loaded.
+    screen_access.require_page_load(
+        db, config_db, user, body.connector_name, body.action, body.doc_type
+    )
     thread_id = None
     if body.thread_id:
         thread = db.query(Thread).filter(Thread.id == body.thread_id).first()
@@ -546,13 +576,14 @@ async def create_from_connector(
 async def get_standalone_document(
     doc_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
     """Get a working document by ID (no task context required)."""
     doc = db.query(WorkingDocument).filter(WorkingDocument.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Working document not found")
-    _check_doc_access(db, user, doc)
+    _check_doc_access(db, user, doc, config_db)
     return _doc_to_dict(doc)
 
 
@@ -573,7 +604,7 @@ def patch_standalone_document(
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Working document not found")
-    _check_doc_access(db, user, doc)
+    _check_doc_access(db, user, doc, config_db)
 
     if doc.version != body.version:
         raise HTTPException(

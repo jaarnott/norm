@@ -25,7 +25,9 @@ Hierarchy v2 (Sep 2026 — AI Team Members -> Apps -> Components -> Connections)
 and Apps v3 (28 Sep 2026): ``tier='agent'`` rows are the hireable team members
 (owns_agents joins them to agent_configs; hiring one is the entitlement);
 ``tier='app'`` rows are the Apps, each naming its ONE member in
-composition["member"]. Every App has an enabled state: hiring a member enables
+composition["member"]; ``tier='team'`` rows (Oct 2026) are the team apps venue
+staff see, which own nothing and only this module's ``team_tools`` reads.
+Every App has an enabled state: hiring a member enables
 its bundled Apps by default, individual Apps can be switched off (an explicit
 entitlement row), and a priced App ships bundled=false until enabled.
 ``hired_agent_slugs``/``apps_on`` resolve those two levels; both return None
@@ -300,6 +302,21 @@ def tool_owners(config_db: Session) -> dict[str, str]:
             for key in (a.composition or {}).get("tools") or []:
                 owners.setdefault(key, a.slug)
     return owners
+
+
+def team_tools(config_db: Session) -> dict[str, set[str]]:
+    """Team app slug -> the tools Norm may use for a person whose role reaches
+    only that team app (a ``tier='team'`` row's ``uses_tools``; docs/plans/
+    team-apps-skeleton.md §3.2). A team app owns nothing: each of these tools
+    is owned by some App, and it reaches the person only while an App giving
+    it is reachable for the organisation (prompt_builder._role_blocked_tools).
+    Empty while the catalog has no team rows. Team rows are ignored by every
+    other reader here (tool_users, tool_owners, apps_on, apps_reachable)."""
+    out: dict[str, set[str]] = {}
+    for a in _catalog(config_db):
+        if a.tier == "team":
+            out[a.slug] = set((a.composition or {}).get("uses_tools") or [])
+    return out
 
 
 def skill_owners(config_db: Session) -> dict[str, str]:

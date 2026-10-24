@@ -43,6 +43,9 @@ def functions_ctx(
                 "message": "Norm Functions isn't switched on for this organisation.",
             },
         )
+    from app.routers.functions import refuse_unless_functions
+
+    refuse_unless_functions(db, config_db, user)
     return ctx
 
 

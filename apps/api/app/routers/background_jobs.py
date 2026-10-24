@@ -1,7 +1,8 @@
 """Background jobs, for the job's live card: read one, cancel one.
 
 A job is visible to the person who started it, to anyone who may open its
-venue, and to a platform admin (services/background_jobs).
+venue (but venue staff, who see only their own), and to a platform admin
+(services/background_jobs).
 """
 
 from __future__ import annotations
@@ -23,7 +24,11 @@ def _job_for(db: Session, user: User, job_id: str) -> BackgroundJob:
         raise HTTPException(404, "No such job")
     if getattr(user, "role", None) == "admin" or job.user_id == user.id:
         return job
-    if job.venue_id:
+    from app.services import screen_access
+
+    # A colleague's job at the venue (an invoice batch, a catalogue merge)
+    # is a manager's to watch or stop, not venue staff's.
+    if job.venue_id and not screen_access.is_staff(db, user):
         from app.services.venue_service import user_can_access_venue
 
         if user_can_access_venue(db, user.id, job.venue_id):

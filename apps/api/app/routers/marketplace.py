@@ -35,13 +35,19 @@ async def list_marketplace(
     user: User = Depends(get_current_user),
 ):
     """Every active catalog App with this org's effective state and what
-    enabling it lights up (the composition — pages, components, agents)."""
+    enabling it lights up (the composition — pages, components, agents).
+
+    Team apps (``tier='team'``: Kitchen, Front of house, Managers) are not
+    listed: they are not Apps, have no switch and nothing here enables them —
+    GET /api/team and the admin App Map carry them
+    (docs/plans/team-apps-skeleton.md)."""
     from app.db.config_models import MarketplaceApp
 
     org_id = org_id_for_user(user.id, db)
     entitled = entitled_slugs(org_id, db, config_db) if org_id else set()
     rows = (
         config_db.query(MarketplaceApp)
+        .filter(MarketplaceApp.tier != "team")
         .order_by(MarketplaceApp.tier, MarketplaceApp.name)
         .all()
     )
@@ -115,6 +121,14 @@ def _set_enabled(
             raise HTTPException(404, f"No marketplace app '{slug}'")
         from app.services.entitlements import is_switchable
 
+        if app.tier == "team":
+            # A team app has no switch: who sees it is the role, what it
+            # holds is its job apps' screens (docs/plans/team-apps-skeleton.md).
+            raise HTTPException(
+                400,
+                f"{app.name} is a team app: it has no switch. Who sees it is "
+                "set on each role, and its screens follow their job apps.",
+            )
         if app.tier == "app" and not is_switchable(app):
             raise HTTPException(
                 400, f"{app.name} is always on while its AI agent is hired."
@@ -192,6 +206,42 @@ def set_screen(
         raise HTTPException(404, f"No screen '{page_id}'")
     _switch(db, org_id, f"{SCREEN_PREFIX}{page_id}", action == "enable")
     return {"page_id": page_id, "enabled": action == "enable"}
+
+
+@router.post("/marketplace/screens/{page_id}/teams/{team}/{action}")
+def set_screen_placement(
+    page_id: str,
+    team: str,
+    action: str,
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
+    user: User = Depends(require_permission("billing:manage")),
+):
+    """Switch one screen's placement in one team app on or off for the
+    organisation (owner, 24 Oct 2026: the same screen is in every team app
+    it is placed in, switched per team app — services/screens.py). Only a
+    page id that some App's screen lists for that team. The agent's menu and
+    the screen's other team apps are not touched; those are the route above
+    and this route with another team."""
+    from app.services.entitlements import _catalog
+    from app.services.screens import app_screens, placement_key
+
+    if action not in ("enable", "disable"):
+        raise HTTPException(404, "enable or disable")
+    org_id = org_id_for_user(user.id, db)
+    if not org_id:
+        raise HTTPException(400, "You are not a member of an organization.")
+    known = {
+        (sc["page_id"], t)
+        for row in _catalog(config_db)
+        if row.tier == "app"
+        for sc in app_screens(row)
+        for t in sc["teams"]
+    }
+    if (page_id, team) not in known:
+        raise HTTPException(404, f"No screen '{page_id}' is placed in '{team}'")
+    _switch(db, org_id, placement_key(page_id, team), action == "enable")
+    return {"page_id": page_id, "team": team, "enabled": action == "enable"}
 
 
 @router.post("/connections/built-in/{system}/{action}")

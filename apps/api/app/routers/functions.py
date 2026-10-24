@@ -89,6 +89,22 @@ router = APIRouter(prefix="/functions", tags=["functions"])
 # ===========================================================================
 
 
+#: The catalog App the Functions pages belong to.
+FUNCTIONS_APP = "functions"
+
+
+def refuse_unless_functions(db: Session, config_db: Session, user: User) -> None:
+    """403 unless the person's role reaches the Functions App (or one of its
+    screens placed in a team app their role reaches)."""
+    from app.services import screen_access
+
+    if not screen_access.catalog_app_reachable(db, config_db, user, FUNCTIONS_APP):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "forbidden", "message": screen_access.REFUSED},
+        )
+
+
 def staff_ctx(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -96,7 +112,10 @@ def staff_ctx(
 ) -> FunctionsCtx:
     """The caller's Functions context — or 404 when their organisation
     doesn't have Functions (off, not entitled, or no organisation at all):
-    the pages don't exist for them, so neither do the endpoints."""
+    the pages don't exist for them, so neither do the endpoints. A role that
+    doesn't reach the Functions App (venue staff) gets 403
+    (services/screen_access): venue access alone opened every enquiry, every
+    customer's email and every proposal."""
     org_id = org_id_for_user(user.id, db)
     if not entitlement.functions_enabled(db, config_db, org_id):
         raise HTTPException(
@@ -106,6 +125,7 @@ def staff_ctx(
                 "message": "Functions is not switched on for your organisation.",
             },
         )
+    refuse_unless_functions(db, config_db, user)
     try:
         return build_ctx(db, user, org_id=org_id)
     except FunctionsError as exc:

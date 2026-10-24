@@ -56,10 +56,27 @@ router = APIRouter(prefix="/entertainers", tags=["entertainers"])
 # ===========================================================================
 
 
+#: The Entertainers screens (the Loaded Payroll App's); a role reaches the
+#: routes when it reaches one of them (services/screen_access).
+SCREENS = (
+    "entertainers_register",
+    "entertainers_roster",
+    "entertainers_payments",
+    "entertainers_emails",
+)
+
+
 def staff_ctx(
-    user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
 ) -> FinanceCtx:
-    """The caller's ctx — or 404 when their organisation has the module off."""
+    """The caller's ctx — or 404 when their organisation has the module off,
+    and 403 for a role that reaches none of its screens (venue staff by
+    default: venue access alone opened the register, the roster and the
+    emails)."""
+    from app.services import screen_access
+
     org_id = org_id_for_user(user.id, db)
     if not org_id or modes_svc.mode(db, org_id, "entertainers") == "off":
         raise HTTPException(
@@ -68,6 +85,13 @@ def staff_ctx(
                 "code": "not_found",
                 "message": "Entertainers is not switched on for your organisation.",
             },
+        )
+    if not any(
+        screen_access.component_reachable(db, config_db, user, key) for key in SCREENS
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "forbidden", "message": screen_access.REFUSED},
         )
     try:
         return build_ctx(db, user, org_id=org_id)

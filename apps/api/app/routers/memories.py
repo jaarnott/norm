@@ -66,12 +66,23 @@ def _visible(db: Session, user: User):
     Org memories are deliberately visible to all members — they shape everyone's
     answers, so everyone should be able to see and challenge them. Another
     user's *personal* preferences are not shown.
+
+    Venue staff (a role with no AI agent) see and change only their own: an
+    org memory carries how the business runs, and approving or editing one
+    changes the answers every manager gets.
     """
+    from app.services import screen_access
+
     org_id = _org_id(user, db)
+    mine_or_org = (
+        Memory.user_id == user.id
+        if screen_access.is_staff(db, user)
+        else or_(Memory.scope == "org", Memory.user_id == user.id)
+    )
     return db.query(Memory).filter(
         Memory.organization_id == org_id,
         Memory.status != "superseded",
-        or_(Memory.scope == "org", Memory.user_id == user.id),
+        mine_or_org,
     )
 
 

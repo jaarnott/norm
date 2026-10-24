@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
+from app.routers.messages import _no_chat_for_tablets
 from app.config import settings
 from app.db.engine import get_db
 from app.mcp import oauth_service as svc
@@ -283,11 +284,16 @@ def consent(
     body: ConsentBody,
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
+    _tablet: None = Depends(_no_chat_for_tablets),
 ):
     """Record consent and mint a single-use authorization code.
 
     Every field is attacker-controlled and re-validated server-side — the
     consent screen's client-side checks are UX, not security.
+
+    Never from a kitchen tablet (a device or PIN token): a shared screen must
+    not hand an AI client a long-lived grant as the tablet or the last person
+    to tap a PIN.
     """
     from app.db.mcp_models import McpAuthorizationCode, McpClient
     from app.mcp.ratelimit import check_rate_limit

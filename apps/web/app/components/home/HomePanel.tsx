@@ -28,9 +28,12 @@ interface HomePanelProps {
   /** What is due today (GET /api/me/today); the block shows only with items. */
   today?: TodayItem[];
   onOpenToday?: (item: TodayItem) => void;
+  /** Venue id -> name: the Today block heads a manager's items by venue
+   *  when they come from more than one. */
+  venueNames?: Record<string, string>;
 }
 
-export default function HomePanel({ onSend, loading, member, venueId, suggestions = 4, staff = false, userName, today = [], onOpenToday, chat = true }: HomePanelProps) {
+export default function HomePanel({ onSend, loading, member, venueId, suggestions = 4, staff = false, userName, today = [], onOpenToday, venueNames, chat = true }: HomePanelProps) {
   const first = firstNameOf(userName);
   const greeting = `${timeOfDayWord()}${first ? `, ${first}` : ''}`;
   // Suggestions are picked per AI agent; the apps section asks for Norm's.
@@ -62,7 +65,7 @@ export default function HomePanel({ onSend, loading, member, venueId, suggestion
           </div>
         </div>
 
-        <TodayBlock items={today} title={staff ? undefined : 'Today at your venues'} onOpen={onOpenToday} />
+        <TodayBlock items={today} title={staff ? undefined : 'Today at your venues'} onOpen={onOpenToday} venueNames={venueNames} />
 
         {chat && (
           <Composer

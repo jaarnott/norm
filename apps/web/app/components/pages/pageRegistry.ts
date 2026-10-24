@@ -593,3 +593,44 @@ export function appPageConfig(app: { slug: string; name: string; icon?: string |
     componentProps: { slug: app.slug },
   };
 }
+
+/** A team app's screen, as the shell needs it to build a page
+ *  (useTeam's TeamAppScreen). */
+export interface TeamPageScreen {
+  page_id: string;
+  label: string;
+  component: string;
+  app_slug?: string | null;
+}
+
+/**
+ * A team app's pages (docs/plans/team-apps-skeleton.md 4.2): its screens'
+ * FUNCTIONAL_PAGES entries re-homed under the 'apps' pseudo-agent, each told
+ * which team app it is open in (`componentProps.team`). A screen with no
+ * entry — a team-only screen needs none — gets a page built from the catalog:
+ * self-loading, its component reading the venue from the usual context and
+ * receiving `{team, page_id}`. Its icon is its job app's (a team-only screen
+ * has no icon of its own in the catalog), else a checklist line.
+ *
+ * `pages` is FUNCTIONAL_PAGES; tests pass their own.
+ */
+export function teamPagesFor(
+  team: { slug: string; screens: TeamPageScreen[] },
+  pages: FunctionalPageConfig[] = FUNCTIONAL_PAGES,
+): FunctionalPageConfig[] {
+  return team.screens.map((screen) => {
+    const entry = pages.find((p) => p.id === screen.page_id);
+    if (entry) {
+      return { ...entry, agent: 'apps', componentProps: { ...entry.componentProps, team: team.slug } };
+    }
+    return {
+      id: screen.page_id,
+      label: screen.label,
+      icon: resolveAppIcon({ slug: screen.app_slug, icon: screen.label }, ClipboardList),
+      agent: 'apps',
+      component: screen.component,
+      loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+      componentProps: { team: team.slug, page_id: screen.page_id },
+    };
+  });
+}

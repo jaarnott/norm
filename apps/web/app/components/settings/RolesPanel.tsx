@@ -7,6 +7,7 @@ import { can } from '../../lib/permissions';
 import { useTeam, type TeamApp } from '../../hooks/useTeam';
 import type { OrgMember, Role } from '../../types';
 import { AGENTS } from '../layout/Sidebar';
+import { humanKey, missingTeamApps, toolName } from '../team/teamApps';
 import AppIcon from '../ui/AppIcon';
 import Avatar from '../ui/Avatar';
 import Badge from '../ui/Badge';
@@ -74,15 +75,16 @@ interface AppRow {
   audience?: string;
 }
 
-/** An app the role may name: a built-in slug, or `custom:<slug>` for an org-built app. */
+/** An app the role may name: a team app's slug (kitchen, front_of_house,
+ *  managers), a built-in slug, or `custom:<slug>` for an org-built app. */
 interface AppOption {
   key: string;
   label: string;
   icon: { slug?: string | null; icon?: string | null };
-  /** Named by the shipped venue roles but not built yet (the Orbit port). */
-  coming?: boolean;
-  /** An AI agent's job app: what ticking it lets Norm use. */
+  /** What ticking it lets Norm use, under the name. */
   hint?: string;
+  /** A test id on the tile (the team apps: `role-app-<slug>`). */
+  testId?: string;
 }
 
 /** One AI agent's job apps (GET /api/team → apps[]), offered under its
@@ -92,16 +94,11 @@ interface AppGroup { label: string; options: AppOption[] }
 
 /** "Norm can use Get recipes, Draft recipe and Cost a menu." — up to three
  *  tool names, so the owner knows what a tick hands Norm. A label that is
- *  really a description (some catalog tools carry one) gives way to the key. */
+ *  really a description (some catalog tools carry one) gives way to the key
+ *  (`toolName`, the rule the Team page's team app cards share). */
 export function toolHint(tools: { key: string; label?: string }[]): string {
   if (tools.length === 0) return 'No tools for Norm to use in a chat.';
-  const name = (t: { key: string; label?: string }) => {
-    if (t.label && t.label.length <= 40) return t.label;
-    // "loadedhub.get_sales" → "Get sales": the connector prefix is not a name.
-    const words = (t.key.split('.').pop() ?? t.key).replace(/_/g, ' ').trim();
-    return words.charAt(0).toUpperCase() + words.slice(1);
-  };
-  const shown = tools.slice(0, 3).map(name);
+  const shown = tools.slice(0, 3).map(toolName);
   const rest = tools.length - shown.length;
   const list = shown.length === 1 ? shown[0] : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
   return rest > 0 ? `Norm can use ${list} and ${rest} more.` : `Norm can use ${list}.`;
@@ -126,12 +123,19 @@ export function catalogAppGroups(apps: TeamApp[], listed: { key: string }[]): Ap
   return groups;
 }
 
-/** Team apps the venue roles name before they exist in Norm (plan 11.3). */
-export const COMING_APPS: { key: string; label: string }[] = [
-  { key: 'kitchen', label: 'Kitchen' },
-  { key: 'front_of_house', label: 'Front of house' },
-  { key: 'managers', label: 'Managers' },
-];
+/** The team apps as the Apps block offers them, first (GET /api/team →
+ *  team_apps[]; docs/plans/team-apps-skeleton.md §4.3): what venue staff open,
+ *  with what a tick lets Norm use — "Norm can use Get recipes." or "No tools
+ *  for Norm yet." Empty until the catalog has team rows. */
+export function teamAppOptions(teamApps: { slug: string; name: string; icon?: string | null; tools: { key: string; label?: string }[] }[]): AppOption[] {
+  return teamApps.map(t => ({
+    key: t.slug,
+    label: t.name,
+    icon: { slug: t.slug, icon: t.icon },
+    hint: t.tools.length ? toolHint(t.tools) : 'No tools for Norm yet.',
+    testId: `role-app-${t.slug}`,
+  }));
+}
 
 /** The role's reach in one line: "All AI agents · 2 apps · 3 Loaded roles". */
 function accessSummary(role: Pick<Role, 'agents' | 'apps' | 'loaded_roles'>): string {
@@ -184,7 +188,7 @@ function tileStyle(checked: boolean): CSSProperties {
 const tickStyle: CSSProperties = { flex: '0 0 auto', width: 16, height: 16, margin: '1px 0 0', accentColor: 'var(--accent)', cursor: 'pointer' };
 
 /** One tile of a ReachBlock: an agent or an app the role may reach. */
-interface ReachOption { key: string; label: string; detail?: string; icon?: ReactNode }
+interface ReachOption { key: string; label: string; detail?: string; icon?: ReactNode; testId?: string }
 
 /** All / only these, then the tiles; `groups` are more tiles, each set
  *  under its own heading (the AI agents' apps). `value` null = all. */
@@ -204,14 +208,14 @@ function ReachBlock({ title, help, allLabel, value, onChange, options, groups = 
   // kept, and shown by its key so it can still be unticked.
   const offered = [...options, ...groups.flatMap(g => g.options)];
   const extras = picked.filter(k => !offered.some(o => o.key === k));
-  const all: ReachOption[] = [...options, ...extras.map(k => ({ key: k, label: k }))];
+  const all: ReachOption[] = [...options, ...extras.map(k => ({ key: k, label: humanKey(k) }))];
   const toggle = (key: string) => {
     onChange(picked.includes(key) ? picked.filter(k => k !== key) : [...picked, key]);
   };
   const tile = (o: ReachOption) => {
     const checked = picked.includes(o.key);
     return (
-      <label key={o.key} style={tileStyle(checked)}>
+      <label key={o.key} style={tileStyle(checked)} data-testid={o.testId}>
         <input type="checkbox" checked={checked} onChange={() => toggle(o.key)} style={tickStyle} data-testid={`${testId}-${o.key}`} />
         {o.icon}
         <span style={{ minWidth: 0 }}>
@@ -369,17 +373,20 @@ export default function RolesPanel({ orgId }: RolesPanelProps) {
     () => hiredAgents.map(a => ({ key: a.id, label: a.label, icon: <Icon icon={a.icon} size="menu" tone="muted" style={{ marginTop: 1 }} /> })),
     [hiredAgents],
   );
+  // The team apps first, then the built-in and org-built apps.
   const appOptions = useMemo<AppOption[]>(() => {
-    const out: AppOption[] = appRows.map(a => ({
-      key: a.builtin ? a.slug : `custom:${a.slug}`,
-      label: a.name,
-      icon: { slug: a.slug, icon: a.icon },
-    }));
-    for (const c of COMING_APPS) {
-      if (!out.some(o => o.key === c.key)) out.push({ key: c.key, label: c.label, icon: { slug: c.key }, coming: true });
+    // Before the team rows are installed the venue roles already name them,
+    // so their tiles are offered by their seed names (team-apps skeleton §2).
+    const out: AppOption[] = teamAppOptions([
+      ...team.teamApps,
+      ...missingTeamApps(team.teamApps).map(t => ({ ...t, icon: null, tools: [] })),
+    ]);
+    for (const a of appRows) {
+      const key = a.builtin ? a.slug : `custom:${a.slug}`;
+      if (!out.some(o => o.key === key)) out.push({ key, label: a.name, icon: { slug: a.slug, icon: a.icon } });
     }
     return out;
-  }, [appRows]);
+  }, [appRows, team.teamApps]);
   // The AI agents' job apps, under their agent, after the team apps.
   const appGroups = useMemo(() => catalogAppGroups(team.apps, appOptions), [team.apps, appOptions]);
 
@@ -569,7 +576,7 @@ export default function RolesPanel({ orgId }: RolesPanelProps) {
 
   const agentLabel = (key: string) => AGENTS.find(a => a.id === key)?.label ?? key;
   const appLabel = (key: string) =>
-    [...appOptions, ...appGroups.flatMap(g => g.options)].find(o => o.key === key)?.label ?? key.replace(/^custom:/, '');
+    [...appOptions, ...appGroups.flatMap(g => g.options)].find(o => o.key === key)?.label ?? humanKey(key);
 
   // A system role's reach, in words, under its card when opened.
   const renderReadOnlyAccess = (role: Role) => {
@@ -751,8 +758,9 @@ export default function RolesPanel({ orgId }: RolesPanelProps) {
             options={appOptions.map(o => ({
               key: o.key,
               label: o.label,
-              detail: o.coming ? 'Coming with the Orbit port' : undefined,
+              detail: o.hint,
               icon: <AppIcon app={o.icon} size="menu" style={{ marginTop: 1 }} />,
+              testId: o.testId,
             }))}
             groups={appGroups.map(g => ({
               label: g.label,

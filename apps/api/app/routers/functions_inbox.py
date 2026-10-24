@@ -77,9 +77,13 @@ def _not_enabled() -> HTTPException:
 
 
 def _ctx_for(db: Session, config_db: Session, user: User) -> FunctionsCtx:
+    from app.routers.functions import refuse_unless_functions
+
     org_id = org_id_for_user(user.id, db)
     if not entitlement.functions_enabled(db, config_db, org_id):
         raise _not_enabled()
+    # The venue inboxes are the Functions App's: not venue staff's by default.
+    refuse_unless_functions(db, config_db, user)
     try:
         return build_ctx(db, user, org_id=org_id)
     except FunctionsError as exc:

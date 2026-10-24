@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { GraduationCap } from 'lucide-react';
-import { FUNCTIONAL_PAGES, appPageConfig } from './pageRegistry';
+import { BookOpen, ClipboardList, GraduationCap } from 'lucide-react';
+import { FUNCTIONAL_PAGES, appPageConfig, teamPagesFor } from './pageRegistry';
 import { AGENTS } from '../layout/Sidebar';
 
 /**
@@ -111,5 +111,57 @@ describe('menu reachability', () => {
     expect(hrMenu).toContain('tasks-hr');
     // and it does NOT leak into another agent's menu
     expect(pages.filter((p) => p.agent === 'procurement').map((p) => p.id)).not.toContain('app:hiring');
+  });
+});
+
+describe('teamPagesFor', () => {
+  // A team app (docs/plans/team-apps-skeleton.md 4.2): its screens become
+  // pages under the 'apps' pseudo-agent, each told which team app it is in.
+  const screen = (page_id: string, label: string, component: string, app_slug = 'recipes-and-costing') =>
+    ({ page_id, label, component, app_slug });
+
+  it('re-homes a screen that has a FUNCTIONAL_PAGES entry, keeping everything but the agent', () => {
+    const entry = FUNCTIONAL_PAGES.find((p) => p.id === 'recipes');
+    expect(entry, 'the Recipes page exists').toBeDefined();
+    const [page] = teamPagesFor({ slug: 'kitchen', screens: [screen('recipes', 'Recipes', 'recipe_editor')] });
+    expect(page.agent).toBe('apps');
+    expect(page.id).toBe('recipes');
+    expect(page.component).toBe(entry!.component);
+    expect(page.icon).toBe(entry!.icon);
+    expect(page.loadAction).toBe(entry!.loadAction);
+    expect(page.componentProps).toEqual({ ...entry!.componentProps, team: 'kitchen' });
+    // …and the agent-menu entry itself is untouched.
+    expect(entry!.agent).not.toBe('apps');
+    expect(entry!.componentProps?.team).toBeUndefined();
+  });
+
+  it('builds a team-only screen with no entry from the catalog: self-loading, carrying team and page id', () => {
+    const [page] = teamPagesFor({ slug: 'kitchen', screens: [screen('prep-today', 'Prep', 'prep_list', 'prep')] }, []);
+    expect(page).toMatchObject({ id: 'prep-today', label: 'Prep', agent: 'apps', component: 'prep_list' });
+    expect(page.loadAction.connector).toBe('_none');
+    expect(page.loadAction.defaultParams()).toEqual({});
+    expect(page.componentProps).toEqual({ team: 'kitchen', page_id: 'prep-today' });
+    expect(FUNCTIONAL_PAGES.some((p) => p.id === 'prep-today')).toBe(false);
+  });
+
+  it('gives a built page its job app\'s icon, else a checklist line', () => {
+    const [known, unknown] = teamPagesFor({ slug: 'kitchen', screens: [
+      screen('recipes-view', 'Recipes', 'recipe_editor', 'recipes-and-costing'),
+      screen('fcp-tasks', 'Tasks', 'fcp_tasks', 'food-control'),
+    ] }, []);
+    expect(known.icon).toBe(BookOpen);
+    expect(unknown.icon).toBe(ClipboardList);
+  });
+
+  it('keeps the screens in the team app\'s order', () => {
+    const pages = teamPagesFor({ slug: 'kitchen', screens: [
+      screen('fcp-tasks', 'Tasks', 'fcp_tasks', 'food-control'),
+      screen('recipes', 'Recipes', 'recipe_editor'),
+    ] });
+    expect(pages.map((p) => p.id)).toEqual(['fcp-tasks', 'recipes']);
+  });
+
+  it('gives a team app with no screens no pages', () => {
+    expect(teamPagesFor({ slug: 'front_of_house', screens: [] })).toEqual([]);
   });
 });

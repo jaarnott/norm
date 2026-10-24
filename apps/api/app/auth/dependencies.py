@@ -48,6 +48,23 @@ def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Device revoked"
             )
+    elif payload.get("type") == "pin":
+        # A PIN tap's short session lives on its tablet: signing the tablet
+        # out on the People page ends it too, not ten minutes later.
+        from app.db.models import VenueDevice
+
+        device_id = payload.get("device")
+        device = (
+            db.query(VenueDevice)
+            .filter(VenueDevice.id == device_id, VenueDevice.revoked_at.is_(None))
+            .first()
+            if device_id
+            else None
+        )
+        if device is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Device revoked"
+            )
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user or not user.is_active:

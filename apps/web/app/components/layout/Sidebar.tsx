@@ -51,14 +51,16 @@ function hasPermission(user: SidebarUser | null | undefined, ...perms: string[])
   return perms.some(p => user.permissions?.includes(p));
 }
 
-/** An app in the apps section of the rail (from /api/apps). */
+/** A tile in the apps section of the rail: a team app (`kind` team) or an
+ *  App-platform app (useAccess's SectionApp carries both). */
 export interface RailApp {
   slug: string;
   name: string;
   icon?: string | null;
+  kind?: 'team' | 'app';
 }
 
-interface SidebarProps {
+interface SidebarProps<T extends RailApp> {
   selected: string;
   onSelect: (id: string) => void;
   threadCounts: Record<string, number>;
@@ -75,12 +77,15 @@ interface SidebarProps {
   access?: AccessInfo | null;
   /** The apps section: one tile per app after a divider from the agents
    *  (docs/plans/staff-access.md 11.7). Empty = no section. */
-  apps?: RailApp[];
+  apps?: T[];
   /** The page open in the content area — an app tile is current when its
    *  page is open. */
   activePage?: string | null;
-  /** Choosing an app tile: the caller sets activeAgent 'apps' + its page. */
-  onSelectApp?: (slug: string) => void;
+  /** The team app open in the apps section — its tile is current. */
+  activeTeam?: string | null;
+  /** Choosing a tile: the caller sets activeAgent 'apps' and the tile's page
+   *  (a team app's first screen). */
+  onSelectApp?: (app: T) => void;
 }
 
 /** A 42px rail tile: icon only, named by its label (tooltip + screen readers). */
@@ -100,7 +105,7 @@ function tileStyle(active: boolean, extra?: CSSProperties): CSSProperties {
   };
 }
 
-export default function Sidebar({ selected, onSelect, user, onLogout, settings = true, hired, access, apps = [], activePage, onSelectApp }: SidebarProps) {
+export default function Sidebar<T extends RailApp>({ selected, onSelect, user, onLogout, settings = true, hired, access, apps = [], activePage, activeTeam, onSelectApp }: SidebarProps<T>) {
   const { isMobile } = useBreakpoint();
   const showSettings = settings && hasPermission(user, 'settings:connectors', 'settings:agents', 'org:read', 'org:members', 'org:venues', 'billing:read');
   const agents = visibleAgentsFor(AGENTS, hired, access);
@@ -156,14 +161,15 @@ export default function Sidebar({ selected, onSelect, user, onLogout, settings =
           <>
             <div className="n-rail-divider" role="separator" aria-label="Apps" data-testid="rail-apps-divider" />
             {apps.map((app) => {
-              const isActive = selected === 'apps' && activePage === `app:${app.slug}`;
+              const team = app.kind === 'team';
+              const isActive = selected === 'apps' && (team ? activeTeam === app.slug : activePage === `app:${app.slug}`);
               return (
                 <button
-                  key={app.slug}
+                  key={`${team ? 'team' : 'app'}:${app.slug}`}
                   type="button"
                   className="n-rail-tile"
-                  data-testid={`rail-app-${app.slug}`}
-                  onClick={() => onSelectApp?.(app.slug)}
+                  data-testid={team ? `rail-team-${app.slug}` : `rail-app-${app.slug}`}
+                  onClick={() => onSelectApp?.(app)}
                   title={app.name}
                   aria-label={app.name}
                   aria-current={isActive ? 'page' : undefined}

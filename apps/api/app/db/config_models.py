@@ -213,33 +213,31 @@ class ComponentApiConfig(ConfigBase):
 class MarketplaceApp(ConfigBase):
     """One row per App in the marketplace — the global catalog.
 
-    An **App** is the one user-facing unit: Loaded, BambooHR and the Cook
-    Brothers App (tier ``integration`` — backed by a connector spec and
-    per-venue credentials) sit beside Hiring and Training (tier ``platform`` —
-    backed by an ``App``/``AppVersion`` row) and org-published user apps (tier
-    ``user``). The marketplace cannot tell the tiers apart; trust and
-    implementation are properties of the row, not the storefront.
-    (docs/apps-marketplace-plan.md; extends docs/lite-apps-architecture.md §4.)
+    Four row kinds, told apart by ``tier`` (Apps v3, 28 Sep 2026; team apps
+    Oct 2026 — docs/plans/agents-and-apps-restructure.md,
+    docs/plans/team-apps-skeleton.md):
 
-    ``composition`` declares everything enabling the app lights up, so the
-    admin screen can answer "what do I get?" from one place::
+    * ``agent`` — a hireable AI agent; ``composition.owns_agents`` joins it to
+      ``agent_configs``, and hiring it is the entitlement.
+    * ``app`` — a job app, bound to ONE agent (``composition.member``; ``*``
+      for Norm Core only). Its composition carries the ``tools`` it owns (each
+      owned by exactly one App), ``uses_tools`` it shares, ``components``
+      (``{key, page: {id, label, icon}|null, full_width, description,
+      connection, teams, team_only}`` — a component with a page is a screen,
+      ``connection`` the system it is for, ``teams`` the team apps it is also
+      placed in (a list; the same screen in each, switched per team app),
+      ``team_only`` keeps it out of the agent's menu), ``skills``,
+      ``works_with``, ``listing`` and, for an App-platform App, ``app_slug``
+      / ``app_connection``. ``full_width`` is documentation only — the web's
+      FULL_WIDTH_COMPONENTS Set is the layout authority.
+    * ``user`` — an org-published community app.
+    * ``team`` — a team app venue staff see (Kitchen, Front of house,
+      Managers): ``composition = {tagline, uses_tools}``. It owns nothing;
+      job apps place screens on it, and ``uses_tools`` names the tools Norm
+      may use for a person whose role reaches only that team app.
 
-        spec        <connector_name>            (integration apps)
-        app_slug    <platform App slug>         (platform/user apps)
-        agents      [agent slug, ...]           agents this app powers/joins
-        components  [{key, agent, page: {id, label, icon}|null,
-                      full_width, description}, ...]
-                    (description feeds the settings Components panel and page
-                    labels feed the agent's page context; full_width is
-                    documentation only — the web's FULL_WIDTH_COMPONENTS Set
-                    is the layout authority, chosen so chat render never
-                    waits on a catalog fetch)
-        playbooks   [playbook slug, ...]
-        mcp_domain  <domain tag>|null           claude.ai surface filter
-
-    Every component belongs to exactly ONE app — the seed script
-    (scripts/sync_marketplace_catalog.py) is the reviewed source of these
-    rows and enforces that invariant.
+    The seed script (scripts/sync_marketplace_catalog.py) is the reviewed
+    source of these rows and enforces the ownership invariants.
 
     Entitlement lives in the MAIN db (``org_app_entitlements``): this table is
     shared by every environment and has no org scoping. Absence of an
@@ -254,7 +252,7 @@ class MarketplaceApp(ConfigBase):
     name = Column(String, nullable=False)
     description = Column(Text, nullable=False, default="")
     icon = Column(String, nullable=True)  # emoji or lucide icon name
-    tier = Column(String, nullable=False)  # integration | platform | user
+    tier = Column(String, nullable=False)  # agent | app | user | team
     #: Included with every subscription, on by default, toggleable off.
     bundled = Column(Boolean, nullable=False, default=True)
     price_cents = Column(Integer, nullable=False, default=0)

@@ -5,6 +5,7 @@ import { ChevronRight } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import type { AgentConfig } from '../../types';
 import type { TeamApp } from '../../hooks/useTeam';
+import { placementNote, type TeamAppNamed } from '../team/teamApps';
 import Badge from '../ui/Badge';
 import BackLink from '../ui/BackLink';
 import Button from '../ui/Button';
@@ -29,10 +30,12 @@ export default function AgentsPanel() {
   // Apps v3: an agent's reach is the Apps bound to it (the App Map), not the
   // retired per-agent connection bindings.
   const [mapApps, setMapApps] = useState<TeamApp[] | null>(null);
+  // The team apps, to name where else a screen shows ("· also in Kitchen").
+  const [teamApps, setTeamApps] = useState<TeamAppNamed[]>([]);
   useEffect(() => {
     apiFetch('/api/admin/app-map')
       .then((r) => (r.ok ? r.json() : { apps: [] }))
-      .then((d) => setMapApps(d.apps ?? []))
+      .then((d) => { setMapApps(d.apps ?? []); setTeamApps(d.team_apps ?? []); })
       .catch(() => setMapApps([]));
   }, []);
   const appsFor = (slug: string) => (mapApps ?? []).filter((a) => a.member === slug);
@@ -173,7 +176,11 @@ export default function AgentsPanel() {
                       </div>
                       {(a.screens ?? []).length > 0 && (
                         <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-soft)', marginBottom: 4 }}>
-                          Screens: {(a.screens ?? []).map((sc) => sc.connection_name ? `${sc.label} (${sc.connection_name})` : sc.label).join(', ')}
+                          Screens: {(a.screens ?? []).map((sc) => {
+                            const where = sc.connection_name ? `${sc.label} (${sc.connection_name})` : sc.label;
+                            const note = placementNote(sc, teamApps, { inline: true });
+                            return note ? `${where} · ${note}` : where;
+                          }).join(', ')}
                         </div>
                       )}
                       {a.tools.length > 0 ? (

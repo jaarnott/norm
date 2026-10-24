@@ -2,11 +2,12 @@
 
 import { Fragment, useState, useEffect, useCallback, useId, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Info, Plus, RefreshCw, Upload, UserPlus } from 'lucide-react';
-import { apiFetch, getStoredUser } from '../../lib/api';
+import { apiFetch, getStoredUser, getToken } from '../../lib/api';
 import { can } from '../../lib/permissions';
 import { AGENTS } from '../layout/Sidebar';
-import { COMING_APPS } from './RolesPanel';
+import { teamName } from '../team/teamApps';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
+import { useTeam } from '../../hooks/useTeam';
 import Avatar from '../ui/Avatar';
 import Badge, { type BadgeTone } from '../ui/Badge';
 import Button from '../ui/Button';
@@ -333,6 +334,9 @@ export default function PeoplePanel({ orgId, orgName }: { orgId: string | null; 
   const [roles, setRoles] = useState<PeopleRole[]>([]);
   // App key (built-in slug or custom:<slug>) -> name, for the role dialog.
   const [appNames, setAppNames] = useState<Record<string, string>>({});
+  // The team apps (Kitchen, Front of house, Managers), so the role dialog
+  // names them too (docs/plans/team-apps-skeleton.md §4.3).
+  const team = useTeam(getToken());
   const [venues, setVenues] = useState<PeopleVenue[]>([]);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
@@ -1033,7 +1037,7 @@ export default function PeoplePanel({ orgId, orgName }: { orgId: string | null; 
   const viewingRole = viewingRoleId ? roleOf(viewingRoleId) : null;
   // The role dialog says "Executive Chef" and "Kitchen", never the stored keys.
   const agentLabel = (key: string) => AGENTS.find(a => a.id === key)?.label ?? key;
-  const appLabel = (key: string) => appNames[key] ?? COMING_APPS.find(c => c.key === key)?.label ?? key.replace(/^custom:/, '');
+  const appLabel = (key: string) => appNames[key] ?? teamName(team.teamApps, key);
 
   return (
     <div data-testid="people-panel">

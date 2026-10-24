@@ -92,6 +92,12 @@ async def list_connectors(
     from app.services.entitlements import org_id_for_user
 
     if venue_id:
+        # Only a venue the caller can open, or one of their organisation's
+        # when they look after its connections or venues (security ledger
+        # S25: any signed-in user could read any venue's connection
+        # settings, 24 Oct 2026).
+        if not connection_scope.can_see_venue_connections(db, user, venue_id):
+            raise HTTPException(403, "You can't see that venue's connections.")
         saved = {
             r.connector_name: r
             for r in db.query(Connection).filter(Connection.venue_id == venue_id)
@@ -643,9 +649,14 @@ def execute_connector_action(
     Credentials are resolved strictly: the caller's ``venue_id`` if they hold
     that venue, otherwise their organisation's organisation-wide connection —
     never another venue's or another organisation's.
+
+    And only a tool the caller's role reaches (services/screen_access): the
+    venue alone let a Kitchen role read any GET row, sales and pay included.
     """
     from app.agents.internal_tools import get_handler
+    from app.services import screen_access
 
+    screen_access.require_tool(db, config_db, user, name, action)
     handler = get_handler(name, action)
     if handler:
         if (name, action) not in _UI_CALLABLE_HANDLERS:
@@ -761,8 +772,9 @@ async def preview_connector_write(
     """What a page's write button would change — the card and its fingerprint,
     from live data, nothing written (services/page_writes). The write half of
     the component-API door: the GET route above never runs a write."""
-    from app.services import page_writes
+    from app.services import page_writes, screen_access
 
+    screen_access.require_tool(db, config_db, user, name, action)
     return page_writes.preview(
         db,
         tool=f"{name}.{action}",
@@ -784,8 +796,9 @@ async def confirm_connector_write(
 ):
     """Run the write the person previewed: refused (409) if Loaded or Xero
     moved since they looked; recorded against the person who pressed."""
-    from app.services import page_writes
+    from app.services import page_writes, screen_access
 
+    screen_access.require_tool(db, config_db, user, name, action)
     result = page_writes.confirm(
         db,
         tool=f"{name}.{action}",
@@ -803,11 +816,21 @@ async def confirm_connector_write(
 async def download_bamboohr_file(
     file_id: str,
     db: Session = Depends(get_db),
+    config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Proxy a file download from BambooHR (keeps API key server-side)."""
+    """Proxy a file download from BambooHR (keeps API key server-side).
+
+    The Hiring board's (an applicant's CV): only for a role that reaches it.
+    """
     import httpx
     from fastapi.responses import Response
+
+    from app.services import screen_access
+
+    screen_access.require_any_component(
+        db, config_db, user, ("hiring_board", "employee_records")
+    )
 
     # The caller's organisation's BambooHR — it took whichever came first,
     # so anyone signed in could fetch another organisation's files

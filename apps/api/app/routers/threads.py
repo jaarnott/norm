@@ -653,14 +653,20 @@ async def widget_action(
     config_db: Session = Depends(get_config_db),
     user: User = Depends(get_current_user),
 ):
-    """Execute a tool call initiated from an interactive widget."""
+    """Execute a tool call initiated from an interactive widget.
+
+    Only a tool the person's role reaches (services/screen_access): the chat
+    never offers them anything else, and this route ran whatever a widget
+    named — a Kitchen role's own thread could read the sales or queue a write.
+    """
     from app.agents.tool_loop import _execute_tool_call, _find_tool_def
-    from app.services import approvals
+    from app.services import approvals, screen_access
     import uuid
 
     thread = approvals.actionable_thread(db, thread_id, user)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
+    screen_access.require_tool(db, config_db, user, body.connector_name, body.action)
 
     # Reject if there are already pending tool calls
     if thread.status == "awaiting_tool_approval":

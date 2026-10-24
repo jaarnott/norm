@@ -1537,6 +1537,51 @@ def _get_connection_settings(params: dict, db: Session, thread_id: str | None) -
     }
 
 
+def _open_team_screen(team: dict, page, refuse) -> dict:
+    """open_app's answer for a team app: ``{team, page}`` for the shell, with
+    the screen's label and the App it comes from. ``page`` is a page id or a
+    label among the team app's screens (case-insensitive, exact before
+    partial); none means the first screen."""
+    screens = team.get("screens") or []
+    if not screens:
+        return {
+            "success": True,
+            "data": {
+                "message": f"{team['name']} has no screens yet.",
+                "team": team["slug"],
+                "_no_display": True,
+            },
+        }
+    want = str(page or "").strip().lower()
+    if not want:
+        screen = screens[0]
+    else:
+
+        def _names(sc: dict) -> set[str]:
+            return {sc["page_id"].lower(), (sc.get("label") or "").lower()}
+
+        screen = next((sc for sc in screens if want in _names(sc)), None) or next(
+            (sc for sc in screens if any(want in n for n in _names(sc) if n)), None
+        )
+        if screen is None:
+            return refuse(
+                f"{team['name']} has no screen '{page}'. Its screens: "
+                + ", ".join(f"{sc['label']} ({sc['page_id']})" for sc in screens)
+            )
+    return {
+        "success": True,
+        "data": {
+            "team": team["slug"],
+            "name": team["name"],
+            "page": screen["page_id"],
+            "label": screen["label"],
+            "component": screen.get("component"),
+            "app_slug": screen.get("app_slug"),
+            "app_name": screen.get("app_name"),
+        },
+    }
+
+
 @register("norm", "open_app")
 def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
     """Open one of the org's App-platform apps in the conversation — Norm
@@ -1544,6 +1589,15 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
     specific, through the inputs its component declares (Hiring: job,
     candidate). The app resolves the inputs itself, by id or by name, so the
     agent never needs the app's internal ids. See services/app_components.py.
+
+    Or a team app (Kitchen, Front of house, Managers — docs/plans/
+    team-apps-skeleton.md §3.6), by slug or name, at one of its screens
+    (``page``: a page id or label; the first screen when left out). The
+    answer carries ``{team, page}`` through the same display block, and the
+    shell opens that screen inside the team app. Only the team apps the
+    person's role reaches are offered, with the screens the organisation has
+    on (services/screens.team_apps). A team app with no screens yet answers
+    with a plain sentence and paints nothing.
 
     Refusals carry the valid choices in the error text and an EMPTY payload:
     a failed call must not paint an app card with nothing in it.
@@ -1560,12 +1614,15 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
     from app.services.app_runtime import resolve_access
     from app.services.builtin_apps import builtin_apps, reserved_slugs
     from app.services.builtin_apps import is_on as builtin_is_on
+    from app.services import role_access, screen_access
     from app.services.entitlements import (
         CUSTOM_PREFIX,
         _catalog,
         apps_on,
+        custom_app_owner,
         org_id_for_user,
     )
+    from app.services.screens import team_apps
 
     def refuse(msg: str) -> dict:
         return {"success": False, "data": {}, "error": msg}
@@ -1579,6 +1636,10 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
     # What this person can actually open: the apps built into Norm that the
     # org has on, then the org's own apps this person may run (creator or
     # shared) whose App is on — never an app whose card would fail to load.
+    # And only what the person's role reaches (services/screen_access.
+    # app_reachable): the role names it or its AI agent, or one of its
+    # screens shows in a team app the role reaches — the same rule as
+    # GET /api/apps, so Norm never offers an app the page would refuse.
     config_db = _ConfigSessionLocal()
     try:
         catalog = _catalog(config_db)
@@ -1589,6 +1650,27 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
             )
             for b in builtin_apps().values()
             if builtin_is_on(b.slug, org, db, config_db)
+            and screen_access.app_reachable(db, config_db, user, b.slug, member=b.agent)
+        ]
+        custom_reach = {
+            a.slug: screen_access.app_reachable(
+                db,
+                config_db,
+                user,
+                f"{CUSTOM_PREFIX}{a.slug}",
+                member=custom_app_owner(a),
+            )
+            for a in db.query(App)
+            .filter(App.organization_id == org, App.archived_at.is_(None))
+            .all()
+        }
+        # The team apps this person's role reaches, with the screens the
+        # organisation has on. None until the owner installs the team rows.
+        access = role_access.for_user(db, user.id)
+        teams = [
+            t
+            for t in team_apps(config_db, db, org)
+            if role_access.allows_app(access, t["slug"])
         ]
     finally:
         config_db.close()
@@ -1604,6 +1686,8 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
             continue
         if not resolve_access(db, a, user).can_run:
             continue
+        if not custom_reach.get(a.slug):
+            continue
         ver = (
             db.query(AppVersion).filter(AppVersion.id == a.current_version_id).first()
             if a.current_version_id
@@ -1617,7 +1701,7 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
                 spec=(ver.spec if ver else None),
             )
         )
-    if not candidates:
+    if not candidates and not teams:
         return refuse("There are no apps you can open here.")
 
     # "Hiring" is the catalog's name for the app whose slug is `hiring`.
@@ -1639,15 +1723,32 @@ def _open_app(params: dict, db: Session, thread_id: str | None) -> dict:
             (fronted_by.get(a.slug) or "").lower(),
         }
 
-    app = next((a for a in candidates if want and want in names(a)), None) or next(
-        (a for a in candidates if want and any(want in n for n in names(a) if n)),
-        None,
-    )
+    def team_names(t: dict) -> set[str]:
+        return {t["slug"].lower(), (t["name"] or "").lower()}
+
+    def _exact(pool, name_of):
+        return next((a for a in pool if want and want in name_of(a)), None)
+
+    def _within(pool, name_of):
+        return next(
+            (a for a in pool if want and any(want in n for n in name_of(a) if n)),
+            None,
+        )
+
+    app = _exact(candidates, names)
+    team = None if app else _exact(teams, team_names)
+    if app is None and team is None:
+        app = _within(candidates, names)
+    if app is None and team is None:
+        team = _within(teams, team_names)
+    if team is not None:
+        return _open_team_screen(team, params.get("page"), refuse)
     if app is None:
         return refuse(
             f"No app '{params.get('app') or ''}'. Apps you can open: "
             + ", ".join(
-                f"{fronted_by.get(a.slug) or a.name} ({a.slug})" for a in candidates
+                [f"{fronted_by.get(a.slug) or a.name} ({a.slug})" for a in candidates]
+                + [f"{t['name']} ({t['slug']}, a team app)" for t in teams]
             )
         )
 

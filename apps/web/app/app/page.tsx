@@ -14,7 +14,7 @@ import QuotaExceededModal from '../components/layout/QuotaExceededModal';
 import { SIDE_PANEL_EVENT, type SidePanelRequest } from '../lib/sidePanel';
 import ConnectPrompt from '../components/display/ConnectPrompt';
 import { requestOpenRecipe } from '../components/display/RecipeEditor';
-import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../components/pages/pageRegistry';
+import { FUNCTIONAL_PAGES, appPageConfig, teamPagesFor, type FunctionalPageConfig } from '../components/pages/pageRegistry';
 import { aliasOpenPageDetail, aliasPageId, aliasPageInUrl } from '../components/pages/pageAliases';
 import { pageAllowed } from '../components/threads/ThreadList';
 import type { SendOptions } from '../components/chat/AttachmentComposer';
@@ -31,14 +31,15 @@ import { AGENTS } from '../components/layout/Sidebar';
 import TeamBar, { type TeamBarActive } from '../components/layout/TeamBar';
 import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useActiveVenue, readActiveVenue } from '../hooks/useActiveVenue';
-import { useTeam } from '../hooks/useTeam';
+import { useTeam, type TeamAppScreen } from '../hooks/useTeam';
 import { useToday } from '../hooks/useToday';
-import { NON_AGENT, allowsAgent, navLabelFor, sectionAppsFor, visibleAgentsFor } from '../hooks/useAccess';
+import { NON_AGENT, allowsAgent, navLabelFor, sectionAppsFor, sectionTileKey, visibleAgentsFor, type SectionApp } from '../hooks/useAccess';
 import { resolveAppIcon } from '../components/ui/appIcons';
 import { threadMembers } from '../lib/threadApps';
 import type { Thread, WidgetAction, VenueDetail, AccessInfo, StaffInfo, TodayItem } from '../types';
 
 type AppRow = { slug: string; name: string; icon?: string | null; pinned?: boolean; agent?: string | null; kind?: 'app' | 'dashboard'; mine?: boolean; audience?: 'agent' | 'team' | 'both' | null };
+type SectionTile = SectionApp<AppRow, TeamAppScreen>;
 
 type AuthUser = { id: string; email: string; full_name: string; role: string; permissions: string[]; org_role: { name: string; display_name: string } | null; organizations?: { id: string; name: string | null }[]; active_organization_id?: string | null; access?: AccessInfo | null; is_device?: boolean; staff?: StaffInfo | null };
 
@@ -68,6 +69,10 @@ export default function Home() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [activePage, setActivePage] = useState<string | null>(null);
+  // The team app open in the apps section (Kitchen, Front of house,
+  // Managers — docs/plans/team-apps-skeleton.md 4.2); its screens are the
+  // pages. Null with an App-platform app open, or outside the section.
+  const [activeTeam, setActiveTeam] = useState<string | null>(null);
   // Bumped when a page asks to be re-opened at new deep-link params (the
   // `norm:open-page` event below) so its component remounts and re-reads them.
   const [pageNonce, setPageNonce] = useState(0);
@@ -95,16 +100,86 @@ export default function Home() {
   // reaches. Unknown (an older payload) = everything, like the App Map.
   const access = user?.access ?? null;
   const isStaff = !!access?.staff;
-  // The apps section: the team's apps (audience team or both) and, for venue
-  // staff, every app they can open. Each gets a page under the 'apps'
-  // pseudo-agent, so the rail, the menu and the bottom bar open the same thing.
-  const sectionApps = useMemo(() => sectionAppsFor(appRows, access), [appRows, access]);
+  // Hierarchy v2: which AI agents are hired and which Apps are on. null
+  // sets = show everything (gating inactive / fetch failed — fail-open).
+  const team = useTeam(token);
+  // The apps section: the team apps the role reaches (with a screen here),
+  // then the team's App-platform apps (audience team or both) and, for venue
+  // staff, every app they can open. Each App-platform app gets a page under
+  // the 'apps' pseudo-agent; a team app's pages are its screens. The rail,
+  // the menu and the bottom bar open the same things.
+  const sectionApps = useMemo<SectionTile[]>(() => sectionAppsFor(appRows, access, team.teamApps), [appRows, access, team.teamApps]);
   const sectionPages = useMemo<FunctionalPageConfig[]>(
-    () => sectionApps.map(r => ({ ...appPageConfig(r), agent: 'apps', app: undefined })),
+    () => sectionApps.flatMap(a => (a.kind === 'app' ? [{ ...appPageConfig(a.row), agent: 'apps', app: undefined }] : [])),
     [sectionApps],
   );
-  const findPage = (id: string | null) =>
-    id ? (FUNCTIONAL_PAGES.find(p => p.id === aliasPageId(id)) ?? appPages.find(p => p.id === id) ?? sectionPages.find(p => p.id === id)) : undefined;
+  // Team slug -> its pages: the screens' FUNCTIONAL_PAGES entries re-homed
+  // under 'apps' (componentProps.team names the team app), a team-only
+  // screen's page built from the catalog (pageRegistry.teamPagesFor).
+  const teamPages = useMemo(() => {
+    const out = new Map<string, FunctionalPageConfig[]>();
+    for (const a of sectionApps) if (a.kind === 'team') out.set(a.slug, teamPagesFor(a));
+    return out;
+  }, [sectionApps]);
+  // The team app is remembered across a visit to an AI agent ("Apps" in the
+  // bottom bar brings it back); it is open only in the apps section.
+  const teamOpen = activeAgent === 'apps' ? activeTeam : null;
+  const activeTeamApp = teamOpen ? sectionApps.find(a => a.kind === 'team' && a.slug === teamOpen) : undefined;
+  const activeTeamPages = (teamOpen && teamPages.get(teamOpen)) || [];
+  // The first team app (the role reaches) that has this screen — where a
+  // team-only page opens, and where a Today item with no team goes.
+  const teamFor = useCallback((pageId: string): string | null => {
+    for (const [slug, pages] of teamPages) if (pages.some(p => p.id === pageId)) return slug;
+    return null;
+  }, [teamPages]);
+  // Open a team app at one of its screens (its first with no page id). False
+  // when the person does not reach that team app or it lacks the screen.
+  const openTeamPage = useCallback((slug: string, pageId?: string | null): boolean => {
+    const pages = teamPages.get(slug) ?? [];
+    const page = (pageId ? pages.find(p => p.id === pageId) : undefined) ?? (pageId ? undefined : pages[0]);
+    if (!page) return false;
+    setActiveAgent('apps');
+    setActiveTeam(slug);
+    setActivePage(page.id);
+    setSelectedThreadId(null);
+    setMobileView('detail');
+    return true;
+  }, [teamPages]);
+  // A team page shares its id with the agent-menu page it came from, so with
+  // a team app open its pages come first. Last, any team's page: a team-only
+  // screen left open while an AI agent is selected still renders (as the
+  // agent's pages do), rather than an empty pane.
+  const findPage = (id: string | null) => {
+    if (!id) return undefined;
+    return activeTeamPages.find(p => p.id === id)
+      ?? FUNCTIONAL_PAGES.find(p => p.id === aliasPageId(id))
+      ?? appPages.find(p => p.id === id)
+      ?? sectionPages.find(p => p.id === id)
+      ?? [...teamPages.values()].flat().find(p => p.id === id);
+  };
+  // The team app can stop being reachable under you — its last screen
+  // switched off, or the role changed. Forget it, and close its page.
+  useEffect(() => {
+    if (!activeTeam || !team.loaded || teamPages.has(activeTeam)) return;
+    setActiveTeam(null);
+    if (activeAgent === 'apps') setActivePage(null);
+  }, [activeTeam, activeAgent, team.loaded, teamPages]);
+  // A reload of ?page=<id>&team=<slug> comes back inside the team app. The
+  // team apps arrive with the team payload, after the first render, so the
+  // address bar's ask waits here until they have. A team app this person
+  // does not reach falls back to the page under its AI agent, as a plain
+  // ?page= would; a team-only page has nowhere else to go.
+  const [pendingTeamPage, setPendingTeamPage] = useState<{ team: string; page: string } | null>(null);
+  useEffect(() => {
+    if (!pendingTeamPage || !team.loaded) return;
+    setPendingTeamPage(null);
+    if (openTeamPage(pendingTeamPage.team, pendingTeamPage.page)) return;
+    const cfg = FUNCTIONAL_PAGES.find(p => p.id === aliasPageId(pendingTeamPage.page));
+    if (!cfg || team.teamOnlyPages.has(cfg.id)) return;
+    setActiveAgent(cfg.agent);
+    setActivePage(cfg.id);
+    setMobileView('detail');
+  }, [pendingTeamPage, team.loaded, team.teamOnlyPages, openTeamPage]);
   // An app page can stop existing under you — archived, unshared, or unpinned
   // in another tab. Both render sites bail with `return null` on a missing
   // config, which paints an empty panel with no way out, so drop back to the
@@ -116,6 +191,9 @@ export default function Home() {
     if (!appPages.some(p => p.id === activePage) && !sectionPages.some(p => p.id === activePage)) setActivePage(null);
   }, [activePage, appPages, sectionPages]);
   const [venues, setVenues] = useState<VenueDetail[]>([]);
+  // Venue id -> name, for the Today block's headings when a manager's items
+  // come from more than one venue.
+  const venueNames = useMemo(() => Object.fromEntries(venues.map(v => [v.id, v.name])), [venues]);
   // Shared, persisted "which venue am I looking at" for the functional pages.
   // Page-scoped only — never passed into sendMessage, so conversations keep
   // their own venue independent of this.
@@ -149,9 +227,6 @@ export default function Home() {
   const connectFromLoad = useRef(false);
   const { isMobile, isTablet } = useBreakpoint();
   const [mobileView, setMobileView] = useState<'list' | 'detail' | 'home' | 'settings'>('home');
-  // Hierarchy v2: which AI agents are hired and which Apps are on. null
-  // sets = show everything (gating inactive / fetch failed — fail-open).
-  const team = useTeam(token);
   // The viewer's org permissions, for pages that carry one (Finance, Oct
   // 2026). A platform admin holds every scope; before /auth/me answers there
   // is no list, and no gate.
@@ -210,9 +285,29 @@ export default function Home() {
       if (cfg?.app && !team.appsOn.has(cfg.app)) setActivePage(null);
       else if (cfg && !pageAllowed(cfg, viewerPermissions)) setActivePage(null);
     }
-    // A screen switched off, or for a system this organisation doesn't have.
-    if (activePage && team.pagesHidden?.has(activePage)) setActivePage(null);
-  }, [team.hired, team.appsOn, team.pagesHidden, activeAgent, activePage, viewerPermissions]);
+    // A screen switched off in its AI agent's menu, or for a system this
+    // organisation doesn't have. Not inside a team app: the agent-menu switch
+    // does not touch a team placement (team-apps skeleton §3.1), and a team
+    // app's screens come already filtered by the server (screens.team_apps)
+    // — the effect below closes one whose placement goes.
+    if (activePage && !teamOpen && team.pagesHidden?.has(activePage)) setActivePage(null);
+  }, [team.hired, team.appsOn, team.pagesHidden, activeAgent, activePage, viewerPermissions, teamOpen]);
+  // A team app's screen that stops being in it (its placement switched off,
+  // its App or system gone) closes, rather than falling through findPage to
+  // the agent-menu page of the same id.
+  useEffect(() => {
+    if (!teamOpen || !activePage || !team.loaded) return;
+    const pages = teamPages.get(teamOpen) ?? [];
+    if (!pages.some(p => p.id === activePage)) setActivePage(null);
+  }, [teamOpen, activePage, team.loaded, teamPages]);
+  // A team-only screen open under an AI agent (a deep link, or a stale
+  // restore) belongs in its team app: move it there, or close it when the
+  // person reaches no team app that has it.
+  useEffect(() => {
+    if (!activePage || NON_AGENT.has(activeAgent) || !team.teamOnlyPages.has(activePage)) return;
+    const slug = teamFor(activePage);
+    if (!slug || !openTeamPage(slug, activePage)) setActivePage(null);
+  }, [activeAgent, activePage, team.teamOnlyPages, teamFor, openTeamPage]);
   // The AI agents this person gets: hired by the organisation and allowed by
   // their role. The rail, the phone menu and the Today block all use it.
   const visibleAgents = useMemo(() => visibleAgentsFor(AGENTS, team.hired, access), [team.hired, access]);
@@ -311,11 +406,18 @@ export default function Home() {
         setMobileView('settings');
       }
       const page = aliasPageInUrl(params.get('page'));
-      const pageCfg = page && !threadId ? FUNCTIONAL_PAGES.find(p => p.id === page) : undefined;
-      if (pageCfg) {
-        setActiveAgent(pageCfg.agent);
-        setActivePage(pageCfg.id);
-        if (isMobile) setMobileView('detail');
+      const teamSlug = params.get('team');
+      if (page && teamSlug && !threadId) {
+        // Inside the team app (docs/plans/team-apps-skeleton.md 4.2), once
+        // the team apps have loaded — the effect above.
+        setPendingTeamPage({ team: teamSlug, page });
+      } else {
+        const pageCfg = page && !threadId ? FUNCTIONAL_PAGES.find(p => p.id === page) : undefined;
+        if (pageCfg) {
+          setActiveAgent(pageCfg.agent);
+          setActivePage(pageCfg.id);
+          if (isMobile) setMobileView('detail');
+        }
       }
     } catch {
       /* no-op */
@@ -342,18 +444,38 @@ export default function Home() {
   // `norm:open-page` {page, params} event (Norm Functions' cross-page links);
   // handling it here swaps the page without reloading the app. The params go
   // in the address bar, where the page reads them on mount.
+  // A detail with `team` opens the page inside that team app (docs/plans/
+  // team-apps-skeleton.md 4.2); a team-only page opens in its team app even
+  // without one, and never in an agent's menu.
+  const pushPageParams = useCallback((pageId: string, params: Record<string, unknown> | null | undefined, teamSlug?: string | null) => {
+    const sp = new URLSearchParams({ page: pageId });
+    if (teamSlug) sp.set('team', teamSlug);
+    for (const [k, v] of Object.entries(params ?? {})) {
+      if (v === null || v === undefined || v === '' || v === false) continue;
+      sp.set(k, v === true ? '1' : String(v));
+    }
+    window.history.pushState(window.history.state, '', `${window.location.pathname}?${sp.toString()}`);
+  }, []);
   useEffect(() => {
     const onOpenPage = (e: Event) => {
-      const detail = aliasOpenPageDetail((e as CustomEvent).detail as { page?: string; params?: Record<string, unknown> } | undefined);
-      const cfg = detail?.page ? FUNCTIONAL_PAGES.find(p => p.id === detail.page) : undefined;
-      if (!cfg) return;
-      e.preventDefault();
-      const sp = new URLSearchParams({ page: cfg.id });
-      for (const [k, v] of Object.entries(detail?.params ?? {})) {
-        if (v === null || v === undefined || v === '' || v === false) continue;
-        sp.set(k, v === true ? '1' : String(v));
+      const detail = aliasOpenPageDetail((e as CustomEvent).detail as { page?: string; params?: Record<string, unknown>; team?: string | null } | undefined);
+      const pageId = detail?.page;
+      if (!pageId) return;
+      const cfg = FUNCTIONAL_PAGES.find(p => p.id === pageId);
+      // The agent's menu shows it: not team-only, and the agent is one this
+      // person sees. Otherwise a team app that has it is where it opens.
+      const inAgentMenu = !!cfg && !team.teamOnlyPages.has(cfg.id) && visibleAgents.some(a => a.id === cfg.agent);
+      const teamSlug = detail?.team || (inAgentMenu ? null : teamFor(pageId));
+      if (teamSlug && teamPages.get(teamSlug)?.some(p => p.id === pageId)) {
+        e.preventDefault();
+        pushPageParams(pageId, detail?.params, teamSlug);
+        openTeamPage(teamSlug, pageId);
+        setPageNonce(n => n + 1);
+        return;
       }
-      window.history.pushState(window.history.state, '', `${window.location.pathname}?${sp.toString()}`);
+      if (!cfg || team.teamOnlyPages.has(cfg.id)) return;
+      e.preventDefault();
+      pushPageParams(cfg.id, detail?.params);
       setSelectedThreadId(null);
       setActiveAgent(cfg.agent);
       setActivePage(cfg.id);
@@ -362,7 +484,7 @@ export default function Home() {
     };
     window.addEventListener('norm:open-page', onOpenPage);
     return () => window.removeEventListener('norm:open-page', onOpenPage);
-  }, [isMobile]);
+  }, [isMobile, team.teamOnlyPages, teamPages, teamFor, openTeamPage, pushPageParams, visibleAgents]);
 
   // `norm:open-settings` {tab}: a page (Functions settings) asks for Norm's own
   // Settings at a tab — company or venues.
@@ -1004,28 +1126,46 @@ export default function Home() {
   }, []);
 
   // A tile in the apps section (rail, phone menu or bottom bar) opens that
-  // app under the 'apps' pseudo-agent.
-  const handleSelectApp = useCallback((slug: string) => {
+  // app under the 'apps' pseudo-agent: a team app at its first screen, an
+  // App-platform app at its page.
+  const handleSelectApp = useCallback((app: SectionTile) => {
+    if (app.kind === 'team') { openTeamPage(app.slug); return; }
     setActiveAgent('apps');
-    setActivePage(`app:${slug}`);
+    setActiveTeam(null);
+    setActivePage(`app:${app.slug}`);
     setSelectedThreadId(null);
     setMobileView('detail');
-  }, []);
+  }, [openTeamPage]);
 
-  // A row in Home's Today block opens the app it came from: in the apps
+  // A row in Home's Today block opens the app it came from: a team app's
+  // screen when it names one (or the screen is team-only), else in the apps
   // section when it is there, else its agent's page, else the app's own page.
   const visibleAgentIds = useMemo(() => new Set(visibleAgents.map(a => a.id)), [visibleAgents]);
   const openTodayItem = useCallback((item: TodayItem) => {
+    const pageId = aliasPageId(item.page_id) || null;
+    // Inside a team app the person reaches, at the item's screen (or the
+    // team app's first); the item's params go in the address bar.
+    const openInTeam = (teamSlug: string | null): boolean => {
+      if (!teamSlug || (pageId ? !teamPages.get(teamSlug)?.some(p => p.id === pageId) : !teamPages.has(teamSlug))) return false;
+      if (pageId) pushPageParams(pageId, item.params, teamSlug);
+      openTeamPage(teamSlug, pageId);
+      setPageNonce(n => n + 1);
+      return true;
+    };
+    if (item.team && openInTeam(item.team)) return;
     const slug = item.app_slug || null;
     const sectionId = slug ? `app:${slug}` : null;
-    const cfg = item.page_id ? FUNCTIONAL_PAGES.find(p => p.id === aliasPageId(item.page_id)) : undefined;
+    const cfg = pageId ? FUNCTIONAL_PAGES.find(p => p.id === pageId) : undefined;
     const pinned = sectionId ? effectiveAppPages.find(p => p.id === sectionId) : undefined;
     if (sectionId && sectionPages.some(p => p.id === sectionId)) {
       setActiveAgent('apps');
+      setActiveTeam(null);
       setActivePage(sectionId);
-    } else if (cfg && visibleAgentIds.has(cfg.agent)) {
+    } else if (cfg && visibleAgentIds.has(cfg.agent) && !team.teamOnlyPages.has(cfg.id)) {
       setActiveAgent(cfg.agent);
       setActivePage(cfg.id);
+    } else if (pageId && openInTeam(teamFor(pageId))) {
+      return;
     } else if (pinned) {
       setActiveAgent(team.pageMember?.[pinned.id] ?? pinned.agent);
       setActivePage(pinned.id);
@@ -1037,7 +1177,7 @@ export default function Home() {
     }
     setSelectedThreadId(null);
     setMobileView('detail');
-  }, [sectionPages, visibleAgentIds, effectiveAppPages, team.pageMember]);
+  }, [sectionPages, visibleAgentIds, effectiveAppPages, team.pageMember, team.teamOnlyPages, teamPages, teamFor, openTeamPage, pushPageParams]);
 
   const handleAction = useCallback(async (threadId: string, action: string, body?: Record<string, unknown>) => {
     // Reload just re-fetches the thread detail
@@ -1247,10 +1387,15 @@ export default function Home() {
   }, []);
 
   // "Open page" on an app card in a conversation: go to that app's menu page
-  // when it has one, else to the app's standalone page.
+  // when it has one, else to the app's standalone page. Norm's open_app with
+  // a team app sends {team, page}: that screen inside the team app.
   useEffect(() => {
     const onOpen = (e: Event) => {
-      const slug = (e as CustomEvent).detail?.slug as string | undefined;
+      const detail = ((e as CustomEvent).detail ?? {}) as { slug?: string; team?: string | null; page?: string | null; page_id?: string | null };
+      const slug = detail.slug;
+      const pageId = detail.page ?? detail.page_id ?? null;
+      const teamSlug = detail.team || (pageId && !slug ? teamFor(pageId) : null);
+      if (teamSlug && openTeamPage(teamSlug, pageId)) return;
       if (!slug) return;
       const page = effectiveAppPages.find(p => p.id === `app:${slug}`);
       if (!page) { window.location.assign(`/apps/${encodeURIComponent(slug)}`); return; }
@@ -1261,7 +1406,7 @@ export default function Home() {
     };
     window.addEventListener(OPEN_APP_PAGE_EVENT, onOpen);
     return () => window.removeEventListener(OPEN_APP_PAGE_EVENT, onOpen);
-  }, [effectiveAppPages, team.pageMember]);
+  }, [effectiveAppPages, team.pageMember, teamFor, openTeamPage]);
 
   // Mobile member row: keep the active member in view when the menu opens or
   // the member changes (the row scrolls sideways when many are hired).
@@ -1271,11 +1416,11 @@ export default function Home() {
     // In the apps section the open app's tile (or the first app) is the one
     // to show — "Apps" in the bottom bar opens the menu there.
     const target = activeAgent === 'apps'
-      ? (activePage?.startsWith('app:') ? activePage : sectionApps[0] ? `app:${sectionApps[0].slug}` : 'home')
+      ? (teamOpen ? `team:${teamOpen}` : activePage?.startsWith('app:') ? activePage : sectionApps[0] ? sectionTileKey(sectionApps[0]) : 'home')
       : activeAgent;
     const el = memberRowRef.current?.querySelector<HTMLElement>(`[data-member="${target}"]`);
     el?.scrollIntoView({ inline: 'center', block: 'nearest' });
-  }, [isMobile, mobileView, activeAgent, activePage, sectionApps]);
+  }, [isMobile, mobileView, activeAgent, teamOpen, activePage, sectionApps]);
 
   // Tablet (768–1023px): the menu panel is a drawer over the content, not a
   // column beside it — at 820px a fixed 360px column left the page about
@@ -1380,6 +1525,7 @@ export default function Home() {
     const barOn = isStaff || activeAgent === 'apps' || (barMe && activeAgent === 'settings');
     const inThread = mobileView === 'detail' && !activePage && !!selectedThread;
     const barActive: TeamBarActive = mobileView === 'settings' ? 'me'
+      : teamOpen && activePage ? `app:${teamOpen}`
       : activePage?.startsWith('app:') ? (activePage as `app:${string}`)
       : inThread || askMode ? 'ask'
       : 'today';
@@ -1445,11 +1591,11 @@ export default function Home() {
       const content = connectPanel ? connectPanel : mobileView === 'detail' && activePage ? (() => {
         const pageConfig = findPage(activePage);
         if (!pageConfig) return null;
-        return <FunctionalPage key={`${pageConfig.id}:${pageNonce}`} config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} venuesLoaded={venuesLoaded} />;
+        return <FunctionalPage key={`${pageConfig.id}:${teamOpen ?? ''}:${pageNonce}`} config={pageConfig} thread={selectedThread} onSend={sendMessage} loading={loading} onWidgetAction={handleWidgetAction} activeVenueId={activeVenueId} venuesLoaded={venuesLoaded} />;
       })() : selectedThread ? (
         <ThreadDetail thread={selectedThread} onAction={handleAction} onWidgetAction={handleWidgetAction} onSend={sendMessage} onRetry={retryFailedSend} loading={loading} openThread={openThread || null} />
       ) : (
-        <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} staff={isStaff} userName={user.full_name} today={today.items} onOpenToday={openTodayItem} chat={!onTablet} />
+        <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} staff={isStaff} userName={user.full_name} today={today.items} onOpenToday={openTodayItem} venueNames={venueNames} chat={!onTablet} />
       );
 
       const title = connectPanel ? 'Reconnect'
@@ -1533,15 +1679,15 @@ export default function Home() {
                 <div className="n-swipe-divider" role="separator" aria-label="Apps" data-testid="rail-apps-divider" />
               )}
               {sectionApps.map((app) => {
-                const isActive = activeAgent === 'apps' && activePage === `app:${app.slug}`;
+                const isActive = activeAgent === 'apps' && (app.kind === 'team' ? activeTeam === app.slug : activePage === `app:${app.slug}`);
                 return (
                   <button
-                    key={`app:${app.slug}`}
+                    key={sectionTileKey(app)}
                     type="button"
-                    data-testid={`rail-app-${app.slug}`}
-                    data-member={`app:${app.slug}`}
+                    data-testid={app.kind === 'team' ? `rail-team-${app.slug}` : `rail-app-${app.slug}`}
+                    data-member={sectionTileKey(app)}
                     aria-current={isActive ? 'page' : undefined}
-                    onClick={() => handleSelectApp(app.slug)}
+                    onClick={() => handleSelectApp(app)}
                     style={{
                       flex: '1 0 auto', minWidth: 72, height: 64, padding: '6px 8px',
                       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
@@ -1574,7 +1720,9 @@ export default function Home() {
                 onNewChat={() => { handleNewChat(); setMobileView('home'); }}
                 onSelectPage={(pageId) => { handleSelectPage(pageId); setMobileView('detail'); }}
                 extraPages={effectiveAppPages}
-                sectionPages={sectionPages}
+                sectionPages={activeTeamApp ? activeTeamPages : sectionPages}
+                sectionTeam={activeTeamApp ? { slug: activeTeamApp.slug, name: activeTeamApp.name } : null}
+                teamOnlyPages={team.teamOnlyPages}
                 appsOn={team.appsOn}
                 pagesHidden={team.pagesHidden}
                 pageMember={team.pageMember}
@@ -1604,7 +1752,7 @@ export default function Home() {
     }
 
     // Home view (default)
-    return mobileShell(isStaff && !askMode ? 'Today' : 'Norm', <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} staff={isStaff} userName={user.full_name} today={today.items} onOpenToday={openTodayItem} chat={!onTablet} />);
+    return mobileShell(isStaff && !askMode ? 'Today' : 'Norm', <HomePanel onSend={sendMessage} loading={loading} member={activeAgent} venueId={activeVenueId} suggestions={2} staff={isStaff} userName={user.full_name} today={today.items} onOpenToday={openTodayItem} venueNames={venueNames} chat={!onTablet} />);
   }
 
   // Choosing something in the tablet drawer closes it.
@@ -1633,7 +1781,8 @@ export default function Home() {
         access={access}
         apps={sectionApps}
         activePage={activePage}
-        onSelectApp={(slug) => { handleSelectApp(slug); closeDrawer(); }}
+        activeTeam={activeTeam}
+        onSelectApp={(app) => { handleSelectApp(app); closeDrawer(); }}
       />
 
       {/* Center Panel — a column beside the content on desktop; on a tablet a
@@ -1674,7 +1823,9 @@ export default function Home() {
           newChat={!onTablet}
           onCollapsePanel={() => setPanelCollapsed(true)}
           extraPages={effectiveAppPages}
-          sectionPages={sectionPages}
+          sectionPages={activeTeamApp ? activeTeamPages : sectionPages}
+          sectionTeam={activeTeamApp ? { slug: activeTeamApp.slug, name: activeTeamApp.name } : null}
+          teamOnlyPages={team.teamOnlyPages}
           onSelectPage={(pageId) => { handleSelectPage(pageId); closeDrawer(); }}
           appsOn={team.appsOn}
           pagesHidden={team.pagesHidden}
@@ -1723,7 +1874,7 @@ export default function Home() {
             if (!pageConfig) return null;
             return (
               <FunctionalPage
-                key={`${pageConfig.id}:${pageNonce}`}
+                key={`${pageConfig.id}:${teamOpen ?? ''}:${pageNonce}`}
                 config={pageConfig}
                 thread={selectedThread}
                 onSend={sendMessage}
@@ -1753,7 +1904,7 @@ export default function Home() {
               staff={isStaff}
               userName={user.full_name}
               today={today.items}
-              onOpenToday={openTodayItem}
+              onOpenToday={openTodayItem} venueNames={venueNames}
               chat={!onTablet}
             />
           )}

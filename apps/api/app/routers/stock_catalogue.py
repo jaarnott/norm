@@ -36,11 +36,13 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_config_db, get_db
 from app.db.models import User, Venue
-from app.services import background_jobs, card_actions, catalogue_job
+from app.services import background_jobs, card_actions, catalogue_job, screen_access
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# The Catalogue page's routes, for a role that reaches that screen
+# (services/screen_access), not only its venue.
+router = APIRouter(dependencies=[Depends(screen_access.needs("stock_catalogue"))])
 
 #: The App the page belongs to.
 APP = "ordering"

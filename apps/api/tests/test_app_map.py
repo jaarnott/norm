@@ -175,7 +175,12 @@ class TestToolOwnership:
         )
         db_session.flush()
         assert "lh.get_stock" not in _tools(db_session, user)
-        _row(db_session, "costs", "app", {"member": "reports", "uses_tools": ["lh.get_stock"]})
+        _row(
+            db_session,
+            "costs",
+            "app",
+            {"member": "reports", "uses_tools": ["lh.get_stock"]},
+        )
         assert "lh.get_stock" in _tools(db_session, user)
 
     def test_retiring_the_member_removes_its_apps_tools(self, db_session):
@@ -362,6 +367,40 @@ class TestSeedDataIsConsistent:
             m = a["composition"].get("member")
             assert m, a["slug"]
             assert m != "*" or a["slug"] == "norm-core"
+
+    def test_team_apps_own_nothing_and_every_placement_names_one(self):
+        """Team apps (docs/plans/team-apps-skeleton.md §2): every entry of a
+        screen's ``teams`` list names a team row, none twice; a team row has
+        no member and owns no tools, components or skills; every team tool
+        is owned by some App."""
+        apps = self._apps()
+        team_slugs = {a["slug"] for a in apps if a["tier"] == "team"}
+        assert team_slugs == {"kitchen", "front_of_house", "managers"}
+        owned = {
+            t
+            for a in apps
+            if a["tier"] == "app"
+            for t in a["composition"].get("tools") or []
+        }
+        for a in apps:
+            comp = a["composition"]
+            if a["tier"] == "team":
+                for field in ("member", "tools", "components", "skills"):
+                    assert not comp.get(field), f"{a['slug']} owns {field}"
+                for key in comp.get("uses_tools") or []:
+                    assert key in owned, f"{a['slug']} uses unowned {key}"
+                continue
+            for c in comp.get("components") or []:
+                assert "team" not in c, f"{a['slug']}/{c['key']}: use teams=[...]"
+                teams = c.get("teams") or []
+                assert isinstance(teams, list), f"{a['slug']}/{c['key']}"
+                assert len(set(teams)) == len(teams), f"{a['slug']}/{c['key']}"
+                for t in teams:
+                    assert t in team_slugs, f"{a['slug']}/{c['key']} → {t}"
+                if teams:
+                    assert c.get("page"), f"{a['slug']}/{c['key']} is not a screen"
+                if c.get("team_only"):
+                    assert teams, f"{a['slug']}/{c['key']}: team_only, no teams"
 
 
 class TestPreshipReviewFixes:

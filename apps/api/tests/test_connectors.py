@@ -222,3 +222,89 @@ class TestEveryWriteVerb:
             kwargs = {"json": body} if body is not None else {}
             resp = client.request(method, url, headers=admin_headers, **kwargs)
             assert resp.status_code == 404, (method, url)
+
+
+class TestConnectionsStayInTheirOrganisation:
+    """Security ledger S25/S33 (24 Oct 2026): any signed-in user could read any
+    venue's connection settings, and /oauth/status with no venue returned the
+    first connection in the whole database, OAuth metadata included."""
+
+    def _two_orgs(self, db_session):
+        from app.db.models import OrganizationMembership
+        from tests.org_helpers import (
+            grant_venue,
+            make_org,
+            make_user,
+            make_venue,
+            seed_system_roles,
+        )
+
+        roles = seed_system_roles(db_session)
+        mine, theirs = make_org(db_session, "Mine"), make_org(db_session, "Theirs")
+        my_venue = make_venue(db_session, "Here", mine)
+        their_venue = make_venue(db_session, "There", theirs)
+        user = make_user(db_session)
+        db_session.add(
+            OrganizationMembership(
+                id=str(uuid.uuid4()),
+                user_id=user.id,
+                organization_id=mine.id,
+                role="owner",
+                role_id=roles["owner"].id,
+            )
+        )
+        grant_venue(db_session, user, my_venue)
+        db_session.add(
+            Connection(
+                id=str(uuid.uuid4()),
+                connector_name="loadedhub",
+                venue_id=their_venue.id,
+                access_token="their-token",
+                oauth_metadata={"company": "theirs"},
+                config={"x_loaded_company_id": "theirs"},
+                enabled="true",
+            )
+        )
+        db_session.flush()
+        return user, my_venue, their_venue
+
+    def test_another_organisations_venue_is_refused(self, client, db_session):
+        from tests.org_helpers import auth_headers
+
+        user, _, their_venue = self._two_orgs(db_session)
+        h = auth_headers(user)
+        assert (
+            client.get(
+                f"/api/connectors?venue_id={their_venue.id}", headers=h
+            ).status_code
+            == 403
+        )
+        assert (
+            client.get(
+                f"/api/oauth/status/loadedhub?venue_id={their_venue.id}", headers=h
+            ).status_code
+            == 403
+        )
+
+    def test_status_without_a_venue_stays_in_my_organisation(self, client, db_session):
+        from tests.org_helpers import auth_headers
+
+        user, my_venue, _ = self._two_orgs(db_session)
+        h = auth_headers(user)
+        out = client.get("/api/oauth/status/loadedhub", headers=h).json()
+        assert out == {"connected": False}  # theirs is not mine
+        assert (
+            client.get(f"/api/connectors?venue_id={my_venue.id}", headers=h).status_code
+            == 200
+        )
+
+    def test_component_configs_are_for_platform_admins(self, client, db_session):
+        from tests.org_helpers import auth_headers, make_user
+
+        user = make_user(db_session)
+        assert (
+            client.get(
+                "/api/component-api-configs", headers=auth_headers(user)
+            ).status_code
+            == 403
+        )

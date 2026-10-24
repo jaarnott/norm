@@ -103,3 +103,32 @@ def venue_or_org_wide(
         if row is not None:
             return row
     return org_wide(base(), org_for(db, venue_id, org_id)).first()
+
+
+def can_see_venue_connections(db: Session, user, venue_id: str) -> bool:
+    """Whether ``user`` may see a venue's connection status (Settings →
+    Venues, the OAuth status check). A platform admin; a person with the
+    venue in their own venue access; or someone who looks after the
+    organisation's connections or venues (``settings:connectors`` or
+    ``org:venues``) for a venue of the organisation they act in, unless their
+    role is venue staff. Settings → Venues lists every venue of the
+    organisation, and a venue gives an access row only to whoever created it,
+    so a second owner or a manager saw no connections at all (security ledger
+    S25/S33, 24 Oct 2026)."""
+    from app.db.models import Venue
+    from app.services import screen_access
+    from app.services.app_runtime import org_permissions
+    from app.services.entitlements import org_id_for_user
+    from app.services.venue_service import user_can_access_venue
+
+    if getattr(user, "role", None) == "admin":
+        return True
+    if user_can_access_venue(db, user.id, venue_id):
+        return True
+    org = org_id_for_user(user.id, db)
+    venue_org = db.query(Venue.organization_id).filter(Venue.id == venue_id).scalar()
+    if not org or venue_org != org:
+        return False
+    if screen_access.is_staff(db, user, org):
+        return False
+    return bool(org_permissions(db, user, org) & {"settings:connectors", "org:venues"})

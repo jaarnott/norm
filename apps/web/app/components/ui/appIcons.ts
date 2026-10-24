@@ -41,6 +41,11 @@ const BY_SLUG: Record<string, LucideIcon> = {
   hiring: UserRoundSearch,
   performance: TrendingUp,
   'norm-core': Compass,
+  // the team apps (docs/plans/team-apps-skeleton.md): a stable line icon in
+  // the rail, the bottom bar and the Roles tiles, whatever emoji the seed holds
+  kitchen: Soup,
+  front_of_house: ConciergeBell,
+  managers: ShieldCheck,
   // the job apps (23 Oct 2026)
   ordering: ShoppingCart,
   'invoice-receiving': Receipt,

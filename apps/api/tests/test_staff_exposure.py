@@ -830,3 +830,94 @@ class TestAudience:
             headers=auth_headers(w.hr_person),
         )
         assert r.status_code == 403
+
+
+# ---------------------------------------------------------- team apps ----
+
+
+RECIPES = "lh.get_recipes"  # Recipes & Costing's, listed by the Kitchen team app
+COSTS = "lh.get_menu_item_costs"  # Recipes & Costing's, not in any team app
+
+
+def _team_world(db) -> World:
+    """World plus the Executive Chef with Recipes & Costing (two tools) and
+    the three team rows; the Kitchen team app lists only the recipes read
+    (docs/plans/team-apps-skeleton.md §2)."""
+    w = World(db)
+    spec = db.query(ConnectionSpec).filter(ConnectionSpec.connector_name == "lh").one()
+    spec.tools = list(spec.tools) + [
+        {"action": "get_recipes", "method": "GET", "description": "Recipes."},
+        {"action": "get_menu_item_costs", "method": "GET", "description": "Costs."},
+    ]
+    db.flush()
+    _row(db, "chef-agent", "agent", {"owns_agents": ["executive_chef"]})
+    _row(
+        db,
+        "recipes-and-costing",
+        "app",
+        {"member": "executive_chef", "tools": [RECIPES, COSTS]},
+    )
+    for slug, tools in (
+        ("kitchen", [RECIPES]),
+        ("front_of_house", []),
+        ("managers", []),
+    ):
+        _row(db, slug, "team", {"tagline": slug, "uses_tools": tools})
+    w.kitchen_team = _role(db, w.org, "kitchen_team", agents=[], apps=["kitchen"])
+    w.chef = _person(db, w.org, w.kitchen_team, name="Kit Chen")
+    return w
+
+
+class TestTeamAppTools:
+    """§3.4: a team app hands Norm exactly the tools its row lists, for a
+    role that reaches only that team app."""
+
+    def test_a_kitchen_role_gets_the_team_apps_tools_and_no_norm_core(self, db_session):
+        w = _team_world(db_session)
+        assert _tools(db_session, w.chef) == {RECIPES}
+
+    def test_the_team_app_never_adds_a_tool_whose_agent_is_not_hired(self, db_session):
+        """The tool still comes with its App's AI agent: retire the Executive
+        Chef and the Kitchen team app's recipes read goes with it."""
+        from app.db.models import OrgAppEntitlement
+
+        w = _team_world(db_session)
+        db_session.add(
+            OrgAppEntitlement(
+                organization_id=w.org.id, app_slug="chef-agent", enabled=False
+            )
+        )
+        db_session.flush()
+        assert _tools(db_session, w.chef) == set()
+
+    def test_ticking_the_job_app_still_gives_the_whole_app(self, db_session):
+        w = _team_world(db_session)
+        w.kitchen_team.apps = ["kitchen", "recipes-and-costing"]
+        db_session.flush()
+        assert _tools(db_session, w.chef) == {RECIPES, COSTS}
+
+    def test_a_team_app_the_role_does_not_name_gives_nothing(self, db_session):
+        w = _team_world(db_session)
+        w.kitchen_team.apps = ["front_of_house"]
+        db_session.flush()
+        assert _tools(db_session, w.chef) == set()
+
+    def test_null_null_and_the_other_roles_are_unchanged(self, db_session):
+        w = _team_world(db_session)
+        assert _tools(db_session, w.owner) == EVERYTHING | {RECIPES, COSTS}
+        assert _tools(db_session, w.staff) == {TRAINING}
+        assert _tools(db_session, w.hr_person) == {HIRING, TRAINING, LABOUR, CORE}
+
+    def test_the_app_door_reads_the_same_rule(self, db_session):
+        """app_runtime._check_role_reach: an App-platform app calling the
+        recipes read for a kitchen-role chef passes; the costs read is
+        refused as before."""
+        from app.services.app_runtime import _check_role_reach
+
+        w = _team_world(db_session)
+        _check_role_reach(db_session, db_session, w.chef, "lh", "get_recipes")
+        with pytest.raises(HTTPException) as e:
+            _check_role_reach(
+                db_session, db_session, w.chef, "lh", "get_menu_item_costs"
+            )
+        assert e.value.status_code == 403

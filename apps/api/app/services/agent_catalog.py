@@ -553,7 +553,10 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
     to show everything — the dark-launch/fail-open contract.
 
     Norm Functions and the two Finance Apps follow their organisation's
-    module modes (_native_view).
+    module modes (_native_view). ``team_apps``, ``team_only_pages`` and
+    ``placements_off`` carry the team apps (services/screens.py); each App's
+    ``screens[]`` say where a screen is placed (``teams`` — the same screen in
+    every team app it lists — and ``team_only``).
     """
     from app.services.entitlements import (
         ALL_MEMBERS,
@@ -719,6 +722,21 @@ def team_payload(organization_id: str | None, db: Session, config_db: Session) -
         "included": included,
         "members": members,
         "apps": all_apps,
+        # The team apps (docs/plans/team-apps-skeleton.md): org-wide — the
+        # web narrows them to the viewer's role. Empty with no team rows.
+        "team_apps": _screens.team_apps(
+            config_db, db, organization_id, tool_label=lambda k: ctx.tool(k)["label"]
+        ),
+        # Screens that show only in their team apps, never in an agent's menu.
+        "team_only_pages": sorted(_screens.team_only_pages(config_db)),
+        # Placements an owner switched off, as "page_id@team": the Team page
+        # lists a switched-off placement with its switch off, so it can be
+        # turned back on for that one team app (the agent-menu switch is a
+        # different row and does not show here).
+        "placements_off": sorted(
+            f"{page_id}{_screens.PLACEMENT_SEP}{team}"
+            for page_id, team in _screens.placements_off(organization_id, db)
+        ),
     }
 
 
@@ -841,10 +859,45 @@ def ownership_findings(config_db: Session) -> dict:
         }
     )
 
+    # Team apps (docs/plans/team-apps-skeleton.md §3.3): a screen placed on a
+    # team app the catalog lacks, a team tool no App owns, and team apps
+    # with nothing placed on them yet (the App Map shows that one; the
+    # validator doesn't fail on it — the rows exist before the screens do).
+    from app.services.screens import team_order
+
+    team_slugs = [r.slug for r in team_order(r for r in rows if r.tier == "team")]
+    placed = {
+        t
+        for a in app_rows
+        if a.tier == "app"
+        for sc in app_screens(a)
+        for t in sc["teams"]
+    }
+    unknown_team = sorted(
+        f"{a.slug}/{sc['page_id']} → {t}"
+        for a in app_rows
+        if a.tier == "app"
+        for sc in app_screens(a)
+        for t in sc["teams"]
+        if t not in team_slugs
+    )
+    team_tools_unowned = sorted(
+        {
+            k
+            for r in rows
+            if r.tier == "team"
+            for k in (r.composition or {}).get("uses_tools") or []
+            if k not in tool_claims
+        }
+    )
+
     return {
         "armed": armed,
         "apps_without_screen": no_screen,
         "unowned_uses": unowned_uses,
+        "team_apps_without_screens": [t for t in team_slugs if t not in placed],
+        "unknown_team": unknown_team,
+        "team_tools_unowned": team_tools_unowned,
         "unowned_tools": sorted(visible - set(tool_claims)) if armed else [],
         "unowned_components": sorted(REGISTERED_COMPONENTS - set(comp_claims))
         if comp_claims
@@ -918,8 +971,54 @@ def app_map_payload(
     return {
         "apps": apps,
         "systems": _systems_view(apps, config_db),
+        "team_apps": _team_apps_map(rows, ctx),
         "findings": ownership_findings(config_db),
     }
+
+
+def _team_apps_map(rows: list, ctx) -> list[dict]:
+    """The team apps for the admin App Map: every team row with every screen
+    placed in it and its tools — switches and systems ignored (the platform's
+    layout, not one organisation's view). A screen placed in several team
+    apps is listed under each. docs/plans/team-apps-skeleton.md."""
+    from app.services.entitlements import app_member
+    from app.services.screens import app_screens, team_order
+
+    team_rows = team_order(r for r in rows if r.tier == "team")
+    if not team_rows:
+        return []
+    placed: dict[str, list[dict]] = {r.slug: [] for r in team_rows}
+    for a in rows:
+        if a.tier != "app":
+            continue
+        for sc in app_screens(a):
+            for team in sc["teams"]:
+                if team not in placed:
+                    continue
+                placed[team].append(
+                    {
+                        "page_id": sc["page_id"],
+                        "label": sc["label"],
+                        "app_slug": a.slug,
+                        "app_name": a.name,
+                        "member": app_member(a),
+                        "teams": list(sc["teams"]),
+                        "team_only": sc["team_only"],
+                    }
+                )
+    return [
+        {
+            "slug": r.slug,
+            "name": r.name,
+            "icon": r.icon,
+            "tagline": (r.composition or {}).get("tagline") or r.description or "",
+            "tools": [
+                ctx.tool(k) for k in (r.composition or {}).get("uses_tools") or []
+            ],
+            "screens": placed[r.slug],
+        }
+        for r in team_rows
+    ]
 
 
 def _systems_view(apps: list[dict], config_db: Session) -> list[dict]:

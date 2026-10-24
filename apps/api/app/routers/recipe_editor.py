@@ -18,12 +18,18 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_config_db, get_db
 from app.db.models import User
+from app.services import screen_access
 from app.services.recipe_save import RecipeSaveError, save_recipe
 from app.services.venue_service import user_can_access_venue
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+#: Each route is its screen's (services/screen_access): a venue's login alone
+#: let any role save a recipe to Loaded or read every recipe's costs.
+_RECIPES = [Depends(screen_access.needs("recipe_editor"))]
+_MENU_ENGINEERING = [Depends(screen_access.needs("menu_engineering"))]
 
 
 class SaveRecipeRequest(BaseModel):
@@ -42,7 +48,7 @@ class RecipeLinksRequest(BaseModel):
     end: str
 
 
-@router.post("/menu-engineering/recipe-links")
+@router.post("/menu-engineering/recipe-links", dependencies=_MENU_ENGINEERING)
 def recipe_links_route(
     req: RecipeLinksRequest,
     db: Session = Depends(get_db),
@@ -65,7 +71,7 @@ def recipe_links_route(
     }
 
 
-@router.post("/recipe-editor/open")
+@router.post("/recipe-editor/open", dependencies=_RECIPES)
 def open_recipe_route(
     req: OpenRecipeRequest,
     db: Session = Depends(get_db),
@@ -88,7 +94,7 @@ def open_recipe_route(
     return _doc_to_dict(doc)
 
 
-@router.get("/recipe-editor/stock-groups")
+@router.get("/recipe-editor/stock-groups", dependencies=_RECIPES)
 def recipe_stock_groups_route(
     venue_id: str,
     db: Session = Depends(get_db),
@@ -111,7 +117,7 @@ class CreateRecipeItemRequest(BaseModel):
     unit_id: str
 
 
-@router.post("/recipe-editor/create-item")
+@router.post("/recipe-editor/create-item", dependencies=_RECIPES)
 def create_recipe_item_route(
     req: CreateRecipeItemRequest,
     db: Session = Depends(get_db),
@@ -143,7 +149,7 @@ def create_recipe_item_route(
     return created
 
 
-@router.post("/recipe-editor/save")
+@router.post("/recipe-editor/save", dependencies=_RECIPES)
 def save_recipe_route(
     req: SaveRecipeRequest,
     db: Session = Depends(get_db),

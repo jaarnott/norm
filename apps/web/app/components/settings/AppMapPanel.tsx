@@ -10,10 +10,12 @@
  * docs/plans/agents-and-apps-restructure.md.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { CircleCheck, TriangleAlert } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
-import type { TeamApp } from '../../hooks/useTeam';
+import type { TeamApp, TeamTool } from '../../hooks/useTeam';
+import { placementNote, teamName } from '../team/teamApps';
+import AppIcon from '../ui/AppIcon';
 import Badge, { type BadgeTone } from '../ui/Badge';
 import Icon from '../ui/Icon';
 import PageState from '../ui/PageState';
@@ -30,8 +32,19 @@ interface Findings {
   bad_members: { app: string; member: string | null; problem: string }[];
   apps_without_screen?: string[];
   unowned_uses?: string[];
+  /** Team apps (docs/plans/team-apps-skeleton.md §3.3): a team row with no
+   *  screen placed on it yet (expected before the Kitchen build), a screen
+   *  naming a team app the catalog lacks ("app/page → team"), a team tool
+   *  no App owns. */
+  team_apps_without_screens?: string[];
+  unknown_team?: string[];
+  team_tools_unowned?: string[];
 }
 interface MapSystem { key: string; name: string; status: 'live' | 'built_in' | 'coming_soon'; apps: string[] }
+/** A team app as the App Map lists it: every screen placed on it, every
+ *  tool it names — the platform's layout, switches and systems ignored. */
+interface MapTeamScreen { page_id: string; label: string; app_slug: string; app_name: string; member: string | null; teams?: string[]; team_only: boolean }
+interface MapTeamApp { slug: string; name: string; icon?: string | null; tagline: string; tools: TeamTool[]; screens: MapTeamScreen[] }
 
 // An App claims TOOLS — consolidators and built-ins. An endpoint (or a
 // missing row) in a claim is a problem, shown in red.
@@ -67,7 +80,7 @@ const inlineCode: React.CSSProperties = {
 };
 
 export default function AppMapPanel() {
-  const [data, setData] = useState<{ apps: MapApp[]; systems?: MapSystem[]; findings: Findings } | null>(null);
+  const [data, setData] = useState<{ apps: MapApp[]; systems?: MapSystem[]; team_apps?: MapTeamApp[]; findings: Findings } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<'apps' | 'connections'>('apps');
   const [member, setMember] = useState('');
@@ -101,6 +114,7 @@ export default function AppMapPanel() {
   if (!data) return <div style={root}>{header}<PageState kind="loading" title="Loading the App Map…" /></div>;
 
   const f = data.findings;
+  const teamApps = data.team_apps ?? [];
   const problems = [
     ...f.unowned_tools.map((k) => `Tool ${k} belongs to no App`),
     ...(f.unowned_uses ?? []).map((k) => `Tool ${k} is shared by an App, but no App owns it`),
@@ -110,6 +124,9 @@ export default function AppMapPanel() {
     ...f.unknown_components.map((k) => `Component ${k} isn't in the web registry`),
     ...f.bad_members.map((b) => `${b.app}: ${b.problem}`),
     ...(f.apps_without_screen ?? []).map((k) => `${k} has no screen`),
+    ...(f.unknown_team ?? []).map((k) => `Screen ${k} is placed on a team app the catalog doesn't have`),
+    ...(f.team_tools_unowned ?? []).map((k) => `Team tool ${k} is owned by no App`),
+    ...(f.team_apps_without_screens ?? []).map((k) => `Team app ${teamName(teamApps, k)} has no screens placed on it yet`),
   ];
   const members = Array.from(new Set(data.apps.filter((a) => a.member && a.member !== '*').map((a) => a.member as string)));
   const memberNames: Record<string, string> = {};
@@ -123,24 +140,31 @@ export default function AppMapPanel() {
 
   const callout = CALLOUT[!f.armed ? 'warn' : problems.length ? 'error' : 'ok'];
 
-  /** Screens grouped by the system each is for. */
+  /** Screens grouped by the system each is for; one a team app also shows
+   *  says "· also in Kitchen" or "· Kitchen only". */
   const screens = (a: MapApp) => {
     const all = a.screens ?? [];
     if (!all.length) {
       const shared = a.components.filter((c) => c.shared);
       return list(shared.map((c) => <span key={c.key}>{c.label} <span style={meta}>(every agent)</span></span>));
     }
-    const groups = new Map<string, string[]>();
+    const groups = new Map<string, React.ReactNode[]>();
     for (const s of all) {
       const key = s.connection_name ?? 'Any';
-      groups.set(key, [...(groups.get(key) ?? []), s.label]);
+      const note = placementNote(s, teamApps, { inline: true });
+      groups.set(key, [...(groups.get(key) ?? []), (
+        <span key={s.page_id}>{s.label}{note && <span style={meta}> · {note}</span>}</span>
+      )]);
     }
-    return list([...groups.entries()].map(([system, labels]) => (
-      <span key={system}><span style={meta}>With {system}:</span> {labels.join(', ')}</span>
+    return list([...groups.entries()].map(([system, items]) => (
+      <span key={system}>
+        <span style={meta}>With {system}:</span>{' '}
+        {items.map((item, i) => <Fragment key={i}>{i > 0 && ', '}{item}</Fragment>)}
+      </span>
     )));
   };
 
-  const tools = (a: MapApp) => list(a.tools.map((t) => {
+  const tools = (items: TeamTool[]) => list(items.map((t) => {
     const st = TYPE_STYLE[t.type];
     return (
       <span key={t.key}>
@@ -246,7 +270,7 @@ export default function AppMapPanel() {
                       </td>
                       <td style={cell}>{a.member_name ?? a.member ?? <Badge tone="error">None</Badge>}</td>
                       <td style={cell}>{screens(a)}</td>
-                      <td style={cell}>{tools(a)}</td>
+                      <td style={cell}>{tools(a.tools)}</td>
                       <td style={cell}>{list([
                         ...chat.map((c) => <span key={c.key} style={mono}>{c.key}</span>),
                         ...appComps.map((c) => (
@@ -266,6 +290,54 @@ export default function AppMapPanel() {
               </tbody>
             </table>
           </div>
+
+          {/* Team apps — a second place a job app's screens show (docs/plans/
+              team-apps-skeleton.md). Absent until the catalog has team rows. */}
+          {teamApps.length > 0 && (
+            <div style={{ marginTop: 24 }} data-testid="map-team-apps">
+              <h4 style={{ margin: 0, fontSize: 'var(--fs-md)', fontWeight: 600, lineHeight: 1.3, color: 'var(--text)' }}>Team apps</h4>
+              <p style={{ margin: '2px 0 12px', maxWidth: 760, ...meta }}>
+                What venue staff open on a phone or the kitchen tablet. A team app owns nothing: its screens are the Apps&apos;
+                screens placed in it (a component&apos;s <code style={inlineCode}>teams</code> list — the same screen in every team
+                app it names, switched per team app), and its tools are the ones Norm may use for a role that reaches only this
+                team app (<code style={inlineCode}>uses_tools</code>). Switches and systems are ignored here; who sees each one is
+                the role.
+              </p>
+              <div className="n-card" style={{ overflowX: 'auto' }}>
+                <table className="n-table" style={{ minWidth: 760 }}>
+                  <thead>
+                    <tr>{['Team app', 'Screens', 'Tools for Norm'].map((h) => <th key={h}>{h}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {teamApps.map((t) => (
+                      <tr key={t.slug} data-testid={`map-team-${t.slug}`}>
+                        <td style={cell}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <AppIcon app={{ slug: t.slug, icon: t.icon }} size="menu" />
+                            <strong style={{ fontWeight: 600 }}>{t.name}</strong>
+                          </div>
+                          <div style={{ ...mono, fontSize: 'var(--fs-xs)', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{t.slug}</div>
+                          {t.tagline && <div style={{ ...meta, maxWidth: 280 }}>{t.tagline}</div>}
+                        </td>
+                        <td style={cell}>
+                          {t.screens.length ? list(t.screens.map((s) => (
+                            <span key={`${s.app_slug}/${s.page_id}`}>
+                              {s.label}
+                              <span style={meta}>
+                                {' '}· from {s.app_name}{s.member ? ` (${memberNames[s.member] ?? s.member})` : ''}
+                                {s.team_only ? ` · ${placementNote(s, teamApps, { inline: true })}` : ''}
+                              </span>
+                            </span>
+                          ))) : <span style={meta}>No screens yet</span>}
+                        </td>
+                        <td style={cell}>{t.tools.length ? tools(t.tools) : <span style={meta}>No tools for Norm yet</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

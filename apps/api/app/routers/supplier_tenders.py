@@ -18,11 +18,13 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_config_db, get_db
 from app.db.models import User
+from app.services import screen_access
 from app.services.venue_service import user_can_access_venue
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# For a role that reaches the Supplier tenders screen (services/screen_access).
+router = APIRouter(dependencies=[Depends(screen_access.needs("supplier_tenders"))])
 
 
 class TendersRequest(BaseModel):

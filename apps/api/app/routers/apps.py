@@ -44,17 +44,18 @@ def _app_key(app) -> str:
     return app.slug if is_builtin(app) else f"{CUSTOM_PREFIX}{app.slug}"
 
 
-def _role_allows(db: Session, app, user: User) -> bool:
+def _role_allows(db: Session, config_db: Session, app, user: User) -> bool:
     """Whether the viewer's role reaches this app: named in the role's apps
-    list, or belonging to one of the role's AI agents. Platform admins and
-    roles with no limits pass (services/role_access.py)."""
-    from app.services import role_access
+    list, belonging to one of the role's AI agents, or — a built-in or a job
+    app — with one of its screens showing in a team app the role reaches
+    (services/screen_access.app_reachable). Platform admins and roles with no
+    limits pass (services/role_access.py)."""
+    from app.services import screen_access
     from app.services.entitlements import custom_app_owner
 
-    if user.role == "admin":
-        return True
-    access = role_access.for_user(db, user.id)
-    return role_access.allows_app(access, _app_key(app), member=custom_app_owner(app))
+    return screen_access.app_reachable(
+        db, config_db, user, _app_key(app), member=custom_app_owner(app)
+    )
 
 
 def _load(db: Session, slug: str, user: User, config_db: Session):
@@ -62,7 +63,7 @@ def _load(db: Session, slug: str, user: User, config_db: Session):
     this viewer, 403 when there is but their role doesn't reach it (staff
     access, docs/plans/staff-access.md section 11.4)."""
     app, version = _resolve(db, slug, user, config_db)
-    if not _role_allows(db, app, user):
+    if not _role_allows(db, config_db, app, user):
         raise HTTPException(403, "Your role doesn't include this app.")
     return app, version
 
@@ -240,23 +241,21 @@ def list_apps(
     # on the user's own preferences blob under a reserved key.
     pinned = set((user.dashboard_preferences or {}).get("_pinned_apps") or [])
 
-    from app.services import role_access
+    from app.services import screen_access
     from app.services.builtin_apps import builtin_apps, is_on
 
     # The viewer's role narrows the list per person (staff access): an app
-    # the role doesn't name, and whose AI agent the role doesn't have, is
-    # left out. Platform admins and roles with no limits see everything.
-    access = (
-        role_access.EVERYTHING
-        if user.role == "admin"
-        else role_access.for_user(db, user.id)
-    )
+    # the role doesn't name, whose AI agent the role doesn't have, and none of
+    # whose screens shows in a team app the role reaches, is left out.
+    # Platform admins and roles with no limits see everything.
+    def reaches(key: str, member: str | None) -> bool:
+        return screen_access.app_reachable(db, config_db, user, key, member=member)
 
     out = []
     for b in builtin_apps().values():
         if not is_on(b.slug, membership.organization_id, db, config_db):
             continue
-        if not role_access.allows_app(access, b.slug, member=b.agent):
+        if not reaches(b.slug, b.agent):
             continue
         out.append(
             {
@@ -288,9 +287,7 @@ def list_apps(
         share = resolve_access(db, app, user)
         if not share.can_run:
             continue
-        if not role_access.allows_app(
-            access, _app_key(app), member=app.agent or "app_builder"
-        ):
+        if not reaches(_app_key(app), app.agent or "app_builder"):
             continue
         out.append(
             {
