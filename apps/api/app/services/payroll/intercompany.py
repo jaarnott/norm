@@ -268,7 +268,7 @@ def for_venue(
 def picture(
     db: Session, ctx: FinanceCtx, week_start: dt.date, venue_id: str | None = None
 ) -> dict:
-    """The Intercompany page: one entity's view, or every entity the caller
+    """The Intercompany tab: one entity's view, or every entity the caller
     may see. Contacts from the venue's Xero mapping ride along so the page
     can say which counterparty has no Xero contact yet."""
     from app.services.finance_core.ctx import require_venue

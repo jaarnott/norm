@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-{% if shadow_original_to %}<p style="background:#fff7e6;border:1px solid #f0c36d;padding:8px 12px;border-radius:6px;font-size:13px;">Shadow mode: this email was meant for <strong>{{ shadow_original_to }}</strong> and was sent to you instead.</p>{% endif %}
+{% if shadow_original_to %}<p style="background:#fff7e6;border:1px solid #f0c36d;padding:8px 12px;border-radius:6px;font-size:13px;">Trial run: this email was meant for <strong>{{ shadow_original_to }}</strong> and was sent to you instead.</p>{% endif %}
 <h1>Your tax-rate declaration</h1>
 <p>Hi {{ first_name }},</p>
 <p>{{ org_name }} deducts withholding tax from your performance payments and needs a signed tax-rate declaration (the IR330C) on record. It takes two minutes: a code we email you, your IRD number, your rate choice and a typed signature.</p>

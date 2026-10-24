@@ -1,4 +1,4 @@
-"""The Norm Finance built-ins — ``norm_finance.*`` (plan §12, DESIGN-CONTRACT §4).
+"""The Budget App's built-ins — ``norm_finance.*`` (plan §12, DESIGN-CONTRACT §4).
 
 Thin layers over ``app/services/finance``: each tool builds the caller's
 ``FinanceCtx`` from the conversation's person (or, over MCP, the scope's
@@ -45,9 +45,9 @@ logger = logging.getLogger(__name__)
 
 CONNECTOR = "norm_finance"
 
-OFF = "Norm Finance isn't switched on for this organisation."
+OFF = "Budget isn't switched on for this organisation."
 UNATTENDED = (
-    "Norm Finance only changes budgets when someone asks in chat — a scheduled "
+    "Norm changes budgets only when someone asks in chat — a scheduled "
     "task can read the budget and the forecast, but not change them."
 )
 #: Rows a forecast read returns unless asked for a range.
@@ -109,7 +109,7 @@ def _ctx(db: Session, thread_id: str | None) -> FinanceCtx:
         )
     org_id = org_id or org_id_for_user(user.id, db)
     if not org_id:
-        raise Refused("You are not a member of an organisation using Norm Finance.")
+        raise Refused("You are not a member of an organisation using Budget.")
     if modes_svc.mode(db, org_id, "finance") == "off":
         raise Refused(OFF)
     ctx = build_ctx(db, user, org_id=org_id, actor_label="Norm")
@@ -621,7 +621,7 @@ def record_budget(params: dict, db: Session, ctx: FinanceCtx, thread_id) -> dict
             data = {
                 "version_id": version_id,
                 "saved": n,
-                "note": "an unlocked version — lock it on the Budgets page to make it the current budget",
+                "note": "an unlocked version — lock it under Versions on the Budgets page to make it the current budget",
             }
         elif op == "driver":
             row = drivers_svc.add_driver(

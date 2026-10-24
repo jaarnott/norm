@@ -49,7 +49,7 @@ class TestGetEntertainers:
         assert (
             out["data"]["performances"][0]["rate"] == "$100.00"
             and out["data"]["performances"][0]["link"]
-            == f"/?page=ent-roster&performance={mine.id}"
+            == f"/app?page=entertainers&tab=roster&performance={mine.id}"
         )
         assert_no_sensitive(out)
         # a venue they cannot see is refused by name

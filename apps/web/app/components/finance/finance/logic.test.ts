@@ -4,6 +4,8 @@ import {
   addMonths,
   band,
   budgetPnl,
+  budgetsPanel,
+  budgetsShow,
   centsInput,
   dayCell,
   daysInMonth,
@@ -14,6 +16,9 @@ import {
   fiscalYearOf,
   fiscalYearRange,
   groupIntoWeeks,
+  historyRange,
+  legacyBudgetsView,
+  stripTotals,
   holidaySyncText,
   isoWeekday,
   mondayOf,
@@ -227,5 +232,65 @@ describe('the public holiday sync toast', () => {
     expect(holidaySyncText({ inserted: 0, updated: 0, removed: 0, dates_until: null })).toBe(
       'Public holidays from Loaded: nothing new. Loaded holds no public holidays for this venue.',
     );
+  });
+});
+
+describe('old ?view= links to the Budgets page', () => {
+  it('opens the tab or panel the old view named, and drops view', () => {
+    expect(legacyBudgetsView('?page=finance-budgets&view=grid')).toEqual({ view: null, tab: 'daily' });
+    expect(legacyBudgetsView('?page=finance-budgets&view=lines')).toEqual({ view: null, tab: 'lines' });
+    expect(legacyBudgetsView('?page=finance-budgets&view=versions')).toEqual({ view: null, tab: 'daily', panel: 'versions' });
+    expect(legacyBudgetsView('?page=finance-budgets&view=import&venue=v1')).toEqual({ view: null, tab: 'daily', panel: 'import' });
+  });
+
+  it('lands an unknown view on the Daily budget', () => {
+    expect(legacyBudgetsView('?page=finance-budgets&view=nonsense')).toEqual({ view: null, tab: 'daily' });
+  });
+
+  it('leaves an explicit tab alone, and other pages and view-less links untouched', () => {
+    expect(legacyBudgetsView('?page=finance-budgets&tab=history&view=lines')).toEqual({ view: null });
+    expect(legacyBudgetsView('?page=finance-budgets&tab=lines')).toBeNull();
+    expect(legacyBudgetsView('?page=payroll&view=leave')).toBeNull();
+    expect(legacyBudgetsView(new URLSearchParams({ page: 'finance-budgets' }))).toBeNull();
+  });
+});
+
+describe('the Daily budget view and panel params', () => {
+  it('defaults to the month grid', () => {
+    expect(budgetsShow(null)).toBe('grid');
+    expect(budgetsShow('compare')).toBe('compare');
+    expect(budgetsShow('year')).toBe('year');
+    expect(budgetsShow('table')).toBe('grid');
+  });
+
+  it('opens Import only for someone who may write budgets', () => {
+    expect(budgetsPanel('versions', false)).toBe('versions');
+    expect(budgetsPanel('import', true)).toBe('import');
+    expect(budgetsPanel('import', false)).toBeNull();
+    expect(budgetsPanel(null, true)).toBeNull();
+  });
+});
+
+describe('the History tab range', () => {
+  it('is the fiscal year, or one month of it', () => {
+    expect(historyRange(2027, 4, null)).toEqual({ from: '2026-04-01', to: '2027-03-31' });
+    expect(historyRange(2027, 4, { year: 2027, month: 2 })).toEqual({ from: '2027-02-01', to: '2027-02-28' });
+  });
+});
+
+describe('the Daily budget summary strip', () => {
+  it('is the grid footer, with Loaded and the actual against the locked budget', () => {
+    const rows = [
+      { amount_cents: 100_00, loaded_cents: 120_00, actual_cents: 90_00 },
+      { amount_cents: 200_00, loaded_cents: 180_00, actual_cents: null },
+    ];
+    expect(stripTotals(rows)).toEqual({ locked: 300_00, loaded: 300_00, actual: 90_00, loadedVariance: 0, actualVariance: -210_00 });
+  });
+
+  it('has no variance when a side has no figures', () => {
+    const t = stripTotals([{ amount_cents: null, loaded_cents: 50_00, actual_cents: null }]);
+    expect(t.locked).toBeNull();
+    expect(t.loadedVariance).toBeNull();
+    expect(t.actualVariance).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Banknote, BarChart3, BookOpen, Calendar, CalendarClock, CalendarDays, CalendarOff, ChartColumnIncreasing, ChefHat, ClipboardCheck, ClipboardList, Contact, Eye, Gavel, GitCompare, Grid2x2, IdCard, Inbox, LayoutDashboard, LayoutGrid, Mail, Music, Package, Receipt, Scale, Settings, ShoppingCart, Table, Timer, TrendingUp, UserCheck, Users, Wallet, type LucideIcon } from 'lucide-react';
+import { Banknote, BarChart3, BookOpen, Calendar, CalendarClock, CalendarDays, ChartColumnIncreasing, ChefHat, ClipboardCheck, ClipboardList, Contact, Gavel, Grid2x2, IdCard, Inbox, LayoutDashboard, LayoutGrid, Music, Package, Receipt, Settings, ShoppingCart, Table, Timer, TrendingUp, UserCheck, Users, type LucideIcon } from 'lucide-react';
 import { resolveAppIcon } from '../ui/appIcons';
 import { tradingMonday, tradingWeekRange } from '../../lib/rosterTime';
 
@@ -17,10 +17,11 @@ export interface FunctionalPageConfig {
    *  explicitly so the connection guard can prompt instead of blank-failing. */
   connections?: string[];
   /** An org permission the viewer must hold to see this page (Oct 2026,
-   *  Finance): `payroll:read` for the Payrun, `finance:read` for the Weekly
-   *  Summary. A page without one keeps today's rule — it shows to every user
-   *  of an organisation whose App is on — which the entertainer Register
-   *  and Roster rely on (venue access, decided server-side). The server
+   *  Finance): `payroll:read` for Payroll and Profit & Loss, `finance:read`
+   *  for the Weekly Summary and Budgets. A page without one keeps the plain
+   *  rule — it shows to every user of an organisation whose App is on —
+   *  which the Entertainers page relies on (venue access, decided
+   *  server-side; its Payments tab is gated inside the page). The server
    *  still gates every route; this only keeps a page off a menu it would
    *  refuse to load. */
   permission?: string;
@@ -41,31 +42,6 @@ function getCurrentWeekRange(): { start_datetime: string; end_datetime: string }
 }
 
 export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
-  {
-    // Finance → Bills: bills in Xero for a venue. Self-loading — the page
-    // loader runs raw GET rows only, and xero.get_bills is a consolidator, so
-    // the component calls /connectors/xero/execute/get_bills itself. Declared
-    // in the Xero App's marketplace composition (sync_marketplace_catalog.py).
-    id: 'xero-bills',
-    app: 'bills',
-    connections: ['xero'],
-    label: 'Bills',
-    icon: Receipt,
-    agent: 'finance',
-    component: 'xero_bills',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    // Finance → Profit & Loss: a venue's P&L from Xero by month (get_profit_and_loss). Self-loading.
-    id: 'profit-and-loss',
-    app: 'profit-and-loss',
-    connections: ['xero'],
-    label: 'Profit & Loss',
-    icon: TrendingUp,
-    agent: 'finance',
-    component: 'profit_and_loss',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
   // Dashboards (one per agent)
   {
     id: 'dashboard-hr',
@@ -212,19 +188,6 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
       connector: 'norm',
       action: 'list_automated_tasks',
       defaultParams: () => ({ agent_slug: 'functions' }),
-    },
-  },
-  {
-    id: 'tasks-finance',
-    app: 'norm-core',
-    label: 'Tasks',
-    icon: Timer,
-    agent: 'finance',
-    component: 'automated_task_board',
-    loadAction: {
-      connector: 'norm',
-      action: 'list_automated_tasks',
-      defaultParams: () => ({ agent_slug: 'finance' }),
     },
   },
   {
@@ -432,19 +395,6 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   // Executive Chef
   {
-    // Finance's board: sales, purchases and labour from Loaded, bills and the
-    // profit and loss from Xero for the venues connected to it. The "Finance"
-    // template (dashboard_templates.py) is what a person starts it from.
-    id: 'dashboard-finance',
-    app: 'norm-core',
-    label: 'Dashboard',
-    icon: LayoutDashboard,
-    agent: 'finance',
-    component: 'dashboard_view',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-    componentProps: { agent_slug: 'finance' },
-  },
-  {
     id: 'dashboard-executive_chef',
     app: 'norm-core',
     label: 'Dashboard',
@@ -512,110 +462,33 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     component: 'apps_dashboard',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
-  // Finance member — the Loaded Payroll and Norm Finance Apps (native modules;
-  // ids, labels, icons and permissions mirror app/services/finance_core/catalog.py,
-  // which tests pin). Pages without a permission show to every user of a hired
-  // organisation; the server keeps them to the person's venues (D15).
+  // Finance — the menu reads in this order (pageRegistry.test.ts pins it):
+  // Dashboard · Weekly Summary · Profit & Loss · Budgets · Bills · Payroll ·
+  // Entertainers · Tasks. Payroll, Entertainers and Budgets are one page each
+  // with tabs (Oct 2026; old page ids are translated by pageAliases.ts). The
+  // Payroll, Entertainers and Budget Apps' pages mirror
+  // app/services/finance_core/catalog.py — ids, labels, icons and apps are
+  // pinned by an API test. Entertainers has no permission: it shows to
+  // everyone with a venue (the server keeps them to their venues) and its
+  // Payments tab is gated inside the page. Payroll declares no `connections`:
+  // that guard checks the active venue, and a head-office entity may have no
+  // Loaded login.
   {
-    id: 'payroll-payrun',
-    app: 'loaded-payroll',
-    label: 'Payrun',
-    icon: Banknote,
+    // Finance's board: sales, purchases and labour from Loaded, bills and the
+    // profit and loss from Xero for the venues connected to it. The "Finance"
+    // template (dashboard_templates.py) is what a person starts it from.
+    id: 'dashboard-finance',
+    app: 'norm-core',
+    label: 'Dashboard',
+    icon: LayoutDashboard,
     agent: 'finance',
-    component: 'payroll_payrun',
-    permission: 'payroll:read',
+    component: 'dashboard_view',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    id: 'payroll-leave',
-    app: 'loaded-payroll',
-    label: 'Leave',
-    icon: CalendarOff,
-    agent: 'finance',
-    component: 'payroll_leave',
-    permission: 'payroll:read',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    id: 'payroll-intercompany',
-    app: 'loaded-payroll',
-    label: 'Intercompany',
-    icon: ArrowLeftRight,
-    agent: 'finance',
-    component: 'payroll_intercompany',
-    permission: 'payroll:read',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    id: 'payroll-reconciliation',
-    app: 'loaded-payroll',
-    label: 'Reconciliation',
-    icon: Scale,
-    agent: 'finance',
-    component: 'payroll_reconciliation',
-    permission: 'payroll:read',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    id: 'payroll-settings',
-    app: 'loaded-payroll',
-    label: 'Payroll settings',
-    icon: Settings,
-    agent: 'finance',
-    component: 'payroll_settings',
-    permission: 'payroll:read',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    id: 'payroll-shadow',
-    app: 'loaded-payroll',
-    label: 'Shadow',
-    icon: Eye,
-    agent: 'finance',
-    component: 'payroll_shadow',
-    permission: 'payroll:read',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    id: 'ent-register',
-    app: 'loaded-payroll',
-    label: 'Entertainers',
-    icon: Music,
-    agent: 'finance',
-    component: 'entertainers_register',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    id: 'ent-roster',
-    app: 'loaded-payroll',
-    label: 'Roster',
-    icon: CalendarDays,
-    agent: 'finance',
-    component: 'entertainers_roster',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    id: 'ent-payments',
-    app: 'loaded-payroll',
-    label: 'Payments',
-    icon: Wallet,
-    agent: 'finance',
-    component: 'entertainers_payments',
-    permission: 'payroll:write',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
-  },
-  {
-    id: 'ent-emails',
-    app: 'loaded-payroll',
-    label: 'Emails',
-    icon: Mail,
-    agent: 'finance',
-    component: 'entertainers_emails',
-    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+    componentProps: { agent_slug: 'finance' },
   },
   {
     id: 'finance-summary',
-    app: 'norm-finance',
+    app: 'budget',
     label: 'Weekly Summary',
     icon: BarChart3,
     agent: 'finance',
@@ -624,8 +497,22 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {
+    // Finance → Profit & Loss: a venue's P&L from Xero by month (get_profit_and_loss). Self-loading.
+    // payroll:read because xero.get_profit_and_loss requires it (it shows
+    // wages); without it a manager saw the item and then an error.
+    id: 'profit-and-loss',
+    app: 'profit-and-loss',
+    connections: ['xero'],
+    label: 'Profit & Loss',
+    icon: TrendingUp,
+    agent: 'finance',
+    component: 'profit_and_loss',
+    permission: 'payroll:read',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
     id: 'finance-budgets',
-    app: 'norm-finance',
+    app: 'budget',
     label: 'Budgets',
     icon: Table,
     agent: 'finance',
@@ -634,24 +521,50 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {
-    id: 'finance-budget-vs-loaded',
-    app: 'norm-finance',
-    label: 'Budget vs Loaded',
-    icon: GitCompare,
+    // Finance → Bills: bills in Xero for a venue. Self-loading — the page
+    // loader runs raw GET rows only, and xero.get_bills is a consolidator, so
+    // the component calls /connectors/xero/execute/get_bills itself. Declared
+    // in the Xero App's marketplace composition (sync_marketplace_catalog.py).
+    id: 'xero-bills',
+    app: 'bills',
+    connections: ['xero'],
+    label: 'Bills',
+    icon: Receipt,
     agent: 'finance',
-    component: 'finance_budget_vs_loaded',
-    permission: 'finance:read',
+    component: 'xero_bills',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {
-    id: 'finance-forecasting',
-    app: 'norm-finance',
-    label: 'Forecasting',
-    icon: TrendingUp,
+    id: 'payroll',
+    app: 'payroll',
+    label: 'Payroll',
+    icon: Banknote,
     agent: 'finance',
-    component: 'finance_forecasting',
-    permission: 'finance:read',
+    component: 'payroll',
+    permission: 'payroll:read',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'entertainers',
+    app: 'entertainers',
+    label: 'Entertainers',
+    icon: Music,
+    agent: 'finance',
+    component: 'entertainers',
+    loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
+  },
+  {
+    id: 'tasks-finance',
+    app: 'norm-core',
+    label: 'Tasks',
+    icon: Timer,
+    agent: 'finance',
+    component: 'automated_task_board',
+    loadAction: {
+      connector: 'norm',
+      action: 'list_automated_tasks',
+      defaultParams: () => ({ agent_slug: 'finance' }),
+    },
   },
 ];
 

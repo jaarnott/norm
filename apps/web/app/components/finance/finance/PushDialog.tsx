@@ -4,7 +4,7 @@
  * A Loaded budget push from a Finance page, in a dialog: the shared
  * ApprovalCard previews through `POST /api/finance/push/preview` and
  * confirms through `/confirm` (F6's wrappers over the page helper, which
- * set the ledger's source from `kind` — `typed` for the day grid, `forecast`
+ * set the ledger's source from `kind` — `typed` for the Daily budget grid, `forecast`
  * for "Set Loaded budget", `restore` for the ledger's restore).
  *
  * The person's click is the approval; the card is what they approve. When

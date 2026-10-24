@@ -7,8 +7,8 @@
 #
 # A WRITE that asks: the preview(card) below lists every line, the totals,
 # the residual and the narration — what the person approves in chat, or sees
-# on the Reconciliation page before pressing Push. The approved run checks
-# the card's basis (the exact Xero payload) and writes.
+# on the Payroll page's Reconciliation tab before pressing Push. The approved
+# run checks the card's basis (the exact Xero payload) and writes.
 #
 # Where the figures come from: NOT from this tool. The journal is built and
 # stored by Norm (services/payroll/journal.py → pay_journal_drafts) from the
@@ -81,8 +81,10 @@ def run(params, call_api, log):
         return {"error": (mode or {}).get("error") or "could not read the payroll mode"}
     if mode.get("mode") != "live":
         return {
-            "error": "Loaded Payroll is not live for this organisation — journals are "
-            "not pushed in " + str(mode.get("mode") or "off") + " mode"
+            "error": "Payroll isn't live for this organisation yet (mode "
+            + str(mode.get("mode") or "off")
+            + (", the trial run" if mode.get("mode") == "shadow" else "")
+            + ") — journals go to Xero only once it is live"
         }
     q = {**vp, "kind": "journal"}
     for k in ("week_ending", "week_start", "draft_id", "basis_sha256"):

@@ -104,9 +104,10 @@ def _mode_off_wins(
     organisation is on: ``off`` beats any entitlement, so an organisation that
     hasn't been switched on is neither shown the App nor billed for it
     (billing reads this same set). Norm Functions' team member and App go
-    with ``functions_mode``; the Finance Apps (Oct 2026) with
-    ``payroll_mode`` / ``entertainers_mode`` (Loaded Payroll) and
-    ``finance_mode`` (Norm Finance) — ``finance_core.catalog`` decides those.
+    with ``functions_mode``; the three Finance Apps (Payroll, Entertainers,
+    Budget — 24 Oct 2026) each follow their own mode (``payroll_mode``,
+    ``entertainers_mode``, ``finance_mode``) — ``finance_core.catalog``
+    decides those, and the two old Finance rows while they still exist.
     A mode is only read when one of the rows is entitled."""
     from app.services.functions.catalog import CATALOG_SLUGS
 
@@ -320,8 +321,9 @@ def apps_reachable(
     screens out of the menus; a hired agent keeps every tool of its Apps,
     owner 23 Oct 2026), and an opt-in App (bundled=False: the Finance Apps)
     once the organisation has switched it on. A module's mode still wins:
-    Functions, Payroll and Finance off take their Apps' tools away. A
-    published community App counts while the org has it."""
+    Functions off takes its App's tools away, and each of the three Finance
+    Apps follows its own mode. A published community App counts while the
+    org has it."""
     apps = _catalog(config_db)
     if not _agent_rows(apps) or not organization_id:
         return None
@@ -394,9 +396,11 @@ def apps_on(
             custom_on.add(key)
     # Norm Functions is also switched by the org's functions_mode, and counts
     # as on without a catalog row while none exists (services/functions/
-    # entitlement.py has the rule). The two Finance Apps (Oct 2026) follow
-    # their own modes the same way, while the Finance member is hired
-    # (services/finance_core/catalog.py).
+    # entitlement.py has the rule). The three Finance Apps (24 Oct 2026),
+    # each following its own mode, stand in the same way while the Finance
+    # agent is hired (services/finance_core/catalog.py — which also bridges
+    # the two old Finance rows; they are deliberately not in SUCCESSORS,
+    # which ignores modes).
     from app.services.finance_core.catalog import adjust_apps_on as finance_apps_on
     from app.services.functions.entitlement import adjust_apps_on
 

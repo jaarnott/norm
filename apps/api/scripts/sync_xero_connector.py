@@ -15,15 +15,16 @@ Writes ONE row to the shared config DB, ``connector_specs`` / ``xero``:
   file's function_code, since the sandbox allows no imports — with their
   ``effect`` from ``sync_approval_labels``. ``get_bills`` carries the
   ``xero_bills`` display component.
-- The Finance team member's ``agent_configs`` row (slug ``finance``; the Xero
-  App in sync_marketplace_catalog.py owns it and claims these tools — run that
-  seed AFTER this script, it refuses an unknown agent).
+- The Finance AI agent's ``agent_configs`` row (slug ``finance``). In
+  sync_marketplace_catalog.py the Bills App claims the bill tools and the
+  Payroll App the three payroll writes — run that seed AFTER this script, it
+  refuses an unknown agent.
 
 NOT in this file: ``client_id`` / ``client_secret``. Paste them in Settings →
 Connector specs → Xero (OAuth section) once the row exists. Re-runs preserve
 them, and preserve ``tools`` and any endpoint row this script doesn't own.
 
-Loaded Payroll (Oct 2026, docs/plans/finance-migration.md §7.2, §10): four
+Payroll (Oct 2026, docs/plans/finance-migration.md §7.2, §10): four
 more endpoint rows (``create_manual_journal``, ``get_manual_journal``,
 ``update_manual_journal``, ``attach_to_invoice`` — a binary body through the
 executor's ``body_file_id``), the three payroll write tools
@@ -313,7 +314,7 @@ ENDPOINTS = [
             "tracking_category_id": "Split columns by this tracking category",
         },
     ),
-    # --- Loaded Payroll (Oct 2026): manual journals and attachments ------
+    # --- Payroll (Oct 2026): manual journals and attachments -------------
     _ep(
         "create_manual_journal",
         "PUT",
@@ -625,7 +626,7 @@ CREATE_BILL_TOOL = {
 }
 TOOLS.append(CREATE_BILL_TOOL)
 
-# --- Loaded Payroll's three write tools (plan §10) ------------------------
+# --- The Payroll App's three write tools (plan §10) -----------------------
 # Each reads Norm's stored draft through the engine-only built-in
 # norm_payroll.get_journal_draft (which refuses unless the person holds
 # payroll:write, payroll is live and the run is attended) and records the
@@ -685,8 +686,8 @@ PAYROLL_TOOLS = [
         "requires": ["payroll:write"],
         "description": (
             "Post one entity's payroll journal for a pay week to Xero as a DRAFT "
-            "manual journal — from the draft Norm built on the Reconciliation "
-            "page (net wages, payroll taxes, unpaid wages, security owed, the "
+            "manual journal — from the draft Norm built on the Payroll page's "
+            "Reconciliation tab (net wages, payroll taxes, unpaid wages, security owed, the "
             "intercompany line, the team cost lines, leave and entitlements, "
             "entertainers, adjustments). Previews every line and the balance "
             "for approval; refuses while a live journal exists unless replace "
@@ -770,13 +771,13 @@ FINANCE_AGENT = {
     "agent_slug": "finance",
     "display_name": "Finance",
     "description": (
-        "Keeps the books in step with the venues: bills, suppliers, accounts "
-        "and profit and loss in Xero."
+        "Keeps the books with you: bills and profit and loss from Xero, the "
+        "weekly pay run, entertainers, and the sales budget and forecast."
     ),
     "persona": (
         "In here you're the finance assistant: exact about amounts, dates and "
-        "GST; you read before you quote; a bill is created only from an "
-        "approval card and lands in Xero as a draft."
+        "GST; you read before you quote; anything that reaches Xero or Loaded "
+        "goes through an approval card."
     ),
 }
 

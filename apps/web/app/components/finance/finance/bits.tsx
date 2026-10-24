@@ -1,11 +1,11 @@
 'use client';
 
 /**
- * Small pieces the four Norm Finance pages share on top of
- * components/finance/shared: the Finance mode banner (its own wording —
- * budgets are edited in Norm while Loaded is not written), the fiscal-year
- * and month controls, a page that could not open, a signed variance cell
- * and a driver chip.
+ * Small pieces the Budget app's pages (Weekly Summary and the Budgets
+ * workspace) share on top of components/finance/shared: the Budget mode
+ * banner (its own wording — budgets are edited in Norm while Loaded is not
+ * written), the fiscal-year and month controls, a page that could not open,
+ * a signed variance cell and a driver chip.
  */
 import type { CSSProperties, ReactNode } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
@@ -16,46 +16,19 @@ import { formatSignedCents } from '../shared/money';
 import { band, bandColor, fiscalYearLabel, monthLabel, pct, type YearMonth } from './logic';
 import type { DriverChip, FinMeta, FinanceMode } from './types';
 
-/** A URL search param from the page's address (a deep link such as
- *  `?page=finance-budgets&view=lines`), read once on mount. */
-export function readPageParam(name: string): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return new URLSearchParams(window.location.search).get(name);
-  } catch {
-    return null;
-  }
-}
-
-/** Keep a param in the address bar (replacing, never adding history) so a
- *  refresh — or the app shell remounting the page when the venue changes —
- *  comes back to the same tab. Null removes it. */
-export function writePageParam(name: string, value: string | null): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const url = new URL(window.location.href);
-    if (value === null || value === '') url.searchParams.delete(name);
-    else url.searchParams.set(name, value);
-    const next = `${url.pathname}${url.search}${url.hash}`;
-    if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
-      window.history.replaceState(window.history.state, '', next);
-    }
-  } catch {
-    /* the address bar is a convenience — never break the page over it */
-  }
-}
-
-/** Shadow: budgets are edited in Norm but Loaded is not written. */
+/** Trial run (the code value stays `shadow`): budgets are edited in Norm
+ *  but Loaded is not written. */
 export function FinanceModeBanner({ mode }: { mode: FinanceMode | undefined }) {
   if (mode !== 'shadow') return null;
   return (
     <div role="status" style={{ background: 'var(--warn-bg)', color: 'var(--warn)', border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: '8px 12px', fontSize: 'var(--fs-sm)', marginBottom: 12 }}>
-      <strong>Shadow</strong> — budgets can be edited here, but nothing is sent to Loaded until Norm Finance goes live.
+      <strong>Trial run</strong> — budgets can be edited here, but nothing is sent to Loaded until Budget goes live.
     </div>
   );
 }
 
-/** The page while its meta is loading or refused. A 404 is the App off. */
+/** The page while its meta is loading or refused. A 404 is the Budget app's
+ *  mode off. */
 export function NotReady({ title, page, error, status, reload }: { title: string; page: boolean; error: string | null; status: number | null; reload: () => void }) {
   return (
     <div>
@@ -63,8 +36,8 @@ export function NotReady({ title, page, error, status, reload }: { title: string
       {error ? (
         <PageState
           kind="error"
-          title={status === 404 ? 'Norm Finance is not on for this organisation.' : status === 403 ? 'You don’t have access to Norm Finance.' : 'Couldn’t open Norm Finance'}
-          detail={status === 404 ? 'Its mode is off. An owner switches it on in Settings.' : status === 403 ? 'The Finance permission on your role opens these pages. Ask an owner if you should have it.' : error}
+          title={status === 404 ? 'Budget isn’t on for this organisation.' : status === 403 ? 'You don’t have access to Budget.' : 'Couldn’t open Budget'}
+          detail={status === 404 ? 'A platform admin turns it on (a trial run first, then live).' : status === 403 ? 'The Finance permission on your role opens these pages. Ask an owner if you should have it.' : error}
           action={status === 403 ? undefined : <Button size="sm" onClick={reload}>Try again</Button>}
         />
       ) : (

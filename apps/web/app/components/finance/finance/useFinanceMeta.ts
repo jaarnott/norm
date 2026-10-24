@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * `GET /api/finance/meta`, loaded once and shared by the four Finance pages:
+ * `GET /api/finance/meta`, loaded once and shared by the Budget app's pages:
  * the mode, the fiscal-year start, the currency, the viewer's scopes and the
  * venues they may see (the server decides — a page never guesses).
  */

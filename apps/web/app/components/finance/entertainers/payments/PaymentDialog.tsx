@@ -93,7 +93,7 @@ export default function PaymentDialog({ row, meta, onChanged, onClose }: {
   const sendQuery = async () => {
     if (!invoice) return;
     const res = await entSend<{ sent: boolean }>('POST', `/invoices/${invoice.id}/query`);
-    setNotice(res.sent ? 'The query email was sent to the performer’s registered address.' : 'Not sent (shadow mode sends only to the payroll contact).');
+    setNotice(res.sent ? 'The query email was sent to the performer’s registered address.' : 'Not sent (during the trial run emails go only to the payroll contact).');
   };
 
   const openInvoice = () => invoice && run('open', () => openEntFile(`/invoices/${invoice.id}`, invoice.filename));
@@ -141,8 +141,8 @@ export default function PaymentDialog({ row, meta, onChanged, onClose }: {
           {!row.performer.payable && <Badge tone="warn">Not payable{row.performer.payable_reason ? ` — ${row.performer.payable_reason}` : ''}</Badge>}
         </div>
 
-        {!live && <Notice tone="warn">Shadow mode: marking paid and pushing bills are off until entertainers go live in Norm.</Notice>}
-        {!row.performer.payable && <Notice tone="warn">This performer isn&rsquo;t payable yet ({row.performer.payable_reason ?? 'not accepted'}). Accept them on the Register first; no pay line or bill is produced until then.</Notice>}
+        {!live && <Notice tone="warn">Trial run: marking paid and pushing bills are off until entertainers go live in Norm.</Notice>}
+        {!row.performer.payable && <Notice tone="warn">This performer isn&rsquo;t payable yet ({row.performer.payable_reason ?? 'not accepted'}). Accept them on the Performers tab first; no pay line or bill is produced until then.</Notice>}
 
         <Section title="Performance">
           <FactGrid min={140}>
@@ -226,7 +226,7 @@ export default function PaymentDialog({ row, meta, onChanged, onClose }: {
             ) : (
               <>
                 <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
-                  A DRAFT bill at the venue&rsquo;s entertainment expense account, GST from the register, the invoice attached. {row.bill && !row.bill.voided_at ? 'Pushing again voids the earlier bill first.' : ''}
+                  A DRAFT bill at the venue&rsquo;s entertainment expense account, GST from the performer’s record, the invoice attached. {row.bill && !row.bill.voided_at ? 'Pushing again voids the earlier bill first.' : ''}
                 </div>
                 <div style={{ marginTop: 10 }}>
                   <Button size="sm" variant={row.bill && !row.bill.voided_at ? 'secondary' : 'primary'} onClick={() => previewBill(null)} disabled={!!busy || !live || !row.performer.payable}>
@@ -289,17 +289,17 @@ export default function PaymentDialog({ row, meta, onChanged, onClose }: {
           ) : (
             <>
               {(row.lane === 'payroll_employee' || row.lane === 'payroll_contractor') && (
-                <Hint style={{ marginBottom: 8 }}>Payroll-lane performances are usually paid from the Payrun for their week; marking paid here records a reference only.</Hint>
+                <Hint style={{ marginBottom: 8 }}>Payroll-lane performances are usually paid through the Payroll page for their week; marking paid here records a reference only.</Hint>
               )}
               <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
                 <div style={{ flex: '1 1 200px' }}>
                   <Field label="Reference (optional)" htmlFor={`${base}-ref`}>
-                    <input id={`${base}-ref`} className="n-input" style={inputStyle} value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Batch, payrun week, bank reference…" />
+                    <input id={`${base}-ref`} className="n-input" style={inputStyle} value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Batch, pay week, bank reference…" />
                   </Field>
                 </div>
                 <Button variant="primary" onClick={markPaid} disabled={!!busy || !live || row.status === 'mismatch'}>{busy === 'paid' ? 'Saving…' : 'Mark paid'}</Button>
               </div>
-              {row.status === 'mismatch' && <Hint style={{ marginTop: 6 }}>Times differ — settle the mismatch on the Roster before paying.</Hint>}
+              {row.status === 'mismatch' && <Hint style={{ marginTop: 6 }}>Times differ — settle the mismatch on the Roster tab before paying.</Hint>}
               <Hint style={{ marginTop: 6 }}>Marking paid also closes the performer&rsquo;s portal link for this performance.</Hint>
             </>
           )}

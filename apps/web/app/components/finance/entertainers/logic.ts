@@ -9,7 +9,7 @@
  * calendar date alone.
  */
 import type { BadgeTone } from '../../ui/Badge';
-import type { BandMember, CheckStatus, ClosingManagerSource, EmailStatus, Lane, Performance, PerformanceStatus, Performer, PortalStatus } from './types';
+import type { BandMember, CheckStatus, ClosingManagerSource, EmailStatus, EntMeta, Lane, Performance, PerformanceStatus, Performer, PortalStatus } from './types';
 
 // ── Performance status ───────────────────────────────────────────────────
 
@@ -161,7 +161,7 @@ export interface Chip {
   tone: BadgeTone;
 }
 
-/** The register's status chips for one performer: the onboarding state
+/** The Performers tab's status chips for one performer: the onboarding state
  *  first, then anything finance must act on. */
 export function performerChips(p: Performer): Chip[] {
   const chips: Chip[] = [];
@@ -183,7 +183,7 @@ export function performerChips(p: Performer): Chip[] {
 
 export type RegisterTab = 'all' | 'awaiting' | 'declarations';
 
-/** The register's tab filter: "awaiting acceptance" is the submitted list;
+/** The Performers tab's list filter: "awaiting acceptance" is the submitted list;
  *  "missing declarations" is active WT performers with no declaration. */
 export function registerRows(rows: Performer[], tab: RegisterTab, q: string, lane: Lane | 'all', needsReview: boolean, includeInactive: boolean): Performer[] {
   const needle = q.trim().toLowerCase();
@@ -199,6 +199,24 @@ export function registerRows(rows: Performer[], tab: RegisterTab, q: string, lan
     }
     return true;
   });
+}
+
+// ── Page header ──────────────────────────────────────────────────────────
+
+/** The Entertainers header's one line: what is waiting, from the meta's
+ *  counts (the last 60 days of performances). Payment and review counts
+ *  only for someone who can pay. */
+export function headerSummary(counts: EntMeta['counts'], canPay: boolean): string {
+  const n = (k: keyof EntMeta['counts']) => counts[k] ?? 0;
+  const s = (x: number, one: string, many: string) => (x === 1 ? one : many);
+  const parts: string[] = [];
+  const approvals = n('awaiting_approvals') + n('awaiting_manager');
+  if (approvals) parts.push(`${approvals} ${s(approvals, 'performance needs', 'performances need')} approval`);
+  if (n('mismatch')) parts.push(`${n('mismatch')} with times that differ`);
+  if (canPay && n('ready_for_payment')) parts.push(`${n('ready_for_payment')} ready to pay`);
+  if (n('missing_declarations')) parts.push(`${n('missing_declarations')} ${s(n('missing_declarations'), 'performer', 'performers')} missing a declaration`);
+  if (canPay && n('needs_review')) parts.push(`${n('needs_review')} ${s(n('needs_review'), 'performer', 'performers')} to review`);
+  return parts.length ? parts.join(' · ') : 'Nothing waiting';
 }
 
 // ── Dates and times ──────────────────────────────────────────────────────

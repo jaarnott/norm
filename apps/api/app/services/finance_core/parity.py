@@ -1,8 +1,8 @@
-"""The shadow period's record: Norm's figures beside Orbit's, every
+"""The trial run's record (mode shadow): Norm's figures beside Orbit's, every
 difference named (plan §14).
 
 A run compares one module's figures for one period — weekly from the tick
-after the nightly importer, or on demand from the Shadow tab — and writes
+after the nightly importer, or on demand from the Trial run tab — and writes
 one item per difference. An item is ``expected`` when it belongs to a named
 class of known difference (``EXPECTED_CLASSES``: things Orbit got wrong or
 did differently, which Norm will not reproduce) or ``unexplained``. The gate
@@ -10,8 +10,8 @@ before each cut-over step counts unexplained items; the payroll person signs
 items off as they are understood.
 
 The classes are a table here, keyed by a short code, so a parity job names
-the class rather than retyping its wording, and the Shadow tab can list what
-each means.
+the class rather than retyping its wording, and the Trial run tab can list
+what each means.
 """
 
 from __future__ import annotations

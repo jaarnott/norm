@@ -1,20 +1,21 @@
 'use client';
 
 /**
- * Loaded Payroll — Intercompany. For a pay week, every shift where the
+ * Payroll — the Intercompany tab. For a pay week, every shift where the
  * entity paying the person is not the venue they worked at (Loaded's own
  * flag), plus gratuity shares paid by another entity's payroll. Per
  * counterparty: In (we pay the person, they worked there — we invoice
  * them) and Out (they pay the person, who worked here — they bill us), the
  * people behind each line, and `net = In − Out`. For one entity the ICO
  * drafts Norm would post to Xero and their push state, with the push and
- * the void through the approval card.
+ * the void through the approval card. With no entity chosen it lands on
+ * the group overview (All entities); picking an entity there chooses it in
+ * the page's one picker.
  *
- * Deep links: `?page=payroll-intercompany&venue=<id>|all&week=<monday>`.
+ * Link: `?page=payroll&tab=intercompany&venue=<id>|all&week=<monday>`.
  */
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
-import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
 import Icon from '../../ui/Icon';
@@ -23,14 +24,12 @@ import { StatTile, TileRow } from '../../functions/enquiries/bits';
 import DataTable, { type Column } from '../shared/DataTable';
 import Money, { useMoney } from '../shared/Money';
 import PageShell, { Note, Section, Stack } from '../shared/PageShell';
-import WeekPicker from '../shared/WeekPicker';
 import { formatHours, personName, plural } from '../shared/format';
 import { useFinQuery, useFinanceApi } from '../shared/useFinanceApi';
-import { weLabel, weekEnding, weekRangeLabel } from '../shared/weeks';
-import { MetaGate } from './PayrollPayrun';
+import { weLabel, weekEnding } from '../shared/weeks';
 import IcoDocuments from './reconciliation/IcoDocuments';
+import type { PayrollTabProps } from './tabProps';
 import type { IcoGroup, IcoLine, IcoPicture, IcoVenue } from './types';
-import { usePayrollPage } from './usePayrollMeta';
 
 function Lines({ group, direction }: { group: IcoGroup; direction: 'in' | 'out' }) {
   const columns: Column<IcoLine>[] = [
@@ -82,17 +81,14 @@ function VenueView({ v }: { v: IcoVenue }) {
   );
 }
 
-export default function PayrollIntercompany({ props }: DisplayBlockProps) {
-  const page = usePayrollPage(props, { allowAll: true, defaultAll: true });
+export default function PayrollIntercompany({ meta, entity, allVenues, weekStart, refresh, onChanged, setVenue }: PayrollTabProps) {
   const api = useFinanceApi();
   const money = useMoney();
-  const [refresh, setRefresh] = useState(0);
-  const venueId = page.allVenues ? null : page.entity?.venue_id ?? null;
-  const q = useFinQuery<IcoPicture>(page.meta ? '/api/payroll/reconciliation/intercompany' : null, { week_ending: weekEnding(page.weekStart), venue_id: venueId ?? undefined }, refresh);
-  const bump = () => setRefresh((n) => n + 1);
+  const venueId = allVenues ? null : entity?.venue_id ?? null;
+  const q = useFinQuery<IcoPicture>('/api/payroll/reconciliation/intercompany', { week_ending: weekEnding(weekStart), venue_id: venueId ?? undefined }, refresh);
 
   const overviewColumns: Column<IcoVenue>[] = [
-    { key: 'venue', label: 'Entity', render: (r) => <Button size="xs" variant="link" onClick={() => page.setVenue(r.venue_id)}>{r.venue}</Button> },
+    { key: 'venue', label: 'Entity', render: (r) => <Button size="xs" variant="link" onClick={() => setVenue(r.venue_id)}>{r.venue}</Button> },
     { key: 'in_cents', label: 'In (we invoice)', align: 'right', render: (r) => <Money cents={r.in_cents} />, csv: (r) => r.in_cents / 100 },
     { key: 'out_cents', label: 'Out (they bill us)', align: 'right', render: (r) => <Money cents={r.out_cents} />, csv: (r) => r.out_cents / 100 },
     { key: 'net_cents', label: 'Net', align: 'right', render: (r) => <Money cents={r.net_cents} signed />, csv: (r) => r.net_cents / 100 },
@@ -105,14 +101,14 @@ export default function PayrollIntercompany({ props }: DisplayBlockProps) {
     body = <PageState kind="error" title="Could not load the intercompany picture." detail={q.error} action={<Button size="sm" onClick={q.retry}>Try again</Button>} />;
   } else if (!q.data) {
     body = <PageState kind="loading" title="Loading…" />;
-  } else if (page.allVenues) {
+  } else if (allVenues) {
     const venues = q.data.venues;
     const totalIn = venues.reduce((s, v) => s + v.in_cents, 0);
     const totalOut = venues.reduce((s, v) => s + v.out_cents, 0);
     body = (
       <Stack>
-        <Note tone="plain">Each entity's In is another entity's Out. The group's In and Out add to the same figure once every entity is connected; a gap means a venue Loaded knows that Norm does not.</Note>
-        <DataTable columns={overviewColumns} rows={venues} rowKey={(r) => r.venue_id} csvName={`Intercompany ${weLabel(page.weekStart)}`} emptyTitle="No intercompany shifts this week." footer={['Group', money(totalIn), money(totalOut), money(totalIn - totalOut), null, null]} />
+        <Note tone="plain">Each entity&rsquo;s In is another entity&rsquo;s Out. The group&rsquo;s In and Out add to the same figure once every entity is connected; a gap means a venue Loaded knows that Norm does not. Pick an entity to see its lines and its intercompany documents.</Note>
+        <DataTable columns={overviewColumns} rows={venues} rowKey={(r) => r.venue_id} csvName={`Intercompany ${weLabel(weekStart)}`} emptyTitle="No intercompany shifts this week." footer={['Group', money(totalIn), money(totalOut), money(totalIn - totalOut), null, null]} />
       </Stack>
     );
   } else {
@@ -120,26 +116,10 @@ export default function PayrollIntercompany({ props }: DisplayBlockProps) {
     body = v ? (
       <Stack>
         <VenueView v={v} />
-        <IcoDocuments api={api} venueId={v.venue_id} venueName={v.venue} weekStart={page.weekStart} canWrite={!!page.meta?.can_write} mode={page.meta?.mode ?? null} refresh={refresh} onChanged={bump} />
+        <IcoDocuments api={api} venueId={v.venue_id} venueName={v.venue} weekStart={weekStart} canWrite={!!meta.can_write} mode={meta.mode ?? null} refresh={refresh} onChanged={onChanged} />
       </Stack>
     ) : <PageState kind="empty" title="No intercompany picture for this entity." />;
   }
 
-  return (
-    <PageShell
-      isPage={page.isPage}
-      title="Intercompany"
-      meta={weekRangeLabel(page.weekStart)}
-      mode={page.meta?.mode}
-      venues={[{ id: 'all', name: 'All entities' }, ...page.venues]}
-      venueId={page.allVenues ? 'all' : page.venueId}
-      onVenueChange={page.setVenue}
-      venueTestId="payroll-intercompany-venue"
-      actions={<Button size="sm" variant="quiet" icon={RefreshCw} onClick={bump}>Refresh</Button>}
-      toolbar={page.meta ? <WeekPicker value={page.weekStart} onChange={page.setWeekStart} venue={page.entity} thisWeek={page.meta.this_week_start} /> : undefined}
-      testId="payroll-intercompany"
-    >
-      <MetaGate status={page.status} error={page.error} loading={page.loading}>{body}</MetaGate>
-    </PageShell>
-  );
+  return <PageShell isPage embedded title="Intercompany" testId="payroll-intercompany">{body}</PageShell>;
 }

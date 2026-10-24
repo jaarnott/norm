@@ -1,5 +1,6 @@
-"""Orbit → Loaded Payroll + Norm Finance: one organisation's finance data,
-reloaded from Orbit while Norm runs the modules in ``shadow``.
+"""Orbit → Norm's Payroll, Entertainers and Budget: one organisation's
+finance data, reloaded from Orbit while Norm runs the modules in ``shadow``
+(the trial run).
 
 Orbit stays the system of record until each module is ``live``. Until then
 every run of this importer makes the organisation's imported rows match Orbit
@@ -920,8 +921,8 @@ PAYROLL_MAPPING_KEYS = {
 NORM_PAYROLL_KEYS = tuple(PAYROLL_MAPPING_KEYS.values()) + ("rounding",)
 #: Keys the owner decides in Norm (23 Oct 2026): Orbit's account is reported
 #: beside the block (``left_for_a_person``) but never written, so the journal
-#: keeps refusing a gratuity week by name until someone chooses it on the
-#: Mapping tab. Orbit's "Reclass Gratuities" mapping was never used.
+#: keeps refusing a gratuity week by name until someone chooses it in
+#: Payroll settings → Xero mapping. Orbit's "Reclass Gratuities" mapping was never used.
 LEFT_FOR_A_PERSON = ("gratuities_reclass",)
 
 
@@ -1211,7 +1212,7 @@ class ImportReport:
 
     def lines(self, *, people: bool = True) -> list[str]:
         out = [
-            f"Orbit → Norm Finance — {self.org.get('name')} ({self.org.get('id')})"
+            f"Orbit → Norm finance (payroll, entertainers, budget) — {self.org.get('name')} ({self.org.get('id')})"
             f"{' — DRY RUN' if self.dry_run else ''}",
             "modes: "
             + ", ".join(f"{m} {v}" for m, v in (self.org.get("modes") or {}).items()),
@@ -1294,7 +1295,7 @@ class ImportReport:
                 for key, acct in (block.get("left_for_a_person") or {}).items():
                     out.append(
                         f"    {key}: Orbit has {_account_text(acct)} — NOT written; "
-                        "chosen on the Mapping tab"
+                        "chosen in Payroll settings → Xero mapping"
                     )
                 if self.mapping_detail:
                     ico = block.get("intercompany", {})

@@ -1,4 +1,4 @@
-"""``finance.nightly`` — the one Norm Finance job on the tick (plan §8,
+"""``finance.nightly`` — the one Budget job on the tick (plan §8,
 DESIGN-CONTRACT §6): per venue, 30 minutes after its trading day closes,
 refresh the actuals, refresh the next twelve months of public holidays from
 Loaded's pay adjustments, log Loaded's budget, build the night's vintage and

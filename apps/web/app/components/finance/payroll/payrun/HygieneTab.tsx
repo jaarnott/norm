@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * Hygiene: the lists the Monday 20:00 email carries — unapproved clock-ins,
+ * The Payroll page's Checks tab (the code and the email still call it
+ * hygiene): the lists the Monday 20:00 email carries — unapproved clock-ins,
  * staff without a pay code, unfinished clock-ins (left out of the snapshot),
  * staff with no remuneration timeline, the salaried count, the week's
  * public holidays, and the parity line against Loaded's own pay summary.
@@ -38,7 +39,7 @@ export default function HygieneTab({ week, api, canWrite, refresh }: { week: Wee
   const h = q.data;
 
   if (q.loading && !h) return <PageState kind="loading" title="Reading Loaded…" />;
-  if (q.error && !h) return <PageState kind="error" title="Could not read the hygiene lists." detail={q.error} action={<Button size="sm" onClick={q.retry}>Try again</Button>} />;
+  if (q.error && !h) return <PageState kind="error" title="Could not read the checks." detail={q.error} action={<Button size="sm" onClick={q.retry}>Try again</Button>} />;
   if (!h) return null;
 
   const dollars = (v: unknown) => (typeof v === 'number' ? formatCents(Math.round(v * 100), currency) : '—');
@@ -47,7 +48,7 @@ export default function HygieneTab({ week, api, canWrite, refresh }: { week: Wee
       const r = await api.post<{ status: string; to: string | null }>(`/weeks/${week.id}/hygiene/email`);
       q.retry();
       return r;
-    }, 'Hygiene email sent to the payroll contact.')} disabled={api.busy === 'hygiene-email'}>
+    }, 'Checks email sent to the payroll contact.')} disabled={api.busy === 'hygiene-email'}>
       {api.busy === 'hygiene-email' ? 'Sending…' : 'Email these lists'}
     </Button>
   ) : undefined;
@@ -61,7 +62,7 @@ export default function HygieneTab({ week, api, canWrite, refresh }: { week: Wee
           { label: 'This venue’s snapshot', value: h.snapshot ? `${instantLabel(h.snapshot.taken_at, tz)} · ${h.snapshot.shift_count} shifts · ${h.snapshot.dropped_deleted} deleted and ${h.snapshot.dropped_unfinished} unfinished left out` : 'Not taken yet' },
           { label: 'Salaried staff', value: String(h.salaried_count) },
           { label: 'Public holidays in the week', value: h.public_holiday_dates.length ? h.public_holiday_dates.map((d) => dateLabel(d, { year: false })).join(', ') : 'None' },
-          { label: 'Hygiene email', value: h.email.last_sent_at ? `Sent ${instantLabel(h.email.last_sent_at, tz)} to ${h.email.to ?? '—'}${h.email.status && h.email.status !== 'sent' ? ` (${h.email.status})` : ''}` : 'Not sent yet' },
+          { label: 'Checks email', value: h.email.last_sent_at ? `Sent ${instantLabel(h.email.last_sent_at, tz)} to ${h.email.to ?? '—'}${h.email.status && h.email.status !== 'sent' ? ` (${h.email.status})` : ''}` : 'Not sent yet' },
           { label: 'Parity with Loaded’s pay summary', value: h.parity ? (
             <span>
               {h.parity.within_tolerance ? <Badge tone="ok">Matches</Badge> : <Badge tone="error">Differs</Badge>}{' '}

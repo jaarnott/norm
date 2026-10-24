@@ -85,7 +85,7 @@ export default function JournalPanel({ api, venueId, venueName, weekStart, canWr
             {livePush ? (
               <Button size="sm" variant="quiet" onClick={() => setPushing({ replace: true })} disabled={!live || !draft || draft.stale}>Void and push again</Button>
             ) : (
-              <Button size="sm" variant="primary" icon={Send} onClick={() => setPushing({ replace: false })} disabled={!live || !draft || draft.stale || !!(doc?.blockers.length)} title={!live ? 'Pushes to Xero happen only once Loaded Payroll is live' : draft?.stale ? 'The figures moved since the draft was built — build again first' : undefined}>Push to Xero</Button>
+              <Button size="sm" variant="primary" icon={Send} onClick={() => setPushing({ replace: false })} disabled={!live || !draft || draft.stale || !!(doc?.blockers.length)} title={!live ? 'Pushes to Xero happen only once Payroll is live' : draft?.stale ? 'The figures moved since the draft was built — build again first' : undefined}>Push to Xero</Button>
             )}
           </>
         ) : undefined}
@@ -94,7 +94,7 @@ export default function JournalPanel({ api, venueId, venueName, weekStart, canWr
         <div style={{ padding: '8px 16px 12px' }}>
           {q.error && !doc ? <PageState kind="error" title="Could not load the journal." detail={q.error} /> : !doc ? <PageState kind="loading" title="Loading…" /> : (
             <Stack gap={8}>
-              {!live && <Note tone="plain">In shadow the draft is built and compared with Orbit&rsquo;s journal to the cent; nothing is pushed until the cut-over.</Note>}
+              {!live && <Note tone="plain">During the trial run the draft is built and compared with Orbit&rsquo;s journal to the cent; nothing is pushed until the cut-over.</Note>}
               {livePush && <Note tone="ok">In Xero as a DRAFT: {livePush.xero_number ?? livePush.xero_id} · {livePush.xero_status} · pushed {instantLabel(livePush.pushed_at)}. The accountant posts it inside Xero.</Note>}
               {draft?.stale && <Note tone="warn">The inputs changed since this draft was built (the snapshot, ACE figures, a payout, an adjustment or the account mapping). Build again before pushing.</Note>}
               <Blockers blockers={doc.blockers} warnings={doc.warnings} title="Before the journal can be built or pushed" okText={draft ? undefined : 'Nothing is blocking the journal.'} compact />

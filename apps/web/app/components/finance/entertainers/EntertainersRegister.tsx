@@ -1,71 +1,46 @@
 'use client';
 
 /**
- * Entertainers — the Register: every performer with their lane and where
- * they are in onboarding, the "awaiting acceptance" list and the missing-
- * declaration list (the §15 gate), "Add performer → send link", and a
- * performer's record (details, band members, documents, emails). Venue
- * access opens it; `payroll:write` unlocks accept, shares and bank/IRD.
- * `?page=ent-register&performer=<id>` opens a record.
+ * Entertainers — the Performers tab: every performer with their lane and
+ * where they are in onboarding; filter chips for the "awaiting acceptance"
+ * list and the missing-declaration list (the §15 gate), each with its
+ * count; and a performer's record (details, band members, documents,
+ * emails). Organisation-wide, so the page hides its venue picker here; the
+ * page's header holds Add performer and Settings. Venue access opens it;
+ * `payroll:write` unlocks accept, shares and bank/IRD.
+ * `?page=entertainers&tab=performers&performer=<id>` opens a record.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Plus, Search, Settings } from 'lucide-react';
-import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
+import { Search } from 'lucide-react';
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
 import Icon from '../../ui/Icon';
-import PageHeader from '../../ui/PageHeader';
 import PageState from '../../ui/PageState';
-import Tabs from '../../ui/Tabs';
 import { useBreakpoint } from '../../../hooks/useBreakpoint';
-import { ToastHost } from '../shared/Toasts';
 import { entGet, errorText } from './api';
 import { when } from './format';
 import { LANE_SHORT, performerChips, registerRows } from './logic';
 import type { RegisterTab } from './logic';
 import { ChipRow, FilterChip, LaneBadge, Notice, RowCard, Toggle } from './ui';
-import { invalidateEntMeta, readPageParam, setPageParam, useEntMeta } from './useMeta';
 import AddPerformerDialog from './register/AddPerformerDialog';
 import PerformerDialog from './register/PerformerDialog';
-import SettingsDialog from './settings/SettingsDialog';
+import type { EntTabProps } from './workspace';
 import type { Lane, Performer } from './types';
 
-export function ModeBanner({ mode }: { mode: 'off' | 'shadow' | 'live' | undefined }) {
-  if (mode !== 'shadow') return null;
-  return (
-    <div style={{ marginBottom: 12 }}>
-      <Notice tone="warn">Shadow mode — Orbit is still the live system. Bookings and approvals made here stay in Norm; emails go only to the payroll contact, and nothing is paid from here yet.</Notice>
-    </div>
-  );
-}
-
-export function OffState({ title }: { title: string }) {
-  return (
-    <>
-      <PageHeader title={title} />
-      <PageState kind="empty" title="Entertainers isn’t switched on for this organisation" detail="A platform admin turns it on (shadow first, then live)." />
-    </>
-  );
-}
-
-export default function EntertainersRegister({ props }: DisplayBlockProps) {
-  const isPage = !!props?.persistVenue;
-  const { meta, error, off, loading, reload } = useEntMeta();
+export default function EntertainersRegister({ meta, reload, param, setParams, primaryOpen, closePrimary }: EntTabProps) {
   const { isMobile } = useBreakpoint();
   const [rows, setRows] = useState<Performer[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-  const [tab, setTab] = useState<RegisterTab>('all');
+  const [list, setList] = useState<RegisterTab>('all');
   const [q, setQ] = useState('');
   const [lane, setLane] = useState<Lane | 'all'>('all');
   const [needsReview, setNeedsReview] = useState(false);
   const [includeInactive, setIncludeInactive] = useState(false);
-  const [openId, setOpenId] = useState<string | null>(() => (isPage ? readPageParam('performer') : null));
-  const [adding, setAdding] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // The open record is the page's `performer` param (the deep link).
+  const openId = param('performer');
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    if (!meta) return;
     let alive = true;
     entGet<{ performers: Performer[] }>('/performers', { include_inactive: true }).then(
       (res) => { if (alive) { setRows(res.performers); setListError(null); } },
@@ -76,70 +51,49 @@ export default function EntertainersRegister({ props }: DisplayBlockProps) {
 
   const refresh = useCallback(() => { setTick((t) => t + 1); reload(); }, [reload]);
 
-  const open = (id: string | null) => {
-    setOpenId(id);
-    if (isPage) setPageParam('performer', id);
-  };
-
-  if (off) return <OffState title="Entertainers" />;
-  if (loading) {
-    return (<><PageHeader title="Entertainers" /><PageState kind="loading" title="Loading…" /></>);
-  }
-  if (!meta) {
-    return (<><PageHeader title="Entertainers" /><PageState kind="error" title="Couldn’t load entertainers" detail={error ?? undefined} action={<Button size="sm" onClick={reload}>Try again</Button>} /></>);
-  }
+  const open = (id: string | null) => setParams({ performer: id ?? undefined });
 
   const all = rows ?? [];
   const awaiting = all.filter((p) => p.is_active && p.onboarding_status === 'submitted').length;
   const missing = all.filter((p) => p.is_active && p.lane === 'payroll_contractor' && !p.has_declaration).length;
-  const shown = registerRows(all, tab, q, lane, needsReview, includeInactive || tab !== 'all');
+  const shown = registerRows(all, list, q, lane, needsReview, includeInactive || list !== 'all');
+
+  const active = all.filter((p) => p.is_active).length;
 
   return (
-    <div style={{ width: '100%' }}>
-      <PageHeader
-        title="Entertainers"
-        meta={`${all.filter((p) => p.is_active).length} active performers`}
-        actions={
-          <>
-            {meta.can_edit_settings && <Button icon={Settings} onClick={() => setSettingsOpen(true)}>Settings</Button>}
-            <Button variant="primary" icon={Plus} onClick={() => setAdding(true)}>Add performer</Button>
-          </>
-        }
-      >
-        <Tabs
-          label="Register lists"
-          value={tab}
-          onChange={(id) => setTab(id as RegisterTab)}
-          items={[
-            { id: 'all', label: 'All performers' },
-            { id: 'awaiting', label: <>Awaiting acceptance {awaiting > 0 && <Badge tone="accent">{awaiting}</Badge>}</> },
-            { id: 'declarations', label: <>Missing declaration {missing > 0 && <Badge tone="error">{missing}</Badge>}</> },
-          ]}
-        />
+    <div style={{ width: '100%', minWidth: 0 }}>
+      {/* The tab's toolbar: which list (chips with their counts — no tabs
+          inside tabs), then search and the narrowing filters. */}
+      <div style={{ marginBottom: 12 }}>
+        <ChipRow label="Performer lists">
+          <FilterChip active={list === 'all'} onClick={() => setList('all')}>All performers {rows !== null && <Badge tone="neutral">{active}</Badge>}</FilterChip>
+          <FilterChip active={list === 'awaiting'} onClick={() => setList('awaiting')}>Awaiting acceptance {awaiting > 0 && <Badge tone="accent">{awaiting}</Badge>}</FilterChip>
+          <FilterChip active={list === 'declarations'} onClick={() => setList('declarations')}>Missing declaration {missing > 0 && <Badge tone="error">{missing}</Badge>}</FilterChip>
+        </ChipRow>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
-          <span style={{ position: 'relative', flex: '1 1 200px', maxWidth: 320 }}>
+          <span style={{ position: 'relative', flex: '1 1 200px', maxWidth: isMobile ? undefined : 320, minWidth: 0 }}>
             <Icon icon={Search} size={16} tone="muted" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
             <input className="n-input" aria-label="Search performers" placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: '100%', paddingLeft: 32 }} />
           </span>
-          <ChipRow label="Lane">
-            <FilterChip active={lane === 'all'} onClick={() => setLane('all')}>All lanes</FilterChip>
-            {meta.lanes.map((l) => <FilterChip key={l} active={lane === l} onClick={() => setLane(l)}>{LANE_SHORT[l]}</FilterChip>)}
-          </ChipRow>
+          <div style={{ flex: isMobile ? '1 1 100%' : '0 1 auto', minWidth: 0 }}>
+            <ChipRow label="Lane">
+              <FilterChip active={lane === 'all'} onClick={() => setLane('all')}>All lanes</FilterChip>
+              {meta.lanes.map((l) => <FilterChip key={l} active={lane === l} onClick={() => setLane(l)}>{LANE_SHORT[l]}</FilterChip>)}
+            </ChipRow>
+          </div>
           <Toggle checked={needsReview} onChange={setNeedsReview}>Needs review</Toggle>
-          {tab === 'all' && <Toggle checked={includeInactive} onChange={setIncludeInactive}>Show inactive</Toggle>}
+          {list === 'all' && <Toggle checked={includeInactive} onChange={setIncludeInactive}>Show inactive</Toggle>}
         </div>
-      </PageHeader>
+      </div>
 
-      <ModeBanner mode={meta.mode} />
-
-      {tab === 'declarations' && (
+      {list === 'declarations' && (
         <div style={{ marginBottom: 12 }}>
           <Notice tone="info">Active withholding-tax performers with no IR330C on record. Each needs the declaration signed on their link, or a signed copy uploaded to their record.</Notice>
         </div>
       )}
 
       {listError ? (
-        <PageState kind="error" title="Couldn’t load the register" detail={listError} action={<Button size="sm" onClick={refresh}>Try again</Button>} />
+        <PageState kind="error" title="Couldn’t load the performers" detail={listError} action={<Button size="sm" onClick={refresh}>Try again</Button>} />
       ) : rows === null ? (
         <PageState kind="loading" title="Loading performers…" />
       ) : shown.length === 0 ? (
@@ -198,11 +152,11 @@ export default function EntertainersRegister({ props }: DisplayBlockProps) {
         </div>
       )}
 
-      {adding && (
+      {primaryOpen && (
         <AddPerformerDialog
           performerTypes={meta.performer_types}
           onCreated={(p) => { setRows((r) => [p, ...(r ?? [])]); reload(); }}
-          onClose={() => setAdding(false)}
+          onClose={closePrimary}
         />
       )}
       {openId && (
@@ -213,14 +167,6 @@ export default function EntertainersRegister({ props }: DisplayBlockProps) {
           onChanged={(p) => setRows((r) => (r ?? []).map((x) => (x.id === p.id ? p : x)))}
         />
       )}
-      {settingsOpen && (
-        <SettingsDialog
-          meta={meta}
-          onSaved={() => { setSettingsOpen(false); invalidateEntMeta(); reload(); }}
-          onClose={() => setSettingsOpen(false)}
-        />
-      )}
-      {isPage && <ToastHost />}
     </div>
   );
 }

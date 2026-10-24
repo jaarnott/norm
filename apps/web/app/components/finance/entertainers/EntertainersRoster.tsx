@@ -7,29 +7,27 @@
  * repeats) and the approval dialog. Anyone with access to the venue books
  * and approves (D15).
  *
- * The closing manager's email links to `?page=ent-roster&performance=<id>`:
- * the page reads `performance` from the address bar on mount and opens
- * that performance's approval dialog, moving the month to its date.
+ * The Roster tab of the Entertainers page. The closing manager's email
+ * links to `?page=entertainers&tab=roster&performance=<id>`: the tab reads
+ * `performance` from the page's params and opens that performance's
+ * approval dialog, moving the month to its date (and the venue to All
+ * venues when it is at another venue). The page draws the header, the
+ * venue picker and the Book performer button.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight, Plus, TriangleAlert } from 'lucide-react';
-import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
+import { ChevronLeft, ChevronRight, TriangleAlert } from 'lucide-react';
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
 import Icon from '../../ui/Icon';
 import IconButton from '../../ui/IconButton';
-import PageHeader from '../../ui/PageHeader';
 import PageState from '../../ui/PageState';
-import VenueSelect from '../../ui/VenueSelect';
 import { useBreakpoint } from '../../../hooks/useBreakpoint';
-import { useActiveVenue } from '../../../hooks/useActiveVenue';
-import { ToastHost } from '../shared/Toasts';
 import { entGet, errorText } from './api';
 import { dateLabel, money, timeRangeLabel, todayIn } from './format';
 import { CLOSING_SOURCE_LABEL, STATUS_LABEL, STATUS_ORDER, addMonths, groupByDate, monthBounds, monthLabel, monthOf, statusCounts } from './logic';
 import { ChipRow, FilterChip, RowCard, StatusChip } from './ui';
-import { invalidateEntMeta, readPageParam, setPageParam, useEntMeta } from './useMeta';
-import { ModeBanner, OffState } from './EntertainersRegister';
+import { invalidateEntMeta } from './useMeta';
+import type { EntTabProps } from './workspace';
 import BookingDialog from './roster/BookingDialog';
 import PerformanceDialog from './roster/PerformanceDialog';
 import type { Performance, PerformanceStatus, Performer } from './types';
@@ -57,32 +55,20 @@ function ClosingManagerCell({ p }: { p: Performance }) {
   );
 }
 
-export default function EntertainersRoster({ props }: DisplayBlockProps) {
-  const isPage = !!props?.persistVenue;
-  const { meta, error, off, loading, reload } = useEntMeta();
+export default function EntertainersRoster({ meta, reload, venueId, setVenueId, param, setParams, primaryOpen, closePrimary }: EntTabProps) {
   const { isMobile } = useBreakpoint();
-  // The page venue is the app's shared, remembered one (a venue manager
-  // lands on their venue); choosing a venue here remembers it for the other
-  // pages too. "All venues" is page-local — the shared choice stays.
-  const [remembered, remember] = useActiveVenue();
-  const [venueId, setVenueIdState] = useState<string>(() => (isPage && remembered ? remembered : 'all'));
-  const setVenueId = (v: string) => {
-    setVenueIdState(v);
-    if (isPage && v !== 'all') remember(v);
-  };
   const [month, setMonth] = useState<string>(() => monthOf(todayIn('Pacific/Auckland')));
   const [status, setStatus] = useState<PerformanceStatus | 'all'>('all');
   const [data, setData] = useState<RosterPayload | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [performers, setPerformers] = useState<Performer[]>([]);
-  const [openId, setOpenId] = useState<string | null>(() => (isPage ? readPageParam('performance') : null));
-  const [booking, setBooking] = useState(false);
+  // The open performance is the page's `performance` param (the deep link).
+  const openId = param('performance');
   const [tick, setTick] = useState(0);
   // The deep-linked performance may sit outside the month first shown.
   const [jumped, setJumped] = useState(false);
 
   useEffect(() => {
-    if (!meta) return;
     let alive = true;
     entGet<{ performers: Performer[] }>('/performers').then(
       (res) => { if (alive) setPerformers(res.performers); },
@@ -92,7 +78,6 @@ export default function EntertainersRoster({ props }: DisplayBlockProps) {
   }, [meta, tick]);
 
   useEffect(() => {
-    if (!meta) return;
     let alive = true;
     const [from, to] = monthBounds(month);
     entGet<RosterPayload>('/roster', { venue_id: venueId === 'all' ? undefined : venueId, from, to }).then(
@@ -104,7 +89,7 @@ export default function EntertainersRoster({ props }: DisplayBlockProps) {
 
   // The deep link: move the month to that performance's date once it is known.
   useEffect(() => {
-    if (!openId || jumped || !meta) return;
+    if (!openId || jumped) return;
     let alive = true;
     entGet<{ performance: Performance }>(`/performances/${openId}`).then(
       (res) => {
@@ -117,22 +102,15 @@ export default function EntertainersRoster({ props }: DisplayBlockProps) {
     );
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only on the first open
-  }, [openId, jumped, meta]);
+  }, [openId, jumped]);
 
   const refresh = useCallback(() => { setTick((t) => t + 1); invalidateEntMeta(); reload(); }, [reload]);
 
-  const open = (id: string | null) => {
-    setOpenId(id);
-    if (isPage) setPageParam('performance', id);
-  };
+  const open = (id: string | null) => setParams({ performance: id ?? undefined });
 
   const replaceRow = (next: Performance) => {
     setData((d) => (d ? { ...d, performances: d.performances.map((p) => (p.id === next.id ? { ...p, ...next } : p)) } : d));
   };
-
-  if (off) return <OffState title="Roster" />;
-  if (loading) return (<><PageHeader title="Roster" /><PageState kind="loading" title="Loading…" /></>);
-  if (!meta) return (<><PageHeader title="Roster" /><PageState kind="error" title="Couldn’t load the roster" detail={error ?? undefined} action={<Button size="sm" onClick={reload}>Try again</Button>} /></>);
 
   const rows = data?.performances ?? [];
   const counts = statusCounts(rows);
@@ -141,24 +119,17 @@ export default function EntertainersRoster({ props }: DisplayBlockProps) {
   const today = todayIn(meta.venues[0]?.timezone ?? 'Pacific/Auckland');
 
   return (
-    <div style={{ width: '100%' }}>
-      <PageHeader
-        title="Roster"
-        meta={data ? `${data.totals.count} performance${data.totals.count === 1 ? '' : 's'} · ${money(data.totals.agreed_cents)} agreed${data.totals.actual_cents ? ` · ${money(data.totals.actual_cents)} approved` : ''}` : undefined}
-        actions={
-          <>
-            <VenueSelect venues={meta.venues} value={venueId} onChange={setVenueId} allowAll />
-            <Button variant="primary" icon={Plus} onClick={() => setBooking(true)} disabled={meta.venues.length === 0}>Book performer</Button>
-          </>
-        }
-      >
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-            <IconButton icon={ChevronLeft} label="Previous month" onClick={() => setMonth(addMonths(month, -1))} />
-            <span style={{ minWidth: 150, textAlign: 'center', fontWeight: 600, fontSize: 'var(--fs-base)' }}>{monthLabel(month)}</span>
-            <IconButton icon={ChevronRight} label="Next month" onClick={() => setMonth(addMonths(month, 1))} />
-          </div>
-          <Button size="sm" variant="quiet" onClick={() => setMonth(monthOf(today))}>This month</Button>
+    <div style={{ width: '100%', minWidth: 0 }}>
+      {/* The tab's toolbar: the month, then the status chips (a row of their
+          own on a phone), then the month's totals. */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+          <IconButton icon={ChevronLeft} label="Previous month" onClick={() => setMonth(addMonths(month, -1))} />
+          <span style={{ minWidth: 140, textAlign: 'center', fontWeight: 600, fontSize: 'var(--fs-base)' }}>{monthLabel(month)}</span>
+          <IconButton icon={ChevronRight} label="Next month" onClick={() => setMonth(addMonths(month, 1))} />
+        </div>
+        <Button size="sm" variant="quiet" onClick={() => setMonth(monthOf(today))}>This month</Button>
+        <div style={{ flex: isMobile ? '1 1 100%' : '0 1 auto', minWidth: 0 }}>
           <ChipRow label="Status">
             <FilterChip active={status === 'all'} onClick={() => setStatus('all')}>All ({rows.length})</FilterChip>
             {STATUS_ORDER.filter((s) => counts[s] > 0).map((s) => (
@@ -166,9 +137,12 @@ export default function EntertainersRoster({ props }: DisplayBlockProps) {
             ))}
           </ChipRow>
         </div>
-      </PageHeader>
-
-      <ModeBanner mode={meta.mode} />
+        {data && (
+          <span style={{ marginLeft: isMobile ? undefined : 'auto', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+            {data.totals.count} performance{data.totals.count === 1 ? '' : 's'} · {money(data.totals.agreed_cents)} agreed{data.totals.actual_cents ? ` · ${money(data.totals.actual_cents)} approved` : ''}
+          </span>
+        )}
+      </div>
 
       {meta.venues.length === 0 ? (
         <PageState kind="empty" title="You don’t have access to any venue" detail="The roster shows the venues on your Norm account." />
@@ -237,14 +211,14 @@ export default function EntertainersRoster({ props }: DisplayBlockProps) {
         </div>
       )}
 
-      {booking && (
+      {primaryOpen && (
         <BookingDialog
           meta={meta}
           performers={performers}
           defaultVenueId={venueId === 'all' ? meta.venues[0]?.id : venueId}
           defaultDate={monthOf(today) === month ? today : `${month}-01`}
           onSaved={() => refresh()}
-          onClose={() => setBooking(false)}
+          onClose={closePrimary}
         />
       )}
       {openId && (
@@ -257,7 +231,6 @@ export default function EntertainersRoster({ props }: DisplayBlockProps) {
           onClose={() => { open(null); refresh(); }}
         />
       )}
-      {isPage && <ToastHost />}
     </div>
   );
 }

@@ -380,30 +380,42 @@ class TestModeOffWins:
 
         def entitled_after_modes(entitled, org_id, db):
             seen["args"] = (set(entitled), org_id)
-            return entitled - {"loaded-payroll"}
+            return entitled - {"payroll"}
 
         monkeypatch.setattr(catalog, "entitled_after_modes", entitled_after_modes)
-        out = entitlements._mode_off_wins(
-            {"xero", "loaded-payroll"}, "org-1", db_session
-        )
+        out = entitlements._mode_off_wins({"xero", "payroll"}, "org-1", db_session)
         assert out == {"xero"}
-        assert seen["args"] == ({"xero", "loaded-payroll"}, "org-1")
+        assert seen["args"] == ({"xero", "payroll"}, "org-1")
 
     def test_the_live_rule_drops_the_apps_while_their_modes_are_off(self, db_session):
-        """The real finance_core.catalog (F1): loaded-payroll is off until
-        payroll OR entertainers is on; norm-finance until finance is on."""
+        """The real finance_core.catalog: one mode per App (Payroll by
+        payroll, Entertainers by entertainers, Budget by finance); the two
+        old rows keep their old rule while they exist — Loaded Payroll off
+        until payroll OR entertainers is on, Norm Finance until finance is."""
         org = make_org(db_session, "Modes Co")
-        both = {"loaded-payroll", "norm-finance", "xero"}
-        assert entitlements._mode_off_wins(set(both), org.id, db_session) == {"xero"}
+        new = {"payroll", "entertainers", "budget", "xero"}
+        old = {"loaded-payroll", "norm-finance", "xero"}
+
+        def after(slugs):
+            return entitlements._mode_off_wins(set(slugs), org.id, db_session)
+
+        assert after(new) == {"xero"} and after(old) == {"xero"}
         org.payroll_mode = "shadow"
         db_session.flush()
-        assert entitlements._mode_off_wins(set(both), org.id, db_session) == {
-            "loaded-payroll",
-            "xero",
-        }
+        assert after(new) == {"payroll", "xero"}
+        assert after(old) == {"loaded-payroll", "xero"}
+        org.entertainers_mode = "shadow"
+        db_session.flush()
+        assert after(new) == {"payroll", "entertainers", "xero"}
         org.finance_mode = "shadow"
         db_session.flush()
-        assert entitlements._mode_off_wins(set(both), org.id, db_session) == both
+        assert after(new) == new and after(old) == old
+        # entertainers alone keeps the old Loaded Payroll row, not Payroll
+        org.payroll_mode = "off"
+        org.finance_mode = "off"
+        db_session.flush()
+        assert after(new) == {"entertainers", "xero"}
+        assert after(old) == {"loaded-payroll", "xero"}
 
     def test_functions_off_still_wins(self, db_session, monkeypatch):
         from app.services.functions.catalog import CATALOG_SLUGS

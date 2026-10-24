@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * Budgets → Versions: every version of a venue-year's daily budget
+ * Budgets → Versions (an in-page panel over the Daily budget tab, opened
+ * from the header): every version of a venue-year's daily budget
  * (import / manual / forecast), locked or a draft. "Locked at the start of
  * the year" is a mechanism here: the current budget is the latest locked
  * version, and a locked version's days cannot be edited — unlock it, or
@@ -56,7 +57,7 @@ function NewVersionDialog({ venueId, fy, versions, onClose, onCreated }: { venue
   );
 }
 
-export default function BudgetVersions({ meta, venueId, fy, canWrite }: { meta: FinMeta; venueId: string; fy: number; canWrite: boolean }) {
+export default function BudgetVersions({ meta, venueId, fy, canWrite, onChanged }: { meta: FinMeta; venueId: string; fy: number; canWrite: boolean; /** A version was created, locked or unlocked — the workspace refreshes the grid. */ onChanged?: () => void }) {
   const [refresh, setRefresh] = useState(0);
   const q = useFinQuery<VersionsDoc>('/api/finance/budgets/versions', { venue_id: venueId, fiscal_year: fy }, refresh);
   const [creating, setCreating] = useState(false);
@@ -69,6 +70,7 @@ export default function BudgetVersions({ meta, venueId, fy, canWrite }: { meta: 
       await finSend('POST', `/api/finance/budgets/versions/${encodeURIComponent(v.id)}/${v.locked_at ? 'unlock' : 'lock'}`);
       toast(v.locked_at ? 'Unlocked — it is a draft again.' : 'Locked — this is now the current budget.', 'ok');
       setRefresh((n) => n + 1);
+      onChanged?.();
     } catch (e) {
       toast(errorText(e), 'error');
     } finally {
@@ -81,7 +83,7 @@ export default function BudgetVersions({ meta, venueId, fy, canWrite }: { meta: 
     { key: 'label', label: 'Version', value: (v) => v.label || SOURCE_LABEL[v.source], render: (v) => (
       <span>
         <span style={{ fontWeight: 500 }}>{v.label || SOURCE_LABEL[v.source]}</span>
-        {v.id === current && <Badge tone="ok" title="The latest locked version — what the Summary and the day grid use">Current</Badge>}
+        {v.id === current && <Badge tone="ok" title="The latest locked version — what the Weekly Summary and the Daily budget use">Current</Badge>}
         {v.notes && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>{v.notes}</div>}
       </span>
     ) },
@@ -117,10 +119,10 @@ export default function BudgetVersions({ meta, venueId, fy, canWrite }: { meta: 
           rowKey={(v) => v.id}
           csvName={`budget versions FY${fy}`}
           emptyTitle="No budget versions for this year."
-          emptyDetail={canWrite ? 'Import a budget on the Import tab, or create a version and type it in on the day grid.' : undefined}
+          emptyDetail={canWrite ? 'Import a budget with Import, or create a version and type it in on the Daily budget tab.' : undefined}
         />
       )}
-      {creating && <NewVersionDialog venueId={venueId} fy={fy} versions={q.data?.versions ?? []} onClose={() => setCreating(false)} onCreated={() => setRefresh((n) => n + 1)} />}
+      {creating && <NewVersionDialog venueId={venueId} fy={fy} versions={q.data?.versions ?? []} onClose={() => setCreating(false)} onCreated={() => { setRefresh((n) => n + 1); onChanged?.(); }} />}
     </Section>
   );
 }

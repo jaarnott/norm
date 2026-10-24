@@ -238,7 +238,7 @@ def resolve(
 
 
 def touch(db: Session, row: EntPublicToken, *, now: dt.datetime | None = None) -> None:
-    """Record use, at most hourly (the Emails page's "link opened")."""
+    """Record use, at most hourly (the Emails tab's "link opened")."""
     now = now or _now()
     if row.last_used_at is None or now - row.last_used_at >= dt.timedelta(hours=1):
         row.last_used_at = now

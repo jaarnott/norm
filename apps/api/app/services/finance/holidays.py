@@ -22,7 +22,7 @@ A sync takes every holiday Loaded returns in its window. Rows from today on
 that Loaded no longer returns are removed (an activation taken away); past
 rows are kept, so history the backtest leans on never vanishes with a
 package. The nightly ``finance.nightly`` refreshes the next twelve months; the
-Forecasting page's "Sync from Loaded" also fills the history.
+Forecast tab's "Sync from Loaded" also fills the history.
 
 Loaded's managed package says its dates run "until 31 December 2026": until
 Loaded publishes the next year's, the forecast has no holidays past that, and
@@ -172,7 +172,7 @@ def sync_venue(
 def sync_from_page(
     db: Session, ctx: FinanceCtx, venue_id: str, *, today: dt.date, config_db=None
 ) -> dict:
-    """The Forecasting page's "Sync from Loaded" (``budgets:write``): the
+    """The Forecast tab's "Sync from Loaded" (``budgets:write``): the
     history and the next twelve months, on the person's own call."""
     ctx.require("budgets:write")
     require_venue(ctx, venue_id)

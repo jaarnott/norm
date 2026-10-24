@@ -118,8 +118,9 @@ class Organization(Base):
     #: Norm Functions switch: off | shadow (imported, read-only) | live.
     #: Checked in the service layer, the public router and the Gmail client.
     functions_mode = Column(String, nullable=False, default="off", server_default="off")
-    #: Loaded Payroll and Norm Finance switches (Oct 2026), each
-    #: off | shadow | live — the Functions pattern. Shadow: Norm computes
+    #: The Payroll, Entertainers and Budget switches (Oct 2026), each
+    #: off | shadow | live — the Functions pattern. Shadow (people read it
+    #: as "Trial run"): Norm computes
     #: (snapshots, exports, drafts, parity) and refuses every Loaded and Xero
     #: write; emails go to payroll_contact_email. Entertainers has its own
     #: switch so it can go live before the payroll close does.

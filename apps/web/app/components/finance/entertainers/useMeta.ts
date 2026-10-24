@@ -1,11 +1,12 @@
 'use client';
 
 /**
- * Entertainers — `GET /api/entertainers/meta`, loaded once and shared by the
- * four pages: the module's mode, whether the caller may pay (payroll:write),
- * the caller's venues, the vocabularies, the settings and the counts the
- * headers show. `off` answers 404 ("not switched on"), which the pages show
- * as a plain message rather than an error.
+ * Entertainers — `GET /api/entertainers/meta`, loaded once by the
+ * Entertainers page and handed to its four tabs: the module's mode,
+ * whether the caller may pay (payroll:write), the caller's venues, the
+ * vocabularies, the settings and the counts the header shows. `off` answers 404 ("not switched on"), which the page shows
+ * as a plain message rather than an error. The page's URL params (tab,
+ * venue, `performance`, `performer`) live in useWorkspaceTab.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EntApiError, entGet } from './api';
@@ -66,39 +67,4 @@ export function useEntMeta(): {
 
   const reload = useCallback(() => setTick((t) => t + 1), []);
   return { meta, error, off, loading: !meta && !error && !off, reload };
-}
-
-/** A URL search param from the current location (`?page=ent-roster&performance=<id>`). */
-export function readPageParam(name: string): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return new URLSearchParams(window.location.search).get(name);
-  } catch {
-    return null;
-  }
-}
-
-/** Set or remove one of this page's own params in the address bar. */
-export function setPageParam(name: string, value: string | null): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const url = new URL(window.location.href);
-    if (value === null || value === '') url.searchParams.delete(name);
-    else url.searchParams.set(name, value);
-    if (url.href !== window.location.href) window.history.replaceState(window.history.state, '', url);
-  } catch {
-    /* an unusual URL — the view still works */
-  }
-}
-
-/** Open another Norm page in place (the app shell handles `norm:open-page`),
- *  else load the deep link. */
-export function openNormPage(page: string, params: Record<string, string> = {}): void {
-  if (typeof window === 'undefined') return;
-  const event = new CustomEvent('norm:open-page', { detail: { page, params }, cancelable: true });
-  const handled = !window.dispatchEvent(event);
-  if (!handled) {
-    const search = new URLSearchParams({ page, ...params }).toString();
-    window.location.assign(`/app?${search}`);
-  }
 }

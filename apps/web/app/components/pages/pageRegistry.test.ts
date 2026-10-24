@@ -58,11 +58,37 @@ describe('scheduled tasks', () => {
 
 describe('finance', () => {
   it('has a Dashboard page for its own board, beside Bills and Tasks', () => {
-    const menu = FUNCTIONAL_PAGES.filter((p) => p.agent === 'finance').map((p) => p.id);
-    expect(menu).toEqual(expect.arrayContaining(['dashboard-finance', 'xero-bills', 'tasks-finance']));
     const page = FUNCTIONAL_PAGES.find((p) => p.id === 'dashboard-finance');
     expect(page?.component).toBe('dashboard_view');
     expect(page?.componentProps).toEqual({ agent_slug: 'finance' });
+  });
+
+  it('has eight menu items, one per job, in this order', () => {
+    // The menu is the registry's order (ThreadList filters, never sorts).
+    const menu = FUNCTIONAL_PAGES.filter((p) => p.agent === 'finance').map((p) => p.id);
+    expect(menu).toEqual([
+      'dashboard-finance', 'finance-summary', 'profit-and-loss', 'finance-budgets',
+      'xero-bills', 'payroll', 'entertainers', 'tasks-finance',
+    ]);
+  });
+
+  it('keeps each page to the people who can load it', () => {
+    const permission = (id: string) => FUNCTIONAL_PAGES.find((p) => p.id === id)?.permission;
+    // xero.get_profit_and_loss needs the payroll permission (it shows wages).
+    expect(permission('profit-and-loss')).toBe('payroll:read');
+    expect(permission('payroll')).toBe('payroll:read');
+    // Venue access, decided by the server; the Payments tab is gated inside the page.
+    expect(permission('entertainers')).toBeUndefined();
+    expect(permission('finance-summary')).toBe('finance:read');
+    expect(permission('finance-budgets')).toBe('finance:read');
+  });
+
+  it('ships Payroll, Entertainers and Budgets with their own Apps', () => {
+    const app = (id: string) => FUNCTIONAL_PAGES.find((p) => p.id === id)?.app;
+    expect(app('payroll')).toBe('payroll');
+    expect(app('entertainers')).toBe('entertainers');
+    expect(app('finance-summary')).toBe('budget');
+    expect(app('finance-budgets')).toBe('budget');
   });
 });
 

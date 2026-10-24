@@ -164,8 +164,9 @@ class TestApprovalEmails:
             and link.recipient_email == "closer@cookbros.test"
         )
         log = w.db.query(EmailLog).filter(EmailLog.id == link.email_log_id).one()
-        assert f"/?page=ent-roster&performance={perf.id}" in html.unescape(
-            log.html_body
+        assert (
+            f"/app?page=entertainers&tab=roster&performance={perf.id}"
+            in html.unescape(log.html_body)
         )
         assert "Casey" in log.html_body and "Sam Smith" in log.html_body
         # same day: nothing; three days on: a reminder; four in all, then exhausted

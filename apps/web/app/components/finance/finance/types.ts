@@ -1,5 +1,5 @@
 /**
- * Norm Finance — the shapes `/api/finance/*` returns (F6's `finance-api.md`)
+ * The Budget app — the shapes `/api/finance/*` returns (F6's `finance-api.md`)
  * and the Weekly Summary figures F2's `get_weekly_financials` produces.
  * Money is integer cents wherever the name says `_cents`; the summary's
  * figures are dollars (Loaded's own numbers, passed through).

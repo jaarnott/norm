@@ -307,7 +307,7 @@ def set_leave_style(
 def annotate_leave_rows(
     db: Session, ctx: FinanceCtx, venue, rows: list[dict], *, config_db=None
 ) -> str | None:
-    """Put each Payrun leave row's Ace style (and where it came from, and
+    """Put each Leave tab row's Ace style (and where it came from, and
     whether Loaded marks the type unpaid) on the row. Returns the error when
     Loaded's leave types can't be read — the rows then say nothing."""
     if not rows:
@@ -601,7 +601,7 @@ def build(
         shares = gratuities_svc.payable_by(db, ctx, venue.id, week.week_start)
         if shares and not entity.ace_gratuity_allowance_code:
             refusals.append(
-                "No gratuity allowance code for this entity — set it on the Payroll settings page."
+                "No gratuity allowance code for this entity — set it in Payroll settings (the gear on the Payroll page)."
             )
         lines, totals, missing = gratuity_lines(entity, shares)
         if missing:

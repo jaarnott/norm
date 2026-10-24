@@ -1,4 +1,4 @@
-"""The Loaded Payroll App's entertainer tools — built-ins over
+"""The Entertainers App's tools — built-ins over
 ``app/services/entertainers`` (plan §12; DESIGN-CONTRACT §4, F5).
 
 Two tools, both on venue access (no ``requires`` — D15): the person in the
@@ -170,7 +170,7 @@ def _performer(db: Session, ctx: FinanceCtx, value):
     if len(partial) == 1:
         return partial[0]
     if not partial:
-        raise Invalid(f"No active performer called '{text}' on the register.")
+        raise Invalid(f"No active performer called '{text}' on the Performers list.")
     raise Invalid(
         f"'{text}' matches {len(partial)} performers: "
         + ", ".join(sorted(r.name for r in partial)[:8])
@@ -217,7 +217,7 @@ def _performance_row(p: dict) -> dict:
         "mismatch": p["mismatch"],
         "closing_manager": (p["closing_manager"] or {}).get("name"),
         "paid": p["payment_status"] == "paid",
-        "link": f"/?page=ent-roster&performance={p['id']}",
+        "link": f"/app?page=entertainers&tab=roster&performance={p['id']}",
     }
 
 
@@ -228,7 +228,7 @@ def _performance_row(p: dict) -> dict:
 
 @_tool("get_entertainers")
 def get_entertainers(params: dict, db: Session, ctx: FinanceCtx) -> dict:
-    """The roster, the onboarding register or the sent emails — at the
+    """The roster, the performers (onboarding) or the sent emails — at the
     person's venues."""
     view = str(params.get("view") or "performances").strip().lower()
     limit = max(1, min(int(params.get("limit") or DEFAULT_ROWS), 200))
@@ -522,7 +522,7 @@ TOOL_ROWS: list[dict] = [
         "description": (
             "Entertainers at the person's venues: view=performances (the roster — "
             "bookings, approvals, confirmations, what's ready to pay; filters venue, "
-            "from, to, status, performer), view=onboarding (the register — who has "
+            "from, to, status, performer), view=onboarding (the Performers tab — who has "
             "filled in the setup form, who is accepted, who needs review; filter q), "
             "view=emails (what Norm sent a performer; filters performer, kind, since). "
             "Never bank, IRD or date-of-birth details."
@@ -564,7 +564,10 @@ TOOL_ROWS: list[dict] = [
                 "description": "Keep one derived status: scheduled, awaiting_approvals, awaiting_manager, awaiting_performer, mismatch, ready_for_payment, did_not_perform, paid.",
             },
             "performer": {"type": "string", "description": "Performer name or id."},
-            "q": {"type": "string", "description": "Search the register (onboarding)."},
+            "q": {
+                "type": "string",
+                "description": "Search the performers (onboarding).",
+            },
             "kind": {
                 "type": "string",
                 "description": "An email kind, e.g. ent_invite, ent_confirm_request (emails).",

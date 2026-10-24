@@ -1,30 +1,43 @@
 /**
- * The Payrun page's pure logic: the tab a deep link opens, the "worked at
- * this venue" view (the old Timeclock screen), the people filters, and the
- * totals rows. Nothing here computes what the server computes — a totals
+ * The pay run's pure logic (the Payroll page's Hours, Leave, Gratuities,
+ * Entertainers and Ace files tabs): the tab an old Payrun link opens, the
+ * "worked at this venue" view (the old Timeclock screen), the people
+ * filters, and the totals rows. Nothing here computes what the server computes — a totals
  * row adds the rows it is given, for the foot of the table only.
  */
 import type { Fact, StaffRow } from '../types';
 
-export type PayrunTab = 'staff' | 'leave' | 'gratuities' | 'entertainers' | 'hygiene' | 'exports';
+/** A Payroll page tab an old Payrun `?view=` lands on. */
+export type LegacyPayrunTab = 'hours' | 'checks' | 'leave' | 'gratuities' | 'entertainers' | 'ace-files';
 
-export const PAYRUN_TABS: { id: PayrunTab; label: string }[] = [
-  { id: 'staff', label: 'Staff' },
-  { id: 'leave', label: 'Leave' },
-  { id: 'gratuities', label: 'Gratuities' },
-  { id: 'entertainers', label: 'Entertainers' },
-  { id: 'hygiene', label: 'Hygiene' },
-  { id: 'exports', label: 'Exports' },
-];
-
-/** `?view=` → a tab; the Timeclock and Security deep links land on Staff. */
-export function tabFrom(view: string | null | undefined): PayrunTab {
-  if (view === 'timeclock' || view === 'security' || view === 'salaried') return 'staff';
-  return PAYRUN_TABS.some((t) => t.id === view) ? (view as PayrunTab) : 'staff';
+/**
+ * An old Payrun link's `?view=` → the Payroll page's tab, plus the `view`
+ * the Hours tab keeps for its chip or the shifts view (timeclock, security,
+ * salaried). Staff, nothing or anything unknown → Hours; Hygiene → Checks;
+ * Exports → Ace files. Used by the old-link table (pages/pageAliases.ts).
+ */
+export function legacyPayrunView(view: string | null | undefined): { tab: LegacyPayrunTab; view?: string } {
+  switch (view) {
+    case 'timeclock':
+    case 'security':
+    case 'salaried':
+      return { tab: 'hours', view };
+    case 'leave':
+    case 'gratuities':
+    case 'entertainers':
+      return { tab: view };
+    case 'hygiene':
+      return { tab: 'checks' };
+    case 'exports':
+      return { tab: 'ace-files' };
+    default:
+      return { tab: 'hours' };
+  }
 }
 
 export type PeopleChip = 'staff' | 'security' | 'salaried';
 
+/** The Hours tab's `?view=` → its people chip (Security, Salaried, else Staff). */
 export function chipFrom(view: string | null | undefined): PeopleChip {
   if (view === 'security' || view === 'salaried') return view;
   return 'staff';

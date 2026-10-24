@@ -151,7 +151,7 @@ export default function MappingTab({ api, entity, entities, canWrite }: { api: F
             const c = ico.contacts[cp.venue_id] ?? { contact_id: '', name: '' };
             const its = issueFor(`intercompany.contacts.${cp.venue_id}`);
             return (
-              <div key={cp.venue_id} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 1fr) minmax(160px, 2fr) minmax(160px, 2fr) auto', gap: 8, alignItems: 'end' }}>
+              <div key={cp.venue_id} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))', gap: 8, alignItems: 'end' }}>
                 <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 500 }}>{cp.venue_name}</div>
                 <Field id={`cp-id-${cp.venue_id}`} label="Contact id" hint={its.map((i) => i.message).join(' ') || undefined}>
                   <input id={`cp-id-${cp.venue_id}`} className="n-input" value={c.contact_id} onChange={(e) => { setChecked(null); setIco((s) => ({ ...s, contacts: { ...s.contacts, [cp.venue_id]: { ...c, contact_id: e.target.value } } })); }} style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)' }} />

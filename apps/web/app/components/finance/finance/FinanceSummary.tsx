@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Norm Finance — Weekly Summary (`finance_summary`).
+ * The Budget app — Weekly Summary (`finance_summary`, page `finance-summary`).
  *
  * One page in place of Orbit's Financial KPIs, Financial Report and
  * Financial Summary: `GET /api/finance/summary` runs
@@ -136,7 +136,7 @@ export default function FinanceSummary({ props }: DisplayBlockProps) {
     if (!doc) return [];
     const base = { week: doc.week, mtd: doc.mtd, warnings: doc.warnings, notes: doc.notes };
     if (doc.group) {
-      const title = doc.venues.length === 1 ? doc.venues[0].venue : 'Weekly summary';
+      const title = doc.venues.length === 1 ? doc.venues[0].venue : 'Weekly Summary';
       return [{ key: 'all', data: { ...base, venues: doc.venues, group: { ...doc.group, venues: doc.venues.filter((v) => !v.error).length } }, title }];
     }
     return doc.venues.map((v) => ({
@@ -152,14 +152,14 @@ export default function FinanceSummary({ props }: DisplayBlockProps) {
     frameRef.current?.remove();
     const frame = document.createElement('iframe');
     frame.setAttribute('aria-hidden', 'true');
-    frame.title = 'Weekly summary';
+    frame.title = 'Weekly Summary';
     frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
     frame.onload = () => {
       frame.contentWindow?.focus();
       frame.contentWindow?.print();
     };
-    const heading = `<h1 style="font-size:16pt;margin:0 0 4px">Weekly summary</h1><div style="color:var(--text-soft);margin-bottom:12px">${doc?.week?.label || weekEnding}</div>`;
-    frame.srcdoc = printDocument(`${heading}${sheet.innerHTML}`, `Weekly summary — ${doc?.week?.label || weekEnding}`);
+    const heading = `<h1 style="font-size:16pt;margin:0 0 4px">Weekly Summary</h1><div style="color:var(--text-soft);margin-bottom:12px">${doc?.week?.label || weekEnding}</div>`;
+    frame.srcdoc = printDocument(`${heading}${sheet.innerHTML}`, `Weekly Summary — ${doc?.week?.label || weekEnding}`);
     document.body.appendChild(frame);
     frameRef.current = frame;
   };
@@ -169,7 +169,7 @@ export default function FinanceSummary({ props }: DisplayBlockProps) {
     downloadText(csvFilename(`weekly summary ${weekEnding}`), summaryCsv(doc.venues, doc.group, weekLabel, mtdLabel));
   };
 
-  if (!meta) return <NotReady title="Weekly summary" page={page} error={metaError} status={status} reload={reload} />;
+  if (!meta) return <NotReady title="Weekly Summary" page={page} error={metaError} status={status} reload={reload} />;
 
   const toggle = (key: string) => setOpen((o) => ({ ...o, [key]: !(o[key] ?? false) }));
   const venues = venueOptions(meta);
@@ -186,13 +186,13 @@ export default function FinanceSummary({ props }: DisplayBlockProps) {
   );
 
   return (
-    <PageShell isPage={page} title="Weekly summary" meta={doc?.week?.label} status={<ModeBadge mode={meta.finance_mode} />} actions={actions} testId="fin-summary">
+    <PageShell isPage={page} title="Weekly Summary" meta={doc?.week?.label} status={<ModeBadge mode={meta.finance_mode} />} actions={actions} testId="fin-summary">
       <FinanceModeBanner mode={meta.finance_mode} />
       <div ref={sheetRef}>
         {loading && !doc ? (
-          <PageState kind="loading" title="Loading the weekly summary…" />
+          <PageState kind="loading" title="Loading the Weekly Summary…" />
         ) : error ? (
-          <PageState kind="error" title="Could not load the weekly summary." detail={error} action={<Button size="sm" onClick={() => void load(weekEnding, venue)}>Try again</Button>} />
+          <PageState kind="error" title="Could not load the Weekly Summary." detail={error} action={<Button size="sm" onClick={() => void load(weekEnding, venue)}>Try again</Button>} />
         ) : !doc || doc.venues.length === 0 ? (
           <PageState kind="empty" title="No venues to summarise." detail="Ask an owner for access to a venue." />
         ) : (

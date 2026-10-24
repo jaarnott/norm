@@ -4,8 +4,9 @@
 //
 // Every app is named after its job and filed under the AI agent that uses it.
 // Only apps that work in Norm today are listed: an app whose tools aren't
-// built yet (Bidfood ordering, Brevo, Metricool, Payroll) waits until they
-// are. The names here are the marketing names; Norm's own catalog still
+// built yet (Bidfood ordering, Brevo, Metricool) waits until they are; the
+// Finance AI agent's Payroll, Entertainers and Budget apps wait until they are
+// live after the January 2027 cut-over. The names here are the marketing names; Norm's own catalog still
 // groups some of them (Loaded Stock holds Ordering, Invoice Receiving,
 // Stocktakes and Supplier Tenders) — docs/plans/marketplace-and-partner-apps.md.
 

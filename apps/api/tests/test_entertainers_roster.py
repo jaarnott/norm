@@ -729,7 +729,7 @@ def xero(w, monkeypatch):
         access_token="tok",
         config={
             "xero_tenant_id": "tenant-1",
-            # Where the Mapping tab and the importer write it.
+            # Where Payroll settings → Xero mapping and the importer write it.
             "xero_mapping": {"payroll": {"entertainment_expense": "67300"}},
         },
     )

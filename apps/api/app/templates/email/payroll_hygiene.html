@@ -3,7 +3,7 @@
 <h1>Payroll hygiene — {{ venue_name }}, {{ week_label }}</h1>
 <p>Snapshot taken for {{ taken }} of {{ of }} entit{% if of == 1 %}y{% else %}ies{% endif %}{% if failed %}; failed: {% for f in failed %}{{ f.venue_name }} ({{ f.error }}){% if not loop.last %}, {% endif %}{% endfor %}{% endif %}.</p>
 {% if of == 0 %}
-<p><strong>No entity has payroll switched on yet</strong> — nothing is snapshotted or exported until a venue is switched on under Payroll settings → Entities.</p>
+<p><strong>No entity has payroll switched on yet</strong> — nothing is snapshotted or exported until a venue is switched on under Payroll settings → Entities (the gear on the Payroll page).</p>
 {% endif %}
 {% if not live %}
 <p><strong>Loaded could not be read tonight</strong>{% if error %} ({{ error }}){% endif %} — the lists below come from the snapshot and may be stale.</p>
@@ -28,5 +28,5 @@
 <h2 style="font-size:15px;margin:16px 0 4px">Against Loaded's pay summary</h2>
 <p>Rows ${{ "%.2f" | format(parity.rows_wages or 0) }} vs pay summary ${{ "%.2f" | format(parity.pay_summary_total_wages or 0) }} (difference ${{ "%.2f" | format(parity.difference or 0) }}){% if parity.within_tolerance %} — within tolerance{% else %} — <strong>outside tolerance</strong>{% endif %}. Leave ${{ "%.2f" | format(parity.rows_leave or 0) }} vs ${{ "%.2f" | format(parity.pay_summary_leave or 0) }}.</p>
 {% endif %}
-<p>Fix these in Loaded before the close snapshot on Tuesday morning (or press Start close on the Payrun page once they are done). Norm approves no clock-ins.</p>
+<p>Fix these in Loaded before the close snapshot on Tuesday morning (or press Start close at the top of the Payroll page once they are done). Norm approves no clock-ins.</p>
 {% endblock %}

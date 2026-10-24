@@ -16,8 +16,11 @@ one, with access to the venue (D15). Reminders three days apart, four at
 most; then the performance joins the venue digest, which also names the
 venues where nobody was found and the managers with no Norm login (so the
 gap shows the next morning — risk 23), and the performer confirmations still
-outstanding. The deep link is ``/?page=ent-roster&performance=<id>``: the
-web app resolves ``?page=`` on load and the Roster opens that performance.
+outstanding. The deep link is
+``/app?page=entertainers&tab=roster&performance=<id>``: the web app resolves
+``?page=`` on load (signed out, ``/app`` shows the login form in place, so the
+query survives sign-in) and the Entertainers page's Roster tab opens that
+performance. Not ``/``: that is the marketing site.
 """
 
 from __future__ import annotations
@@ -60,12 +63,13 @@ MANAGER_KINDS = ("ent_manager_approval",)
 
 def deep_link(performance_id: str) -> str:
     return (
-        f"{settings.app_url.rstrip('/')}/?page=ent-roster&performance={performance_id}"
+        f"{settings.app_url.rstrip('/')}/app?page=entertainers&tab=roster"
+        f"&performance={performance_id}"
     )
 
 
 def roster_link() -> str:
-    return f"{settings.app_url.rstrip('/')}/?page=ent-roster"
+    return f"{settings.app_url.rstrip('/')}/app?page=entertainers&tab=roster"
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +408,7 @@ def send_approval_requests(
 def send_approval_request(
     db: Session, ctx: FinanceCtx, performance_id: str, *, resend: bool = False
 ) -> dict:
-    """Staff resend the closing manager's request from the Emails page."""
+    """Staff resend the closing manager's request from the Emails tab."""
     require_any_venue(ctx)
     perf = load_performance(db, ctx, performance_id)
     if perf.performance_status != "scheduled":

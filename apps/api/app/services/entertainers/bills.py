@@ -130,7 +130,8 @@ def _contact(
 
 def entertainment_account(db: Session, venue_id: str) -> str | None:
     """The venue's entertainment expense account code, from the payroll Xero
-    mapping (the Mapping tab and the importer both write it there)."""
+    mapping (Payroll settings → Xero mapping and the importer both write it
+    there)."""
     return xero_mapping.payroll_of(db, venue_id).get("entertainment_expense")
 
 

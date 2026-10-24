@@ -62,7 +62,7 @@ export default function AddPerformerDialog({ performerTypes, onCreated, onClose 
             <Notice tone={done.invite.sent ? 'ok' : 'warn'}>
               {done.invite.sent
                 ? `The onboarding link was emailed to ${done.performer.email}.`
-                : 'The link was made but the email didn’t go out (shadow mode sends only to the payroll contact).'}
+                : 'The link was made but the email didn’t go out (during the trial run emails go only to the payroll contact).'}
             </Notice>
             {done.invite.url && (
               <div style={{ marginTop: 12 }}>

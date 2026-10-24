@@ -1,4 +1,4 @@
-"""The Orbit → Norm Finance importer, run against a fake Orbit (no network).
+"""The Orbit → Norm finance importer (Payroll, Entertainers, Budget), run against a fake Orbit (no network).
 
 What these pin down, beyond each transform:
 

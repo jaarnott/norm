@@ -1,10 +1,11 @@
-"""Wages reconciliation and the Xero side of Loaded Payroll —
+"""Wages reconciliation and the Xero side of Payroll —
 ``/api/payroll/reconciliation/...`` and ``/api/payroll/xero/...`` (F4).
 
-What the Reconciliation page and the Bills settings panel's payroll section
-call: the nine-term reconciliation per entity-week and for the group, the
-intercompany picture, the stored journal and intercompany drafts, the push
-ledger, the mapping blocks, and the Xero status refresh.
+What the Payroll page's Reconciliation and Intercompany tabs and Payroll
+settings → Xero mapping call: the nine-term reconciliation per entity-week
+and for the group, the intercompany picture, the stored journal and
+intercompany drafts, the push ledger, the mapping blocks, and the Xero
+status refresh.
 
 Every write that reaches Xero goes through ``page_writes.preview`` /
 ``confirm`` (plan §5.1): the page shows the card the consolidator built from
@@ -56,7 +57,7 @@ def _ctx(db: Session, user: User) -> FinanceCtx:
             404,
             detail={
                 "code": "not_found",
-                "message": "Loaded Payroll is not switched on for your organisation.",
+                "message": "Payroll is not switched on for your organisation.",
             },
         )
     return ctx

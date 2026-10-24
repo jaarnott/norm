@@ -539,7 +539,7 @@ class TestCtx:
         }
         assert ctx.is_live("entertainers") and not ctx.is_live("payroll")
         ctx.require_live("entertainers")
-        with pytest.raises(NotLive, match="shadow"):
+        with pytest.raises(NotLive, match="trial run"):
             ctx.require_live("payroll")
         with pytest.raises(NotLive, match="not switched on"):
             ctx.require_live("finance")
@@ -826,40 +826,90 @@ class TestParity:
 # ===========================================================================
 
 
+REPO = pathlib.Path(__file__).resolve().parents[3]
+
+#: The Finance pages as the contract fixes them (24 Oct 2026): id -> what the
+#: web's pageRegistry entry must say. Entertainers carries no permission
+#: (venue access; its Payments tab is gated inside the page).
+FINANCE_PAGES = {
+    "payroll": {
+        "app": "payroll",
+        "label": "Payroll",
+        "icon": "Banknote",
+        "component": "payroll",
+        "permission": "payroll:read",
+    },
+    "entertainers": {
+        "app": "entertainers",
+        "label": "Entertainers",
+        "icon": "Music",
+        "component": "entertainers",
+        "permission": None,
+    },
+    "finance-summary": {
+        "app": "budget",
+        "label": "Weekly Summary",
+        "icon": "BarChart3",
+        "component": "finance_summary",
+        "permission": "finance:read",
+    },
+    "finance-budgets": {
+        "app": "budget",
+        "label": "Budgets",
+        "icon": "Table",
+        "component": "finance_budgets",
+        "permission": "finance:read",
+    },
+}
+
+
+def _seed_apps() -> dict[str, dict]:
+    spec = importlib.util.spec_from_file_location(
+        "seed", REPO / "apps/api/scripts/sync_marketplace_catalog.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return {a["slug"]: a for a in mod.APPS}
+
+
 class TestCatalog:
     def test_entitled_after_modes_drops_the_right_slugs(self, db_session):
-        both = {"loaded-payroll", "norm-finance", "xero", "finance-agent"}
+        """One mode per App; the two old rows keep their old rule (Loaded
+        Payroll while payroll OR entertainers is on) until they are gone."""
+        ours = {"payroll", "entertainers", "budget", "loaded-payroll", "norm-finance"}
+        everything = ours | {"bills", "finance-agent"}
         w = make_world(db_session, payroll="off", entertainers="off", finance="off")
-        assert catalog.entitled_after_modes(set(both), w.org.id, w.db) == {
-            "xero",
-            "finance-agent",
-        }
+
+        def after():
+            return catalog.entitled_after_modes(set(everything), w.org.id, w.db)
+
+        assert after() == {"bills", "finance-agent"}
         modes.set_mode(w.db, w.org.id, "entertainers", "shadow")
-        assert catalog.entitled_after_modes(set(both), w.org.id, w.db) == {
-            "loaded-payroll",
-            "xero",
-            "finance-agent",
-        }
+        assert after() == {"entertainers", "loaded-payroll", "bills", "finance-agent"}
         modes.set_mode(w.db, w.org.id, "entertainers", "off")
         modes.set_mode(w.db, w.org.id, "payroll", "live")
+        assert after() == {"payroll", "loaded-payroll", "bills", "finance-agent"}
         modes.set_mode(w.db, w.org.id, "finance", "shadow")
-        assert catalog.entitled_after_modes(set(both), w.org.id, w.db) == both
+        assert after() == everything - {"entertainers"}
+        modes.set_mode(w.db, w.org.id, "entertainers", "shadow")
+        assert after() == everything
         # Nothing of ours entitled: the modes are not even read.
-        assert catalog.entitled_after_modes({"xero"}, "no-such-org", w.db) == {"xero"}
+        assert catalog.entitled_after_modes({"bills"}, "no-such-org", w.db) == {"bills"}
+        assert catalog.entitled_after_modes({"budget"}, None, w.db) == set()
         assert catalog.entitled_after_modes({"norm-finance"}, None, w.db) == set()
 
-    def test_stand_in_rows_match_the_declaration(self):
+    def test_stand_ins_are_the_rows_the_seed_writes(self):
+        """No drift between what the fallback shows and what the seed will
+        write — except the price: nothing bills for a row that isn't there."""
+        seeded = _seed_apps()
         rows = {r.slug: r for r in catalog.stand_in_rows(catalog.CATALOG_SLUGS)}
-        assert set(rows) == {"loaded-payroll", "norm-finance"}
+        assert set(rows) == {"payroll", "entertainers", "budget"}
         for slug, row in rows.items():
-            app = catalog.APPS[slug]
-            assert row.bundled is False and row.price_cents == 0 and row.tier == "app"
-            assert row.composition["member"] == "finance"
-            assert row.composition["tools"] == list(app["tools"])
-            assert [c["key"] for c in row.composition["components"]] == [
-                c["key"] for c in app["components"]
-            ]
-        assert catalog.stand_in_rows({"loaded-payroll"})[0].slug == "loaded-payroll"
+            for field in ("name", "description", "icon", "tier", "composition"):
+                assert getattr(row, field) == seeded[slug][field], (slug, field)
+            assert row.bundled is False and seeded[slug]["bundled"] is False
+            assert row.price_cents == 0 and not seeded[slug].get("price_cents")
+        assert catalog.stand_in_rows({"budget"})[0].slug == "budget"
         assert catalog.stand_in_rows(set()) == []
 
     def test_pages_tools_and_permissions_follow_the_contract(self):
@@ -869,52 +919,97 @@ class TestCatalog:
             for c in app["components"]
             if c["page"] is not None
         }
-        assert pages == {
-            "payroll-payrun": "payroll_payrun",
-            "payroll-leave": "payroll_leave",
-            "payroll-intercompany": "payroll_intercompany",
-            "payroll-reconciliation": "payroll_reconciliation",
-            "payroll-settings": "payroll_settings",
-            "payroll-shadow": "payroll_shadow",
-            "ent-register": "entertainers_register",
-            "ent-roster": "entertainers_roster",
-            "ent-payments": "entertainers_payments",
-            "ent-emails": "entertainers_emails",
-            "finance-summary": "finance_summary",
-            "finance-budgets": "finance_budgets",
-            "finance-budget-vs-loaded": "finance_budget_vs_loaded",
-            "finance-forecasting": "finance_forecasting",
+        assert pages == {pid: page["component"] for pid, page in FINANCE_PAGES.items()}
+        assert catalog.PAGE_PERMISSIONS == {
+            pid: page["permission"]
+            for pid, page in FINANCE_PAGES.items()
+            if page["permission"]
         }
-        # Register, Roster and Emails carry no permission: venue access only (D15).
-        assert {"ent-register", "ent-roster", "ent-emails"}.isdisjoint(
-            catalog.PAGE_PERMISSIONS
-        )
-        assert catalog.PAGE_PERMISSIONS["ent-payments"] == "payroll:write"
-        assert set(catalog.PAGE_PERMISSIONS) <= set(pages)
+        # Every screen is for Loaded; each App says what it works with.
+        for app in catalog.APPS.values():
+            assert app["member"] == "finance" and app["bundled"] is False
+            assert "price_cents" not in app and "listing" not in app
+            assert "note" not in app  # the seed's _app() takes no note
+            for c in app["components"]:
+                if c["page"] is not None:
+                    assert c["connection"] == "loaded", c["key"]
+        assert catalog.APPS["payroll"]["works_with"] == ["loaded", "xero"]
+        assert catalog.APPS["entertainers"]["works_with"] == ["loaded", "xero"]
+        assert catalog.APPS["budget"]["works_with"] == ["loaded"]
+        assert catalog.APPS["budget"]["uses_tools"] == ["loadedhub.get_budgets"]
         # A tool belongs to exactly one App, and the engine-only rows to none.
         claimed = [t for app in catalog.APPS.values() for t in app["tools"]]
         assert len(claimed) == len(set(claimed))
         assert set(claimed).isdisjoint(
-            catalog.PAYROLL_ENGINE_ONLY + catalog.FINANCE_ENGINE_ONLY
+            catalog.PAYROLL_ENGINE_ONLY
+            + catalog.ENTERTAINERS_ENGINE_ONLY
+            + catalog.BUDGET_ENGINE_ONLY
         )
-        # No App note: the catalog's note budget (1,500 chars over every App,
-        # config_validator.check_app_notes) is full; the rules live on the
-        # tool descriptions and in the skills. A note, if one returns, is
-        # capped at 300.
-        for app in catalog.APPS.values():
-            assert len(app.get("note") or "") <= 300
+        # The payroll writes to Xero are Payroll's, no longer Bills'.
+        assert set(catalog.PAYROLL_XERO_TOOLS) <= set(catalog.APPS["payroll"]["tools"])
+        bills = _seed_apps()["bills"]["composition"]
+        assert bills["tools"] == [
+            "xero.get_bills",
+            "xero.get_contacts",
+            "xero.create_bill",
+        ]
+        assert bills["uses_tools"] == ["xero.get_accounts"]
         # get_weekly_financials' chat rendering: declared here or the validator
-        # refuses the tool row (F2's build note).
-        keys = [c["key"] for c in catalog.APPS["norm-finance"]["components"]]
+        # refuses the tool row, and the finance-weekly dashboard template breaks.
+        keys = [c["key"] for c in catalog.APPS["budget"]["components"]]
         assert "finance_weekly" in keys
+        # One mode per App, and every App replaces exactly one old one.
+        assert catalog.MODE_OF == {
+            "payroll": "payroll",
+            "entertainers": "entertainers",
+            "budget": "finance",
+        }
+        assert sorted(n for news in catalog.LEGACY_SLUGS.values() for n in news) == (
+            sorted(catalog.CATALOG_SLUGS)
+        )
 
-    # -- before and after the seed ------------------------------------------
+    def test_its_pages_are_the_web_registrys(self):
+        """The web's pageRegistry entries for the four Finance pages say what
+        the catalog says (app, label, icon, agent, component, permission),
+        and no page still names one of the two old Apps."""
+        src = (REPO / "apps/web/app/components/pages/pageRegistry.ts").read_text()
+        web = {}
+        for m in re.finditer(r"\{\s*id: '([a-z-]+)',(.*?)loadAction", src, re.S):
+            if m.group(1) not in FINANCE_PAGES:
+                continue
+            body = m.group(2)
+            perm = re.search(r"permission: '([^']+)'", body)
+            web[m.group(1)] = {
+                "app": re.search(r"app: '([\w-]+)'", body).group(1),
+                "label": re.search(r"label: '([^']+)'", body).group(1),
+                "icon": re.search(r"icon: (\w+)", body).group(1),
+                "agent": re.search(r"agent: '(\w+)'", body).group(1),
+                "component": re.search(r"component: '(\w+)'", body).group(1),
+                "permission": perm.group(1) if perm else None,
+            }
+        declared = {
+            c["page"]["id"]: {
+                "app": slug,
+                "label": c["page"]["label"],
+                "icon": c["page"]["icon"],
+                "agent": catalog.MEMBER,
+                "component": c["key"],
+                "permission": catalog.PAGE_PERMISSIONS.get(c["page"]["id"]),
+            }
+            for slug, app in catalog.APPS.items()
+            for c in app["components"]
+            if c["page"] is not None
+        }
+        assert web == declared
+        assert not re.search(r"app: '(loaded-payroll|norm-finance)'", src)
+
+    # -- before the seed, in the window, and after ----------------------------
 
     @staticmethod
     def _finance_member(db, org, *, hired=True):
-        """The Finance member's catalog row as seeded (bundled=False — hired
+        """The Finance agent's catalog row as seeded (bundled=False — hired
         per organisation) and, when hired, the organisation's entitlement
-        row for it. Any member row arms team gating."""
+        row for it. Any agent row arms team gating."""
         from app.db.config_models import MarketplaceApp
         from app.db.models import OrgAppEntitlement
 
@@ -936,89 +1031,191 @@ class TestCatalog:
             )
         db.flush()
 
-    def test_stand_ins_count_as_on_while_the_rows_are_missing(self, db_session):
-        """No Finance App rows in the catalog yet (local testing, and the
-        hours between the deploy and the catalog seed): an App whose modes
-        are on is stood in and counts as on; one whose modes are off is not
-        listed at all — not "available to switch on"."""
+    @staticmethod
+    def _old_rows(db):
+        """The two old Finance rows as the live catalog holds them until the
+        switch script deletes them (bundled=False, the Finance agent's)."""
+        from app.db.config_models import MarketplaceApp
+
+        for slug, name, tools in (
+            ("loaded-payroll", "Loaded Payroll", ["norm_payroll.get_week"]),
+            ("norm-finance", "Norm Finance", ["norm_finance.get_forecast"]),
+        ):
+            db.add(
+                MarketplaceApp(
+                    slug=slug,
+                    name=name,
+                    description="",
+                    tier="app",
+                    bundled=False,
+                    composition={"member": "finance", "tools": tools},
+                )
+            )
+        db.flush()
+
+    @staticmethod
+    def _switch(db, org, slug, enabled=True):
+        from app.db.models import OrgAppEntitlement
+
+        db.add(
+            OrgAppEntitlement(organization_id=org.id, app_slug=slug, enabled=enabled)
+        )
+        db.flush()
+
+    @staticmethod
+    def _state(db, org):
+        """(apps_on, apps_reachable, the team page's Finance App slugs)."""
         from app.services import agent_catalog
-        from app.services.entitlements import apps_on
+        from app.services.entitlements import apps_on, apps_reachable
+
+        agent_catalog.invalidate_cache()
+        payload = agent_catalog.team_payload(org.id, db, db)
+        listed = {a["slug"] for a in payload["apps"]} & catalog.GOVERNED_SLUGS
+        return apps_on(org.id, db, db), apps_reachable(org.id, db, db), listed
+
+    def test_stand_ins_count_as_on_while_the_rows_are_missing(self, db_session):
+        """No Finance App rows in the catalog at all (local testing): an App
+        whose mode is on is stood in and counts as on; one whose mode is off
+        is not listed at all — not "available to switch on"."""
+        from app.services import agent_catalog
 
         w = make_world(db_session, payroll="shadow", entertainers="off", finance="off")
         self._finance_member(db_session, w.org)
-        agent_catalog.invalidate_cache()
-        on = apps_on(w.org.id, db_session, db_session)
-        assert "loaded-payroll" in on and "norm-finance" not in on
+        on, reachable, listed = self._state(db_session, w.org)
+        assert on & catalog.GOVERNED_SLUGS == {"payroll"}
+        assert reachable & catalog.GOVERNED_SLUGS == {"payroll"}
+        assert listed == {"payroll"}
 
         payload = agent_catalog.team_payload(w.org.id, db_session, db_session)
         apps = {a["slug"]: a for a in payload["apps"]}
-        assert apps["loaded-payroll"]["enabled"] is True
-        assert apps["loaded-payroll"]["switchable"] is False  # nothing to switch yet
-        assert apps["loaded-payroll"]["price_cents"] == 0
-        assert [p["id"] for p in apps["loaded-payroll"]["pages"]] == [
-            c["page"]["id"]
-            for c in catalog.APPS["loaded-payroll"]["components"]
-            if c["page"]
-        ]
-        assert "norm-finance" not in apps
+        assert apps["payroll"]["enabled"] is True
+        assert apps["payroll"]["switchable"] is False  # nothing to switch yet
+        assert apps["payroll"]["price_cents"] == 0
+        assert [p["id"] for p in apps["payroll"]["pages"]] == ["payroll"]
         finance = next(m for m in payload["members"] if m["slug"] == "finance")
-        assert [a["slug"] for a in finance["apps"]] == ["loaded-payroll"]
+        assert [a["slug"] for a in finance["apps"]] == ["payroll"]
 
+        modes.set_mode(db_session, w.org.id, "entertainers", "shadow")
         modes.set_mode(db_session, w.org.id, "finance", "shadow")
-        agent_catalog.invalidate_cache()
-        assert "norm-finance" in apps_on(w.org.id, db_session, db_session)
-        # the other organisation (modes off, Finance not hired) sees neither
-        assert not catalog.CATALOG_SLUGS & apps_on(
-            w.other_org.id, db_session, db_session
-        )
+        on, _, listed = self._state(db_session, w.org)
+        assert on & catalog.GOVERNED_SLUGS == catalog.CATALOG_SLUGS
+        assert listed == catalog.CATALOG_SLUGS
+        # the other organisation (modes off, Finance not hired) sees none
+        other_on, _, other_listed = self._state(db_session, w.other_org)
+        assert not catalog.GOVERNED_SLUGS & other_on and not other_listed
 
     def test_a_stand_in_needs_the_finance_member_hired(self, db_session):
-        from app.services import agent_catalog
-        from app.services.entitlements import apps_on
-
         w = make_world(db_session)  # every mode live
         self._finance_member(db_session, w.org, hired=False)
-        agent_catalog.invalidate_cache()
-        assert not catalog.CATALOG_SLUGS & apps_on(w.org.id, db_session, db_session)
+        on, reachable, _ = self._state(db_session, w.org)
+        assert not catalog.GOVERNED_SLUGS & on
+        assert not catalog.GOVERNED_SLUGS & reachable
+
+    def test_while_the_old_rows_exist_each_new_app_follows_its_old_one(
+        self, db_session
+    ):
+        """The window between the deploy and the catalog step: the shared
+        catalog still has Loaded Payroll and Norm Finance. A new App counts
+        as on exactly when the old App it comes from is switched on — and
+        never while its own mode is off; the team page shows only the new
+        Apps. Deliberately not entitlements.SUCCESSORS, which ignores modes."""
+        w = make_world(
+            db_session, payroll="shadow", entertainers="shadow", finance="shadow"
+        )
+        self._finance_member(db_session, w.org)
+        self._old_rows(db_session)
+        # Nothing switched on yet: the old Apps are opt-in, so nothing shows.
+        on, reachable, listed = self._state(db_session, w.org)
+        assert not catalog.GOVERNED_SLUGS & on and not listed
+
+        self._switch(db_session, w.org, "loaded-payroll")
+        on, reachable, listed = self._state(db_session, w.org)
+        assert on & catalog.GOVERNED_SLUGS == {
+            "loaded-payroll",
+            "payroll",
+            "entertainers",
+        }
+        # the old row is what gives the tools until the new rows exist
+        assert {"loaded-payroll", "payroll", "entertainers"} <= reachable
+        assert "budget" not in reachable
+        assert listed == {"payroll", "entertainers"}  # never the old rows
+
+        # Its own mode off: Entertainers goes, though Loaded Payroll stays on.
+        modes.set_mode(db_session, w.org.id, "entertainers", "off")
+        on, reachable, listed = self._state(db_session, w.org)
+        assert "entertainers" not in on and "entertainers" not in reachable
+        assert {"loaded-payroll", "payroll"} <= on
+        assert listed == {"payroll"}
+
+        self._switch(db_session, w.org, "norm-finance")
+        on, _, listed = self._state(db_session, w.org)
+        assert "budget" in on and listed == {"payroll", "budget"}
+
+        # A copied switch row for a new App changes nothing while the old App
+        # is off and the new App has no row of its own.
+        org2 = make_org(db_session, "Window Two")
+        modes.set_mode(db_session, org2.id, "payroll", "shadow")
+        self._switch(db_session, org2, "finance-agent")
+        self._switch(db_session, org2, "loaded-payroll", enabled=False)
+        self._switch(db_session, org2, "payroll")
+        on, _, listed = self._state(db_session, org2)
+        assert not catalog.GOVERNED_SLUGS & on and not listed
 
     def test_seeded_rows_follow_the_entitlement_and_the_mode(self, db_session):
         """Once the seed has written the rows, the stand-in adds nothing:
-        bundled=False means the organisation switches each App on itself,
-        and a module's ``off`` still wins over that switch."""
-        from app.db.models import OrgAppEntitlement
+        bundled=False means the organisation switches each App on itself (the
+        switch script copies the old switches), and each App's own mode still
+        wins over its switch."""
         from app.services import agent_catalog
-        from app.services.entitlements import apps_on
 
         w = make_world(db_session)
         self._finance_member(db_session, w.org)
         for row in catalog.stand_in_rows(catalog.CATALOG_SLUGS):
             db_session.add(row)
         db_session.flush()
-        agent_catalog.invalidate_cache()
-        assert not catalog.CATALOG_SLUGS & apps_on(w.org.id, db_session, db_session)
+        on, _, listed = self._state(db_session, w.org)
+        assert not catalog.GOVERNED_SLUGS & on
+        assert listed == catalog.CATALOG_SLUGS
         payload = agent_catalog.team_payload(w.org.id, db_session, db_session)
         apps = {a["slug"]: a for a in payload["apps"]}
-        assert apps["loaded-payroll"]["enabled"] is False
-        assert apps["loaded-payroll"]["switchable"] is True
-        assert apps["norm-finance"]["enabled"] is False
+        assert apps["payroll"]["enabled"] is False
+        assert apps["payroll"]["switchable"] is True
+        assert apps["budget"]["enabled"] is False
 
-        db_session.add(
-            OrgAppEntitlement(
-                organization_id=w.org.id, app_slug="loaded-payroll", enabled=True
-            )
-        )
-        db_session.flush()
-        agent_catalog.invalidate_cache()
-        on = apps_on(w.org.id, db_session, db_session)
-        assert "loaded-payroll" in on and "norm-finance" not in on
+        self._switch(db_session, w.org, "payroll")
+        self._switch(db_session, w.org, "entertainers")
+        on, reachable, _ = self._state(db_session, w.org)
+        assert on & catalog.GOVERNED_SLUGS == {"payroll", "entertainers"}
+        assert {"payroll", "entertainers"} <= reachable
 
         modes.set_mode(db_session, w.org.id, "payroll", "off")
-        modes.set_mode(db_session, w.org.id, "entertainers", "off")
-        agent_catalog.invalidate_cache()
-        assert "loaded-payroll" not in apps_on(w.org.id, db_session, db_session)
-        payload = agent_catalog.team_payload(w.org.id, db_session, db_session)
-        assert "loaded-payroll" not in {a["slug"] for a in payload["apps"]}
-        assert "norm-finance" in {a["slug"] for a in payload["apps"]}
+        on, reachable, listed = self._state(db_session, w.org)
+        assert on & catalog.GOVERNED_SLUGS == {"entertainers"}
+        assert "payroll" not in reachable
+        assert listed == {"entertainers", "budget"}
+
+    def test_a_copied_switch_counts_once_the_new_row_exists(self, db_session):
+        """The order the switch script relies on: switches copied first
+        (harmless — a slug with no catalog row is ignored), the catalog step
+        after, and the organisation keeps the App throughout."""
+        from app.db.config_models import MarketplaceApp
+
+        w = make_world(db_session, payroll="shadow", entertainers="off", finance="off")
+        self._finance_member(db_session, w.org)
+        self._old_rows(db_session)
+        self._switch(db_session, w.org, "loaded-payroll")
+        self._switch(db_session, w.org, "payroll")  # the copy
+        on, _, _ = self._state(db_session, w.org)
+        assert "payroll" in on  # stood in, following loaded-payroll
+        # the catalog step: the new row, then the old rows deleted
+        db_session.add(catalog.stand_in_rows({"payroll"})[0])
+        db_session.query(MarketplaceApp).filter(
+            MarketplaceApp.slug.in_(list(catalog.LEGACY_SLUGS))
+        ).delete(synchronize_session=False)
+        db_session.flush()
+        on, reachable, listed = self._state(db_session, w.org)
+        assert on & catalog.GOVERNED_SLUGS == {"payroll"}
+        assert "payroll" in reachable and listed == {"payroll"}
 
 
 class TestSyncScript:
@@ -1034,12 +1231,15 @@ class TestSyncScript:
         expected = {
             "norm_payroll": {
                 n
-                for n in catalog.PAYROLL_TOOLS + catalog.PAYROLL_ENGINE_ONLY
+                for n in catalog.PAYROLL_TOOLS
+                + catalog.ENTERTAINERS_TOOLS
+                + catalog.PAYROLL_ENGINE_ONLY
+                + catalog.ENTERTAINERS_ENGINE_ONLY
                 if n.startswith("norm_payroll.")
             },
             "norm_finance": {
                 n
-                for n in catalog.FINANCE_TOOLS + catalog.FINANCE_ENGINE_ONLY
+                for n in catalog.BUDGET_TOOLS + catalog.BUDGET_ENGINE_ONLY
                 if n.startswith("norm_finance.")
             },
         }
@@ -1121,9 +1321,22 @@ class TestSyncScript:
         from app.services.finance_core import catalog
         from scripts import sync_norm_finance as s
 
-        assert set(s.PLAYBOOKS) == set(catalog.PAYROLL_SKILLS + catalog.FINANCE_SKILLS)
+        assert set(s.PLAYBOOKS) == set(
+            catalog.PAYROLL_SKILLS + catalog.ENTERTAINERS_SKILLS + catalog.BUDGET_SKILLS
+        )
         for pb in s.PLAYBOOKS.values():
             assert pb["display_name"] and pb["description"] and pb["instructions"]
+            # the words people and the model read: "trial run", the new Apps
+            # and pages (the mode's code value `shadow` may still be named)
+            text = pb["description"] + pb["instructions"]
+            assert not re.search(r"\bShadow\b|\bin shadow\b", text), text[:80]
+            for old in (
+                "Loaded Payroll",
+                "Norm Finance",
+                "Payrun page",
+                "Forecasting page",
+            ):
+                assert old not in text, old
         named = set(
             re.findall(
                 r"`((?:norm_payroll|norm_finance|loadedhub|xero)\.[a-z_]+)",
@@ -1131,13 +1344,10 @@ class TestSyncScript:
             )
         )
         # every tool a skill names is one the model can reach: claimed by the
-        # two Apps or the Xero App, or a Loaded read every organisation has
-        reachable = set(catalog.PAYROLL_TOOLS + catalog.FINANCE_TOOLS) | {
+        # three Apps (the Xero writes included), or used by Budget
+        reachable = {t for app in catalog.APPS.values() for t in app["tools"]} | {
             "loadedhub.get_budgets",
             "loadedhub.set_budgets_typed",  # named as the page's door, not for use
-            "xero.post_wage_journal",
-            "xero.post_intercompany_documents",
-            "xero.void_payroll_document",
         }
         assert named <= reachable, named - reachable
 
@@ -1166,3 +1376,40 @@ class TestSyncScript:
         assert len(lines) == 4 and all("enabled; on" in line for line in lines)
         assert all(pb.enabled for pb in db_session.query(Playbook).all())
         assert s._skills(db_session, dry_run=True) == []
+
+    def test_a_skill_any_active_app_claims_stays_on(self, db_session):
+        """Claims come from every active catalog row, not two named slugs:
+        before the catalog step the old Loaded Payroll and Norm Finance rows
+        claim the four skills, and a run then must not switch them off (the
+        old code would have, the moment the new slugs were named)."""
+        from app.db.config_models import MarketplaceApp, Playbook
+        from scripts import sync_norm_finance as s
+
+        for slug, skills in (
+            ("loaded-payroll", ["weekly_payroll_close", "leave_payout_rules"]),
+            ("norm-finance", ["budget_review", "forecast_review"]),
+        ):
+            db_session.add(
+                MarketplaceApp(
+                    slug=slug,
+                    name=slug,
+                    description="",
+                    tier="app",
+                    bundled=False,
+                    composition={"member": "finance", "tools": [], "skills": skills},
+                )
+            )
+        db_session.flush()
+        s._skills(db_session, dry_run=False)
+        db_session.flush()
+        assert all(pb.enabled for pb in db_session.query(Playbook).all())
+        # a retired row does not count
+        db_session.query(MarketplaceApp).filter(
+            MarketplaceApp.slug == "norm-finance"
+        ).update({"status": "retired"})
+        db_session.flush()
+        lines = s._skills(db_session, dry_run=True)
+        assert sorted(line.split("'")[1] for line in lines) == [
+            "budget_review",
+            "forecast_review",
+        ]

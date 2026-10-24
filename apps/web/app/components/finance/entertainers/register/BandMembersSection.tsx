@@ -91,7 +91,7 @@ export default function BandMembersSection({ performerId, members, canPay, onCha
     setNote(null);
     try {
       const res = await entSend<{ sent: boolean; url?: string }>('POST', `/performers/${performerId}/members/${member.id}/invite`);
-      setNote(res.sent ? `A new link was emailed to ${member.name}.` : `A new link was made for ${member.name} but the email didn’t go out (shadow mode).`);
+      setNote(res.sent ? `A new link was emailed to ${member.name}.` : `A new link was made for ${member.name} but the email didn’t go out (during the trial run emails go only to the payroll contact).`);
     } catch (e) {
       setNote(errorText(e));
     }

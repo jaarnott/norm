@@ -27,7 +27,7 @@
 #
 # What the card shows (every day: weekday, before, after, GST basis, update
 # vs create) and the guards (a range over 92 days refused; $0 days only with
-# allow_zero, listed; a move over 25% warned; refused unless Norm Finance is
+# allow_zero, listed; a move over 25% warned; refused unless Budget is
 # live; refused unless `venue` is exactly one connected Loaded venue — a
 # venue-less call used to land on the organisation's first login).
 
@@ -268,18 +268,17 @@ def _settle_offsets(create_days, known, call_api, venue_id, budget):
 
 def _push_budgets(params, call_api, log, row):
     """The whole write for one twin; `row` names the tool for the ledger."""
-    # 1. Norm Finance must be live (shadow and off never write Loaded).
+    # 1. Budget must be live (the trial run, shadow, and off never write Loaded).
     mode = call_api("norm_finance", "get_mode", {})
     if not isinstance(mode, dict) or mode.get("error"):
         why = mode.get("error") if isinstance(mode, dict) else str(mode)
-        return {
-            "error": "Norm Finance isn't available for budget pushes (" + str(why) + ")"
-        }
+        return {"error": "Pushing budgets to Loaded isn't available (" + str(why) + ")"}
     if str(mode.get("mode") or "") != "live":
         return {
-            "error": "Norm Finance is "
+            "error": "Budget is "
             + repr(mode.get("mode"))
-            + " for this organisation — budgets are pushed to Loaded only when it is live"
+            + (", the trial run," if mode.get("mode") == "shadow" else "")
+            + " for this organisation — budgets are pushed to Loaded only once it is live"
         }
     calls = 1
 

@@ -116,7 +116,7 @@ def current_snapshot(db: Session, org_id: str, week_id: str) -> PaySnapshot | No
 def close_snapshot(db: Session, org_id: str, week_id: str) -> PaySnapshot | None:
     """The latest CLOSE snapshot — what the reconciliation and the journal
     build from, superseded or not (F3's rule: a later manual retake shows as
-    drift on the Payrun page; it does not move the close)."""
+    drift on the Payroll page; it does not move the close)."""
     return (
         db.query(PaySnapshot)
         .filter(

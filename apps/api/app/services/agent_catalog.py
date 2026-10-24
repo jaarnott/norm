@@ -232,23 +232,14 @@ REGISTERED_COMPONENTS = frozenset(
         "employee_records",
         "sales_analysis",
         "weekly_report",
-        # Norm Finance App: the Weekly Summary block (chat + the Summary page)
+        # Budget App: the Weekly Summary block (chat + the Summary page)
         "finance_weekly",
-        # Finance member pages (Loaded Payroll + Norm Finance Apps)
-        "payroll_payrun",
-        "payroll_leave",
-        "payroll_intercompany",
-        "payroll_reconciliation",
-        "payroll_settings",
-        "payroll_shadow",
-        "entertainers_register",
-        "entertainers_roster",
-        "entertainers_payments",
-        "entertainers_emails",
+        # The Finance agent's pages (Payroll, Entertainers and Budget Apps):
+        # one tabbed page each for Payroll and Entertainers, two for Budget
+        "payroll",
+        "entertainers",
         "finance_summary",
         "finance_budgets",
-        "finance_budget_vs_loaded",
-        "finance_forecasting",
     }
 )
 
@@ -523,9 +514,10 @@ def _native_view(
     rows: list, organization_id: str | None, db: Session
 ) -> tuple[list, set[str]]:
     """The catalog as this organisation sees the native modules in it: Norm
-    Functions (its member and App, by ``functions_mode``) and the two Finance
-    Apps (Loaded Payroll by ``payroll_mode`` / ``entertainers_mode``, Norm
-    Finance by ``finance_mode``).
+    Functions (its member and App, by ``functions_mode``) and the three
+    Finance Apps, one mode each (Payroll by ``payroll_mode``, Entertainers by
+    ``entertainers_mode``, Budget by ``finance_mode``; the two old Finance
+    rows they replaced are never listed).
 
     While a module's switch is off, its rows are not there at all — not
     "available to hire": hiring can't switch them on, the mode does (Settings
@@ -919,9 +911,10 @@ def app_map_payload(
         "hr": 5,
         "marketing": 6,
         "functions": 7,
-        "app_builder": 8,
+        "finance": 8,
+        "app_builder": 9,
     }
-    apps.sort(key=lambda a: (order.get(a["member"] or "", 9), a["name"]))
+    apps.sort(key=lambda a: (order.get(a["member"] or "", 10), a["name"]))
     return {
         "apps": apps,
         "systems": _systems_view(apps, config_db),

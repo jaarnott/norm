@@ -1,4 +1,4 @@
-"""The world the Norm Finance (F6) tests share: one organisation with the
+"""The world the Budget (F6, the old Norm Finance) tests share: one organisation with the
 four system roles, three venues (two trading, one head office), and NON-admin
 people — an owner, a manager with one venue, a team member, a payroll admin.
 A platform admin bypasses every org rule, so none is used here.

@@ -25,7 +25,7 @@ function RehearsalCheck({ value, onChange, shadow }: { value: boolean; onChange:
   return (
     <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)' }}>
       <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />
-      Rehearsal — a practice entry the reconciliation and the journal ignore{shadow ? ' (required while Orbit is the system of record)' : ''}
+      Rehearsal — a practice entry the reconciliation and the journal ignore{shadow ? ' (required during the trial run)' : ''}
     </label>
   );
 }

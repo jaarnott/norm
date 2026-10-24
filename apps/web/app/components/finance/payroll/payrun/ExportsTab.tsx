@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Exports: the four Ace files generated from the close snapshot and kept
+ * The Payroll page's Ace files tab: the four Ace files generated from the close snapshot and kept
  * (every generation, newest first), each downloadable; the diff against
  * the previous generation; and the fallback pack — the four files plus a
  * re-key sheet of everything Norm authored for the week (plan §15).
@@ -86,7 +86,7 @@ export default function ExportsTab({ week, api, canWrite, refresh, onChanged }: 
   return (
     <Stack>
       <Section title="Generate the Ace files" meta={week.close_snapshot ? `from the close snapshot taken ${instantLabel(week.close_snapshot.taken_at, tz)}` : undefined}>
-        {!week.close_snapshot && <Note tone="warn">No close snapshot yet. Start the close on this page first — exports are built from it, never from a live read.</Note>}
+        {!week.close_snapshot && <Note tone="warn">No close snapshot yet. Start the close at the top of the page first — the Ace files are built from it, never from a live read.</Note>}
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', margin: '8px 0' }}>
           {EXPORT_KINDS.map((k) => (
             <label key={k.kind} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-sm)' }}>
@@ -144,7 +144,7 @@ export default function ExportsTab({ week, api, canWrite, refresh, onChanged }: 
         </Button>
       )}>
         <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
-          If a Norm file is wrong on a live week, head office takes this pack and re-keys the week in Orbit (until 3 Feb) or Ace, and voids the Norm draft journal on the Reconciliation page.
+          If a Norm file is wrong on a live week, head office takes this pack and re-keys the week in Orbit (until 3 Feb) or Ace, and voids the Norm draft journal on the Reconciliation tab.
         </div>
         {pack && (
           <>

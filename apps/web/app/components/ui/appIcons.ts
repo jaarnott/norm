@@ -2,9 +2,9 @@ import {
   AppWindow, Award, Banknote, Beer, Bell, Blocks, BookOpen, Boxes, CalendarClock, CalendarDays,
   ChartColumn, ChartColumnBig, ChartLine, ChefHat, ClipboardList, Clock, Coffee, Compass,
   ConciergeBell, Contact, CookingPot, FolderOpen, GraduationCap, HandPlatter, Handshake, Heart,
-  LayoutDashboard, Mail, Martini, Megaphone, Package, Puzzle, Receipt, Salad, Share2, ShieldCheck,
+  LayoutDashboard, Mail, Martini, Megaphone, Music, Package, PiggyBank, Puzzle, Receipt, Salad, Share2, ShieldCheck,
   ShoppingCart, Smartphone, Soup, Sparkles, Star, Store, Target, TrendingUp, Truck, UserRound,
-  UserRoundSearch, Users, Utensils, UtensilsCrossed, Wine,
+  UserRoundSearch, Users, Utensils, UtensilsCrossed, Wallet, Wine,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -57,6 +57,11 @@ const BY_SLUG: Record<string, LucideIcon> = {
   functions: ConciergeBell,
   'sales-analysis': ChartColumn,
   'weekly-report': Mail,
+  // the Finance AI agent's job apps (Oct 2026). Bills has Banknote and
+  // Profit & Loss TrendingUp, so these take their own.
+  payroll: Wallet,
+  entertainers: Music,
+  budget: PiggyBank,
   // the system-named apps they replaced, until the switch has run everywhere
   'loaded-stock': Boxes,
   'loaded-kitchen': BookOpen,
@@ -68,6 +73,8 @@ const BY_SLUG: Record<string, LucideIcon> = {
   'metricool-app': Share2,
   'bidfood-app': Truck,
   'app-builder': Puzzle,
+  'loaded-payroll': Wallet,
+  'norm-finance': PiggyBank,
 };
 
 /** Emoji that older apps were given, mapped to their nearest line icon. */

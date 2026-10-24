@@ -2,7 +2,7 @@
 # namespace by app/connectors/function_executor.py; they are not imports.
 #
 # Canonical function_code for `loadedhub.get_weekly_financials` — the Weekly
-# Summary (Norm Finance; installed by scripts/sync_payroll_config.py; plan
+# Summary (the Budget App; installed by scripts/sync_payroll_config.py; plan
 # docs/plans/finance-migration.md §4, §7). Orbit's Financial Report and
 # Financial KPIs in one read: per venue, the week and the month-to-date the
 # week starts in, each with sales (incl and ex GST), budget, orders,

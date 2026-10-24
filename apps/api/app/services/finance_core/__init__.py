@@ -1,5 +1,5 @@
-"""The core the three Finance modules share — Loaded Payroll (``payroll``),
-Entertainers (``entertainers``) and Norm Finance (``finance``).
+"""The core the three Finance modules share — Payroll (``payroll``),
+Entertainers (``entertainers``) and Budget (``finance``), one App each.
 
 What lives here is only what every module needs the same way:
 

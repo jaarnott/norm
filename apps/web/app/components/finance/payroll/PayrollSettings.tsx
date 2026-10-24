@@ -1,41 +1,32 @@
 'use client';
 
 /**
- * Loaded Payroll — Payroll settings. Four sections: the pay entities and
+ * Payroll — the settings view behind the page's gear. Four sections: the pay entities and
  * their Ace codes; the leave types Loaded holds for each entity and the Ace
  * style each goes out as (from Loaded, or set here for a company's own
  * type); the dated
  * statutory rules this module applies (read-only here — a new rule is a
  * dated row the owner's accountant signs off); and the Xero account
- * mapping for the journal and the intercompany documents.
+ * mapping for the journal and the intercompany documents. The section names
+ * stay as they are: server messages point at them ("Payroll settings →
+ * Entities"). The page draws the section tabs, the back link and the entity
+ * picker (Leave types and Xero mapping only) in its header; an in-page
+ * view rather than a dialog, because the shared dialog closes every open
+ * dialog on Escape and these sections open dialogs of their own.
  *
- * Deep links: `?page=payroll-settings&view=entities|leave|rules|xero&venue=<id>`.
+ * Link: `?page=payroll&tab=settings&view=entities|leave|rules|xero&venue=<id>`.
  */
-import { useState } from 'react';
-import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
 import Badge from '../../ui/Badge';
 import PageState from '../../ui/PageState';
-import Tabs from '../../ui/Tabs';
-import { readPageParam } from '../../functions/shared/meta';
 import DataTable, { type Column } from '../shared/DataTable';
 import PageShell, { Note, Stack } from '../shared/PageShell';
 import { dateLabel } from '../shared/format';
 import { useFinQuery, useFinanceApi } from '../shared/useFinanceApi';
-import { MetaGate } from './PayrollPayrun';
 import EntitiesTab from './settings/EntitiesTab';
 import LeaveTypesTab from './settings/LeaveTypesTab';
 import MappingTab from './settings/MappingTab';
-import type { Rule } from './types';
-import { usePayrollPage } from './usePayrollMeta';
-
-type TabId = 'entities' | 'leave' | 'rules' | 'xero';
-const TABS: { id: TabId; label: string }[] = [
-  { id: 'entities', label: 'Entities' },
-  { id: 'leave', label: 'Leave types' },
-  { id: 'rules', label: 'Rules' },
-  { id: 'xero', label: 'Xero mapping' },
-];
-const VENUE_TABS = new Set<TabId>(['leave', 'xero']);
+import type { Entity, PayrollMeta, Rule } from './types';
+import type { SettingsView } from './workspace';
 
 const RULE_LABELS: Record<string, string> = {
   sick_eligibility: 'Sick leave — who qualifies',
@@ -67,34 +58,24 @@ function RulesTab() {
   );
 }
 
-export default function PayrollSettings({ props }: DisplayBlockProps) {
-  const page = usePayrollPage(props);
+export default function PayrollSettings({ meta, entity, view, onEntitiesChanged }: {
+  meta: PayrollMeta;
+  /** The entity chosen in the page header (Leave types and Xero mapping). */
+  entity: Entity | null;
+  view: SettingsView;
+  /** An entity was edited: reload the page's meta so the header picker sees it. */
+  onEntitiesChanged: () => void;
+}) {
   const api = useFinanceApi();
-  const [tab, setTab] = useState<TabId>(() => { const v = readPageParam('view'); return TABS.some((t) => t.id === v) ? (v as TabId) : 'entities'; });
-  const canWrite = !!page.meta?.can_write;
-  const entities = page.meta?.entities ?? [];
+  const canWrite = !!meta.can_write;
+  const entities = meta.entities ?? [];
 
   let body: React.ReactNode;
-  if (tab === 'entities') body = <EntitiesTab api={api} entities={entities} canWrite={canWrite} onChanged={page.reload} />;
-  else if (tab === 'rules') body = <RulesTab />;
-  else if (!page.entity) body = <PageState kind="empty" title="No entities." />;
-  else if (tab === 'leave') body = <LeaveTypesTab key={page.entity.venue_id} api={api} entity={page.entity} canWrite={canWrite} />;
-  else body = <MappingTab key={page.entity.venue_id} api={api} entity={page.entity} entities={entities} canWrite={canWrite} />;
+  if (view === 'entities') body = <EntitiesTab api={api} entities={entities} canWrite={canWrite} onChanged={onEntitiesChanged} />;
+  else if (view === 'rules') body = <RulesTab />;
+  else if (!entity) body = <PageState kind="empty" title="No entities." />;
+  else if (view === 'leave') body = <LeaveTypesTab key={entity.venue_id} api={api} entity={entity} canWrite={canWrite} />;
+  else body = <MappingTab key={entity.venue_id} api={api} entity={entity} entities={entities} canWrite={canWrite} />;
 
-  return (
-    <PageShell
-      isPage={page.isPage}
-      title="Payroll settings"
-      meta="Entities, Ace codes, leave types, the rules, and the Xero mapping"
-      mode={page.meta?.mode}
-      venues={VENUE_TABS.has(tab) ? page.venues : undefined}
-      venueId={page.venueId}
-      onVenueChange={page.setVenue}
-      venueTestId="payroll-settings-venue"
-      toolbar={<Tabs items={TABS} value={tab} onChange={(id) => setTab(id as TabId)} label="Payroll settings sections" />}
-      testId="payroll-settings"
-    >
-      <MetaGate status={page.status} error={page.error} loading={page.loading}>{body}</MetaGate>
-    </PageShell>
-  );
+  return <PageShell isPage embedded title="Payroll settings" testId="payroll-settings">{body}</PageShell>;
 }

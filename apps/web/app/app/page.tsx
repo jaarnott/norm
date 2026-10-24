@@ -15,6 +15,7 @@ import { SIDE_PANEL_EVENT, type SidePanelRequest } from '../lib/sidePanel';
 import ConnectPrompt from '../components/display/ConnectPrompt';
 import { requestOpenRecipe } from '../components/display/RecipeEditor';
 import { FUNCTIONAL_PAGES, appPageConfig, type FunctionalPageConfig } from '../components/pages/pageRegistry';
+import { aliasOpenPageDetail, aliasPageId, aliasPageInUrl } from '../components/pages/pageAliases';
 import { pageAllowed } from '../components/threads/ThreadList';
 import type { SendOptions } from '../components/chat/AttachmentComposer';
 import { APP_PAGES_CHANGED_EVENT } from '../components/apps/AppsDashboard';
@@ -103,7 +104,7 @@ export default function Home() {
     [sectionApps],
   );
   const findPage = (id: string | null) =>
-    id ? (FUNCTIONAL_PAGES.find(p => p.id === id) ?? appPages.find(p => p.id === id) ?? sectionPages.find(p => p.id === id)) : undefined;
+    id ? (FUNCTIONAL_PAGES.find(p => p.id === aliasPageId(id)) ?? appPages.find(p => p.id === id) ?? sectionPages.find(p => p.id === id)) : undefined;
   // An app page can stop existing under you — archived, unshared, or unpinned
   // in another tab. Both render sites bail with `return null` on a missing
   // config, which paints an empty panel with no way out, so drop back to the
@@ -309,7 +310,7 @@ export default function Home() {
         setSettingsTab('connections');
         setMobileView('settings');
       }
-      const page = params.get('page');
+      const page = aliasPageInUrl(params.get('page'));
       const pageCfg = page && !threadId ? FUNCTIONAL_PAGES.find(p => p.id === page) : undefined;
       if (pageCfg) {
         setActiveAgent(pageCfg.agent);
@@ -343,7 +344,7 @@ export default function Home() {
   // in the address bar, where the page reads them on mount.
   useEffect(() => {
     const onOpenPage = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { page?: string; params?: Record<string, unknown> } | undefined;
+      const detail = aliasOpenPageDetail((e as CustomEvent).detail as { page?: string; params?: Record<string, unknown> } | undefined);
       const cfg = detail?.page ? FUNCTIONAL_PAGES.find(p => p.id === detail.page) : undefined;
       if (!cfg) return;
       e.preventDefault();
@@ -1017,7 +1018,7 @@ export default function Home() {
   const openTodayItem = useCallback((item: TodayItem) => {
     const slug = item.app_slug || null;
     const sectionId = slug ? `app:${slug}` : null;
-    const cfg = item.page_id ? FUNCTIONAL_PAGES.find(p => p.id === item.page_id) : undefined;
+    const cfg = item.page_id ? FUNCTIONAL_PAGES.find(p => p.id === aliasPageId(item.page_id)) : undefined;
     const pinned = sectionId ? effectiveAppPages.find(p => p.id === sectionId) : undefined;
     if (sectionId && sectionPages.some(p => p.id === sectionId)) {
       setActiveAgent('apps');

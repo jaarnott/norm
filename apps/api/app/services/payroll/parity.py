@@ -1,9 +1,9 @@
-"""Parity for the payroll module during the shadow period (plan §14): Norm's
-figures beside Orbit's, every difference named, through
+"""Parity for the payroll module during the trial run (mode shadow; plan
+§14): Norm's figures beside Orbit's, every difference named, through
 ``finance_core.parity.record_run``.
 
 Module ``payroll`` — the exports: each stored Ace file byte-diffed against
-the owner's file for the week (uploaded on the Shadow tab), the close
+the owner's file for the week (uploaded on the Trial run tab), the close
 snapshot's totals against Loaded's own pay summary, and the clock-ins the
 snapshot dropped (Orbit mapped them as $0 rows). Module ``inputs`` — the
 rehearsal weeks: Norm-keyed payouts, gratuity shares, ACE inputs,
@@ -534,7 +534,7 @@ def run_module(
         )
     if module == "inputs":
         return inputs_check(db, ctx, week, trigger=trigger)
-    raise Invalid("The payroll Shadow tab runs the payroll and inputs modules.")
+    raise Invalid("The Trial run tab runs the payroll and inputs checks.")
 
 
 # ================================================================= shadow ==

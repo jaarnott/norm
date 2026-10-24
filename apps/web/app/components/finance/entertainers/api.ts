@@ -22,7 +22,7 @@ export class EntApiError extends Error {
     this.detail = detail;
   }
 
-  /** Shadow mode refused a write that reaches outside Norm (mark paid, a bill). */
+  /** The trial run (mode `shadow`) refused a write that reaches outside Norm (mark paid, a bill). */
   get notLive(): boolean {
     return this.code === 'not_live';
   }
@@ -123,7 +123,7 @@ export async function openEntFile(path: string, filename?: string): Promise<void
 }
 
 /** What to tell a person when a call failed: the API's own sentence (it is
- *  written for people), or the plain reason in shadow mode. */
+ *  written for people), or the plain reason during the trial run. */
 export function errorText(e: unknown): string {
   if (e instanceof EntApiError) {
     if (e.notLive) return e.message || 'Not available until entertainers go live in Norm.';

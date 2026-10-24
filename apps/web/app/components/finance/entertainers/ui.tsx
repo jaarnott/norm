@@ -34,7 +34,7 @@ export function CheckChip({ status }: { status: CheckStatus | null | undefined }
   );
 }
 
-/** delivered green, bounced/failed red — the Emails page and the Register agree. */
+/** delivered green, bounced/failed red — the Emails tab and the Performers tab agree. */
 export function EmailStatusBadge({ status }: { status: EmailStatus | null | undefined }) {
   if (!status) return <Badge tone="neutral">Unknown</Badge>;
   return <Badge tone={EMAIL_STATUS_TONE[status]}>{status.charAt(0).toUpperCase() + status.slice(1)}</Badge>;
@@ -211,6 +211,38 @@ export function KpiTile({ label, value, tone = 'neutral', onClick, active }: {
 
 export function KpiRow({ children }: { children: ReactNode }) {
   return <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>{children}</div>;
+}
+
+/** Two or three joined buttons choosing one view (Payments / Statement) —
+ *  a view switch inside a tab, so not another row of tabs. */
+export function Segmented({ label, value, onChange, options }: {
+  label: string;
+  value: string;
+  onChange: (id: string) => void;
+  options: { id: string; label: ReactNode }[];
+}) {
+  return (
+    <div role="group" aria-label={label} style={{ display: 'inline-flex', flex: '0 0 auto', border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflow: 'hidden', background: 'var(--surface-alt)' }}>
+      {options.map((o, i) => {
+        const on = o.id === value;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onChange(o.id)}
+            style={{
+              padding: '5px 14px', border: 'none', borderLeft: i ? '1px solid var(--line)' : 'none', cursor: 'pointer', whiteSpace: 'nowrap',
+              fontFamily: 'inherit', fontSize: 'var(--fs-sm)', fontWeight: on ? 600 : 500,
+              background: on ? 'var(--accent-soft)' : 'transparent', color: on ? 'var(--accent)' : 'var(--text)',
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 /** A pill filter (status, lane). */

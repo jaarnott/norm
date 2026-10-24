@@ -1637,7 +1637,7 @@ DASHBOARD_TEMPLATES: list[dict] = [
             },
         ],
     },
-    # Weekly summary (Oct 2026, Norm Finance): Orbit's Financial Report and
+    # Weekly summary (Oct 2026, the Budget App): Orbit's Financial Report and
     # Financial KPIs as one read per venue — get_weekly_financials, rendered
     # by the finance_weekly component, with the group's headline tiles on
     # top. The tool takes a week, not a period, so the tiles read the last

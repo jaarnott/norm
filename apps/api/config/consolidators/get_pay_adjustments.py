@@ -2,7 +2,7 @@
 # namespace by app/connectors/function_executor.py; they are not imports.
 #
 # Canonical function_code for `loadedhub.get_pay_adjustments` (installed by
-# scripts/sync_payroll_config.py; claimed by the Loaded Payroll App).
+# scripts/sync_payroll_config.py; claimed by the Payroll App).
 #
 # Loaded's pay adjustments for one venue's company, in Loaded's own words:
 # a pay adjustment PACKAGE (the managed "New Zealand Public Holidays", a

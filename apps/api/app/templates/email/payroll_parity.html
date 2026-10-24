@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Payroll parity — week {{ week_start }} to {{ week_ending }}</h1>
-<p>{{ unexplained }} unexplained difference{% if unexplained != 1 %}s{% endif %} across {{ runs | length }} run{% if runs | length != 1 %}s{% endif %}. Open the Shadow tab to read and sign them off.</p>
+<p>{{ unexplained }} unexplained difference{% if unexplained != 1 %}s{% endif %} across {{ runs | length }} run{% if runs | length != 1 %}s{% endif %}. Open the Trial run tab on the Payroll page to read and sign them off.</p>
 <table style="border-collapse:collapse;margin:4px 0 12px">
   <tr><th align="left" style="padding:4px 12px 4px 0">Entity</th><th align="left" style="padding:4px 12px">Module</th><th align="left" style="padding:4px 12px">Items</th><th align="left" style="padding:4px 0 4px 12px">Unexplained</th></tr>
   {% for r in runs %}

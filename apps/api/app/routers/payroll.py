@@ -1,4 +1,4 @@
-"""Loaded Payroll — the staff API (``/api/payroll/...``), the pages' side of
+"""Payroll — the staff API (``/api/payroll/...``), the Payroll page's side of
 ``app/services/payroll`` (plan §9; the route contract is
 ``payroll-api.md`` in the build folder).
 
@@ -16,7 +16,7 @@ Every endpoint does the same four things, written once:
 4. **One request, one transaction** — writes run in a savepoint and commit
    once; a refused write leaves nothing behind.
 
-Shadow mode: a Norm-side input (payout, gratuity batch, ACE inputs,
+Trial run (mode ``shadow``): a Norm-side input (payout, gratuity batch, ACE inputs,
 adjustment, accrual) is refused with 409 ``not_live`` unless the body says
 ``rehearsal: true`` (the rehearsal weeks). Snapshots, exports, settings,
 leave styles, parity runs and the payroll-contact emails are allowed in
@@ -69,7 +69,7 @@ def _ctx(user: User, db: Session) -> FinanceCtx:
             status_code=404,
             detail={
                 "code": "not_found",
-                "message": "Loaded Payroll is not switched on for your organisation.",
+                "message": "Payroll is not switched on for your organisation.",
             },
         )
     return ctx
@@ -1111,7 +1111,7 @@ def set_accruals(
 
 
 # ===========================================================================
-# Shadow tab, jobs
+# Trial run tab, jobs
 # ===========================================================================
 
 

@@ -148,16 +148,18 @@ class TestToolOwnership:
         the organisation switches the App on (23 Oct 2026)."""
         user, org = _world(db_session)
         _tool_spec(db_session, "pay", ["run_payroll"])
+        # not "payroll": that slug is the real Payroll App, which its
+        # organisation's payroll mode also gates (finance_core/catalog.py)
         _row(
             db_session,
-            "payroll",
+            "pay-runs",
             "app",
             {"member": "procurement", "tools": ["pay.run_payroll"]},
             bundled=False,
         )
         assert "pay.run_payroll" not in _tools(db_session, user)
         db_session.add(
-            OrgAppEntitlement(organization_id=org.id, app_slug="payroll", enabled=True)
+            OrgAppEntitlement(organization_id=org.id, app_slug="pay-runs", enabled=True)
         )
         db_session.flush()
         assert "pay.run_payroll" in _tools(db_session, user)

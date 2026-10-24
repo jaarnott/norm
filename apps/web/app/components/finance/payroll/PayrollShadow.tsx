@@ -1,33 +1,33 @@
 'use client';
 
 /**
- * Loaded Payroll — Shadow. While Orbit is the system of record Norm
- * computes beside it; this page is where the comparison lives (plan §14):
+ * Payroll — the Trial run tab (the code calls the mode `shadow`). While
+ * Orbit is the system of record Norm computes beside it; this tab is where
+ * the comparison lives (plan §14):
  * the parity runs (weekly on Wednesday, or on demand), each run's items
  * with Norm's value beside Orbit's and a class — expected (a named kind of
  * difference) or unexplained — signed off by the payroll person; the
  * week's failed job runs; the importer's last run; "Run parity now"; and
- * the byte-check of Norm's Ace files against the owner's.
+ * the byte-check of Norm's Ace files against the owner's. Shown only while
+ * payroll is in its trial run; the page hides its entity and week pickers
+ * here, and the two dialogs start on the entity and week chosen there.
  *
- * Deep links: `?page=payroll-shadow&run=<id>`.
+ * Link: `?page=payroll&tab=trial-run&run=<id>`.
  */
 import { useState } from 'react';
 import { Play, RefreshCw, Upload } from 'lucide-react';
-import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
 import PageState from '../../ui/PageState';
 import { FormDialog, StatTile, TileRow } from '../../functions/enquiries/bits';
-import { readPageParam } from '../../functions/shared/meta';
 import DataTable, { type Column } from '../shared/DataTable';
 import PageShell, { Field, FormGrid, Note, Section, Stack } from '../shared/PageShell';
 import WeekPicker from '../shared/WeekPicker';
 import { instantLabel, plural } from '../shared/format';
 import { useFinQuery, useFinanceApi } from '../shared/useFinanceApi';
-import { shiftWeek, weLabel } from '../shared/weeks';
-import { MetaGate } from './PayrollPayrun';
+import { weLabel } from '../shared/weeks';
+import type { PayrollTabProps } from './tabProps';
 import type { Entity, JobRun, ParityItem, ParityRun, ShadowDoc, Week } from './types';
-import { usePayrollPage } from './usePayrollMeta';
 
 const MODULE_LABEL: Record<string, string> = { payroll: 'Payroll exports and totals', inputs: 'Keyed inputs', journal: 'Journals and ICO documents', entertainers: 'Entertainers', summary: 'Weekly Summary' };
 const JOB_LABEL: Record<string, string> = {
@@ -47,23 +47,25 @@ function periodLabel(period: string, entities: Entity[]): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(period) ? weLabel(period, true) : period;
 }
 
+/** The start of the day `weeks` weeks ago (UTC). Whole days, so the
+ *  queries' params stay the same between renders instead of refetching. */
 function sinceIso(weeks: number): string {
   const d = new Date();
   d.setDate(d.getDate() - 7 * weeks);
-  return d.toISOString();
+  return `${d.toISOString().slice(0, 10)}T00:00:00Z`;
 }
 
-function RunDialog({ api, entities, defaultWeek, thisWeek, onClose, onDone }: { api: ReturnType<typeof useFinanceApi>; entities: Entity[]; defaultWeek: string; thisWeek: string | null; onClose: () => void; onDone: (run: ParityRun) => void }) {
+function RunDialog({ api, entities, defaultVenue, defaultWeek, thisWeek, onClose, onDone }: { api: ReturnType<typeof useFinanceApi>; entities: Entity[]; defaultVenue: string | null; defaultWeek: string; thisWeek: string | null; onClose: () => void; onDone: (run: ParityRun) => void }) {
   const [module, setModule] = useState<'payroll' | 'inputs'>('payroll');
-  const [venue, setVenue] = useState(entities[0]?.venue_id ?? '');
+  const [venue, setVenue] = useState(defaultVenue ?? entities[0]?.venue_id ?? '');
   const [week, setWeek] = useState(defaultWeek);
   return (
     <FormDialog title="Run parity now" submitLabel="Run" busyLabel="Comparing…" submitDisabled={!venue} onSubmit={async () => { onDone(await api.post<ParityRun>('/shadow/runs', { module, venue_id: venue, week_start: week })); }} onClose={onClose}>
       <FormGrid min={200}>
         <Field id="parity-module" label="What to compare">
           <select id="parity-module" className="n-select" value={module} onChange={(e) => setModule(e.target.value as typeof module)} style={{ width: '100%' }}>
-            <option value="payroll">Payroll — the close snapshot's totals against Loaded's pay summary, and the stored exports</option>
-            <option value="inputs">Keyed inputs — Norm-keyed payouts, gratuities, ACE figures, adjustments and accruals against Orbit's</option>
+            <option value="payroll">Payroll — the close snapshot&rsquo;s totals against Loaded&rsquo;s pay summary, and the stored exports</option>
+            <option value="inputs">Keyed inputs — Norm-keyed payouts, gratuities, ACE figures, adjustments and accruals against Orbit&rsquo;s</option>
           </select>
         </Field>
         <Field id="parity-venue" label="Entity">
@@ -79,8 +81,8 @@ function RunDialog({ api, entities, defaultWeek, thisWeek, onClose, onDone }: { 
   );
 }
 
-function AceFilesDialog({ api, entities, defaultWeek, thisWeek, onClose, onDone }: { api: ReturnType<typeof useFinanceApi>; entities: Entity[]; defaultWeek: string; thisWeek: string | null; onClose: () => void; onDone: (run: ParityRun) => void }) {
-  const [venue, setVenue] = useState(entities[0]?.venue_id ?? '');
+function AceFilesDialog({ api, entities, defaultVenue, defaultWeek, thisWeek, onClose, onDone }: { api: ReturnType<typeof useFinanceApi>; entities: Entity[]; defaultVenue: string | null; defaultWeek: string; thisWeek: string | null; onClose: () => void; onDone: (run: ParityRun) => void }) {
+  const [venue, setVenue] = useState(defaultVenue ?? entities[0]?.venue_id ?? '');
   const [week, setWeek] = useState(defaultWeek);
   const [files, setFiles] = useState<Record<string, File | null>>({ import: null, leave: null, gratuities: null, entertainers: null });
   const any = Object.values(files).some(Boolean);
@@ -149,20 +151,23 @@ function RunDetail({ runId, api, canWrite, refresh, entities, onChanged }: { run
   );
 }
 
-export default function PayrollShadow({ props }: DisplayBlockProps) {
-  const page = usePayrollPage(props);
+export default function PayrollShadow({ meta, entity, weekStart, refresh, onChanged, run, onRun }: PayrollTabProps & {
+  /** The parity run open below the list (`run=` in the address bar). */
+  run: string | null;
+  onRun: (id: string | null) => void;
+}) {
   const api = useFinanceApi();
-  const [refresh, setRefresh] = useState(0);
   const [weeks, setWeeks] = useState(4);
-  const [selected, setSelected] = useState<string | null>(() => readPageParam('run'));
   const [running, setRunning] = useState<'parity' | 'ace' | null>(null);
   const since = sinceIso(weeks);
-  const shadow = useFinQuery<ShadowDoc>(page.meta ? '/api/payroll/shadow' : null, { since }, refresh);
-  const jobs = useFinQuery<{ runs: JobRun[] }>(page.meta ? '/api/payroll/jobs' : null, { since }, refresh);
-  const canWrite = !!page.meta?.can_write;
-  const bump = () => setRefresh((n) => n + 1);
-  const entities = page.meta?.entities ?? [];
-  const defaultWeek = page.meta?.last_week_start ?? shiftWeek(page.weekStart, 0);
+  const shadow = useFinQuery<ShadowDoc>('/api/payroll/shadow', { since }, refresh);
+  const jobs = useFinQuery<{ runs: JobRun[] }>('/api/payroll/jobs', { since }, refresh);
+  const canWrite = !!meta.can_write;
+  const bump = onChanged;
+  const selected = run;
+  const setSelected = onRun;
+  const entities = meta.entities ?? [];
+  const defaultWeek = weekStart;
 
   const runColumns: Column<ParityRun>[] = [
     { key: 'ran_at', label: 'Ran', render: (r) => instantLabel(r.ran_at), nowrap: true },
@@ -191,7 +196,6 @@ export default function PayrollShadow({ props }: DisplayBlockProps) {
     : !shadow.data ? <PageState kind="loading" title="Loading…" />
     : (
       <Stack>
-        {page.meta?.mode === 'live' && <Note tone="ok">Loaded Payroll is live. Parity runs keep comparing with the imported Orbit rows for as long as the importer runs.</Note>}
         <TileRow min={150}>
           <StatTile label="Parity runs" value={String(runs.length)} sub={`last ${weeks} weeks`} />
           <StatTile label="Unexplained differences" value={String(unexplained)} sub={unexplained ? 'need a sign-off or a fix' : 'every difference explained'} />
@@ -234,10 +238,10 @@ export default function PayrollShadow({ props }: DisplayBlockProps) {
     );
 
   return (
-    <PageShell isPage={page.isPage} title="Shadow" meta="Norm beside Orbit — what differs, and why" mode={page.meta?.mode} testId="payroll-shadow">
-      <MetaGate status={page.status} error={page.error} loading={page.loading}>{body}</MetaGate>
-      {running === 'parity' && <RunDialog api={api} entities={entities} defaultWeek={defaultWeek} thisWeek={page.meta?.this_week_start ?? null} onClose={() => setRunning(null)} onDone={(run) => { setRunning(null); setSelected(run.id); bump(); }} />}
-      {running === 'ace' && <AceFilesDialog api={api} entities={entities} defaultWeek={defaultWeek} thisWeek={page.meta?.this_week_start ?? null} onClose={() => setRunning(null)} onDone={(run) => { setRunning(null); setSelected(run.id); bump(); }} />}
+    <PageShell isPage embedded title="Trial run" testId="payroll-trial-run">
+      {body}
+      {running === 'parity' && <RunDialog api={api} entities={entities} defaultVenue={entity?.venue_id ?? null} defaultWeek={defaultWeek} thisWeek={meta.this_week_start ?? null} onClose={() => setRunning(null)} onDone={(run) => { setRunning(null); setSelected(run.id); bump(); }} />}
+      {running === 'ace' && <AceFilesDialog api={api} entities={entities} defaultVenue={entity?.venue_id ?? null} defaultWeek={defaultWeek} thisWeek={meta.this_week_start ?? null} onClose={() => setRunning(null)} onDone={(run) => { setRunning(null); setSelected(run.id); bump(); }} />}
     </PageShell>
   );
 }

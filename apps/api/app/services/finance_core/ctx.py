@@ -49,15 +49,15 @@ FINANCE_SCOPES = frozenset(
 
 _NOT_LIVE = {
     "shadow": (
-        "{label} is in shadow mode for this organisation — Norm computes beside "
+        "{label} is in its trial run for this organisation — Norm computes beside "
         "Orbit but writes nothing until it goes live."
     ),
     "off": "{label} is not switched on for this organisation.",
 }
 _LABELS = {
-    "payroll": "Loaded Payroll",
+    "payroll": "Payroll",
     "entertainers": "Entertainers",
-    "finance": "Norm Finance",
+    "finance": "Budget",
 }
 
 

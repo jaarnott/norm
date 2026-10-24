@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * Budgets → Import: a generic `date, amount[, note]` import (pasted lines
+ * Budgets → Import (an in-page panel over the Daily budget tab, opened from
+ * the header; only for budgets:write): a generic `date, amount[, note]` import (pasted lines
  * or a CSV file) with Orbit's twelve-block spreadsheet tab as an optional
  * parser (04 §12 F). The server parses and previews (`/budgets/import/
  * preview`); the person reads the preview — days, total, months, the
@@ -60,7 +61,7 @@ export default function BudgetImport({ meta, venueId, fy, canWrite, onImported }
     setError(null);
     try {
       await finSend('POST', '/api/finance/budgets/import/apply', { venue_id: venueId, text, layout, fiscal_year: fy, label: label.trim() || null, lock });
-      toast(lock ? 'Imported and locked — this is now the current budget.' : 'Imported as a draft version — lock it on the Versions tab.', 'ok');
+      toast(lock ? 'Imported and locked — this is now the current budget.' : 'Imported as a draft version — lock it under Versions.', 'ok');
       setText('');
       setPreview(null);
       onImported();

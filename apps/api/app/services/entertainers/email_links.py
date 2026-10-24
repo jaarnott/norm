@@ -1,4 +1,4 @@
-"""``ent_email_links`` — the record behind the Emails page (D32).
+"""``ent_email_links`` — the record behind the Emails tab (D32).
 
 One row per email the module sent, pointing at its ``email_logs`` row
 (where the exact HTML, the provider id and the delivery status live), plus
@@ -119,7 +119,7 @@ def last_sent_at(
 
 
 # ---------------------------------------------------------------------------
-# Reading (the Emails page)
+# Reading (the Emails tab)
 # ---------------------------------------------------------------------------
 
 _PURPOSE_FOR_KIND = {

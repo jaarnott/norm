@@ -1,56 +1,90 @@
 'use client';
 
 /**
- * Norm Finance — Budgets (`finance_budgets`).
+ * The Budget app — the Budgets workspace (page `finance-budgets`, component
+ * `finance_budgets`): the locked daily sales budget per venue and fiscal
+ * year (the real asset, 04 §12 A), in four tabs kept in the address bar as
+ * `?page=finance-budgets&tab=…` (useWorkspaceTab):
  *
- * The locked daily sales budget per venue and fiscal year (the real asset,
- * 04 §12 A), in four tabs:
+ *  - **Daily budget** (`daily`, the default) — a summary strip (locked,
+ *    Loaded, actual and the two variances, from the grid's own totals) over
+ *    three views in `show=`:
+ *    - `grid` — Day · Locked budget · Loaded budget · Note for one
+ *      venue-month. The Loaded column is Orbit's Managers Budget habit kept
+ *      (plan §8): type a number, see the card, confirm, and Loaded has it —
+ *      `loadedhub.set_budgets_typed` through the page helper, recorded
+ *      `source=manual`; the card is the per-person always-allow point, so
+ *      the preview may come back already done. "Sync month to Loaded" sends
+ *      the locked month ($0 days only with "allow zero"; days Loaded has no
+ *      budget for are created). The locked column is edited only on an
+ *      unlocked (draft) version.
+ *    - `compare` — the month per day against Loaded, with week subtotals
+ *      and a CSV (what the Budget vs Loaded page showed).
+ *    - `year` — the fiscal year by month; a month opens Compare by day.
+ *  - **Forecast** (`forecast`) — FinanceForecasting.tsx, on its own rolling
+ *    months (so the fiscal-year control hides there).
+ *  - **Monthly lines** (`lines`) — the carried line items (D33).
+ *  - **History** (`history`) — the push ledger and "Restore Loaded budgets".
  *
- *  - **Day grid** — Day · Locked budget · Loaded budget · Note for one
- *    venue-month. The Loaded column is Orbit's Managers Budget habit kept
- *    (plan §8): type a number, see the card, confirm, and Loaded has it —
- *    `loadedhub.set_budgets_typed` through the page helper, recorded
- *    `source=manual`; the card is the per-person always-allow point, so the
- *    preview may come back already done. "Sync month to Loaded" sends the
- *    locked month ($0 days only with "allow zero"; days Loaded has no
- *    budget for are created). The locked column is edited only on an
- *    unlocked (draft) version.
- *  - **Versions** — import / manual / forecast versions, lock and unlock
- *    (`budgets:write`); the current budget is the latest locked one.
- *  - **Monthly lines** — the carried line items (D33), a value or a ratio.
- *  - **Import** — paste or a CSV of `date, amount, note` (Orbit's 12-block
- *    tab as an optional parser) → preview → apply as a new version.
+ * Versions and Import are in-page panels over the Daily budget tab
+ * (`panel=versions|import`, a back link), opened from the header — not
+ * dialogs, because a dialog closes every open dialog on Escape and both
+ * hold dialogs of their own. Import needs budgets:write. Old `?view=` links
+ * (grid, versions, lines, import) are translated on mount: the page id did
+ * not change, so the app shell's alias table never sees them.
  */
-import { useEffect, useMemo, useState } from 'react';
-import { Download, RefreshCw, Send } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Download, Layers, RefreshCw, Send, Upload } from 'lucide-react';
 import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
+import { StatTile, TileRow } from '../../functions/enquiries/bits';
+import { Segmented } from '../../functions/settings/ui';
+import BackLink from '../../ui/BackLink';
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
 import Dialog from '../../ui/Dialog';
 import PageState from '../../ui/PageState';
 import Tabs from '../../ui/Tabs';
 import { useBreakpoint } from '../../../hooks/useBreakpoint';
-import PageShell, { ModeBadge, Note, Section } from '../shared/PageShell';
+import PageShell, { ModeBadge, Note, Section, Stack } from '../shared/PageShell';
 import { csvFilename, downloadText, toCsv } from '../shared/csv';
 import { formatCents } from '../shared/money';
 import { toast } from '../shared/Toasts';
 import { errorText, finGet, finSend, useFinQuery } from '../shared/useFinanceApi';
+import { WorkspaceTabContext, usePublishFinanceTab, useWorkspaceTab, withParams } from '../shared/useWorkspaceTab';
 import BudgetImport from './BudgetImport';
 import BudgetLines from './BudgetLines';
 import BudgetVersions from './BudgetVersions';
+import { BudgetHistory, CompareByDay, YearByMonth } from './FinanceBudgetVsLoaded';
+import ForecastTab from './FinanceForecasting';
 import PushDialog, { type PushRequest } from './PushDialog';
-import { FinanceModeBanner, FiscalYearControl, MonthNav, NotReady, Small, cellInput, readPageParam, totalRow, venueOptions, writePageParam } from './bits';
-import { centsInput, dayCell, defaultMonth, fiscalYearMonths, fiscalYearOf, longDate, monthLabel, parseAmount, sumCents, type YearMonth } from './logic';
+import { FinanceModeBanner, FiscalYearControl, MonthNav, NotReady, Small, Variance, cellInput, totalRow, venueOptions } from './bits';
+import {
+  BUDGETS_PAGE, BUDGETS_TABS, BUDGETS_TAB_LABEL, budgetsPanel, budgetsShow, centsInput, dayCell, defaultMonth, fiscalYearMonths, fiscalYearOf,
+  legacyBudgetsView, longDate, monthLabel, parseAmount, stripTotals, type BudgetsPanel, type BudgetsShow, type BudgetsTab, type YearMonth,
+} from './logic';
 import type { BudgetDay, DaysDoc, FinMeta, SyncMonthDoc, VersionsDoc } from './types';
 import { holds, useFinanceMeta, useFinanceVenue } from './useFinanceMeta';
 
-const TABS = [
-  { id: 'grid', label: 'Day grid' },
-  { id: 'versions', label: 'Versions' },
-  { id: 'lines', label: 'Monthly lines' },
-  { id: 'import', label: 'Import' },
-] as const;
-type TabId = (typeof TABS)[number]['id'];
+const SHOW_ITEMS: { id: BudgetsShow; label: string }[] = [
+  { id: 'grid', label: 'Month grid' },
+  { id: 'compare', label: 'Compare by day' },
+  { id: 'year', label: 'Year' },
+];
+
+const PANEL_LABEL: Record<BudgetsPanel, string> = { versions: 'Versions', import: 'Import' };
+
+/** Rewrite an old `?page=finance-budgets&view=…` link to its tab (and panel)
+ *  before the tab hook reads the address bar. Idempotent. */
+function translateLegacyLink(enabled: boolean): void {
+  if (!enabled || typeof window === 'undefined') return;
+  const update = legacyBudgetsView(window.location.search);
+  if (!update) return;
+  try {
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${withParams(window.location.search, update)}`);
+  } catch {
+    /* an unusual URL — the page opens on its default tab */
+  }
+}
 
 /** One Loaded-budget cell: type, leave the cell (or Enter), and the card opens. */
 function LoadedCell({ day, currency, disabled, title, onCommit }: { day: BudgetDay; currency: string; disabled: boolean; title?: string; onCommit: (cents: number) => void }) {
@@ -111,7 +145,7 @@ function SyncMonthDialog({ meta, venueId, month, onClose, onDone }: { meta: FinM
       ) : !plan ? (
         <PageState kind="loading" title="Reading the locked budget…" />
       ) : days.length === 0 ? (
-        <PageState kind="empty" title="No locked budget for this month." detail="Lock a version on the Versions tab first." />
+        <PageState kind="empty" title="No locked budget for this month." detail="Lock a version first (Versions, at the top of the page)." />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }}>
           <div>
@@ -142,14 +176,26 @@ function SyncMonthDialog({ meta, venueId, month, onClose, onDone }: { meta: FinM
   );
 }
 
-function DayGrid({ meta, venueId, fy, canWrite }: { meta: FinMeta; venueId: string; fy: number; canWrite: boolean }) {
+/** The Daily budget's summary strip, from the grid's own totals. */
+function SummaryStrip({ rows, currency, thisVersion }: { rows: BudgetDay[]; currency: string; thisVersion: boolean }) {
+  const t = stripTotals(rows);
+  return (
+    <div data-testid="fin-budgets-strip">
+      <TileRow min={150}>
+        <StatTile label={thisVersion ? 'Budget, this version' : 'Locked budget'} value={formatCents(t.locked, currency, 0)} />
+        <StatTile label="Loaded budget" value={formatCents(t.loaded, currency, 0)} sub={<>Against {thisVersion ? 'this version' : 'locked'}: <Variance cents={t.loadedVariance} base={t.locked} currency={currency} /></>} />
+        <StatTile label="Actual sales" value={formatCents(t.actual, currency, 0)} sub={<>Against {thisVersion ? 'this version' : 'locked'}: <Variance cents={t.actualVariance} base={t.locked} currency={currency} /></>} />
+      </TileRow>
+    </div>
+  );
+}
+
+function DayGrid({ meta, venueId, fy, month, canWrite, refresh: outerRefresh }: { meta: FinMeta; venueId: string; fy: number; month: YearMonth; canWrite: boolean; /** Bumped by the workspace when a version is locked, unlocked or imported. */ refresh: number }) {
   const { isMobile } = useBreakpoint();
-  const months = useMemo(() => fiscalYearMonths(fy, meta.fiscal_year_start_month), [fy, meta.fiscal_year_start_month]);
-  const [month, setMonth] = useState<YearMonth>(() => defaultMonth(fy, meta.fiscal_year_start_month, meta.today));
-  useEffect(() => { setMonth(defaultMonth(fy, meta.fiscal_year_start_month, meta.today)); }, [fy, meta.fiscal_year_start_month, meta.today]);
   const [versionId, setVersionId] = useState<string>('current');
   useEffect(() => { setVersionId('current'); }, [venueId, fy]);
-  const [refresh, setRefresh] = useState(0);
+  const [ownRefresh, setRefresh] = useState(0);
+  const refresh = ownRefresh + outerRefresh;
   const versions = useFinQuery<VersionsDoc>('/api/finance/budgets/versions', { venue_id: venueId, fiscal_year: fy }, refresh);
   const days = useFinQuery<DaysDoc>('/api/finance/budgets/days', { venue_id: venueId, year: month.year, month: month.month, version_id: versionId === 'current' ? undefined : versionId }, refresh);
   const [edits, setEdits] = useState<Record<string, { amount_cents: number | null; note: string }>>({});
@@ -162,13 +208,11 @@ function DayGrid({ meta, venueId, fy, canWrite }: { meta: FinMeta; venueId: stri
   const live = meta.finance_mode === 'live';
   const editable = !!doc && !doc.locked && !!doc.version_id && canWrite;
   const loadedEditable = canWrite && live;
-  const loadedHint = !canWrite ? 'Editing budgets needs the Budgets permission on your role.' : !live ? 'Loaded is written only once Norm Finance is live.' : undefined;
+  const loadedHint = !canWrite ? 'Editing budgets needs the Budgets permission on your role.' : !live ? 'Loaded is written only once Budget is live.' : undefined;
   const currency = meta.currency;
 
   const rows = useMemo(() => (doc?.days ?? []).map((d) => ({ ...d, ...(edits[d.date] ? { amount_cents: edits[d.date].amount_cents, note: edits[d.date].note } : {}) })), [doc, edits]);
-  const lockedTotal = sumCents(rows, (r) => r.amount_cents);
-  const loadedTotal = sumCents(rows, (r) => r.loaded_cents);
-  const actualTotal = sumCents(rows, (r) => r.actual_cents);
+  const totals = stripTotals(rows);
   const dirty = Object.keys(edits).length > 0;
 
   const saveEdits = async () => {
@@ -200,177 +244,246 @@ function DayGrid({ meta, venueId, fy, canWrite }: { meta: FinMeta; venueId: stri
   };
 
   return (
-    <Section
-      title={monthLabel(month)}
-      meta={doc ? (doc.locked ? `locked budget · ${versionLabel(doc.version_id)}` : doc.version_id ? `draft · ${versionLabel(doc.version_id)}` : 'no locked budget for this year') : undefined}
-      padded={false}
-      actions={
-        <>
-          <MonthNav months={months} value={month} onChange={setMonth} />
-          <select aria-label="Budget version" className="n-select" value={versionId} onChange={(e) => setVersionId(e.target.value)} style={{ maxWidth: '100%' }}>
-            <option value="current">Current locked budget</option>
-            {(versions.data?.versions ?? []).map((v) => (
-              <option key={v.id} value={v.id}>{v.label || v.source} · {v.locked_at ? 'locked' : 'draft'}</option>
-            ))}
-          </select>
-          <Button size="sm" variant="quiet" icon={RefreshCw} aria-label="Refresh" onClick={() => setRefresh((n) => n + 1)} />
-          <Button size="sm" variant="quiet" icon={Download} onClick={csv} disabled={rows.length === 0}>CSV</Button>
-          {canWrite && (
-            <Button size="sm" variant="primary" icon={Send} onClick={() => setSync(true)} disabled={!live || !doc?.locked} title={!live ? loadedHint : !doc?.locked ? 'Lock a version first' : undefined}>
-              Sync month to Loaded
-            </Button>
-          )}
-        </>
-      }
-    >
-      {days.error ? (
-        <div style={{ padding: 12 }}><PageState kind="error" title="Couldn’t load the month." detail={days.error} action={<Button size="sm" onClick={days.retry}>Try again</Button>} /></div>
-      ) : !doc ? (
-        <PageState kind="loading" title="Loading…" />
-      ) : (
-        <>
-          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', opacity: days.loading ? 0.6 : 1 }}>
-            <table className="n-table" style={{ width: '100%' }} aria-label={`Budget grid for ${monthLabel(month)}`}>
-              <thead>
-                <tr>
-                  <th>Day</th>
-                  <th className="num">Locked budget</th>
-                  <th className="num">Loaded budget</th>
-                  {!isMobile && <th className="num">Actual</th>}
-                  <th>Note</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((d) => (
-                  <tr key={d.date} style={d.weekday >= 6 ? { background: 'var(--surface)' } : undefined}>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      {dayCell(d.date, d.weekday)}
-                      {d.holiday && <span className="n-badge" style={{ marginLeft: 6 }} title="Public holiday">{d.holiday}</span>}
-                    </td>
-                    <td className="num">
-                      {editable ? (
-                        <input
-                          className="n-input"
-                          inputMode="decimal"
-                          aria-label={`Locked budget for ${longDate(d.date)}`}
-                          value={edits[d.date] ? centsInput(edits[d.date].amount_cents) : centsInput(d.amount_cents)}
-                          onChange={(e) => setEdits((prev) => ({ ...prev, [d.date]: { amount_cents: parseAmount(e.target.value), note: prev[d.date]?.note ?? d.note ?? '' } }))}
-                          style={cellInput}
-                        />
-                      ) : (
-                        <span style={{ color: d.amount_cents === null ? 'var(--muted)' : undefined }}>{formatCents(d.amount_cents, currency, 0)}</span>
-                      )}
-                    </td>
-                    <td className="num">
-                      <LoadedCell
-                        key={`${d.date}:${d.loaded_cents ?? 'none'}`}
-                        day={d}
-                        currency={currency}
-                        disabled={!loadedEditable}
-                        title={loadedHint}
-                        onCommit={(v) => setPush({ title: `Set Loaded budget — ${longDate(d.date)}`, request: { venue_id: venueId, kind: 'typed', days: [{ date: d.date, amount_cents: v }], allow_zero: v === 0 } })}
-                      />
-                    </td>
-                    {!isMobile && <td className="num" style={{ color: 'var(--text-soft)' }}>{formatCents(d.actual_cents, currency, 0)}</td>}
-                    <td style={{ minWidth: 140 }}>
-                      {editable ? (
-                        <input
-                          className="n-input"
-                          aria-label={`Note for ${longDate(d.date)}`}
-                          value={edits[d.date]?.note ?? d.note ?? ''}
-                          onChange={(e) => setEdits((prev) => ({ ...prev, [d.date]: { amount_cents: prev[d.date]?.amount_cents ?? d.amount_cents, note: e.target.value } }))}
-                          style={{ width: '100%', padding: '4px 8px' }}
-                        />
-                      ) : (
-                        <span style={{ color: 'var(--text-soft)', fontSize: 'var(--fs-sm)' }}>{d.note || ''}</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                <tr style={totalRow}>
-                  <td>Total</td>
-                  <td className="num">{formatCents(lockedTotal, currency, 0)}</td>
-                  <td className="num">{formatCents(loadedTotal, currency, 0)}</td>
-                  {!isMobile && <td className="num">{formatCents(actualTotal, currency, 0)}</td>}
-                  <td />
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div style={{ padding: '8px 12px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            {editable ? (
-              <>
-                <Button size="sm" variant="primary" onClick={() => void saveEdits()} disabled={!dirty || saving}>{saving ? 'Saving…' : `Save changes${dirty ? ` (${Object.keys(edits).length})` : ''}`}</Button>
-                <Button size="sm" variant="quiet" onClick={() => setEdits({})} disabled={!dirty || saving}>Discard</Button>
-                <Small style={{ marginTop: 0 }}>Editing the draft version; lock it on the Versions tab to make it the current budget.</Small>
-              </>
-            ) : (
-              <Small style={{ marginTop: 0 }}>
-                {doc.locked ? 'The locked budget is read-only here — unlock it or create a new version on the Versions tab to change it.' : !doc.version_id ? 'No locked budget for this year yet: import one or create a version.' : 'Editing budgets needs the Budgets permission.'}
-                {loadedHint ? ` ${loadedHint}` : ' Type into the Loaded column to set that day in Loaded.'}
-              </Small>
+    <Stack>
+      {doc && !days.error && <SummaryStrip rows={rows} currency={currency} thisVersion={versionId !== 'current'} />}
+      <Section
+        title={monthLabel(month)}
+        meta={doc ? (doc.locked ? `locked budget · ${versionLabel(doc.version_id)}` : doc.version_id ? `draft · ${versionLabel(doc.version_id)}` : 'no locked budget for this year') : undefined}
+        padded={false}
+        testId="fin-budgets-grid"
+        actions={
+          <>
+            <select aria-label="Budget version" className="n-select" value={versionId} onChange={(e) => setVersionId(e.target.value)} style={{ maxWidth: '100%' }}>
+              <option value="current">Current locked budget</option>
+              {(versions.data?.versions ?? []).map((v) => (
+                <option key={v.id} value={v.id}>{v.label || v.source} · {v.locked_at ? 'locked' : 'draft'}</option>
+              ))}
+            </select>
+            <Button size="sm" variant="quiet" icon={RefreshCw} aria-label="Refresh" onClick={() => setRefresh((n) => n + 1)} />
+            <Button size="sm" variant="quiet" icon={Download} onClick={csv} disabled={rows.length === 0}>CSV</Button>
+            {canWrite && (
+              <Button size="sm" variant="primary" icon={Send} onClick={() => setSync(true)} disabled={!live || !doc?.locked} title={!live ? loadedHint : !doc?.locked ? 'Lock a version first' : undefined}>
+                Sync month to Loaded
+              </Button>
             )}
-            {doc.warnings.map((w) => <Small key={w} tone="warn" style={{ marginTop: 0 }}>{w}</Small>)}
-          </div>
-        </>
+          </>
+        }
+      >
+        {days.error ? (
+          <div style={{ padding: 12 }}><PageState kind="error" title="Couldn’t load the month." detail={days.error} action={<Button size="sm" onClick={days.retry}>Try again</Button>} /></div>
+        ) : !doc ? (
+          <PageState kind="loading" title="Loading…" />
+        ) : (
+          <>
+            <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', opacity: days.loading ? 0.6 : 1 }}>
+              <table className="n-table" style={{ width: '100%' }} aria-label={`Daily budget for ${monthLabel(month)}`}>
+                <thead>
+                  <tr>
+                    <th>Day</th>
+                    <th className="num">Locked budget</th>
+                    <th className="num">Loaded budget</th>
+                    {!isMobile && <th className="num">Actual</th>}
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((d) => (
+                    <tr key={d.date} style={d.weekday >= 6 ? { background: 'var(--surface)' } : undefined}>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {dayCell(d.date, d.weekday)}
+                        {d.holiday && <span className="n-badge" style={{ marginLeft: 6 }} title="Public holiday">{d.holiday}</span>}
+                      </td>
+                      <td className="num">
+                        {editable ? (
+                          <input
+                            className="n-input"
+                            inputMode="decimal"
+                            aria-label={`Locked budget for ${longDate(d.date)}`}
+                            value={edits[d.date] ? centsInput(edits[d.date].amount_cents) : centsInput(d.amount_cents)}
+                            onChange={(e) => setEdits((prev) => ({ ...prev, [d.date]: { amount_cents: parseAmount(e.target.value), note: prev[d.date]?.note ?? d.note ?? '' } }))}
+                            style={cellInput}
+                          />
+                        ) : (
+                          <span style={{ color: d.amount_cents === null ? 'var(--muted)' : undefined }}>{formatCents(d.amount_cents, currency, 0)}</span>
+                        )}
+                      </td>
+                      <td className="num">
+                        <LoadedCell
+                          key={`${d.date}:${d.loaded_cents ?? 'none'}`}
+                          day={d}
+                          currency={currency}
+                          disabled={!loadedEditable}
+                          title={loadedHint}
+                          onCommit={(v) => setPush({ title: `Set Loaded budget — ${longDate(d.date)}`, request: { venue_id: venueId, kind: 'typed', days: [{ date: d.date, amount_cents: v }], allow_zero: v === 0 } })}
+                        />
+                      </td>
+                      {!isMobile && <td className="num" style={{ color: 'var(--text-soft)' }}>{formatCents(d.actual_cents, currency, 0)}</td>}
+                      <td style={{ minWidth: 140 }}>
+                        {editable ? (
+                          <input
+                            className="n-input"
+                            aria-label={`Note for ${longDate(d.date)}`}
+                            value={edits[d.date]?.note ?? d.note ?? ''}
+                            onChange={(e) => setEdits((prev) => ({ ...prev, [d.date]: { amount_cents: prev[d.date]?.amount_cents ?? d.amount_cents, note: e.target.value } }))}
+                            style={{ width: '100%', padding: '4px 8px' }}
+                          />
+                        ) : (
+                          <span style={{ color: 'var(--text-soft)', fontSize: 'var(--fs-sm)' }}>{d.note || ''}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr style={totalRow}>
+                    <td>Total</td>
+                    <td className="num">{formatCents(totals.locked, currency, 0)}</td>
+                    <td className="num">{formatCents(totals.loaded, currency, 0)}</td>
+                    {!isMobile && <td className="num">{formatCents(totals.actual, currency, 0)}</td>}
+                    <td />
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding: '8px 12px 12px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {editable ? (
+                <>
+                  <Button size="sm" variant="primary" onClick={() => void saveEdits()} disabled={!dirty || saving}>{saving ? 'Saving…' : `Save changes${dirty ? ` (${Object.keys(edits).length})` : ''}`}</Button>
+                  <Button size="sm" variant="quiet" onClick={() => setEdits({})} disabled={!dirty || saving}>Discard</Button>
+                  <Small style={{ marginTop: 0 }}>Editing the draft version; lock it under Versions to make it the current budget.</Small>
+                </>
+              ) : (
+                <Small style={{ marginTop: 0 }}>
+                  {doc.locked ? 'The locked budget is read-only here — unlock it or create a new version under Versions to change it.' : !doc.version_id ? 'No locked budget for this year yet: import one or create a version.' : 'Editing budgets needs the Budgets permission.'}
+                  {loadedHint ? ` ${loadedHint}` : ' Type into the Loaded column to set that day in Loaded.'}
+                </Small>
+              )}
+              {doc.warnings.map((w) => <Small key={w} tone="warn" style={{ marginTop: 0 }}>{w}</Small>)}
+            </div>
+          </>
+        )}
+        {push && (
+          <PushDialog title={push.title} intro="Loaded's budget for the day, as you typed it. Amounts include GST." request={push.request} onDone={() => setRefresh((n) => n + 1)} onClose={() => setPush(null)} />
+        )}
+        {sync && <SyncMonthDialog meta={meta} venueId={venueId} month={month} onClose={() => setSync(false)} onDone={() => setRefresh((n) => n + 1)} />}
+      </Section>
+    </Stack>
+  );
+}
+
+/** The Daily budget tab: the view switch and month, then the chosen view. */
+function DailyBudget({ meta, venueId, fy, canWrite, refresh, show, onShow }: { meta: FinMeta; venueId: string; fy: number; canWrite: boolean; refresh: number; show: BudgetsShow; onShow: (s: BudgetsShow) => void }) {
+  const months = useMemo(() => fiscalYearMonths(fy, meta.fiscal_year_start_month), [fy, meta.fiscal_year_start_month]);
+  // Keyed by the fiscal year in the workspace, so a new year starts on its default month.
+  const [month, setMonth] = useState<YearMonth>(() => defaultMonth(fy, meta.fiscal_year_start_month, meta.today));
+  return (
+    <Stack>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'space-between' }}>
+        <Segmented items={SHOW_ITEMS} value={show} onChange={onShow} label="Daily budget view" />
+        {show !== 'year' && <MonthNav months={months} value={month} onChange={setMonth} />}
+      </div>
+      {show === 'grid' ? (
+        <DayGrid meta={meta} venueId={venueId} fy={fy} month={month} canWrite={canWrite} refresh={refresh} />
+      ) : show === 'compare' ? (
+        <CompareByDay meta={meta} venueId={venueId} month={month} refresh={refresh} />
+      ) : (
+        <YearByMonth meta={meta} venueId={venueId} fy={fy} refresh={refresh} onOpenMonth={(m) => { setMonth(m); onShow('compare'); }} />
       )}
-      {push && (
-        <PushDialog title={push.title} intro="Loaded's budget for the day, as you typed it. Amounts include GST." request={push.request} onDone={() => setRefresh((n) => n + 1)} onClose={() => setPush(null)} />
-      )}
-      {sync && <SyncMonthDialog meta={meta} venueId={venueId} month={month} onClose={() => setSync(false)} onDone={() => setRefresh((n) => n + 1)} />}
-    </Section>
+    </Stack>
   );
 }
 
 export default function FinanceBudgets({ props }: DisplayBlockProps) {
-  const page = !!props?.persistVenue;
+  const isPage = !!props?.persistVenue;
+  // Before the tab hook reads the address bar: an old ?view= link.
+  useState(() => translateLegacyLink(isPage));
+  const ws = useWorkspaceTab<BudgetsTab>({ pageId: BUDGETS_PAGE, tabs: BUDGETS_TABS, defaultTab: 'daily', syncUrl: isPage });
   const { meta, error, status, reload } = useFinanceMeta();
   const [venueId, setVenue] = useFinanceVenue(meta);
   const [fy, setFy] = useState<number | null>(null);
-  // The tab rides in the address bar (`?view=`): the app shell remounts a
-  // page when the shared venue changes, and a refresh should land back here.
-  const [tab, setTab] = useState<TabId>(() => {
-    const v = page ? readPageParam('view') : null;
-    return TABS.some((t) => t.id === v) ? (v as TabId) : 'grid';
-  });
-  const choose = (id: string) => {
-    if (!TABS.some((t) => t.id === id)) return;
-    setTab(id as TabId);
-    if (page) writePageParam('view', id === 'grid' ? null : id);
-  };
-  const fiscalYear = fy ?? (meta ? fiscalYearOf(meta.today, meta.fiscal_year_start_month) : 2027);
-
-  if (!meta) return <NotReady title="Budgets" page={page} error={error} status={status} reload={reload} />;
+  const [refresh, setRefresh] = useState(0);
+  const bump = useCallback(() => setRefresh((n) => n + 1), []);
   const canWrite = holds(meta, 'budgets:write');
+  const tab = ws.tab;
+  const panel = tab === 'daily' && meta ? budgetsPanel(ws.param('panel'), canWrite) : null;
+  const show = budgetsShow(ws.param('show'));
+
+  // The venue rides in the address bar too: a link's ?venue= is honoured
+  // once (when the person may see it), then the shown venue is written back.
+  const [linkVenue] = useState(() => (isPage ? ws.param('venue') : null));
+  const linkApplied = useRef(false);
+  const { param, setParams } = ws;
+  useEffect(() => {
+    if (!isPage || !meta || !venueId) return;
+    if (!linkApplied.current) {
+      linkApplied.current = true;
+      if (linkVenue && linkVenue !== venueId && meta.venues.some((v) => v.id === linkVenue)) { setVenue(linkVenue); return; }
+    }
+    if (param('venue') !== venueId) setParams({ venue: venueId });
+  }, [isPage, meta, venueId, linkVenue, setVenue, param, setParams]);
+
+  usePublishFinanceTab({
+    page: BUDGETS_PAGE,
+    tab,
+    label: panel ? `${BUDGETS_TAB_LABEL[tab]} · ${PANEL_LABEL[panel]}` : BUDGETS_TAB_LABEL[tab],
+    venue_id: venueId,
+    enabled: isPage,
+  });
+
+  if (!meta) return <NotReady title="Budgets" page={isPage} error={error} status={status} reload={reload} />;
+  const fiscalYear = fy ?? fiscalYearOf(meta.today, meta.fiscal_year_start_month);
   const venue = meta.venues.find((v) => v.id === venueId);
 
+  const openPanel = (p: BudgetsPanel) => {
+    if (tab === 'daily') ws.setParams({ panel: p }, false);
+    else ws.setTab('daily', { panel: p });
+  };
+  const closePanel = () => ws.setParams({ panel: undefined }, false);
+  const setShow = (s: BudgetsShow) => ws.setParams({ show: s === 'grid' ? undefined : s });
+
+  const actions = (
+    <>
+      {tab !== 'forecast' && <FiscalYearControl meta={meta} value={fiscalYear} onChange={setFy} />}
+      <Button size="sm" icon={Layers} onClick={() => openPanel('versions')} aria-pressed={panel === 'versions'} data-testid="fin-budgets-versions">Versions</Button>
+      {canWrite && <Button size="sm" icon={Upload} onClick={() => openPanel('import')} aria-pressed={panel === 'import'} data-testid="fin-budgets-import">Import</Button>}
+    </>
+  );
+
   return (
-    <PageShell
-      isPage={page}
-      title="Budgets"
-      meta={venue ? `${venue.name} · ${canWrite ? 'you can edit budgets' : 'read-only'}` : undefined}
-      status={<ModeBadge mode={meta.finance_mode} />}
-      venues={venueOptions(meta)}
-      venueId={venueId}
-      onVenueChange={setVenue}
-      venueTestId="fin-budgets-venue"
-      actions={<FiscalYearControl meta={meta} value={fiscalYear} onChange={setFy} />}
-      toolbar={<Tabs items={TABS.map((t) => ({ id: t.id, label: t.label, testId: `fin-budgets-tab-${t.id}` }))} value={tab} onChange={choose} label="Budgets" />}
-      testId="fin-budgets"
-    >
-      <FinanceModeBanner mode={meta.finance_mode} />
-      {!venueId ? (
-        <PageState kind="empty" title="No venues." detail="Ask an owner for access to a venue." />
-      ) : tab === 'grid' ? (
-        <DayGrid meta={meta} venueId={venueId} fy={fiscalYear} canWrite={canWrite} />
-      ) : tab === 'versions' ? (
-        <BudgetVersions meta={meta} venueId={venueId} fy={fiscalYear} canWrite={canWrite} />
-      ) : tab === 'lines' ? (
-        <BudgetLines meta={meta} venueId={venueId} fy={fiscalYear} canWrite={canWrite} />
-      ) : (
-        <BudgetImport meta={meta} venueId={venueId} fy={fiscalYear} canWrite={canWrite} onImported={() => setTab('versions')} />
-      )}
-      {!canWrite && tab !== 'grid' && <div style={{ marginTop: 8 }}><Badge tone="neutral">Read-only</Badge></div>}
-    </PageShell>
+    <WorkspaceTabContext.Provider value={ws.context}>
+      <PageShell
+        isPage={isPage}
+        title="Budgets"
+        meta={venue?.name}
+        status={<><ModeBadge mode={meta.finance_mode} />{!canWrite && <Badge tone="neutral">Read-only</Badge>}</>}
+        venues={venueOptions(meta)}
+        venueId={venueId}
+        onVenueChange={setVenue}
+        venueTestId="fin-budgets-venue"
+        actions={actions}
+        toolbar={<Tabs items={BUDGETS_TABS.map((t) => ({ id: t, label: BUDGETS_TAB_LABEL[t], testId: `fin-budgets-tab-${t}` }))} value={tab} onChange={(id) => ws.setTab(id as BudgetsTab)} label="Budgets" />}
+        testId="fin-budgets"
+      >
+        <FinanceModeBanner mode={meta.finance_mode} />
+        {!venueId ? (
+          <PageState kind="empty" title="No venues." detail="Ask an owner for access to a venue." />
+        ) : panel ? (
+          <Stack gap={8}>
+            <div><BackLink label="Back to the Daily budget" onClick={closePanel} testId="fin-budgets-panel-back" /></div>
+            {panel === 'versions' ? (
+              <BudgetVersions meta={meta} venueId={venueId} fy={fiscalYear} canWrite={canWrite} onChanged={bump} />
+            ) : (
+              <BudgetImport meta={meta} venueId={venueId} fy={fiscalYear} canWrite={canWrite} onImported={() => { bump(); ws.setParams({ panel: 'versions' }); }} />
+            )}
+          </Stack>
+        ) : tab === 'daily' ? (
+          <DailyBudget key={fiscalYear} meta={meta} venueId={venueId} fy={fiscalYear} canWrite={canWrite} refresh={refresh} show={show} onShow={setShow} />
+        ) : tab === 'forecast' ? (
+          <ForecastTab meta={meta} venueId={venueId} canWrite={canWrite} reload={reload} />
+        ) : tab === 'lines' ? (
+          <BudgetLines meta={meta} venueId={venueId} fy={fiscalYear} canWrite={canWrite} />
+        ) : (
+          <BudgetHistory key={fiscalYear} meta={meta} venueId={venueId} fy={fiscalYear} canWrite={canWrite} />
+        )}
+      </PageShell>
+    </WorkspaceTabContext.Provider>
   );
 }

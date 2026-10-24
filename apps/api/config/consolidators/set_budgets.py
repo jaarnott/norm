@@ -6,9 +6,9 @@
 # write a model may call. It asks EVERY time (approval default "ask", no
 # always-allow): a model can fill the numbers from a forecast, and a
 # per-person always-allow would carry them past the card. The page helper
-# runs this same row for the Forecasting grid's "Set Loaded budget". The
-# ledger built-in records the source from the row and the door — chat when
-# a thread is present, forecast when the page helper ran it.
+# runs this same row for "Set Loaded budget" on the Budgets page's Forecast
+# tab. The ledger built-in records the source from the row and the door —
+# chat when a thread is present, forecast when the page helper ran it.
 #
 # Requires consolidator_config: {"max_api_calls": 100,
 #   "allowed_write_actions": ["update_budget_raw", "create_budget_raw",

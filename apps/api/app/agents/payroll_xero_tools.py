@@ -175,7 +175,7 @@ def _get_journal_draft(params: dict, db: Session, thread_id: str | None) -> dict
         if draft is None:
             raise Refused(
                 f"no journal draft for {venue.name} WE {current['week_ending']} — "
-                "build it on the Reconciliation page first"
+                "build it on the Payroll page's Reconciliation tab first"
             )
         wanted = str(params.get("draft_id") or "").strip()
         if wanted and wanted != draft["id"]:

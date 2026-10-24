@@ -7,6 +7,7 @@ import {
   endsOnForCount,
   equalShares,
   groupByDate,
+  headerSummary,
   isoWeekday,
   monthBounds,
   bankAccountProblem,
@@ -25,7 +26,8 @@ import {
   validIrdNumber,
   weekStart,
 } from './logic';
-import type { Performance, Performer } from './types';
+import type { EntMeta, Performance, Performer } from './types';
+import { entTabsAllowed } from './workspace';
 
 function performer(over: Partial<Performer> = {}): Performer {
   return {
@@ -251,5 +253,27 @@ describe('roster grouping', () => {
       ['2026-10-23', ['2']],
       ['2026-10-24', ['3', '1']],
     ]);
+  });
+});
+
+describe('the Entertainers page header and tabs', () => {
+  const zero: EntMeta['counts'] = { awaiting_approvals: 0, awaiting_performer: 0, awaiting_manager: 0, mismatch: 0, ready_for_payment: 0, needs_review: 0, missing_declarations: 0 };
+
+  it('says what is waiting, in plain words', () => {
+    expect(headerSummary(zero, true)).toBe('Nothing waiting');
+    expect(headerSummary({ ...zero, awaiting_approvals: 1 }, false)).toBe('1 performance needs approval');
+    expect(headerSummary({ ...zero, awaiting_approvals: 2, awaiting_manager: 1, mismatch: 1, ready_for_payment: 3, missing_declarations: 1 }, true))
+      .toBe('3 performances need approval · 1 with times that differ · 3 ready to pay · 1 performer missing a declaration');
+  });
+
+  it('keeps payment and review counts from people who cannot pay', () => {
+    expect(headerSummary({ ...zero, ready_for_payment: 4, needs_review: 2 }, false)).toBe('Nothing waiting');
+    expect(headerSummary({ ...zero, needs_review: 2 }, true)).toBe('2 performers to review');
+  });
+
+  it('offers Payments only to someone with the payroll permission', () => {
+    expect(entTabsAllowed({ can_pay: true })).toEqual(['roster', 'performers', 'payments', 'emails']);
+    expect(entTabsAllowed({ can_pay: false })).toEqual(['roster', 'performers', 'emails']);
+    expect(entTabsAllowed(null)).toEqual(['roster', 'performers', 'emails']);
   });
 });

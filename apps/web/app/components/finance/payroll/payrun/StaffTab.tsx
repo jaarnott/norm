@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * The Staff tab: the people this entity pays this week (the Payrun's main
- * table), the Security contractors chip (pay code = the entity's security
+ * The Payroll page's Hours tab: the people this entity pays this week (the
+ * main table), the Security contractors chip (pay code = the entity's security
  * code, excluded from the wages export), the Salaried chip, and the
  * "shifts at this venue" view — the old Timeclock screen — listing every
  * shift worked here with its clock times.
@@ -114,7 +114,7 @@ export default function StaffTab({ doc, timeZone, initialChip = 'staff', initial
           rowTone={(r) => (r.is_approved ? undefined : 'warn')}
         />
         <div style={{ marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>
-          Shifts this entity pays for that happened at another venue are on the Intercompany page; leave is on the Leave tab.
+          Shifts this entity pays for that happened at another venue are on the Intercompany tab; leave is on the Leave tab.
         </div>
       </div>
     );
@@ -132,7 +132,7 @@ export default function StaffTab({ doc, timeZone, initialChip = 'staff', initial
         columns={peopleColumns}
         rows={filtered}
         rowKey={(r) => r.staff_member_id}
-        csvName={`${chip === 'security' ? 'Security' : 'Payrun'} ${doc.entity.venue_name} ${weekLabel}`}
+        csvName={`${chip === 'security' ? 'Security' : 'Hours'} ${doc.entity.venue_name} ${weekLabel}`}
         toolbar={toolbar}
         initialSort={{ key: 'staff_name', dir: 'asc' }}
         emptyTitle={chip === 'security' ? `No one with the pay code ${doc.security.pay_code} this week.` : 'No one to pay in this snapshot.'}

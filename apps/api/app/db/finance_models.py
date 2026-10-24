@@ -1,4 +1,4 @@
-"""Norm Finance — the ``fin_*`` tables (plan: docs/plans/finance-migration.md §6.3),
+"""Budget — the ``fin_*`` tables (plan: docs/plans/finance-migration.md §6.3),
 plus the two things every finance module shares: the job claim table and
 the parity engine's record.
 
@@ -496,7 +496,7 @@ class FinJobRun(NativeRow, Base):
 
 class FinParityRun(NativeRow, Base):
     """One comparison of Norm's figures against Orbit's for a module and a
-    period (plan §14), weekly from the tick or on demand from the Shadow tab."""
+    period (plan §14), weekly from the tick or on demand from the Trial run tab."""
 
     __tablename__ = "fin_parity_runs"
     __table_args__ = _tenancy(

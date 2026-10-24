@@ -174,7 +174,7 @@ app.include_router(staff_auth_router.router)
 app.include_router(staff_router.router)
 app.include_router(tablet_router.router)
 
-# finance: Loaded Payroll + Norm Finance routers (each module agent appends its line)
+# finance: the Payroll, Entertainers and Budget routers (each module appends its line)
 from app.routers import payroll_xero as payroll_xero_router  # noqa: E402
 
 app.include_router(payroll_xero_router.router, prefix="/api")
@@ -200,8 +200,8 @@ def _load_system_secrets() -> None:
         "STRIPE_SECRET_KEY",
         "STRIPE_WEBHOOK_SECRET",
         "RESEND_API_KEY",
-        # Resend's signing secret for its delivery webhook (Loaded Payroll's
-        # Emails page) — kept beside the API key it belongs to.
+        # Resend's signing secret for its delivery webhook (the Entertainers
+        # page's Emails tab) — kept beside the API key it belongs to.
         "RESEND_WEBHOOK_SECRET",
         "GOOGLE_CLIENT_ID",
         "GOOGLE_CLIENT_SECRET",

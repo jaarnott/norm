@@ -7,7 +7,7 @@
  * perform, reset, "use the performer's times" on a mismatch, the closing
  * manager Loaded found, the emails sent about it, "open as performer", and
  * the field-level audit trail. The closing manager's email lands here via
- * `?page=ent-roster&performance=<id>`.
+ * `?page=entertainers&tab=roster&performance=<id>`.
  */
 import { useCallback, useEffect, useId, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -21,7 +21,8 @@ import { entGet, entSend, errorText, isStale } from '../api';
 import { dateLabel, money, timeRangeLabel, when } from '../format';
 import { CLOSING_SOURCE_LABEL, approvalDefaults, emailKindLabel, hoursLabel } from '../logic';
 import { CheckChip, CopyButton, DialogActions, EmailStatusBadge, Fact, FactGrid, Field, FieldGrid, Hint, LaneBadge, Notice, Section, StatusChip, Toggle, WriteError, inputStyle } from '../ui';
-import { invalidateEntMeta, openNormPage } from '../useMeta';
+import { invalidateEntMeta } from '../useMeta';
+import { useOpenTab } from '../../shared/useWorkspaceTab';
 import BookingDialog from './BookingDialog';
 import type { EntMeta, Performance, PerformanceDetail, Performer } from '../types';
 
@@ -65,6 +66,8 @@ export default function PerformanceDialog({ performanceId, meta, performers, onC
   onDeleted?: (id: string) => void;
   onClose: () => void;
 }) {
+  // "Open in Payments": in place on the Entertainers page, else opens it.
+  const openTab = useOpenTab('entertainers');
   const base = useId();
   const id = (k: string) => `${base}-${k}`;
   const [detail, setDetail] = useState<PerformanceDetail | null>(null);
@@ -326,7 +329,7 @@ export default function PerformanceDialog({ performanceId, meta, performers, onC
               </FactGrid>
               {meta.can_pay && (
                 <div style={{ marginTop: 8 }}>
-                  <Button size="sm" onClick={() => openNormPage('ent-payments', { performance: p.id })}>Open in Payments</Button>
+                  <Button size="sm" onClick={() => openTab('payments', { performance: p.id })}>Open in Payments</Button>
                 </div>
               )}
             </Section>

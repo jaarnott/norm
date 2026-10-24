@@ -1,4 +1,4 @@
-"""Loaded Payroll — the ``pay_*`` tables (plan: docs/plans/finance-migration.md §6.1).
+"""Payroll — the ``pay_*`` tables (plan: docs/plans/finance-migration.md §6.1).
 
 What Norm stores for payroll is only what Loaded does not: the per-entity
 settings a client token cannot read, the statutory rules as dated rows, the

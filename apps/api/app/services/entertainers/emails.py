@@ -5,7 +5,7 @@
   ``email_service.send_system_email`` (which writes the ``email_logs`` row:
   recipients, subject, the full HTML as sent, the provider's message id —
   where the delivery webhook later lands ``delivered`` / ``bounced``), and
-  adds the ``ent_email_links`` row the Emails page reads (D32).
+  adds the ``ent_email_links`` row the Emails tab reads (D32).
 * **Idempotent per kind, target and send number.** The n-th send of a kind
   for a performance (or performer, or band member) carries
   ``idempotency_key = ent:<kind>:<target>:<n>`` on its log row; a retried job
@@ -68,7 +68,7 @@ KINDS: dict[str, tuple[str, bool]] = {
     "ent_manager_digest": ("venue_manager", False),
 }
 MONEY_KINDS = frozenset(k for k, (_, money) in KINDS.items() if money)
-#: Kinds the Emails page may resend, and the service that does it.
+#: Kinds the Emails tab may resend, and the service that does it.
 RESENDABLE = frozenset(
     {"ent_invite", "ent_band_invite", "ent_confirm_request", "ent_manager_approval"}
 )
@@ -199,7 +199,7 @@ def deliver(
             address = contact
         else:
             address = None
-            reason = "no payroll contact to redirect to in shadow mode"
+            reason = "no payroll contact to send to during the trial run"
     if not address and reason is None:
         reason = "no recipient address"
     status = "suppressed" if reason else None
@@ -265,7 +265,7 @@ def deliver(
             flush(db)
     if log is not None and kind == "ent_code" and context.get("code"):
         # Nor in the stored subject, whatever a template (a DB-stored one
-        # included) put there: the Emails page shows subjects to anyone
+        # included) put there: the Emails tab shows subjects to anyone
         # with venue access (security review, 20 Oct 2026).
         log.subject = (log.subject or "").replace(str(context["code"]), "••••••")
         flush(db)

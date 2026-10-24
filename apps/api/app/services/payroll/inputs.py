@@ -1,4 +1,4 @@
-"""The Reconciliation page's typed inputs (plan §9 step 7, §10): the Ace pay
+"""The Payroll page's Reconciliation tab's typed inputs (plan §9 step 7, §10): the Ace pay
 run's totals (``pay_ace_inputs``, one per week), the signed manual lines
 (``pay_adjustments``) and the accrual (``pay_accruals``, one per week). F4's
 reconciliation computes from them; this module only keeps them, under the

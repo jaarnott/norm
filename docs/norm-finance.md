@@ -1,18 +1,22 @@
-# Norm Finance — Loaded Payroll and Norm Finance
+# Finance apps — Payroll, Entertainers and Budget
 
-The group's weekly pay run on Loaded's time (payrun and Ace exports, leave payouts,
+The group's weekly pay run on Loaded's time (pay run and Ace exports, leave payouts,
 gratuities, intercompany, the wages reconciliation and Xero journals, the entertainers'
 roster, onboarding, portal and payments) and its finances (the Weekly Summary, the locked
 sales budget, budget against Loaded and actual, a scored daily sales forecast) — rebuilt
-from Orbit's Finance app as **two native Norm modules** (Oct 2026). Design and the owner's
+from Orbit's Finance app as native Norm modules (Oct 2026), first shipped as two Apps (Loaded
+Payroll, Norm Finance, 23 Oct) and split on 24 Oct into **three job apps**. Design and the owner's
 decisions: `docs/plans/finance-migration.md` (v5, 19 Oct 2026) and the seven research reports
 under `docs/plans/finance-migration/`.
 
-To users they are two Apps under the existing **Finance** team member, beside the Xero App:
-catalog Apps `loaded-payroll` ("Loaded Payroll") and `norm-finance` ("Norm Finance"), pages
-gated by `app: 'loaded-payroll' | 'norm-finance'`, tools claimed through the App Map. Both
-ship `bundled=False` — hiring Finance does not switch them on; an organisation switches each
-on from the Team page, and its module modes (below) have the last word. "Native" only means
+To users they are three Apps under the existing **Finance** AI agent, beside Bills and Profit &
+Loss (Xero): catalog Apps `payroll` ("Payroll"), `entertainers` ("Entertainers") and `budget`
+("Budget"), pages gated by `app: 'payroll' | 'entertainers' | 'budget'`, tools claimed through
+the App Map. All three ship `bundled=False`, unpriced and unlisted on the public marketplace
+(until the January cut-over) — hiring Finance does not switch them on; an organisation switches
+each on from the Team page, and its own module mode (below) has the last word. The Finance menu
+reads Dashboard · Weekly Summary · Profit & Loss · Budgets · Bills · Payroll · Entertainers ·
+Tasks. "Native" only means
 the code lives in Norm's main codebase rather than the app-platform sandbox; Loaded and Xero
 are reached only through their connectors (consolidators with preview cards), never directly.
 
@@ -21,30 +25,39 @@ are reached only through their connectors (consolidators with preview cards), ne
 | Layer | Where |
 |---|---|
 | Models | `apps/api/app/db/payroll_models.py` (16 `pay_*`), `entertainers_models.py` (11 `ent_*`), `finance_models.py` (16 `fin_*` incl. `fin_job_runs`, `fin_parity_*`) — 43 tables; shared helpers `app/db/_native_rows.py`; migrations `kb6e8g0i2k4m` (scopes, modes, `venues.is_trading`) → `lc7f9h1j3l5n` → `md8g0i2k4m6o` → `ne9h1j3l5n7p` |
-| Shared core | `app/services/finance_core/` — `errors`, `modes`, `ctx` (`FinanceCtx`), `jobs` (the one claim table), `tick`, `parity`, `catalog` (the two Apps, declared once), `importer`, `importer_jobs` |
+| Shared core | `app/services/finance_core/` — `errors`, `modes`, `ctx` (`FinanceCtx`), `jobs` (the one claim table), `tick`, `parity`, `catalog` (the three Apps, declared once, and `LEGACY_SLUGS` for the switch from the two old ones), `importer`, `importer_jobs` |
 | Payroll | `app/services/payroll/` — `entities`, `weeks`, `snapshot`, `hygiene`, `leave`, `gratuities`, `exports`, `rules`, `inputs`, `parity`, `retention`, `jobs`; wages rec + Xero: `reconciliation`, `intercompany`, `journal`, `xero_mapping`, `xero_pushes`, `xero_status` |
 | Entertainers | `app/services/entertainers/` — `performers`, `onboarding`, `band`, `series`, `performances`, `status`, `portal`, `tokens`, `emails`, `email_links`, `invoice_check`, `invoice_reader`, `closing_manager`, `bills`, `payments`, `jobs` |
-| Finance | `app/services/finance/` — `summary`, `budgets`, `budget_import`, `holidays`, `actuals`, `forecast`, `scoring`, `drivers`, `pushes`, `jobs` |
+| Budget | `app/services/finance/` — `summary`, `budgets`, `budget_import`, `holidays`, `actuals`, `forecast`, `scoring`, `drivers`, `pushes`, `jobs` |
 | Platform pieces | `app/services/page_writes.py` (the page-side approval helper), `public_links.py`, `files/pdf_check.py`, `files/store.py`, `caller_scope.py` (`requires` on tool rows), `app/auth/permissions.py` (the four scopes) |
 | HTTP | `routers/payroll.py` + `payroll_xero.py` (`/api/payroll/*`), `entertainers.py` (`/api/entertainers/*`), `finance.py` (`/api/finance/*`), `entertainers_public.py` (`/api/public/entertainers/{token}/*`, `/api/public/join/{token}/*`, no login), `email_events.py` (`POST /api/public/email-events/resend`), `connectors.py` (`POST /api/connectors/{name}/execute/{action}/preview|confirm`) |
 | Agent | `app/agents/payroll_tools.py`, `payroll_xero_tools.py`, `entertainers_tools.py` (connector `norm_payroll`), `finance_tools.py` (`norm_finance`) — registered from `internal_tools.py`; `norm.caller_holds` |
 | Config layer | `config/consolidators/{get_payrun,get_weekly_financials,get_closing_manager,set_budgets,set_budgets_typed}.py` (+ `set_budgets_common.py`), `post_wage_journal.py`, `post_intercompany_documents.py`, `void_payroll_document.py`, `create_bill.py` (attachment); shapes in `config/consolidators/shapes.json` |
-| Web (staff) | `apps/web/app/components/finance/{payroll,entertainers,finance,shared}/` — one entry file per page (`PayrollPayrun.tsx`, …); `components/display/FinanceWeekly.tsx` (the chat block) |
+| Web (staff) | `apps/web/app/components/finance/{payroll,entertainers,finance,shared}/` — one entry file per page: `payroll/PayrollPage.tsx` (Payroll, its tabs and the settings gear), `entertainers/EntertainersPage.tsx`, `finance/FinanceBudgets.tsx`, `finance/FinanceSummary.tsx`; shared tab state in `shared/useWorkspaceTab.ts`; old page ids (`payroll-leave`, `ent-roster`, `finance-forecasting`, …) are translated by `components/pages/pageAliases.ts`; `components/display/FinanceWeekly.tsx` (the chat block) |
 | Web (performers) | `apps/web/app/p/[token]` (portal), `apps/web/app/join/[token]` (onboarding, band member, declaration) |
-| Config scripts | `scripts/sync_norm_finance.py`, `sync_payroll_config.py`, `sync_xero_connector.py`, `sync_marketplace_catalog.py` (the two App rows + the Xero App's three tools), `sync_approval_labels.py`, `sync_caller_holds_tool.py`, `sync_member_dashboards_config.py` (`finance-weekly`) |
+| Config scripts | `scripts/sync_norm_finance.py`, `sync_payroll_config.py`, `sync_xero_connector.py`, `sync_marketplace_catalog.py` (the three App rows, Bills and the `finance-agent` row), `switch_finance_apps.py` (the 24 Oct switch, below), `sync_approval_labels.py`, `sync_caller_holds_tool.py`, `sync_member_dashboards_config.py` (`finance-weekly`) |
 | Import | `scripts/migrate_orbit_finance.py`, `app/services/finance_core/importer.py` |
 
-## The two Apps
+## The three Apps
 
-| App | Pages (`pageRegistry.ts`, `agent: 'finance'`) | Tools the model sees | Skills |
+Every Finance page names its system (`connection: "loaded"`), so it hides for an organisation
+with no Loaded connection. Works with: Payroll — Loaded and Xero; Entertainers — Loaded and Xero;
+Budget — Loaded.
+
+| App | Pages (`pageRegistry.ts`, `agent: 'finance'`) and their tabs (`tab=` in the address) | Tools the model sees | Skills |
 |---|---|---|---|
-| **Loaded Payroll** `loaded-payroll` | Payrun · Leave · Intercompany · Reconciliation · Payroll settings · Shadow — `permission: payroll:read`; Entertainers (register) · Roster · Emails — **no permission**, venue access decided server-side; Payments — `payroll:write` | `loadedhub.get_payrun` (`requires: payroll:read`), `norm_payroll.get_week` (`payroll:read`), `norm_payroll.record_week` (`payroll:write`, asks), `norm_payroll.get_entertainers` and `norm_payroll.record_performance` (no `requires` — venue access; `op=mark_paid` refuses without `payroll:write` inside) | `weekly_payroll_close`, `leave_payout_rules` |
-| **Norm Finance** `norm-finance` | Weekly Summary · Budgets · Budget vs Loaded · Forecasting — `finance:read` (`budgets:write` to edit); also the page-less display component `finance_weekly` | `loadedhub.get_weekly_financials` (`finance:read`, renders `finance_weekly`), `norm_finance.get_budget_plan`, `norm_finance.get_forecast` (`finance:read`), `norm_finance.record_budget` (`budgets:write`, asks), `loadedhub.set_budgets` (`budgets:write`, asks every time, never always-allow) | `budget_review`, `forecast_review` |
-| **Xero** (exists) | Bills (+ the payroll/intercompany mapping section) | the five existing (now with `requires`: reads `finance:read`, `get_profit_and_loss` `payroll:read`, `create_bill` `orders:write`) + `xero.post_wage_journal`, `xero.post_intercompany_documents` (ask, always-allow permitted), `xero.void_payroll_document` (ask only) — each `requires: payroll:write` | — |
+| **Payroll** `payroll` (follows `payroll_mode`) | **Payroll** (`payroll`, `permission: payroll:read`): Hours · Checks · Leave · Gratuities · Entertainers (the week's entertainer pay lines) · Intercompany · Reconciliation · Ace files · Trial run (only while payroll is in its trial run); **Payroll settings** behind the gear (`tab=settings`, `view=entities\|leave\|rules\|xero`: Entities · Leave types · Rules · Xero mapping). Intercompany and Reconciliation open on "All entities" when no entity is chosen | `loadedhub.get_payrun` (`requires: payroll:read`), `loadedhub.get_pay_adjustments` (none — no dollar rates), `norm_payroll.get_week` (`payroll:read`), `norm_payroll.record_week` (`payroll:write`, asks), `xero.post_wage_journal`, `xero.post_intercompany_documents` (ask, always-allow permitted), `xero.void_payroll_document` (ask only) — the three Xero writes each `requires: payroll:write` (moved from Bills on 24 Oct) | `weekly_payroll_close`, `leave_payout_rules` |
+| **Entertainers** `entertainers` (follows `entertainers_mode`) | **Entertainers** (`entertainers`, **no permission** — venue access decided server-side): Roster (default) · Performers (All / Awaiting acceptance / Missing declaration as filter chips) · Payments (only `payroll:write`) · Emails (follows the shared venue picker); Settings behind the gear for those who may edit settings | `norm_payroll.get_entertainers` and `norm_payroll.record_performance` (no `requires` — venue access; `op=mark_paid` refuses without `payroll:write` inside) | none — the tool descriptions say how booking, approval and paying work |
+| **Budget** `budget` (follows `finance_mode`) | **Weekly Summary** (`finance-summary`, `finance:read`); **Budgets** (`finance-budgets`, `finance:read`, `budgets:write` to edit): Daily budget (default; `show=grid\|compare\|year` — the grid, Compare by day with Loaded's per-day variances, week subtotals and CSV, and the year table) · Forecast · Monthly lines · History, with Versions and Import at the top of the page (`panel=versions\|import`); also the page-less display component `finance_weekly` | `loadedhub.get_weekly_financials` (`finance:read`, renders `finance_weekly`), `norm_finance.get_budget_plan`, `norm_finance.get_forecast` (`finance:read`), `norm_finance.record_budget` (`budgets:write`, asks), `loadedhub.set_budgets` (`budgets:write`, asks every time, never always-allow) | `budget_review`, `forecast_review` |
+| **Bills** and **Profit & Loss** (Xero, existing) | Bills; Profit & Loss (`permission: payroll:read`) | Bills: `xero.get_bills`, `xero.get_contacts`, `xero.create_bill` (uses `get_accounts`); reads `requires: finance:read`, `get_profit_and_loss` `payroll:read`, `create_bill` `orders:write`. The payroll and intercompany account mapping is under Payroll settings → Xero mapping | — |
+
+The connector names stay `norm_payroll` (display name "Norm Payroll") and `norm_finance`
+("Norm Finance"), and the scopes, mode columns and module names (`payroll`, `entertainers`,
+`finance`) are unchanged by the split.
 
 Engine-only rows no App claims and the model never sees: `norm_payroll.get_mode`,
 `get_journal_draft`, `record_push`; `norm_finance.get_mode`, `record_budget_push`;
-`loadedhub.get_closing_manager`, `loadedhub.set_budgets_typed` (the Budgets day grid's
+`loadedhub.get_closing_manager`, `loadedhub.set_budgets_typed` (the Daily budget grid's
 always-allowable typed push); `norm.caller_holds`. MCP exposes three reads only —
 `get_payrun` (`mcp:payroll:read`), `get_weekly_financials` and `get_forecast`
 (`mcp:finance:read`); writes stay behind Norm's cards.
@@ -77,7 +90,7 @@ always-allowable typed push); `norm.caller_holds`. MCP exposes three reads only 
   through `page_writes.preview/confirm` (`POST /api/connectors/{name}/execute/{action}/preview`
   and `/confirm` with a fingerprint); chat goes through the approval card; `source` on a
   budget push is set by the door, never by the model (`set_budgets` chat → `chat`, page
-  forecast → `forecast`, the day grid's `set_budgets_typed` → `manual`).
+  forecast → `forecast`, the Daily budget grid's `set_budgets_typed` → `manual`).
 - **Nothing from an unattended run.** `norm_payroll.get_mode` / `norm_finance.get_mode`
   answer `error: unattended run` for a task-run thread; every write built-in and consolidator
   checks them first.
@@ -103,14 +116,14 @@ always-allowable typed push); `norm.caller_holds`. MCP exposes three reads only 
   Leave types refuses `IMPORT_LEAVE.TXT` by name; **public holidays come from Loaded's pay
   adjustments** (the Public Holiday adjustments in each venue's activated packages — no
   region setting); a `payroll_contractor` with no IR330C declaration gets no
-  Payrun line; an exemption certificate past its expiry is not billable as exempt.
+  pay run line; an exemption certificate past its expiry is not billable as exempt.
 - **Entertainer bookings and approvals are venue-access work** (D15): anyone with access to
   the venue books and approves (as Orbit allowed); only `payroll:write` opens Payments, marks
   paid and sees bank/IRD details. The closing Sales Manager is read from Loaded's clock-ins
   (else the roster) each morning and emailed a link that opens the approval; one with no Norm
   login goes on the venue digest instead. **Which roles count is a setting**
   (`ent_settings.closing_manager_roles`, default `["Sales Manager"]`, D22): a payroll writer or an
-  owner picks them on the Register's **Settings** dialog from the venue's live Loaded roles
+  owner picks them in the Entertainers page's **Settings** (the gear) from the venue's live Loaded roles
   (`GET /api/entertainers/settings/loaded-roles`), or types one.
 - **Bank accounts pass Inland Revenue's validation** (Payroll Calculations and Business Rules
   Specification 2026–27 §7: a listed bank, a branch in its Payments NZ ranges, the check digits
@@ -126,19 +139,31 @@ always-allowable typed push); `norm.caller_holds`. MCP exposes three reads only 
 
 ## Modes (`organizations.payroll_mode`, `entertainers_mode`, `finance_mode`)
 
-Each module has its own switch, `off | shadow | live` (`finance_core.modes`).
+Each module has its own switch, `off | shadow | live` (`finance_core.modes`), and each App
+follows exactly one: Payroll ← `payroll_mode`, Entertainers ← `entertainers_mode`, Budget ←
+`finance_mode`. People and the model read `shadow` as **Trial run** — the banners and badges,
+the Payroll page's Trial run tab, the emails' "Trial run:" line, the refusal messages and the
+skills; the stored value stays `shadow`.
 
-| Mode | Loaded Payroll | Entertainers | Norm Finance |
+| Mode | Payroll | Entertainers | Budget |
 |---|---|---|---|
-| `off` | every route 404; the App is not listed | 404 | 404; the App is not listed |
-| `shadow` | reads, snapshots, hygiene emails, exports (kept inside Norm) and parity work; a write is refused with `409 not_live` unless the body carries `rehearsal: true` (stored flagged, never feeds an export, draft or journal); every email goes to the organisation's `payroll_contact_email` (none → logged `suppressed`) | staff routes work (register, bookings, approvals); the portal is off (404 `not_yet`); mark-paid and Xero bills refuse; emails to the payroll contact | reads and Norm's own budget edits work; every Loaded push 409 `not_live`; nightly vintages and scores run |
+| `off` | every route 404; the App is not listed | 404; the App is not listed | 404; the App is not listed |
+| `shadow` | reads, snapshots, hygiene emails, exports (kept inside Norm) and parity work; a write is refused with `409 not_live` unless the body carries `rehearsal: true` (stored flagged, never feeds an export, draft or journal); every email goes to the organisation's `payroll_contact_email` (none → logged `suppressed`) | staff routes work (performers, bookings, approvals); the portal is off (404 `not_yet`); mark-paid and Xero bills refuse; emails to the payroll contact | reads and Norm's own budget edits work; every Loaded push 409 `not_live`; nightly vintages and scores run |
 | `live` | everything | everything | everything |
 
-`loaded-payroll` counts as on while `payroll_mode` or `entertainers_mode` is on;
-`norm-finance` while `finance_mode` is. Until the catalog rows exist (local testing, and the
-hours between a deploy and the seed) an App whose modes are on is stood in from the
-declaration in `finance_core/catalog.py` and counts as on, as Functions' are; once the rows
-exist the organisation's own switch on the Team page decides, and `off` still vetoes.
+`payroll` counts as on only while `payroll_mode` is on, `entertainers` while
+`entertainers_mode` is, `budget` while `finance_mode` is (`catalog.MODE_OF`). Until the catalog
+rows exist (local testing, and the hours between a deploy and the catalog step) an App whose
+mode is on is stood in from the declaration in `finance_core/catalog.py` and counts as on, as
+Functions' are; once the rows exist the organisation's own switch on the Team page decides, and
+`off` still vetoes.
+
+**The window after the 24 Oct split** (`catalog.LEGACY_SLUGS`, removed at the restructure's
+stage-5 tidy-up): while the old `loaded-payroll` / `norm-finance` rows are still in the catalog
+they keep their old rule (Loaded Payroll on while payroll OR entertainers is on) and the Team
+page never lists them; a new App with no row of its own counts as on exactly when the App it
+replaced is on for the organisation, and only while its own mode is. This is deliberately not
+`entitlements.SUCCESSORS`, which ignores modes.
 
 ## Background jobs (the finance tick)
 
@@ -164,11 +189,11 @@ weekly parity email.
 | `importer.nightly` | 02:30 NZ per org-day, until a module is live | shadow import from Orbit (`ORBIT_SUPABASE_CREDS`) |
 | `importer.post_freeze_watch` | daily inside the freeze window (19 Jan – 3 Feb) | emails the payroll contact any Orbit payroll-input row created after the freeze |
 
-## The parity engine (the shadow period)
+## The parity engine (the trial run)
 
 Norm computes beside Orbit, which stays the system of record until each step is proven.
 `fin_parity_runs` / `fin_parity_items` hold every comparison, weekly (the job) and on demand
-from the Shadow tab (`POST /api/payroll/shadow/runs`, `.../exports-check` with the owner's
+from the Payroll page's Trial run tab (`POST /api/payroll/shadow/runs`, `.../exports-check` with the owner's
 Ace files); each item is `expected` (a named class from `finance_core.parity.EXPECTED_CLASSES`
 — Loaded-side attribution, dropped deleted/unfinished rows, the "Other team" line, the
 one-day budget shift, summed percentages, gratuity cent residuals, "Orbit defaulted to #70",
@@ -178,7 +203,49 @@ plan §14: three consecutive clean pay weeks from WE 15 Nov (exports), three cle
 weeks including Christmas, three clean entertainer weeks, both rehearsal weeks explained,
 four weeks of forecast scores before "Set Loaded budget" shows.
 
-## Ship-day runbook
+## Shipping the 24 Oct split (two Apps → three)
+
+The Apps are opt-in, so each organisation's switch rows must move before the shared catalog
+changes — otherwise an organisation with Loaded Payroll and Norm Finance on (Cook Brothers in
+production) loses every Finance tool, skill and page the moment the new rows land. The order,
+each step `--dry-run` first and every production write with the owner's go-ahead:
+
+1. **Deploy** (push to main → production). The new code reads the old catalog rows through
+   `LEGACY_SLUGS`, so nothing changes for anyone yet.
+2. **`scripts/switch_finance_apps.py`, the switches phase, in every environment's app
+   database** (production, testing, staging, local): for each `org_app_entitlements` row on
+   `loaded-payroll` or `norm-finance` it adds one row per new App with the same on/off value
+   (skipping rows that exist), keeps the old rows (a rollback still works), and rewrites any
+   role's app list that names an old slug. Dry run by default; flags are in the script's
+   docstring. Early copies are harmless: a switch row whose App has no catalog row is ignored.
+3. **The catalog phase, once** (the shared config DB, after production serves the new code):
+   `sync_marketplace_catalog.py --only payroll,entertainers,budget,bills` (expect create
+   payroll, create entertainers, create budget, update bills), then the two old rows deleted
+   (`--only` never retires a row) and the catalog cache invalidated. Never run the seed
+   without `--only`. The script refuses while this environment still has an old switch row
+   without its successors.
+4. **The word re-syncs** (each writes live; dry-run and read the diff first):
+   `sync_norm_finance.py` (skills, tool descriptions, the "Norm Payroll" display name — all
+   four playbooks must stay on; never run the pre-split version after step 3),
+   `sync_payroll_config.py` (the loadedhub refusals and descriptions), `sync_xero_connector.py`
+   (the three Xero refusals, the `post_wage_journal` description and the Finance AI agent's
+   description and persona — it rewrites the whole xero spec, so confirm nothing else moves),
+   optionally `sync_marketplace_catalog.py --only finance-agent`, and
+   `sync_approval_labels.py --dry-run` reporting every finance row up to date.
+5. **Tell the payroll and finance people to reload** any open Norm tab: an old bundle gates
+   the pages on the old slugs.
+
+Old links keep working: `pageAliases.ts` maps every retired page id (`payroll-leave`,
+`payroll-settings&view=xero`, `payroll-shadow&run=…`, `ent-roster&performance=…`,
+`finance-forecasting`, `finance-budgets&view=versions`, …) to the new page and tab, and the
+root path forwards `?page=` to `/app`.
+
+## Ship-day runbook (23 Oct 2026 — history: the first ship as two Apps)
+
+Kept as the record of how the modules first shipped; for the split, use the section above.
+Step 3d's `--only loaded-payroll,norm-finance,xero` no longer works (`xero` stopped being a
+catalog slug when Bills and Profit & Loss replaced the Xero App), and the old rows it names are
+retired by the switch script.
 
 The config DB is shared with production: `--dry-run` each script first. The scripts are
 idempotent. The full order was rehearsed end to end on a scratch copy of the config DB on
@@ -247,10 +314,11 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
      organisation: `UPDATE organizations SET payroll_mode='shadow', entertainers_mode='shadow',
      finance_mode='shadow' WHERE slug='default';` (the `norm` login from `DATABASE_URL_DIRECT`).
    - **Switch the Apps on** for the `default` organisation from the Team page (Finance →
-     Loaded Payroll, Norm Finance); the Xero App is on already.
+     Payroll, Entertainers, Budget since the split; Loaded Payroll and Norm Finance before it);
+     Bills and Profit & Loss are on already.
    - `organizations.payroll_contact_email` (D25) — without it every payroll and entertainer email in
      shadow is suppressed and logged, nothing is sent.
-   - Per NZ entity on Payroll settings: `payroll_on`, the Ace pay type code (`50001`), the
+   - Per NZ entity in Payroll settings → Entities (the gear on the Payroll page): `payroll_on`, the Ace pay type code (`50001`), the
      gratuity allowance code, the security pay code, the $150 bond and 12 % uplift (D19,
      confirmed with the accountant), the intercompany leave line's tax rule, the sick-leave
      approver. Fill them from Orbit first, on their own, before the full import:
@@ -271,7 +339,7 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
      trading day in every other Norm read.
    - Public holidays come from Loaded's pay adjustments: nothing to seed. The nightly job
      fills the next 12 months per venue once `finance_mode` is on; for history press
-     **Sync from Loaded** in each venue's Forecasting settings
+     **Sync from Loaded** in each venue's Forecast settings (the Budgets page's Forecast tab)
      (`POST /api/finance/holidays/sync {"venue_id"}`). Check each venue's regional anniversary
      day is activated in Loaded (Compliance › Pay Rules) — live 23 Oct, only Bessie & Royals
      has one (Canterbury, activated for 14 Nov 2025 only, so 13 Nov 2026 is not priced), and
@@ -286,10 +354,10 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
    - **Xero consents** for all seven entities, from production, by each entity's Xero admin;
      after each one: `uv run python scripts/migrate_orbit_finance.py --org default --module payroll
      --write-xero-mapping` once (fills the `xero_mapping.payroll` / `.intercompany` keys nobody
-     set; never overwrites a key a person set), then the mapping panel validated per entity
-     (`rounding` is new and comes from the panel). Two journal decisions for the accountant,
+     set; never overwrites a key a person set), then Payroll settings → Xero mapping validated
+     per entity (`rounding` is new and comes from there). Two journal decisions for the accountant,
      both settings now: the **"Reclass Gratuities" account** (`xero_mapping.payroll.gratuities_reclass`
-     on the Mapping tab — the importer reports Orbit's 41100 Bar Sales but never writes it; until
+     under Payroll settings → Xero mapping — the importer reports Orbit's 41100 Bar Sales but never writes it; until
      it is chosen a week that pays gratuities through payroll is refused by name, never journalled
      without the line), and the **leave line's tax rule** on intercompany invoices and bills
      (Payroll settings → Entities, `pay_entities.ico_leave_tax`: `account_default` — Orbit's, the
@@ -306,7 +374,7 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
      `--skip-venue CBI` until CBI exists. Nightly re-import while in shadow.
    - `RESEND_WEBHOOK_SECRET` (D32) — a new secret per environment; Resend's webhook pointed at
      `https://<env>/api/public/email-events/resend` (delivered / bounced / complained land on
-     the Emails page). Without the secret the webhook answers 503 and nothing else changes.
+     the Entertainers page's Emails tab). Without the secret the webhook answers 503 and nothing else changes.
    - **The Xero Demo Company test** (F4's list, owner go-ahead): connect a local venue to the
      Demo Company (NZ), map accounts, build a week's draft, journal preview → confirm, confirm
      again ("already in Xero"), void preview → confirm on the DRAFT (confirm Xero accepts
@@ -329,20 +397,20 @@ idempotent. The full order was rehearsed end to end on a scratch copy of the con
      functions undeployed on each date, the "this link has moved" banners via Lovable) — owner
      actions with named people, verified the day after each date.
 5. **Golden files** (D18): head office keeps every week's four Ace files from now; parity
-   byte-diffs Norm's exports against them on the Shadow tab.
+   byte-diffs Norm's exports against them on the Payroll page's Trial run tab.
 
 ## Cut-over calendar (from plan §15) and rollback
 
-Shadow through Christmas; **Tue 19 Jan 2027** payroll and entertainers cut over together for
+The trial run (mode `shadow`) through Christmas; **Tue 19 Jan 2027** payroll and entertainers cut over together for
 WE 17 Jan (Orbit bookings frozen Mon 18 Jan 18:00 → final import → `payroll_mode` and
 `entertainers_mode` → `live` → exports, payouts, entertainer lines, reconciliation, journal
 and ICO documents from Norm; Norm's emails on; Orbit's entertainer screens, sweep, portal and
 onboarding off); **Tue 2 Feb** budgets live from Norm (`finance_mode` → `live` for the push;
 Orbit's budget pushes undeployed); **Wed 3 Feb** Orbit's payroll screens read-only after two
-clean Norm weeks; **Mon 15 Feb** the Forecasting page's "Set Loaded budget"; **Mon 1 Mar** the
+clean Norm weeks; **Mon 15 Feb** "Set Loaded budget" on the Budgets page's Forecast tab; **Mon 1 Mar** the
 Weekly Summary retires Orbit's three report screens; **Mon 22 Mar** FY2028 budget imported and
 pushed from Norm; **Wed 31 Mar** Orbit Finance off, read-only to 30 Apr, archived. Slip
-clause: a slip is a missed shadow week — without three clean journal weeks by Wed 13 Jan both
+clause: a slip is a missed trial-run week — without three clean journal weeks by Wed 13 Jan both
 cut-overs move to Tue 2 Feb.
 
 **Rollback, per module.** *Xero:* every write is DRAFT with its id in the ledger;
@@ -359,25 +427,26 @@ pin (with `encrypt_connection_tokens.py --decrypt` before an image that predates
 
 ## What the owner decided (the defaults this build took — plan §18)
 
-Taken as given: **D2** two Apps under Finance, no new member; **D3** both Apps $0, the
-member $10; **D4** the Financial Report lives inside the Weekly Summary; **D5** the journal and
-intercompany tools on the Xero App; **D6** always-allow only on the day grid's typed push,
+Taken as given: **D2** two Apps under Finance, no new AI agent; **D3** both Apps $0, the
+AI agent $10 (D2 and D3 superseded on 24 Oct by the three job apps — Payroll, Entertainers,
+Budget — still under Finance, still $0); **D4** the Financial Report lives inside the Weekly Summary; **D5** the journal and
+intercompany tools on the Xero App (superseded on 24 Oct: they belong to Payroll); **D6** always-allow only on the Daily budget grid's typed push,
 never in chat, never for the forecast push (a card every time, hidden until four weeks of
 scores, 92-day cap); **D7** Ace Payroll (if Xero Payroll comes, only the export layer dies);
 **D8** `payroll:*` for owner and payroll_admin only, `finance:read` + `budgets:write` for owner,
 manager and payroll_admin, never team_member; `get_labour` NOT stripped (owner, 23 Oct: managers keep rates);
-the Xero App's five tools gated the same way; **D9** IRD, bank and DOB encrypted; **D10** Xero
+the Xero tools gated the same way; **D9** IRD, bank and DOB encrypted; **D10** Xero
 DRAFT only; **D12** NZ payroll only, AU `payroll_mode = off`; **D14 a–g** personal onboarding
 links only, the email code before bank/tax, finance accepts before payable, the IR330C signed on
 the form (upload kept), band shares set by finance, amounts by email never on the link, the
-unknown-lane performers decided from the importer's list; **D15** register, roster and emails
+unknown-lane performers decided from the importer's list; **D15** performers, roster and emails
 on venue access, payments and bank/IRD on `payroll:write`; **D16 / D29** cut-over in January,
 entertainers with payroll (the modes allow earlier, with the D29 bridge); **D21** text Ace
 files and CSV of any grid; XLSX and PDF deferred; **D22** closing-manager roles default
-`["Sales Manager"]` (an `ent_settings` list, editable on the Register's Settings dialog);
+`["Sales Manager"]` (an `ent_settings` list, editable in the Entertainers page's Settings);
 **D26** settled (23 Oct): no performer sender of its own — Norm's address in the
 organisation's name, `Reply-To` the payroll contact; **D23** purchases-based COGS, cash variance and
-voids kept; **D24** the close runs on a snapshot; **D32** the Emails page with Resend delivery
+voids kept; **D24** the close runs on a snapshot; **D32** the Emails tab with Resend delivery
 status and Orbit's send dates imported; **D33** the four monthly lines (intercompany fees,
 finance costs, income tax, leave %) not carried; **D34** total-only forecast; **D35** the
 invoice check on the extraction model, Norm's cost, paid Orbit invoices not re-read; **D36** the
@@ -397,7 +466,7 @@ directly under the organisation's scope for the job (a platform "system caller" 
 let that bypass go — backlog); `pay_ace_inputs` and `pay_accruals` are one row per week, so a
 Norm-keyed and an Orbit-keyed row for the same rehearsal week cannot both exist (parity records
 the Norm row as "check against Orbit by hand"); `level_correction_on` defaults to false;
-`email_logs.status` gains `suppressed`; the two Finance App rows carry no App note (the
+`email_logs.status` gains `suppressed`; the Finance App rows carry no App note (the
 catalog's note budget is full — the rules are on the tool descriptions and in the skills).
 
 ## Testing
@@ -406,7 +475,7 @@ catalog's note budget is full — the rules are on the tool descriptions and in 
 `test_consolidator_finance.py`, `test_payroll_xero*.py`, `test_app_map.py`; worlds in
 `tests/payroll_world.py`, `entertainers_world.py`, `finance_f6_world.py`. The public routes
 (portal, onboarding, the code, the webhook) and the D15 gate (a `team_member` with venue
-access approves at their venue, is refused at another, cannot open the Payrun, never sees
+access approves at their venue, is refused at another, cannot open the Payroll page, never sees
 bank or IRD) are blocking CI tests. The three consolidators were run live on La Zeppa (reads
 only) and their shapes recorded in `shapes.json`; the forecast backtest reproduced the
 research reader's figures on real data (Bessie inside both targets, La Zeppa not — the human

@@ -1530,10 +1530,10 @@ class TestBuiltIns:
             out = tools._get_journal_draft(
                 {"venue_id": w.a.id, "week_ending": "2026-10-18"}, w.db, None
             )
-        assert "shadow" in out["error"]
+        assert "trial run" in out["error"]
         with _as(w.db, w.owner):
             assert (
-                "shadow"
+                "trial run"
                 in tools._record_push(
                     {
                         "kind": "journal",
@@ -1627,7 +1627,7 @@ def _install_specs(db):
     db.add(
         ConnectionSpec(
             connector_name="norm_payroll",
-            display_name="Loaded Payroll",
+            display_name="Norm Payroll",
             execution_mode="internal",
             auth_type="none",
             enabled=True,

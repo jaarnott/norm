@@ -195,7 +195,7 @@ from app.routers import receiving_rules as _receiving_rules  # noqa: E402
 
 _test_app.include_router(_receiving_rules.router, prefix="/api")
 
-# finance: Loaded Payroll + Norm Finance routers (each module agent appends its line)
+# finance: the Payroll, Entertainers and Budget routers (each module appends its line)
 from app.routers import payroll_xero as _payroll_xero  # noqa: E402
 
 _test_app.include_router(_payroll_xero.router, prefix="/api")

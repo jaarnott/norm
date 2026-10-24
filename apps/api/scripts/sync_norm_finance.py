@@ -14,22 +14,27 @@ production immediately):
   are labelled the moment they exist), ``requires`` (the org scopes a
   caller's person must hold — DESIGN-CONTRACT §1/§4) and, on the internal
   rows, ``engine_only`` (never shown to a model; called by consolidators
-  and pages). The two Apps claim the rows
-  (app/services/finance_core/catalog.py ``PAYROLL_TOOLS`` / ``FINANCE_TOOLS``).
+  and pages). The three Apps claim the rows
+  (app/services/finance_core/catalog.py: ``PAYROLL_TOOLS`` and
+  ``ENTERTAINERS_TOOLS`` on norm_payroll, ``BUDGET_TOOLS`` on norm_finance).
 - the four skills (playbooks) the Apps own — ``weekly_payroll_close`` and
-  ``leave_payout_rules`` on Loaded Payroll, ``budget_review`` and
-  ``forecast_review`` on Norm Finance — written the way
+  ``leave_payout_rules`` on Payroll, ``budget_review`` and
+  ``forecast_review`` on Budget (Entertainers has none) — written the way
   scripts/sync_norm_functions.py writes ``PLAYBOOKS``: created switched OFF,
-  and switched on only once the App claims them (an unclaimed enabled
-  playbook would be offered to every organisation's agent).
+  and switched on only while some active catalog row claims them (an
+  unclaimed enabled playbook would be offered to every organisation's
+  agent). Claims are read from EVERY active row, not named slugs, so the
+  run before the catalog step (the old Loaded Payroll and Norm Finance rows
+  claim them) and the run after it (the new rows do) both keep them on.
 - the three ``mcp_capabilities`` rows that put the reads on Norm's MCP
   (plan §12): ``loadedhub.get_payrun`` behind ``mcp:payroll:read``,
   ``loadedhub.get_weekly_financials`` and ``norm_finance.get_forecast``
   behind ``mcp:finance:read`` (app/mcp/scopes.py). Writes stay behind
   Norm's cards; the other reads duplicate these or carry no scope.
 
-No team member here: the ``finance`` member exists (scripts/sync_xero_connector.py
-writes its agent_configs row) and owns the Xero App; the two Apps join it.
+No AI agent here: the ``finance`` agent exists (scripts/sync_xero_connector.py
+writes its agent_configs row) and owns Bills and Profit & Loss; the three
+Apps join it.
 
 **The registry contract.** Each tools module registers its handlers with
 ``app.agents.internal_tools.register(CONNECTOR, action)`` as every built-in
@@ -59,25 +64,31 @@ approval label — and refuses to install otherwise. It works with zero
 handlers: then both specs are installed with no rows, which is what the
 validator expects before the modules ship.
 
-Ship-day order — code first: the config DB is shared, and production must
-know the handlers before their rows appear (docs/norm-finance.md has the
-whole runbook).
+Order — code first: the config DB is shared, and production must know the
+handlers before their rows appear (docs/norm-finance.md has the whole
+runbook).
 
-  1. deploy (the tools modules registered from internal_tools).
-  2. this script:                  --dry-run, then for real — the two specs
-     and their rows (labelled), the skills (off), and the MCP capability
-     for norm_finance.get_forecast; the two loadedhub capabilities are
-     skipped with a note until step 3 has written their rows.
-  3. sync_payroll_config.py, then sync_xero_connector.py: the loadedhub and
-     xero rows (the validator refuses set_budgets / get_weekly_financials
-     before step 2 — they call norm_finance rows).
-  4. sync_marketplace_catalog.py --only loaded-payroll,norm-finance,xero:
-     --dry-run, then for real — creates the two App rows (claiming the tools
-     and skills) and the Xero App's three payroll tools.
-  5. this script again — switches the claimed skills on and adds the two
-     loadedhub MCP capabilities.
-  6. sync_approval_labels.py:      --dry-run — every finance row reports
-     "up to date"; apply only if it doesn't.
+The split into Payroll, Entertainers and Budget (24 Oct 2026; the specs,
+skills and capabilities already exist):
+
+  1. deploy (the code that knows the three Apps, and bridges the old rows).
+  2. scripts/switch_finance_apps.py — its switches phase in every
+     environment's app database, then its catalog phase once: the three App
+     rows and Bills (``--only payroll,entertainers,budget,bills``), then the
+     two old rows deleted. It ends with this script's dry run and refuses if
+     a skill would switch off.
+  3. this script: --dry-run, then for real — the new words (skills, tool
+     descriptions, the "Norm Payroll" display name).
+  4. sync_approval_labels.py: --dry-run — every finance row reports "up to
+     date"; apply only if it doesn't.
+
+A fresh config DB (first install): deploy; this script (the specs and rows,
+the skills off, the norm_finance MCP capability — the two loadedhub ones
+wait); sync_payroll_config.py, then sync_xero_connector.py (the validator
+refuses set_budgets / get_weekly_financials before this script's rows);
+sync_marketplace_catalog.py ``--only payroll,entertainers,budget,bills``;
+then this script again (switches the claimed skills on, adds the loadedhub
+MCP capabilities).
 
 Idempotent. Dry-run first.
 
@@ -97,12 +108,13 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from app.services.finance_core.catalog import (  # noqa: E402 — path set above
-    FINANCE_APP_SLUG,
-    FINANCE_ENGINE_ONLY,
-    FINANCE_SKILLS,
-    FINANCE_TOOLS,
+    BUDGET_ENGINE_ONLY,
+    BUDGET_SKILLS,
+    BUDGET_TOOLS,
+    ENTERTAINERS_ENGINE_ONLY,
+    ENTERTAINERS_SKILLS,
+    ENTERTAINERS_TOOLS,
     MEMBER,
-    PAYROLL_APP_SLUG,
     PAYROLL_ENGINE_ONLY,
     PAYROLL_SKILLS,
     PAYROLL_TOOLS,
@@ -127,15 +139,19 @@ KNOWN_SCOPES = frozenset(
     {"payroll:read", "payroll:write", "finance:read", "budgets:write"}
 )
 
-#: Each connector's claimed and engine-only tools, as the catalog declares them.
+#: Each connector's claimed and engine-only tools, as the catalog declares
+#: them: norm_payroll's rows belong to Payroll and Entertainers, norm_finance's
+#: to Budget.
 CLAIMED = {
-    PAYROLL_CONNECTOR: frozenset(PAYROLL_TOOLS),
-    FINANCE_CONNECTOR: frozenset(FINANCE_TOOLS),
+    PAYROLL_CONNECTOR: frozenset(PAYROLL_TOOLS + ENTERTAINERS_TOOLS),
+    FINANCE_CONNECTOR: frozenset(BUDGET_TOOLS),
 }
 ENGINE_ONLY = {
-    PAYROLL_CONNECTOR: frozenset(PAYROLL_ENGINE_ONLY),
-    FINANCE_CONNECTOR: frozenset(FINANCE_ENGINE_ONLY),
+    PAYROLL_CONNECTOR: frozenset(PAYROLL_ENGINE_ONLY + ENTERTAINERS_ENGINE_ONLY),
+    FINANCE_CONNECTOR: frozenset(BUDGET_ENGINE_ONLY),
 }
+#: Every skill the three Apps own.
+SKILLS = PAYROLL_SKILLS + ENTERTAINERS_SKILLS + BUDGET_SKILLS
 
 #: The reads on Norm's MCP (plan §12): exactly these three, not every read
 #: tool. ``norm_payroll.get_week`` duplicates what ``get_payrun`` gives an
@@ -150,7 +166,9 @@ MCP_CAPABILITIES = (
 
 SPECS = {
     PAYROLL_CONNECTOR: {
-        "display_name": "Loaded Payroll",
+        # Never a bare "Payroll": the connect-card matcher reads display
+        # names (services/supervisor.py), and it skips internal connectors.
+        "display_name": "Norm Payroll",
         "category": "internal",
         "execution_mode": "internal",
         "auth_type": "none",
@@ -189,8 +207,8 @@ SPECS = {
 
 # ---------------------------------------------------------------------------
 # Skills — the four playbooks the Apps own (plan §12). Each says what the
-# Finance member does step by step with its tools and pages, what stays a
-# person's, and the shadow rule. Written in the words a payroll or finance
+# Finance AI agent does step by step with its tools and pages, what stays a
+# person's, and the trial-run rule. Written in the words a payroll or finance
 # person would use; the tool names are the only jargon.
 # ---------------------------------------------------------------------------
 
@@ -201,60 +219,60 @@ Goal: walk one payroll entity's pay week from Monday's snapshot to a closed week
 
 **Figures.** The tools return integer cents; speak in dollars. Never quote a wage, hours, a payout or a total you have not read from `norm_payroll.get_week`, `loadedhub.get_payrun` or the person. `get_week` is the week as Norm holds it; `get_payrun` is a live read of Loaded for the same week (views: staff, security, leave, salaried, hygiene, intercompany, all — `rows: false` keeps just the sections for chat).
 
-**Shadow.** While Loaded Payroll is in shadow, Orbit is still the system of record: Norm computes beside it, and `record_week` refuses a write unless `fields.rehearsal` is true (a rehearsal row is stored flagged and never feeds an export, a draft or a journal). When a write is refused with "not live", say that is the shadow rule, not an error. In shadow the hygiene and parity emails go to the organisation's payroll contact.
+**Trial run.** While Payroll is in its trial run (mode `shadow`), Orbit is still the system of record: Norm computes beside it, and `record_week` refuses a write unless `fields.rehearsal` is true (a rehearsal row is stored flagged and never feeds an export, a draft or a journal). When a write is refused with "not live", say that is the trial-run rule, not an error. During the trial run the hygiene and parity emails go to the organisation's payroll contact.
 
 The steps, in order, and who does each:
 
-1. **Monday — the snapshot (Norm).** Thirty minutes after the venue's day start, Norm takes the week's snapshot: `get_payrun view=all` with the entity's own Loaded login, stored as the week's shift facts. `get_week` shows it under `snapshot` (when it was taken, how many shifts, how many deleted and unfinished clock-ins were dropped). No snapshot yet → the person takes one on the Payrun page; you cannot take one from chat.
+1. **Monday — the snapshot (Norm).** Thirty minutes after the venue's day start, Norm takes the week's snapshot: `get_payrun view=all` with the entity's own Loaded login, stored as the week's shift facts. `get_week` shows it under `snapshot` (when it was taken, how many shifts, how many deleted and unfinished clock-ins were dropped). No snapshot yet → the person presses Take snapshot at the top of the Payroll page; you cannot take one from chat.
 
-2. **Monday — hygiene (the person, in Loaded).** `get_week.hygiene_from_snapshot` lists unapproved clock-ins and staff without a pay code; `get_payrun view=hygiene` adds unfinished clock-ins, staff without a timeline, the week's public holidays and a parity line against Loaded's own pay summary. Every fix happens in Loaded — approving a clock-in, finishing one, giving someone a pay code, changing a rate or a timeline. Norm approves nothing in Loaded. The Monday 20:00 hygiene email sends the same lists to the payroll contact.
+2. **Monday — hygiene (the person, in Loaded).** `get_week.hygiene_from_snapshot` lists unapproved clock-ins and staff without a pay code; `get_payrun view=hygiene` adds unfinished clock-ins, staff without a timeline, the week's public holidays and a parity line against Loaded's own pay summary. Every fix happens in Loaded — approving a clock-in, finishing one, giving someone a pay code, changing a rate or a timeline. Norm approves nothing in Loaded. The Monday 20:00 hygiene email sends the same lists to the payroll contact. The Payroll page's Checks tab shows the same lists.
 
-3. **Tuesday — the close snapshot (Norm, or the person).** At 10:00 venue time Norm re-snapshots the week, or earlier when the person presses "Start close" on the Payrun page. The exports, the reconciliation and the journal build from this close snapshot; anything Loaded changes after it shows in `get_week.drift` ("drift since close"). If the drift is not empty, say what moved and let the person decide whether to re-snapshot.
+3. **Tuesday — the close snapshot (Norm, or the person).** At 10:00 venue time Norm re-snapshots the week, or earlier when the person presses "Start close" at the top of the Payroll page. The exports, the reconciliation and the journal build from this close snapshot; anything Loaded changes after it shows in `get_week.drift` ("drift since close"). If the drift is not empty, say what moved and let the person decide whether to re-snapshot.
 
 4. **Leave (the person decides; you record).** `get_payrun view=leave` is what Loaded says the week's leave is worth; `get_week.payouts` is what payroll decided to pay. A decision is recorded with `record_week op=leave_payout` — the rules for annual, sick and generic payouts are in the `leave_payout_rules` skill; read it before recording one.
 
 5. **Gratuities (monthly).** A venue's pool for a month is split by Norm over the hours physically worked there across the overlapping pay weeks (leave and security excluded, inactive staff keep a share that is not payable, excluded staff redistributed, cents by largest remainder). Record a batch with `record_week op=gratuity_batch` (`fields`: `period` "YYYY-MM", `total_cents`, `gl_code`, optional `excluded_staff_ids`); the shares appear under `get_week.gratuities`. A reminder goes out on the 1st of each month.
 
-6. **Entertainers.** Approved, unpaid payroll-lane performances carry forward into the week's IMPORT_ENTERTAINERS.TXT; marking them paid is the Payments page (`payroll:write`). A performer with no pay code, or one finance has not accepted yet, blocks the file and is named — nothing is paid silently.
+6. **Entertainers.** Approved, unpaid payroll-lane performances carry forward into the week's IMPORT_ENTERTAINERS.TXT; they show on the Payroll page's Entertainers tab, and marking one paid is the Payments tab of the Entertainers page (`payroll:write`). A performer with no pay code, or one finance has not accepted yet, blocks the file and is named — nothing is paid silently.
 
-7. **Exports (the person).** The person generates the four Ace files on the Payrun page — IMPORT.TXT, IMPORT_LEAVE.TXT, GRATUITIES.TXT, IMPORT_ENTERTAINERS.TXT — from the close snapshot, and imports them into Ace. Norm refuses the files when there is no close snapshot, a staff member has no pay code, a leave type has no Ace style, or the entity has no gratuity allowance code; you can see most of those coming from `get_week` and warn before they press the button. You never generate or import the files.
+7. **Ace files (the person).** The person generates the four Ace files on the Payroll page's Ace files tab — IMPORT.TXT, IMPORT_LEAVE.TXT, GRATUITIES.TXT, IMPORT_ENTERTAINERS.TXT — from the close snapshot, and imports them into Ace. Norm refuses the files when there is no close snapshot, a staff member has no pay code, a leave type has no Ace style, or the entity has no gratuity allowance code; you can see most of those coming from `get_week` and warn before they press the button. You never generate or import the files.
 
 8. **The Ace run (outside Norm).** When Ace has run, the person gives you gross, net, ESCT and KiwiSaver; record them with `record_week op=ace_inputs` (`fields`: `gross_cents`, `net_cents`, `esct_cents`, `kiwisaver_cents` — $12,345.67 is 1234567).
 
-9. **Reconciliation.** `get_week.inputs` holds the Ace totals, the adjustments and the accrual; `get_week.parity` the last parity run. Record an adjustment with `record_week op=adjustment` (`fields`: `label`, `amount_cents` signed, `xero_account_code`, `report_target` wages | leave | null, `notes`) and the accrual with `op=accrual` (`opening_cents` or null, `accrued_cents`, `paid_cents`). The Reconciliation page explains Loaded's cost against Ace gross — timeclock, plus intercompany, plus leave paid, less security, less accrued additions, plus accrued deductions, plus adjustments, entertainers and gratuities — in bands: ok under $1, near under $50, off above. Blockers (no close snapshot, Ace inputs missing, a leave request with no payout, an adjustment with no account, a missing Xero mapping) are listed on the page; read them back rather than guessing the cause.
+9. **Reconciliation.** `get_week.inputs` holds the Ace totals, the adjustments and the accrual; `get_week.parity` the last parity run. Record an adjustment with `record_week op=adjustment` (`fields`: `label`, `amount_cents` signed, `xero_account_code`, `report_target` wages | leave | null, `notes`) and the accrual with `op=accrual` (`opening_cents` or null, `accrued_cents`, `paid_cents`). The Payroll page's Reconciliation tab explains Loaded's cost against Ace gross — timeclock, plus intercompany, plus leave paid, less security, less accrued additions, plus accrued deductions, plus adjustments, entertainers and gratuities — in bands: ok under $1, near under $50, off above. Blockers (no close snapshot, Ace inputs missing, a leave request with no payout, an adjustment with no account, a missing Xero mapping) are listed on that tab; read them back rather than guessing the cause.
 
-10. **The journal and the intercompany documents (Xero App tools, a card every time).** The person builds the journal draft on the Reconciliation page. `xero.post_wage_journal` posts it to Xero as a DRAFT manual journal; `xero.post_intercompany_documents` posts the DRAFT invoice and bill per counterparty; `xero.void_payroll_document` takes one back. Each needs `payroll:write`, previews every line on a card, refuses while payroll is not live, and is done only when the person asks. The accountant posts the drafts inside Xero.
+10. **The journal and the intercompany documents (the Payroll app's Xero tools, a card every time).** The person builds the journal draft on the Reconciliation tab. `xero.post_wage_journal` posts it to Xero as a DRAFT manual journal; `xero.post_intercompany_documents` posts the DRAFT invoice and bill per counterparty; `xero.void_payroll_document` takes one back. Each needs `payroll:write`, previews every line on a card, refuses while payroll is not live, and is done only when the person asks. The accountant posts the drafts inside Xero.
 
-11. **Close (the person).** "Close week" on the Payrun page records who closed it and when. There is no tool for it.
+11. **Close (the person).** "Close week" at the top of the Payroll page records who closed it and when. There is no tool for it.
 
-**Always a person, never you:** generating and importing the Ace files; closing a week; the entity's settings (pay type and allowance codes, the security pay code, the uniform bond, the leave uplift), the leave styles and their sign-off, and the Xero account mappings; approving clock-ins and changing pay rates or timelines (Loaded's job); signing off a parity difference on the Shadow tab. In a scheduled task's run nothing is recorded: `record_week` refuses, and says why.
+**Always a person, never you:** generating and importing the Ace files; closing a week; the entity's settings (pay type and allowance codes, the security pay code, the uniform bond, the leave uplift — in Payroll settings, the gear on the Payroll page), the leave styles and their sign-off, and the Xero account mappings; approving clock-ins and changing pay rates or timelines (Loaded's job); signing off a parity difference on the Trial run tab. In a scheduled task's run nothing is recorded: `record_week` refuses, and says why.
 """
 
 LEAVE_PAYOUT_RULES = """\
 Goal: record a leave payout decision for a pay week correctly — the three workflows, the gates each must pass, and what you may never decide for the person. Read `weekly_payroll_close` for where leave sits in the week.
 
-**What you read.** `loadedhub.get_payrun view=leave` lists the week's leave requests as Loaded prices them: the request id, the staff member, the leave type, the dates, hours and the requested cost. `norm_payroll.get_week.payouts` lists the decisions already recorded. The Leave page shows both side by side.
+**What you read.** `loadedhub.get_payrun view=leave` lists the week's leave requests as Loaded prices them: the request id, the staff member, the leave type, the dates, hours and the requested cost. `norm_payroll.get_week.payouts` lists the decisions already recorded. The Payroll page's Leave tab shows both side by side.
 
-**What you record.** `norm_payroll.record_week op=leave_payout` with `fields` = the Leave page's body: `loaded_request_id`, `staff_member_id`, `staff_name`, `leave_type`, `requested_cents`, `workflow_kind` (annual | sick | generic), `inputs` (below), optional `paid_cents`, `notes`, `rehearsal`, and `version` on an edit. Norm works the paid amount out from the inputs; a `paid_cents` override may only lower it. Cents in, dollars when you speak. Use `preview: true` when the figures are large or the person is unsure — the card shows exactly what would be recorded.
+**What you record.** `norm_payroll.record_week op=leave_payout` with `fields` = the Leave tab's body: `loaded_request_id`, `staff_member_id`, `staff_name`, `leave_type`, `requested_cents`, `workflow_kind` (annual | sick | generic), `inputs` (below), optional `paid_cents`, `notes`, `rehearsal`, and `version` on an edit. Norm works the paid amount out from the inputs; a `paid_cents` override may only lower it. Cents in, dollars when you speak. Use `preview: true` when the figures are large or the person is unsure — the card shows exactly what would be recorded.
 
-**Annual leave.** Paid = the smaller of what was requested and what is available after the bond. `inputs`: `holiday_pay_available_cents` (the balance lives in Ace — the person types it; never estimate it), `uniform_bond_cents` (the entity's default, $150), and either `bond_consent_file_id` or `bond_held_in_ace: true`. The uniform bond may be deducted from holiday pay only with the employee's written consent (Wages Protection Act 1983 s 5): without a consent file on record or "held in Ace", Norm refuses the deduction and says so. Do not set either flag yourself — the person uploads the consent on the Leave page or states that Ace holds it.
+**Annual leave.** Paid = the smaller of what was requested and what is available after the bond. `inputs`: `holiday_pay_available_cents` (the balance lives in Ace — the person types it; never estimate it), `uniform_bond_cents` (the entity's default, $150), and either `bond_consent_file_id` or `bond_held_in_ace: true`. The uniform bond may be deducted from holiday pay only with the employee's written consent (Wages Protection Act 1983 s 5): without a consent file on record or "held in Ace", Norm refuses the deduction and says so. Do not set either flag yourself — the person uploads the consent on the Leave tab or states that Ace holds it.
 
 **Sick leave.** Four gates, and the payout is $0 unless every one passes:
-1. Qualification (Holidays Act 2003 ss 63–65): six months' current continuous employment, an average of at least 10 hours a week over the last 26 weeks, and at least 1 hour a week or 40 hours a month. The Leave page's eligibility check reads the facts: the start date from Loaded (the approver enters it when Loaded has none) and that person's own 26 weeks of clock-ins.
+1. Qualification (Holidays Act 2003 ss 63–65): six months' current continuous employment, an average of at least 10 hours a week over the last 26 weeks, and at least 1 hour a week or 40 hours a month. The Leave tab's eligibility check reads the facts: the start date from Loaded (the approver enters it when Loaded has none) and that person's own 26 weeks of clock-ins.
 2. Balance: `available_days × daily_hours` must cover the hours claimed. A sick day is the hours that person would otherwise have worked that day (s 63), not a flat eight — the rule row carries 8 only as the default.
 3. Certificate: received, or the approver overrides.
 4. Payout: the sum of each day's hours × the hourly rate.
-`inputs`: `qualification` {employment_start_date, six_months, avg_hours, continuous, override, override_notes}, `balance` {available_days, daily_hours, override, override_notes}, `certificate` {received, override, override_notes}, `payout` {day_hours: [{date, hours}], hourly_rate_cents}. An override is the approver's call with a note; never set one yourself. Three emails exist for the person to send from the Leave page: to the approver when someone does not qualify, to the staff member that nothing can be processed without a certificate, and a request for a certificate. Sick-leave inputs and notes are health information: Norm shows them only to people with `payroll:write`, and you do not repeat them in a thread others can read.
+`inputs`: `qualification` {employment_start_date, six_months, avg_hours, continuous, override, override_notes}, `balance` {available_days, daily_hours, override, override_notes}, `certificate` {received, override, override_notes}, `payout` {day_hours: [{date, hours}], hourly_rate_cents}. An override is the approver's call with a note; never set one yourself. Three emails exist for the person to send from the Leave tab: to the approver when someone does not qualify, to the staff member that nothing can be processed without a certificate, and a request for a certificate. Sick-leave inputs and notes are health information: Norm shows them only to people with `payroll:write`, and you do not repeat them in a thread others can read.
 
 **Anything else (generic).** Paid may not exceed requested; `inputs` is empty.
 
-**Rules that are dated.** The sick-leave thresholds and the default day length are rows in `pay_rules` with an effective date (the platform defaults, plus an organisation's overrides from the Settings page). When the Holidays Act replacement arrives, it is a new row, not a code change — if someone asks why a figure changed, the rule's effective date is the answer.
+**Rules that are dated.** The sick-leave thresholds and the default day length are rows in `pay_rules` with an effective date (the platform defaults, plus an organisation's overrides in Payroll settings, the gear on the Payroll page). When the Holidays Act replacement arrives, it is a new row, not a code change — if someone asks why a figure changed, the rule's effective date is the answer.
 
-**Leave styles.** Each Loaded leave type maps to an Ace style on the Settings page (annual → #70, sick → #60, bereavement → #63 by default; family violence, alternative holiday, public holiday not worked, unpaid and parental leave must not be booked as annual leave). A type with no style, or one not signed off, refuses IMPORT_LEAVE.TXT by name. Mapping and signing off are the payroll person's and the accountant's, not yours.
+**Leave styles.** Each Loaded leave type maps to an Ace style in Payroll settings → Leave types (annual → #70, sick → #60, bereavement → #63 by default; family violence, alternative holiday, public holiday not worked, unpaid and parental leave must not be booked as annual leave). A type with no style, or one not signed off, refuses IMPORT_LEAVE.TXT by name. Mapping and signing off are the payroll person's and the accountant's, not yours.
 
 **Imported history.** A payout whose source is `orbit_legacy` shows "week inferred from Orbit": Orbit's row carried no pay week and the importer took the week before it was keyed. Say so if one is questioned.
 
-**Shadow.** In shadow a payout is recorded only as a rehearsal (`fields.rehearsal: true`); rehearsal rows never feed the export or the journal.
+**Trial run.** During the trial run a payout is recorded only as a rehearsal (`fields.rehearsal: true`); rehearsal rows never feed the export or the journal.
 """
 
 BUDGET_REVIEW = """\
@@ -264,47 +282,47 @@ Goal: review a venue's trading week and its budget with the person — the Weekl
 
 **Budgets in Norm.** A venue-year has budget versions; the latest locked version is the current budget, and `norm_finance.get_budget_plan` reads it. `norm_finance.record_budget` changes it, always asking first:
 - `op=lines` sets a month's line items (`fiscal_year`, `month`, `lines`: wage_pct or wage_cents — never both — cogs_pct, food_cogs_pct, bev_cogs_pct, leave_cents, opex_cents, depreciation_cents, rebates_pct; a null removes a line). Ratios as fractions (0.29), money as cents.
-- `op=days` sets daily amounts on an unlocked version (`version_id`, or a `label` for a new one; `days` [{date, amount_cents, note}]). A locked version refuses — the person unlocks it on the Budgets page or starts a new version.
-Locking and unlocking a version, importing a spreadsheet and the fiscal-year settings are page actions.
+- `op=days` sets daily amounts on an unlocked version (`version_id`, or a `label` for a new one; `days` [{date, amount_cents, note}]). A locked version refuses — the person unlocks it (Versions, on the Budgets page) or starts a new version.
+Locking and unlocking a version, importing a spreadsheet and the fiscal-year settings are page actions (Versions and Import at the top of the Budgets page).
 
-**Budget vs Loaded.** The Budget vs Loaded page shows, by day and by month, the locked budget beside Loaded's live budget and the actual; variance is Loaded minus locked. Loaded's live figure is `loadedhub.get_budgets`; the actual is the nightly actuals cache.
+**Budget against Loaded.** The Budgets page's Daily budget tab shows the locked budget beside Loaded's live budget and the actual, by day, with the month's totals above the grid, a Compare by day view and a year view; its History tab lists every push to Loaded and Restore Loaded budgets. Variance is Loaded minus locked. Loaded's live figure is `loadedhub.get_budgets`; the actual is the nightly actuals cache.
 
 **Setting Loaded's budget — three doors, never a fourth.**
-1. The Budgets day grid: a person types a number and it syncs (the engine-only `set_budgets_typed`, which a person may let through) — "Sync month to Loaded" pushes a locked month the same way. Page actions, not yours.
-2. The Forecasting page's "Set Loaded budget" — a card every time (see `forecast_review`).
+1. The Daily budget tab: a person types a number and it syncs (the engine-only `set_budgets_typed`, which a person may let through) — "Sync month to Loaded" pushes a locked month the same way. Page actions, not yours.
+2. "Set Loaded budget" on the Budgets page's Forecast tab — a card every time (see `forecast_review`).
 3. Chat: `loadedhub.set_budgets` (`venue`, `days` [{date, amount}] in GST-inclusive dollars, `allow_zero`). It asks every time and can never be let through: read `loadedhub.get_budgets` first, keep to 92 days, say which days move by more than 25 %, and remember Loaded has no delete — a day created in Loaded stays. $0 days are skipped unless `allow_zero` is true.
 Never set a budget from a scheduled task, and never from a number you worked out yourself without the person seeing it on the card.
 
-**Shadow.** While Norm Finance is in shadow, reads and Norm's own budget edits work; every Loaded push is refused ("not live") — the shadow rule, not an error. In `off` the pages and tools are not there at all.
+**Trial run.** While Budget is in its trial run (mode `shadow`), reads and Norm's own budget edits work; every Loaded push is refused ("not live") — the trial-run rule, not an error. In `off` the pages and tools are not there at all.
 
 **Figures.** Cents from the norm_finance tools, dollars from the Loaded reads; say which you are quoting. Never quote a budget, a variance or a wage % you have not read.
 """
 
 FORECAST_REVIEW = """\
-Goal: explain and review Norm's daily sales forecast for a venue with the person — where each number comes from, how the forecast has scored against the human budget, and how a driver or an override changes it — and never push a forecast to Loaded except through the page's card.
+Goal: explain and review Norm's daily sales forecast for a venue with the person — where each number comes from, how the forecast has scored against the human budget, and how a driver or an override changes it — and never push a forecast to Loaded except through the Forecast tab's card.
 
 **Reading it.** `norm_finance.get_forecast` (`venue`; `start` / `end`, default the next four weeks; `explain` a date for one day's workings) returns per day: the actual (when past), the forecast, the final figure (the override if one exists, else the forecast), Loaded's budget as logged last night, the locked Norm budget, the drivers and the holiday name. Cents, GST included, like Loaded's budget.
 
 **How a day's number is made** (say it this way when asked "why"):
 - the baseline is the median of the last eight same-weekday trading days (at least four), after taking each sample day's confirmed functions spend out, and skipping closed days, public holidays and days a driver flagged;
-- uplifts are added on top and labelled: confirmed Norm Functions events on the day, a public holiday (last year's same holiday if the venue traded, else the baseline — always flagged), and manual drivers in dollars or percent;
+- uplifts are added on top and labelled: confirmed Functions events on the day, a public holiday (last year's same holiday if the venue traded, else the baseline — always flagged), and manual drivers in dollars or percent;
 - an override replaces the number, keeps who set it and why, and survives the nightly regeneration;
 - last year is shown for reference and never blended in;
 - the level correction (the recent four weeks against the previous four, damped and capped at ±15 %) is a per-venue switch, off by default.
 `explain` gives the eight samples with each one's reason (ok, closed, holiday, driver, no data, deflated), the uplifts, the override and a one-line "why". The flag `thin_history` means fewer than eight usable samples.
 
-**How it has scored.** Every night Norm scores the vintages made 1, 7 and 28 days earlier, and Loaded's budget as it stood 28 days earlier, against the day's actual: MAPE, median APE, bias, the share within ±10 % and ±20 %, and the monthly-sum error — the Forecasting page's accuracy strip shows the previous month. The targets are a monthly-sum error of 10 % or less and a daily median APE of 25 % or less at the steadier venues. Be straight about the standing: on real data the human budget still beats the forecast on daily accuracy at the busier venues, so present the forecast as a defensible starting point with reasons, not a prediction, and quote the strip rather than a feeling.
+**How it has scored.** Every night Norm scores the vintages made 1, 7 and 28 days earlier, and Loaded's budget as it stood 28 days earlier, against the day's actual: MAPE, median APE, bias, the share within ±10 % and ±20 %, and the monthly-sum error — the Forecast tab's accuracy strip (Budgets page) shows the previous month. The targets are a monthly-sum error of 10 % or less and a daily median APE of 25 % or less at the steadier venues. Be straight about the standing: on real data the human budget still beats the forecast on daily accuracy at the busier venues, so present the forecast as a defensible starting point with reasons, not a prediction, and quote the strip rather than a feeling.
 
 **Changing the inputs** — `norm_finance.record_budget`, which asks first:
 - `op=driver`: a labelled uplift on a date (`date`, `kind` holiday | event | function | manual, `label`, `uplift_cents` or `uplift_pct`). Removing one is a page action.
 - `op=override`: replace a day (`date`, `amount_cents`, `reason`), or `clear: true` to remove it. An override is the person's number — record their reason, not yours.
-A driver or an override changes the next vintage; the page shows the new number after the nightly run (or when the person presses "Run now").
+A driver or an override changes the next vintage; the Forecast tab shows the new number after the nightly run (or when the person presses "Run now").
 
-**Pushing to Loaded.** "Set Loaded budget" on the Forecasting page pushes the final figure (override, else forecast) for a day, a week or a month through `loadedhub.set_budgets` with a card every time; the button appears only once four weeks of nightly scores exist for the venue, and each push records which vintage it came from so the pushed series is scored on its own. From chat, `set_budgets` also asks every time and is never let through; a scheduled task never sets a budget. Never type a forecast into a budget push yourself unless the person asked for exactly that and sees it on the card.
+**Pushing to Loaded.** "Set Loaded budget" on the Forecast tab (Budgets page) pushes the final figure (override, else forecast) for a day, a week or a month through `loadedhub.set_budgets` with a card every time; the button appears only once four weeks of nightly scores exist for the venue, and each push records which vintage it came from so the pushed series is scored on its own. From chat, `set_budgets` also asks every time and is never let through; a scheduled task never sets a budget. Never type a forecast into a budget push yourself unless the person asked for exactly that and sees it on the card.
 
 **Always a person:** the venue's settings (holiday region, closed weekdays, the level-correction switch), loading history at a new venue, running a backtest, seeding the year's holidays, locking a budget version, and every Loaded push.
 
-**Shadow.** In shadow the nightly vintages and scores run and the grid works; every Loaded push is refused ("not live"). Say so rather than retrying.
+**Trial run.** During the trial run the nightly vintages and scores run and the grid works; every Loaded push is refused ("not live"). Say so rather than retrying.
 """
 
 #: slug -> playbook row. Description = what the agent's playbook menu shows.
@@ -316,8 +334,8 @@ PLAYBOOKS = {
             "Monday snapshot, what Loaded still needs fixed, the Tuesday close, "
             "leave, gratuities, entertainers, the Ace files, the Ace totals, the "
             "reconciliation and the Xero journal — which steps are Norm's, which "
-            "are theirs. Use for any pay-week, payrun, hygiene, reconciliation "
-            "or journal question."
+            "are theirs. Use for any pay-week, payrun, hours, checks (hygiene), "
+            "leave, gratuities, Ace files, reconciliation or journal question."
         ),
         "instructions": WEEKLY_PAYROLL_CLOSE,
     },
@@ -486,17 +504,29 @@ def _spec(db, connector: str, dry_run: bool) -> list[str]:
 
 
 def _skills(db, dry_run: bool) -> list[str]:
-    """The four playbooks, each enabled exactly when its App claims it — the
-    catalog seed is what claims, so the first run creates them off and the
-    run after the seed switches them on."""
+    """The four playbooks, each enabled exactly while an active catalog App
+    claims it — the catalog seed is what claims, so the first run creates
+    them off and the run after the seed switches them on.
+
+    Claims are read from every active App row, not from named slugs: during
+    the split the old rows (Loaded Payroll, Norm Finance) claim them until
+    the catalog step and the new ones (Payroll, Budget) after it, and either
+    must keep them on. The rows are read directly (not through
+    entitlements, which fails open to an empty catalog), so an unreadable
+    catalog stops the run instead of switching every skill off."""
     from app.db.config_models import MarketplaceApp, Playbook
 
-    if sorted(PLAYBOOKS) != sorted(PAYROLL_SKILLS + FINANCE_SKILLS):
+    if sorted(PLAYBOOKS) != sorted(SKILLS):
         raise SystemExit("PLAYBOOKS and catalog.py's skills disagree")
+    rows = (
+        db.query(MarketplaceApp)
+        .filter(MarketplaceApp.status == "active")
+        .filter(MarketplaceApp.tier.in_(("app", "user")))
+        .all()
+    )
     claimed: set[str] = set()
-    for slug in (PAYROLL_APP_SLUG, FINANCE_APP_SLUG):
-        app = db.query(MarketplaceApp).filter(MarketplaceApp.slug == slug).first()
-        claimed |= set((app.composition or {}).get("skills") or []) if app else set()
+    for app in rows:
+        claimed |= set((app.composition or {}).get("skills") or [])
     lines = []
     for slug, fields in PLAYBOOKS.items():
         want = {"agent_slug": MEMBER, **fields, "enabled": slug in claimed}
@@ -590,7 +620,7 @@ def main() -> int:
         changes += _skills(db, args.dry_run)
         changes += _mcp(db, args.dry_run)
         if not changes:
-            print("Norm Finance config up to date")
+            print("Finance config up to date")
             return 0
         for c in changes:
             print(f"  {c}")

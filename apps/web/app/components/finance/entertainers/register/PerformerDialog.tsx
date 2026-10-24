@@ -20,7 +20,8 @@ import { entGet, entSend, entUpload, errorText, isStale, openEntFile } from '../
 import { dateLabel, when } from '../format';
 import { LANE_LABEL, emailKindLabel, performerChips } from '../logic';
 import { CopyButton, EmailStatusBadge, Fact, FactGrid, Field, FieldGrid, Hint, LaneBadge, Notice, Section, StatusChip, Toggle, WriteError, inputStyle } from '../ui';
-import { invalidateEntMeta, openNormPage } from '../useMeta';
+import { invalidateEntMeta } from '../useMeta';
+import { useOpenTab } from '../../shared/useWorkspaceTab';
 import EmailBodyDialog from '../emails/EmailBodyDialog';
 import BandMembersSection from './BandMembersSection';
 import type { BandMode, EmailLink, EntFile, EntMeta, InviteResult, Lane, Performer, PerformerDetail, PerformerType } from '../types';
@@ -87,6 +88,8 @@ export default function PerformerDialog({ performerId, meta, onClose, onChanged 
   onClose: () => void;
   onChanged: (performer: Performer) => void;
 }) {
+  // "Open roster" and a performance row: in place on the Entertainers page.
+  const openTab = useOpenTab('entertainers');
   const [detail, setDetail] = useState<PerformerDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('details');
@@ -189,7 +192,7 @@ export default function PerformerDialog({ performerId, meta, onClose, onChanged 
       tone: r.sent ? 'ok' : 'warn',
       text: (
         <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {r.sent ? `${label} emailed to ${performer?.email}.` : `${label} made — the email didn’t go out (shadow mode sends only to the payroll contact).`}
+          {r.sent ? `${label} emailed to ${performer?.email}.` : `${label} made — the email didn’t go out (during the trial run emails go only to the payroll contact).`}
           {r.url && <CopyButton text={r.url} size="xs" />}
         </span>
       ),
@@ -306,7 +309,7 @@ export default function PerformerDialog({ performerId, meta, onClose, onChanged 
             )}
 
             {tab === 'performances' && (
-              <Section title="Last performances" actions={<Button size="sm" icon={CalendarDays} onClick={() => openNormPage('ent-roster', {})}>Open roster</Button>}>
+              <Section title="Last performances" actions={<Button size="sm" icon={CalendarDays} onClick={() => openTab('roster')}>Open roster</Button>}>
                 {detail.performances.length === 0 ? (
                   <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>No performances booked yet.</div>
                 ) : (
@@ -315,7 +318,7 @@ export default function PerformerDialog({ performerId, meta, onClose, onChanged 
                       <thead><tr><th>Date</th><th>Venue</th><th>Times</th><th>Status</th></tr></thead>
                       <tbody>
                         {detail.performances.map((p) => (
-                          <tr key={p.id} onClick={() => openNormPage('ent-roster', { performance: p.id })} style={{ cursor: 'pointer' }}>
+                          <tr key={p.id} onClick={() => openTab('roster', { performance: p.id })} style={{ cursor: 'pointer' }}>
                             <td style={{ whiteSpace: 'nowrap' }}>{dateLabel(p.performance_date, { year: false })}</td>
                             <td>{p.venue_name}</td>
                             <td style={{ whiteSpace: 'nowrap' }}>{p.start_time}–{p.end_time}{p.ends_next_day ? ' (next day)' : ''}</td>
@@ -346,7 +349,7 @@ export default function PerformerDialog({ performerId, meta, onClose, onChanged 
       )}
       {confirm === 'reactivate' && performer && (
         <ConfirmDialog title={`Reactivate ${performer.name}?`} confirmLabel="Reactivate" onClose={() => setConfirm(null)} onConfirm={() => act('/reactivate', performerResult)}>
-          They come back into the register and can be booked again.
+          They come back onto the Performers list and can be booked again.
         </ConfirmDialog>
       )}
       {confirm === 'request' && performer && (

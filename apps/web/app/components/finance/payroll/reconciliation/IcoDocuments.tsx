@@ -5,7 +5,7 @@
  * (an invoice to each counterparty we recharge, a bill from each that
  * recharges us), their push state in Xero, "Build drafts", "Push to
  * Xero" through the approval card, and void. Shared by the Intercompany
- * and Reconciliation pages.
+ * and Reconciliation tabs.
  */
 import { useState } from 'react';
 import { Hammer, Send } from 'lucide-react';
@@ -87,7 +87,7 @@ export default function IcoDocuments({ api, venueId, venueName, weekStart, canWr
       actions={canWrite ? (
         <>
           <Button size="sm" icon={Hammer} onClick={build} disabled={api.busy === 'build'}>{api.busy === 'build' ? 'Building…' : doc?.ico.length ? 'Build drafts again' : 'Build drafts'}</Button>
-          <Button size="sm" variant="primary" icon={Send} onClick={() => setPushing({ replace: false })} disabled={!live || !doc?.ico.length || !anyUnpushed} title={!live ? 'Pushes to Xero happen only once Loaded Payroll is live' : undefined}>Push to Xero</Button>
+          <Button size="sm" variant="primary" icon={Send} onClick={() => setPushing({ replace: false })} disabled={!live || !doc?.ico.length || !anyUnpushed} title={!live ? 'Pushes to Xero happen only once Payroll is live' : undefined}>Push to Xero</Button>
           {anyLive && <Button size="sm" variant="quiet" onClick={() => setPushing({ replace: true })} disabled={!live}>Void and push again</Button>}
         </>
       ) : undefined}
@@ -96,7 +96,7 @@ export default function IcoDocuments({ api, venueId, venueName, weekStart, canWr
       <div style={{ padding: '8px 16px 12px' }}>
         {q.error && !doc ? <PageState kind="error" title="Could not load the documents." detail={q.error} /> : !doc ? <PageState kind="loading" title="Loading…" /> : (
           <Stack gap={8}>
-            {!live && <Note tone="plain">In shadow the drafts are built and compared with Orbit's documents; nothing is pushed until the cut-over.</Note>}
+            {!live && <Note tone="plain">During the trial run the drafts are built and compared with Orbit&rsquo;s documents; nothing is pushed until the cut-over.</Note>}
             {doc.blockers.length > 0 && <Blockers blockers={doc.blockers} title="Before these can be pushed" compact />}
             <DataTable columns={columns} rows={doc.ico} rowKey={(r) => r.id} dense emptyTitle="No intercompany drafts yet." emptyDetail="Build the drafts once the week's close snapshot is in; a counterparty appears when at least one person crossed between the entities." />
             {doc.intercompany && (

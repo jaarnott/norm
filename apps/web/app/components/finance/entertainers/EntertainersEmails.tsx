@@ -6,24 +6,21 @@
  * whether the link inside was opened. A row opens the exact email that
  * went out (a sandboxed frame); resend where the API allows it. Orbit's
  * send dates show as "from Orbit — date only". Venue access opens the
- * page; a money email's body needs `payroll:write`.
+ * tab; a money email's body needs `payroll:write`. The venue is the page's
+ * shared venue picker; `?…&tab=emails&performer=<id>` filters to one
+ * performer.
  */
 import { useCallback, useEffect, useId, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
-import PageHeader from '../../ui/PageHeader';
 import PageState from '../../ui/PageState';
-import VenueSelect from '../../ui/VenueSelect';
 import { useBreakpoint } from '../../../hooks/useBreakpoint';
-import { ToastHost } from '../shared/Toasts';
 import { entGet, errorText } from './api';
 import { when } from './format';
 import { EMAIL_KIND_LABEL, RECIPIENT_LABEL, emailKindLabel } from './logic';
 import { EmailStatusBadge, RowCard } from './ui';
-import { readPageParam, setPageParam, useEntMeta } from './useMeta';
-import { ModeBanner, OffState } from './EntertainersRegister';
+import type { EntTabProps } from './workspace';
 import EmailBodyDialog from './emails/EmailBodyDialog';
 import type { EmailLink, Performer, RecipientKind } from './types';
 
@@ -31,26 +28,28 @@ const PAGE = 100;
 const KINDS = Object.keys(EMAIL_KIND_LABEL).filter((k) => k.startsWith('ent_'));
 const RECIPIENTS: RecipientKind[] = ['performer', 'band_member', 'closing_manager', 'venue_manager', 'finance'];
 
-export default function EntertainersEmails({ props }: DisplayBlockProps) {
-  const isPage = !!props?.persistVenue;
-  const { meta, error, off, loading, reload } = useEntMeta();
+export default function EntertainersEmails({ meta, venueId, param, setParams }: EntTabProps) {
   const { isMobile } = useBreakpoint();
   const ids = { performer: useId(), kind: useId(), recipient: useId(), from: useId(), to: useId() };
   const [performers, setPerformers] = useState<Performer[]>([]);
-  const [performerId, setPerformerId] = useState<string>(() => (isPage ? readPageParam('performer') ?? '' : ''));
-  const [venueId, setVenueId] = useState<string>('all');
+  // The performer filter is the page's `performer` param (the deep link).
+  const performerId = param('performer') ?? '';
   const [kind, setKind] = useState('');
   const [recipient, setRecipient] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [offset, setOffset] = useState(0);
+  // The page of results, back to the first whenever a filter (or the
+  // page's venue) changes.
+  const filterKey = [performerId, venueId, kind, recipient, from, to].join('|');
+  const [paging, setPaging] = useState({ key: filterKey, offset: 0 });
+  const offset = paging.key === filterKey ? paging.offset : 0;
+  const setOffset = (n: number) => setPaging({ key: filterKey, offset: n });
   const [data, setData] = useState<{ emails: EmailLink[]; total: number } | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [open, setOpen] = useState<EmailLink | null>(null);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    if (!meta) return;
     let alive = true;
     entGet<{ performers: Performer[] }>('/performers', { include_inactive: true }).then(
       (res) => { if (alive) setPerformers(res.performers); },
@@ -60,7 +59,6 @@ export default function EntertainersEmails({ props }: DisplayBlockProps) {
   }, [meta]);
 
   useEffect(() => {
-    if (!meta) return;
     let alive = true;
     entGet<{ emails: EmailLink[]; total: number }>('/emails', {
       performer_id: performerId || undefined,
@@ -79,15 +77,7 @@ export default function EntertainersEmails({ props }: DisplayBlockProps) {
   }, [meta, performerId, venueId, kind, recipient, from, to, offset, tick]);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
-  const choosePerformer = (id: string) => {
-    setPerformerId(id);
-    setOffset(0);
-    if (isPage) setPageParam('performer', id || null);
-  };
-
-  if (off) return <OffState title="Emails" />;
-  if (loading) return (<><PageHeader title="Emails" /><PageState kind="loading" title="Loading…" /></>);
-  if (!meta) return (<><PageHeader title="Emails" /><PageState kind="error" title="Couldn’t load emails" detail={error ?? undefined} action={<Button size="sm" onClick={reload}>Try again</Button>} /></>);
+  const choosePerformer = (id: string) => setParams({ performer: id || undefined });
 
   const rows = data?.emails ?? [];
   const total = data?.total ?? 0;
@@ -95,46 +85,40 @@ export default function EntertainersEmails({ props }: DisplayBlockProps) {
   const pages = Math.max(1, Math.ceil(total / PAGE));
 
   return (
-    <div style={{ width: '100%' }}>
-      <PageHeader
-        title="Emails"
-        meta={data ? `${total} email${total === 1 ? '' : 's'}` : undefined}
-        actions={<VenueSelect venues={meta.venues} value={venueId} onChange={(v) => { setVenueId(v); setOffset(0); }} allowAll />}
-      >
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <span>
-            <label htmlFor={ids.performer} className="n-label">Performer</label>
-            <select id={ids.performer} className="n-select" value={performerId} onChange={(e) => choosePerformer(e.target.value)} style={{ maxWidth: 220 }}>
-              <option value="">Everyone</option>
-              {performers.slice().sort((a, b) => a.name.localeCompare(b.name)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </span>
-          <span>
-            <label htmlFor={ids.kind} className="n-label">Kind</label>
-            <select id={ids.kind} className="n-select" value={kind} onChange={(e) => { setKind(e.target.value); setOffset(0); }}>
-              <option value="">Any</option>
-              {KINDS.map((k) => <option key={k} value={k}>{EMAIL_KIND_LABEL[k]}</option>)}
-            </select>
-          </span>
-          <span>
-            <label htmlFor={ids.recipient} className="n-label">To</label>
-            <select id={ids.recipient} className="n-select" value={recipient} onChange={(e) => { setRecipient(e.target.value); setOffset(0); }}>
-              <option value="">Anyone</option>
-              {RECIPIENTS.map((r) => <option key={r} value={r}>{RECIPIENT_LABEL[r]}</option>)}
-            </select>
-          </span>
-          <span>
-            <label htmlFor={ids.from} className="n-label">From</label>
-            <input id={ids.from} className="n-input" type="date" value={from} onChange={(e) => { setFrom(e.target.value); setOffset(0); }} />
-          </span>
-          <span>
-            <label htmlFor={ids.to} className="n-label">To</label>
-            <input id={ids.to} className="n-input" type="date" value={to} onChange={(e) => { setTo(e.target.value); setOffset(0); }} />
-          </span>
-        </div>
-      </PageHeader>
-
-      <ModeBanner mode={meta.mode} />
+    <div style={{ width: '100%', minWidth: 0 }}>
+      {/* The tab's toolbar: the filters (the venue is the page's picker). */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+        <span style={{ minWidth: 0, maxWidth: '100%' }}>
+          <label htmlFor={ids.performer} className="n-label">Performer</label>
+          <select id={ids.performer} className="n-select" value={performerId} onChange={(e) => choosePerformer(e.target.value)} style={{ maxWidth: 220 }}>
+            <option value="">Everyone</option>
+            {performers.slice().sort((a, b) => a.name.localeCompare(b.name)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </span>
+        <span style={{ minWidth: 0, maxWidth: '100%' }}>
+          <label htmlFor={ids.kind} className="n-label">Kind</label>
+          <select id={ids.kind} className="n-select" value={kind} onChange={(e) => setKind(e.target.value)} style={{ maxWidth: '100%' }}>
+            <option value="">Any</option>
+            {KINDS.map((k) => <option key={k} value={k}>{EMAIL_KIND_LABEL[k]}</option>)}
+          </select>
+        </span>
+        <span>
+          <label htmlFor={ids.recipient} className="n-label">To</label>
+          <select id={ids.recipient} className="n-select" value={recipient} onChange={(e) => setRecipient(e.target.value)}>
+            <option value="">Anyone</option>
+            {RECIPIENTS.map((r) => <option key={r} value={r}>{RECIPIENT_LABEL[r]}</option>)}
+          </select>
+        </span>
+        <span>
+          <label htmlFor={ids.from} className="n-label">Sent from</label>
+          <input id={ids.from} className="n-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        </span>
+        <span>
+          <label htmlFor={ids.to} className="n-label">Sent until</label>
+          <input id={ids.to} className="n-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        </span>
+        {data && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', paddingBottom: 8 }}>{total} email{total === 1 ? '' : 's'}</span>}
+      </div>
 
       {listError ? (
         <PageState kind="error" title="Couldn’t load emails" detail={listError} action={<Button size="sm" onClick={refresh}>Try again</Button>} />
@@ -172,7 +156,7 @@ export default function EntertainersEmails({ props }: DisplayBlockProps) {
                   </td>
                   <td>{emailKindLabel(m.kind)}{m.is_money && <Badge tone="info">money</Badge>}</td>
                   <td style={{ color: 'var(--text-soft)' }}>{m.subject || '—'}</td>
-                  <td>{m.source === 'orbit' ? <Badge tone="neutral">From Orbit — date only</Badge> : <EmailStatusBadge status={m.status} />}{m.shadow_redirected && <Badge tone="warn">shadow</Badge>}</td>
+                  <td>{m.source === 'orbit' ? <Badge tone="neutral">From Orbit — date only</Badge> : <EmailStatusBadge status={m.status} />}{m.shadow_redirected && <Badge tone="warn">trial run</Badge>}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{m.link_opened_at ? when(m.link_opened_at) : <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                 </tr>
               ))}
@@ -190,7 +174,6 @@ export default function EntertainersEmails({ props }: DisplayBlockProps) {
       )}
 
       {open && <EmailBodyDialog link={open} onClose={() => setOpen(null)} onResent={refresh} />}
-      {isPage && <ToastHost />}
     </div>
   );
 }

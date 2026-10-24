@@ -1,4 +1,4 @@
-"""Loaded Payroll — the ``pay_*`` services (plan: docs/plans/finance-migration.md §9–§10).
+"""Payroll — the ``pay_*`` services (plan: docs/plans/finance-migration.md §9–§10).
 
 F3 owns the week, snapshot, leave, gratuity, export and job modules; F4 owns
 the wages reconciliation and the Xero side (``reconciliation``, ``intercompany``,

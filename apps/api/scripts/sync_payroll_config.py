@@ -1,4 +1,4 @@
-"""Install the Loaded Payroll + Norm Finance config layer on the ``loadedhub``
+"""Install the Payroll, Entertainers and Budget config layer on the ``loadedhub``
 spec — plan docs/plans/finance-migration.md §7 (F2 of the build).
 
 What this puts in the shared config DB, idempotently:
@@ -25,9 +25,8 @@ What this puts in the shared config DB, idempotently:
                   endpoints it reads (config/consolidators/shapes.json).
 
 Nothing here claims a tool for an App: exposure is the App Map
-(scripts/sync_marketplace_catalog.py — Norm Finance claims
-get_weekly_financials and set_budgets; Loaded Payroll claims get_payrun and
-get_pay_adjustments). An unclaimed tool is an engine-side building block.
+(scripts/sync_marketplace_catalog.py — Budget claims get_weekly_financials
+and set_budgets; Payroll claims get_payrun and get_pay_adjustments). An unclaimed tool is an engine-side building block.
 
 The config DB is SHARED WITH PRODUCTION. validate_config runs over the
 pending state before anything is committed; ``--dry-run`` prints the diff and
@@ -219,7 +218,7 @@ ENDPOINTS = [
         "requestedFrom / requestedTo. Rows: id, staffMemberId, leaveTypeId, "
         "leaveTypeName, startDateTime, endDateTime, status, dayLines[{date, "
         "hours}], actions[]. The live get_leave_requests (from/to only) is "
-        "untouched. For the Leave page and the sick-leave checks.",
+        "untouched. For the Payroll page's Leave tab and the sick-leave checks.",
         required=("q",),
         fields={"q": "Raw query fragment (from=…&to=…&staffMemberIds=…&statuses=…)"},
     ),
@@ -452,9 +451,9 @@ TOOLS = [
         "read_only": False,
         "effect": "write",
         "requires": ["budgets:write"],
-        # Engine-only: the Budgets day grid's type→sync through the page
-        # helper. A person typed the number, so always-allow per person is
-        # permitted from day one.
+        # Engine-only: the type→sync of the Budgets page's Daily budget grid,
+        # through the page helper. A person typed the number, so always-allow
+        # per person is permitted from day one.
         "engine_only": True,
         "approval": {
             "default": "ask",
@@ -462,7 +461,7 @@ TOOLS = [
             "label": "sync typed budgets to Loaded",
         },
         "description": (
-            "Engine-only twin of set_budgets for the Budgets day grid: the same "
+            "Engine-only twin of set_budgets for the Budgets page's Daily budget tab: the same "
             "write (update where a row exists, create where none; 92-day cap; "
             "$0 only with allow_zero; every day previewed), recorded as a "
             "manual push. Never shown to the model."
@@ -542,8 +541,8 @@ TOOLS = [
             "Engine-only. Who closed the venue on each trading day: the latest-"
             "ending clock-in in the closing roles (default Sales Manager), else "
             "the latest-ending rostered shift; name, Loaded staff id, email and "
-            "the source. The 08:00 entertainers job and the Roster column call "
-            "it. Never shown to the model."
+            "the source. The 08:00 entertainers job and the Entertainers page's "
+            "Roster tab call it. Never shown to the model."
         ),
         "required_fields": ["dates"],
         "optional_fields": ["venue", "roles"],
@@ -686,7 +685,7 @@ def main() -> int:
         issues = report.get("issues") or []
         own_issues = [i for i in issues if any(m in json.dumps(i) for m in mine)]
         # The catalog seed (the NEXT ship step) is what claims finance_weekly
-        # for the Norm Finance App — and it refuses that App until
+        # for the Budget App — and it refuses that App until
         # get_weekly_financials exists, i.e. until this script has run. So a
         # "no app composition declares it" issue for a component
         # finance_core/catalog.py declares is expected here, not a fault.

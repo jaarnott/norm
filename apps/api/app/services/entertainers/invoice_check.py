@@ -196,7 +196,7 @@ def findings(
         out.append(
             {
                 "code": "gst",
-                "message": "The invoice charges GST but the register has this performer as not GST registered.",
+                "message": "The invoice charges GST but our records have this performer as not GST registered.",
                 "found": gst_printed,
             }
         )
@@ -209,7 +209,7 @@ def findings(
         out.append(
             {
                 "code": "gst",
-                "message": "The GST number on the invoice differs from the one on the register.",
+                "message": "The GST number on the invoice differs from the one in our records.",
                 "found": printed_number,
             }
         )
@@ -237,7 +237,7 @@ def findings(
         out.append(
             {
                 "code": "payee",
-                "message": f"The payee '{payee}' matches none of the performer's names on the register.",
+                "message": f"The payee '{payee}' matches none of the performer's names in our records.",
                 "found": payee,
             }
         )
@@ -478,7 +478,7 @@ def send_query(db: Session, ctx: FinanceCtx, file_id: str) -> dict:
         db.query(EntPerformer).filter(EntPerformer.id == rows[0].performer_id).first()
     )
     if performer is None or not performer.email:
-        raise Invalid("The performer has no email address on the register.")
+        raise Invalid("The performer has no email address on the Performers tab.")
     venues = {
         v.id: v.name
         for v in db.query(Venue).filter(Venue.id.in_({r.venue_id for r in rows}))

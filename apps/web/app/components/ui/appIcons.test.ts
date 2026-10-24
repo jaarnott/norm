@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AppWindow, Blocks, BookOpen, ChefHat, GraduationCap, Share2, TrendingUp, Truck, UserRoundSearch } from 'lucide-react';
+import { AppWindow, Banknote, Blocks, BookOpen, ChefHat, GraduationCap, Music, PiggyBank, Share2, TrendingUp, Truck, UserRoundSearch, Wallet } from 'lucide-react';
 import { resolveAppIcon } from './appIcons';
 
 describe('resolveAppIcon', () => {
@@ -9,6 +9,15 @@ describe('resolveAppIcon', () => {
     expect(resolveAppIcon({ slug: 'hiring', icon: '🧑‍🍳' })).toBe(UserRoundSearch);
     expect(resolveAppIcon({ slug: 'hiring', icon: '🧑‍💻' })).toBe(UserRoundSearch);
     expect(resolveAppIcon({ slug: 'performance', icon: '📈' })).toBe(TrendingUp);
+  });
+
+  it('gives the Finance job apps three icons of their own', () => {
+    expect(resolveAppIcon({ slug: 'payroll', icon: '💵' })).toBe(Wallet);
+    expect(resolveAppIcon({ slug: 'entertainers' })).toBe(Music);
+    expect(resolveAppIcon({ slug: 'budget', icon: '📈' })).toBe(PiggyBank);
+    // …none of them Bills' or Profit & Loss'.
+    expect(resolveAppIcon({ slug: 'bills' })).toBe(Banknote);
+    expect(resolveAppIcon({ slug: 'profit-and-loss' })).toBe(TrendingUp);
   });
 
   it('takes a lucide name the app chose, in any spelling', () => {

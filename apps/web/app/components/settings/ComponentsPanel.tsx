@@ -112,6 +112,14 @@ const COMPONENT_META: Record<string, { label?: string; description?: string; int
     label: 'Xero Bills',
     description: 'Bills in Xero for a venue — outstanding, overdue, due soon, by supplier, with links into Xero. Renders xero.get_bills in chat and self-loads on the Finance → Bills page.',
   },
+  payroll: {
+    label: 'Payroll',
+    description: 'The Payroll App’s page: the Tuesday close as one row of tabs — Hours, Checks, Leave, Gratuities, Entertainers, Intercompany, Reconciliation, Ace files, and Trial run while payroll is in trial run — with one entity and week picker they share. Self-loading; Finance → Payroll.',
+  },
+  entertainers: {
+    label: 'Entertainers',
+    description: 'The Entertainers App’s page: Roster, Performers, Payments (people who can pay only) and Emails tabs, with the settings gear. Self-loading; Finance → Entertainers.',
+  },
   invoices_dashboard: {
     label: 'Invoices Dashboard',
     description: 'Outstanding supplier invoices for a venue (self-loading from /invoice-fixes/outstanding). Opens each invoice in the Receive Invoice Editor.',

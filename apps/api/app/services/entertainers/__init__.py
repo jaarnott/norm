@@ -1,4 +1,4 @@
-"""Entertainers — the register, roster, approvals, portal, onboarding form,
+"""Entertainers — the performers, roster, approvals, portal, onboarding form,
 invoice check, emails, closing manager, payments and Xero bills (plan
 docs/plans/finance-migration.md §11; DESIGN-CONTRACT §4 row F5).
 

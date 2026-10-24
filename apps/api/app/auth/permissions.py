@@ -52,10 +52,10 @@ PERMISSION_SCOPES: set[str] = {
     # Receiving rules — how an organisation's invoices are received where the
     # invoice leaves a choice (a due date), set by an owner or a manager.
     "receiving:rules",
-    # Payroll and finance (Oct 2026, Loaded Payroll + Norm Finance). Pay data
+    # Payroll and finance (Oct 2026, the Payroll and Budget Apps). Pay data
     # — rates, per-shift costs, payruns, leave payouts, wage journals — is for
     # the owner and the payroll administrator only; a venue manager does not
-    # open the Payrun for their own venue (owner decision D8). The group's
+    # open the Payroll page for their own venue (owner decision D8). The group's
     # finances — weekly summaries, budgets, forecasts — are for owners and
     # managers; never a team member.
     "payroll:read",

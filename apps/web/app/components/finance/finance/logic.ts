@@ -1,7 +1,7 @@
 /**
- * Norm Finance — the pure logic behind the four pages (Weekly Summary,
- * Budgets, Budget vs Loaded, Forecasting), kept out of the components so it
- * is tested without a DOM.
+ * The Budget app — the pure logic behind its two pages (Weekly Summary, and
+ * the Budgets workspace with its Daily budget, Forecast, Monthly lines and
+ * History tabs), kept out of the components so it is tested without a DOM.
  *
  * Money is integer cents, as the API sends it; the Weekly Summary's figures
  * are the one place dollars appear (they are Loaded's own numbers, passed
@@ -425,4 +425,82 @@ export function pushOutcome(data: PushData | null | undefined): string {
   if (data.skipped_zero?.length) parts.push(`${data.skipped_zero.length} at $0 skipped`);
   if (data.failed?.length) parts.push(`${data.failed.length} failed`);
   return parts.length ? `${parts.join(', ')}.` : data.note || 'Nothing to change.';
+}
+
+// ---------------------------------------------------------------------------
+// The Budgets workspace: tabs, views, panels and old links
+// ---------------------------------------------------------------------------
+
+export const BUDGETS_PAGE = 'finance-budgets';
+export const BUDGETS_TABS = ['daily', 'forecast', 'lines', 'history'] as const;
+export type BudgetsTab = (typeof BUDGETS_TABS)[number];
+export const BUDGETS_TAB_LABEL: Record<BudgetsTab, string> = { daily: 'Daily budget', forecast: 'Forecast', lines: 'Monthly lines', history: 'History' };
+
+/** The Daily budget tab's views (`show=`): the editable month grid, the
+ *  per-day comparison with Loaded, and the fiscal year by month. */
+export type BudgetsShow = 'grid' | 'compare' | 'year';
+export type BudgetsPanel = 'versions' | 'import';
+
+export function budgetsShow(value: string | null | undefined): BudgetsShow {
+  return value === 'compare' || value === 'year' ? value : 'grid';
+}
+
+/** The in-page panel to show over the Daily budget tab. Import needs the
+ *  budgets:write scope; without it the link opens the grid. */
+export function budgetsPanel(value: string | null | undefined, canWrite: boolean): BudgetsPanel | null {
+  if (value === 'versions') return 'versions';
+  if (value === 'import' && canWrite) return 'import';
+  return null;
+}
+
+/**
+ * The Budgets page used to keep its tab in `?view=` (grid, versions, lines,
+ * import). Its page id did not change, so the app shell's alias table never
+ * sees these links: the page translates them itself on mount. Returns the
+ * params to change (null deletes), or null when the URL needs nothing.
+ * An explicit `tab` wins; `view` is always dropped.
+ */
+export function legacyBudgetsView(search: string | URLSearchParams): Record<string, string | null> | null {
+  const sp = new URLSearchParams(typeof search === 'string' ? search : search.toString());
+  if (sp.get('page') !== BUDGETS_PAGE) return null;
+  const view = sp.get('view');
+  if (view === null) return null;
+  if (sp.get('tab')) return { view: null };
+  switch (view) {
+    case 'lines': return { view: null, tab: 'lines' };
+    case 'versions': return { view: null, tab: 'daily', panel: 'versions' };
+    case 'import': return { view: null, tab: 'daily', panel: 'import' };
+    default: return { view: null, tab: 'daily' };
+  }
+}
+
+/** The History tab's dates: the whole fiscal year, or one month of it. */
+export function historyRange(fy: number, startMonth: number, month: YearMonth | null): { from: string; to: string } {
+  if (!month) return fiscalYearRange(fy, startMonth);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return { from: `${month.year}-${pad(month.month)}-01`, to: `${month.year}-${pad(month.month)}-${pad(daysInMonth(month))}` };
+}
+
+/** The Daily budget's summary strip: the grid's own column totals and the
+ *  two variances against the locked (or shown) budget. A variance is null
+ *  when either side has no figure, so it reads "—", never a false $0. */
+export interface StripTotals {
+  locked: number | null;
+  loaded: number | null;
+  actual: number | null;
+  loadedVariance: number | null;
+  actualVariance: number | null;
+}
+
+export function stripTotals<T extends { amount_cents: number | null; loaded_cents: number | null; actual_cents: number | null }>(rows: T[]): StripTotals {
+  const locked = sumCents(rows, (r) => r.amount_cents);
+  const loaded = sumCents(rows, (r) => r.loaded_cents);
+  const actual = sumCents(rows, (r) => r.actual_cents);
+  return {
+    locked,
+    loaded,
+    actual,
+    loadedVariance: locked === null || loaded === null ? null : loaded - locked,
+    actualVariance: locked === null || actual === null ? null : actual - locked,
+  };
 }

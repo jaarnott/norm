@@ -1,5 +1,5 @@
 /**
- * The Loaded Payroll API's shapes (`payroll-api.md`, `xero-api.md` in the
+ * The Payroll API's shapes (`payroll-api.md`, `xero-api.md` in the
  * build folder). Money is integer cents; hours are decimals (the API sends
  * numbers, sometimes as strings from Numeric columns); dates "YYYY-MM-DD";
  * instants ISO 8601 with an offset.

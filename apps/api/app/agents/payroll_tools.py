@@ -1,9 +1,9 @@
-"""The Loaded Payroll built-ins (connector ``norm_payroll``) — the Finance
-member's view of a pay week, over ``app/services/payroll``.
+"""The Payroll App's built-ins (connector ``norm_payroll``) — the Finance
+AI agent's view of a pay week, over ``app/services/payroll``.
 
 Each tool builds the caller's ``FinanceCtx`` from the conversation's person
 (``build_ctx(..., actor_label="Norm")`` — the same organisation, venues and
-scopes they have on the Payroll pages), calls the services, and shapes a
+scopes they have on the Payroll page), calls the services, and shapes a
 small answer. No rule of payroll lives here; a refusal is the service's own
 message. Rows and their ``field_schema`` are declared beside the handlers for
 ``scripts/sync_norm_finance.py`` (F1's registry contract).
@@ -46,7 +46,7 @@ from app.services.payroll import weeks as weeks_svc
 
 CONNECTOR = "norm_payroll"
 
-OFF = "Loaded Payroll isn't switched on for this organisation."
+OFF = "Payroll isn't switched on for this organisation."
 UNATTENDED = (
     "Payroll inputs are recorded when someone asks in chat — a scheduled task "
     "can read a pay week, but not record anything."
@@ -72,7 +72,7 @@ TOOL_ROWS: list[dict] = [
             "the snapshot says needs fixing in Loaded, the typed inputs (ACE "
             "totals, adjustments, accrual), leave payouts, gratuity shares, Xero "
             "pushes and the last parity run. Pay figures come from here or the "
-            "Payroll pages — never quote one you haven't read."
+            "Payroll page — never quote one you haven't read."
         ),
         "required_fields": [],
         "optional_fields": ["venue", "venue_id", "week_start"],
@@ -101,9 +101,9 @@ TOOL_ROWS: list[dict] = [
             "Record a payroll input for a pay week: a leave payout decision, a "
             "reconciliation adjustment, the ACE pay-run totals, a gratuity batch "
             "or the accrual. `fields` is the same object the Payroll page sends "
-            "(payroll-api.md). Asks the person first; in shadow mode only a "
-            "rehearsal row (fields.rehearsal = true) is accepted. Never changes "
-            "Loaded or Xero."
+            "(payroll-api.md). Asks the person first; during the trial run (mode "
+            "shadow) only a rehearsal row (fields.rehearsal = true) is accepted. "
+            "Never changes Loaded or Xero."
         ),
         "required_fields": ["op", "fields"],
         "optional_fields": ["venue", "venue_id", "week_start", "preview"],
@@ -141,9 +141,10 @@ TOOL_ROWS: list[dict] = [
         "action": "get_mode",
         "method": "GET",
         "description": (
-            "Engine-only: Loaded Payroll's mode for the caller's organisation "
-            "(off | shadow | live). In an unattended task run the answer carries "
-            "error 'unattended run', so a write that asks first refuses."
+            "Engine-only: Payroll's mode for the caller's organisation "
+            "(off | shadow, the trial run | live). In an unattended task run the "
+            "answer carries error 'unattended run', so a write that asks first "
+            "refuses."
         ),
         "required_fields": [],
         "optional_fields": [],
@@ -296,7 +297,7 @@ def _week_start(p: dict, venue) -> dt.date:
 
 @register(CONNECTOR, "get_mode")
 def get_mode(params: dict, db: Session, thread_id: str | None) -> dict:
-    """Loaded Payroll's mode for the caller's organisation; an unattended
+    """Payroll's mode for the caller's organisation; an unattended
     run is named so a write refuses."""
     from app.services.entitlements import org_id_for_user
 

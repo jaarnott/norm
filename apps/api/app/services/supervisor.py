@@ -334,8 +334,15 @@ def _detect_connect_intent(message: str, config_db: Session) -> str | None:
 
     best = None
     for spec in config_db.query(ConnectionSpec).filter(ConnectionSpec.enabled == True):  # noqa: E712
-        # Skip Norm-internal plumbing — not a user-connectable system.
-        if spec.connector_name == "norm" or spec.category == "_platform":
+        # Skip Norm-internal plumbing — not a user-connectable system. That
+        # includes Norm's own modules (Norm Payroll, Norm Finance, …): nothing
+        # to connect, and a display name like "Loaded Payroll" would otherwise
+        # beat the "loaded" alias in "reconnect loaded payroll".
+        if (
+            spec.connector_name == "norm"
+            or spec.category in ("_platform", "internal")
+            or spec.auth_type == "none"
+        ):
             continue
         tokens = {spec.connector_name.lower(), (spec.display_name or "").lower()}
         tokens |= set(_CONNECT_ALIASES.get(spec.connector_name, ()))

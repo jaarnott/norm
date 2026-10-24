@@ -497,6 +497,36 @@ class TestConnectIntentDetection:
         # Norm's own internal connector never matches
         assert _detect_connect_intent("connect to norm", db_session) is None
 
+    def test_norms_own_modules_never_take_the_card(self, db_session):
+        """Norm's payroll and finance modules are connectors with nothing to
+        connect (category internal, no auth). Their display name must not
+        win the match: "Loaded Payroll" (14 letters) beat the "loaded" alias
+        (6), so "reconnect loaded payroll" offered to connect Norm's own
+        module instead of Loaded."""
+        from app.services.supervisor import _detect_connect_intent
+
+        self._specs(db_session)
+        for name, display in [
+            ("norm_payroll", "Loaded Payroll"),
+            ("norm_finance", "Norm Finance"),
+        ]:
+            db_session.add(
+                ConnectionSpec(
+                    id=str(uuid.uuid4()),
+                    connector_name=name,
+                    display_name=display,
+                    category="internal",
+                    auth_type="none",
+                    enabled=True,
+                )
+            )
+        db_session.flush()
+        assert (
+            _detect_connect_intent("can you reconnect loaded payroll", db_session)
+            == "loadedhub"
+        )
+        assert _detect_connect_intent("connect norm finance", db_session) is None
+
 
 class TestMcpConnectLink:
     def test_connect_link_targets_the_web_connect_route(self):

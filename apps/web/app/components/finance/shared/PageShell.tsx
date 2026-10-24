@@ -6,6 +6,11 @@
  * venue switcher, and the toast host. On a menu page (`isPage`, i.e. the
  * registry mounted it with `persistVenue`) it is the full PageHeader; in a
  * conversation it is a compact title row, the FnHeader pattern.
+ *
+ * `embedded`: the screen is a tab body inside a workspace page (Payroll,
+ * Entertainers, Budgets) whose own PageShell already draws the banner, the
+ * header and the one ToastHost — so it renders its children only. Two
+ * ToastHosts would show and announce every toast twice.
  */
 import type { ReactNode } from 'react';
 import PageHeader from '../../ui/PageHeader';
@@ -15,8 +20,9 @@ import { ToastHost } from './Toasts';
 
 export type FinanceMode = 'off' | 'shadow' | 'live';
 
-/** "Shadow — Orbit is still the system of record" at the top of the page
- *  while the module is in shadow; nothing while it is live or unknown. */
+/** "Trial run — Orbit is still the system of record" at the top of the page
+ *  while the module is in shadow (the code value stays `shadow`); nothing
+ *  while it is live or unknown. */
 export function ModeBanner({ mode, module = 'Payroll' }: { mode: FinanceMode | null | undefined; module?: string }) {
   if (mode !== 'shadow') return null;
   return (
@@ -27,7 +33,7 @@ export function ModeBanner({ mode, module = 'Payroll' }: { mode: FinanceMode | n
         borderRadius: 'var(--radius)', padding: '8px 12px', fontSize: 'var(--fs-sm)', marginBottom: 12,
       }}
     >
-      <strong>Shadow</strong> — Orbit is still the system of record. Norm computes {module.toLowerCase()} beside it; nothing
+      <strong>Trial run</strong> — Orbit is still the system of record. Norm computes {module.toLowerCase()} beside it; nothing
       here reaches Ace or Xero. Inputs keyed here are rehearsals until the cut-over.
     </div>
   );
@@ -35,13 +41,15 @@ export function ModeBanner({ mode, module = 'Payroll' }: { mode: FinanceMode | n
 
 export function ModeBadge({ mode }: { mode: FinanceMode | null | undefined }) {
   if (mode === 'live') return <Badge tone="ok">Live</Badge>;
-  if (mode === 'shadow') return <Badge tone="warn">Shadow</Badge>;
+  if (mode === 'shadow') return <Badge tone="warn">Trial run</Badge>;
   if (mode === 'off') return <Badge tone="neutral">Off</Badge>;
   return null;
 }
 
-export default function PageShell({ isPage, title, meta, mode, module, status, actions, venues, venueId, onVenueChange, venueTestId, toolbar, children, testId }: {
+export default function PageShell({ isPage, embedded = false, title, meta, mode, module, status, actions, venues, venueId, onVenueChange, venueTestId, toolbar, children, testId }: {
   isPage: boolean;
+  /** A tab body inside a workspace page: children only (no banner, header or toast host). */
+  embedded?: boolean;
   title: ReactNode;
   meta?: ReactNode;
   mode?: FinanceMode | null;
@@ -58,6 +66,7 @@ export default function PageShell({ isPage, title, meta, mode, module, status, a
   children: ReactNode;
   testId?: string;
 }) {
+  if (embedded) return <div data-testid={testId} style={{ minWidth: 0 }}>{children}</div>;
   const picker = venues && onVenueChange && venues.length > 0 ? (
     <VenueSelect venues={venues} value={venueId ?? venues[0]?.id ?? null} onChange={onVenueChange} testId={venueTestId} />
   ) : null;

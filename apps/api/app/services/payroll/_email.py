@@ -3,12 +3,12 @@ recipient rule (D25, DESIGN-CONTRACT §5).
 
 * The payroll contact is the entity's ``payroll_contact_email`` override,
   else the organisation's ``payroll_contact_email``.
-* In shadow mode EVERY payroll email goes to that address, whoever it was
+* In shadow mode (the trial run) EVERY payroll email goes to that address, whoever it was
   meant for (a sick-leave note to a venue manager included) — nobody outside
   payroll hears from Norm until the module is live.
 * No address at all → nothing is sent and an ``email_logs`` row with status
-  ``suppressed`` records that it would have been, so the Shadow tab can show
-  it.
+  ``suppressed`` records that it would have been, so the Trial run tab can
+  show it.
 * From Norm's address in the organisation's name, ``Reply-To`` the payroll
   contact (the entertainers' rule, ``entertainers.emails.sender``) — a
   manager answering a sick-leave note reaches payroll.

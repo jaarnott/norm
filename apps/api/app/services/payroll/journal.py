@@ -13,7 +13,8 @@ Orbit's journal, line for line, with two things Orbit left to a person:
   payroll this week. The reconciliation counts them (they are in Ace gross),
   so without a debit the journal cannot balance in a gratuity week; Orbit
   only had the never-used tagged version. Its account is the accountant's
-  choice (``xero_mapping.payroll.gratuities_reclass``, the Mapping tab).
+  choice (``xero_mapping.payroll.gratuities_reclass``, Payroll settings →
+  Xero mapping).
   Until it is chosen a gratuity week's journal is REFUSED by name rather
   than built without the line: leaving the debit out would either fail the
   balance check with a less useful message or — for shares under the $1

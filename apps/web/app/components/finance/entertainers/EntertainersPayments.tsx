@@ -4,28 +4,25 @@
  * Entertainers — Payments (`payroll:write`): the approved performances
  * with what each is owed, the invoice check's verdict, the Xero bill, and
  * who was paid when with what reference; "mark paid for payroll week" for
- * the payroll lane; a per-performer statement. The page is hidden from
- * anyone without `payroll:write` (the registry gate) and the API 403s the
- * rest, so this component only has to say so.
+ * the payroll lane; a per-performer statement. The Entertainers page only
+ * offers this tab to someone with `payroll:write` (meta.can_pay) and the API
+ * 403s the rest; the refusal below is a fallback. The page draws the header
+ * and the venue picker; `performance` (a deep link, or "Open in Payments")
+ * opens that performance's payment dialog.
  */
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { CalendarCheck } from 'lucide-react';
-import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
-import PageHeader from '../../ui/PageHeader';
 import PageState from '../../ui/PageState';
-import Tabs from '../../ui/Tabs';
-import VenueSelect from '../../ui/VenueSelect';
 import { useBreakpoint } from '../../../hooks/useBreakpoint';
-import { useActiveVenue } from '../../../hooks/useActiveVenue';
-import { ToastHost, toast } from '../shared/Toasts';
+import { toast } from '../shared/Toasts';
 import { entGet, entSend, errorText } from './api';
 import { dateLabel, money, todayIn } from './format';
 import { LANE_SHORT, addDays, sumCents, weekStart } from './logic';
-import { CheckChip, ChipRow, FilterChip, KpiRow, KpiTile, LaneBadge, Notice, RowCard, StatusChip, Toggle } from './ui';
-import { invalidateEntMeta, readPageParam, setPageParam, useEntMeta } from './useMeta';
-import { ModeBanner, OffState } from './EntertainersRegister';
+import { CheckChip, ChipRow, FilterChip, KpiRow, KpiTile, LaneBadge, Notice, RowCard, Segmented, StatusChip, Toggle } from './ui';
+import { invalidateEntMeta } from './useMeta';
+import type { EntTabProps } from './workspace';
 import PaymentDialog from './payments/PaymentDialog';
 import StatementView from './payments/StatementView';
 import type { Lane, PaymentRow, Performance } from './types';
@@ -37,19 +34,10 @@ interface Payload {
 
 type View = 'rows' | 'statement';
 
-export default function EntertainersPayments({ props }: DisplayBlockProps) {
-  const isPage = !!props?.persistVenue;
-  const { meta, error, off, loading, reload } = useEntMeta();
+export default function EntertainersPayments({ meta, reload, venueId, param, setParams }: EntTabProps) {
   const { isMobile } = useBreakpoint();
   const ids = { from: useId(), to: useId(), week: useId() };
   const today = todayIn('Pacific/Auckland');
-  // The app's shared, remembered page venue; "All venues" stays page-local.
-  const [remembered, remember] = useActiveVenue();
-  const [venueId, setVenueIdState] = useState<string>(() => (isPage && remembered ? remembered : 'all'));
-  const setVenueId = (v: string) => {
-    setVenueIdState(v);
-    if (isPage && v !== 'all') remember(v);
-  };
   const [status, setStatus] = useState<'pending' | 'paid' | 'all'>('pending');
   const [lane, setLane] = useState<Lane | 'all'>('all');
   const [from, setFrom] = useState(addDays(today, -90));
@@ -57,7 +45,8 @@ export default function EntertainersPayments({ props }: DisplayBlockProps) {
   const [view, setView] = useState<View>('rows');
   const [data, setData] = useState<Payload | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(() => (isPage ? readPageParam('performance') : null));
+  // The open payment is the page's `performance` param.
+  const openId = param('performance');
   const [statementFor, setStatementFor] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [weekOf, setWeekOf] = useState(weekStart(today));
@@ -65,7 +54,7 @@ export default function EntertainersPayments({ props }: DisplayBlockProps) {
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    if (!meta || !meta.can_pay) return;
+    if (!meta.can_pay) return;
     let alive = true;
     entGet<Payload>('/payments', { venue_id: venueId === 'all' ? undefined : venueId, status, from, to, lane: lane === 'all' ? undefined : lane }).then(
       (res) => { if (alive) { setData(res); setListError(null); } },
@@ -74,12 +63,10 @@ export default function EntertainersPayments({ props }: DisplayBlockProps) {
     return () => { alive = false; };
   }, [meta, venueId, status, lane, from, to, tick]);
 
-  const refresh = useCallback(() => { setTick((t) => t + 1); invalidateEntMeta(); }, []);
+  // A payment moves the header's counts too.
+  const refresh = useCallback(() => { setTick((t) => t + 1); invalidateEntMeta(); reload(); }, [reload]);
 
-  const open = (id: string | null) => {
-    setOpenId(id);
-    if (isPage) setPageParam('performance', id);
-  };
+  const open = (id: string | null) => setParams({ performance: id ?? undefined });
 
   const rows = useMemo(() => data?.rows ?? [], [data]);
   const openRow = openId ? rows.find((r) => r.id === openId) ?? null : null;
@@ -108,11 +95,8 @@ export default function EntertainersPayments({ props }: DisplayBlockProps) {
     setBulkBusy(false);
   };
 
-  if (off) return <OffState title="Payments" />;
-  if (loading) return (<><PageHeader title="Payments" /><PageState kind="loading" title="Loading…" /></>);
-  if (!meta) return (<><PageHeader title="Payments" /><PageState kind="error" title="Couldn’t load payments" detail={error ?? undefined} action={<Button size="sm" onClick={reload}>Try again</Button>} /></>);
   if (!meta.can_pay) {
-    return (<><PageHeader title="Payments" /><PageState kind="empty" title="Payments is for finance" detail="You need the payroll permission to see what performers are owed and to mark them paid." /></>);
+    return <PageState kind="empty" title="Payments is for finance" detail="You need the payroll permission to see what performers are owed and to mark them paid." />;
   }
 
   const queries = rows.filter((r) => r.invoice_check_status === 'query').length;
@@ -121,33 +105,40 @@ export default function EntertainersPayments({ props }: DisplayBlockProps) {
   const pendingShown = sumCents(rows.filter((r) => r.payment_status !== 'paid'), (r) => r.actual_cents ?? r.agreed_cents);
 
   return (
-    <div style={{ width: '100%' }}>
-      <PageHeader
-        title="Payments"
-        meta={data ? `${data.totals.count} approved performance${data.totals.count === 1 ? '' : 's'} in range` : undefined}
-        actions={<VenueSelect venues={meta.venues} value={venueId} onChange={setVenueId} allowAll />}
-      >
-        <Tabs label="Payments views" value={view} onChange={(id) => setView(id as View)} items={[{ id: 'rows', label: 'Payments' }, { id: 'statement', label: 'Statement' }]} />
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
+    <div style={{ width: '100%', minWidth: 0 }}>
+      {/* The tab's toolbar: Payments or Statement, then the filters. */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+        <Segmented
+          label="Show"
+          value={view}
+          onChange={(v) => setView(v as View)}
+          options={[{ id: 'rows', label: 'Payments' }, { id: 'statement', label: 'Statement' }]}
+        />
+        <div style={{ flex: isMobile ? '1 1 100%' : '0 1 auto', minWidth: 0 }}>
           <ChipRow label="Payment status">
             <FilterChip active={status === 'pending'} onClick={() => setStatus('pending')}>To pay</FilterChip>
             <FilterChip active={status === 'paid'} onClick={() => setStatus('paid')}>Paid</FilterChip>
             <FilterChip active={status === 'all'} onClick={() => setStatus('all')}>All</FilterChip>
           </ChipRow>
+        </div>
+        <div style={{ flex: isMobile ? '1 1 100%' : '0 1 auto', minWidth: 0 }}>
           <ChipRow label="Lane">
             <FilterChip active={lane === 'all'} onClick={() => setLane('all')}>All lanes</FilterChip>
             {meta.lanes.map((l) => <FilterChip key={l} active={lane === l} onClick={() => setLane(l)}>{LANE_SHORT[l]}</FilterChip>)}
           </ChipRow>
-          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 'var(--fs-sm)' }}>
-            <label htmlFor={ids.from} className="n-label" style={{ margin: 0 }}>From</label>
-            <input id={ids.from} className="n-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-            <label htmlFor={ids.to} className="n-label" style={{ margin: 0 }}>to</label>
-            <input id={ids.to} className="n-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          </span>
         </div>
-      </PageHeader>
-
-      <ModeBanner mode={meta.mode} />
+        <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', fontSize: 'var(--fs-sm)' }}>
+          <label htmlFor={ids.from} className="n-label" style={{ margin: 0 }}>From</label>
+          <input id={ids.from} className="n-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <label htmlFor={ids.to} className="n-label" style={{ margin: 0 }}>to</label>
+          <input id={ids.to} className="n-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        </span>
+        {data && (
+          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+            {data.totals.count} approved performance{data.totals.count === 1 ? '' : 's'} in range
+          </span>
+        )}
+      </div>
 
       {data && view === 'rows' && (
         <KpiRow>
@@ -166,7 +157,7 @@ export default function EntertainersPayments({ props }: DisplayBlockProps) {
       ) : view === 'statement' ? (
         <StatementView rows={rows} performerId={statementFor} onPerformer={setStatementFor} onOpen={(r) => open(r.id)} />
       ) : rows.length === 0 ? (
-        <PageState kind="empty" title="Nothing to pay in this range" detail="Approved performances appear here once a manager approves them on the Roster." />
+        <PageState kind="empty" title="Nothing to pay in this range" detail="Approved performances appear here once a manager approves them on the Roster tab." />
       ) : (
         <>
           {payrollRows.length > 0 && status !== 'paid' && (
@@ -267,7 +258,6 @@ export default function EntertainersPayments({ props }: DisplayBlockProps) {
           <Notice tone="info" action={<Button size="sm" onClick={() => open(null)}>Dismiss</Button>}>That performance isn&rsquo;t in the current filter — widen the dates or the venue to open it.</Notice>
         </div>
       )}
-      {isPage && <ToastHost />}
     </div>
   );
 }

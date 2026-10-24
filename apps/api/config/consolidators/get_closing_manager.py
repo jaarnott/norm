@@ -5,8 +5,8 @@
 # (installed by scripts/sync_payroll_config.py, never claimed by an App).
 #
 # Who closed the venue on a given night: the Sales Manager whose shift ended
-# latest on that trading day. The 08:00 entertainers job and the Roster's
-# "Closing manager" column call it (plan docs/plans/finance-migration.md
+# latest on that trading day. The 08:00 entertainers job and the Roster
+# tab's "Closing manager" column call it (plan docs/plans/finance-migration.md
 # §7, §11.7); its answer is who gets the "please confirm the performance"
 # email. Orbit's resolve-sales-manager rule, kept:
 #

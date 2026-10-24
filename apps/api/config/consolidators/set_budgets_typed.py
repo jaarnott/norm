@@ -4,7 +4,7 @@
 #
 # Canonical function_code for `loadedhub.set_budgets_typed` — the ENGINE-ONLY
 # twin of set_budgets, never in a model's menu. Only the page-side approval
-# helper runs it, from the Budgets day grid's type→sync and "Sync month to
+# helper runs it, from the Daily budget grid's type→sync and "Sync month to
 # Loaded": a person typed the number, so it may be always-allowed per person
 # (approval allow_auto true) — the one forecasting habit the business keeps
 # (268 edits in three months), which a card on every keystroke would break.

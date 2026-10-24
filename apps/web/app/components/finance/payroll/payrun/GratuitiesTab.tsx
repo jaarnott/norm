@@ -130,7 +130,7 @@ function AddBatchDialog({ api, venueId, venueName, weekStart, rehearsalDefault, 
       )}
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)' }}>
         <input type="checkbox" checked={rehearsal} onChange={(e) => setRehearsal(e.target.checked)} />
-        Rehearsal — a practice entry that never reaches an export{shadow ? ' (required while Orbit is the system of record)' : ''}
+        Rehearsal — a practice entry that never reaches an export{shadow ? ' (required during the trial run)' : ''}
       </label>
     </FormDialog>
   );
@@ -222,7 +222,7 @@ export default function GratuitiesTab({ doc, api, canWrite, weekStart, shadow, o
 
       <Section title="Earned here, paid by another entity" meta={paidElsewhere.length ? plural(paidElsewhere.length, 'share') : undefined} padded={false}>
         <div style={{ padding: '8px 16px 12px' }}>
-          <DataTable columns={allocationColumns(false)} rows={paidElsewhere} rowKey={(r) => r.id} csvName={`Gratuities recharged ${venueName} ${weLabel(weekStart)}`} dense emptyTitle="None." emptyDetail="Shares of a batch earned here whose person is paid by another entity's payroll. They become intercompany recharges on the Intercompany page." />
+          <DataTable columns={allocationColumns(false)} rows={paidElsewhere} rowKey={(r) => r.id} csvName={`Gratuities recharged ${venueName} ${weLabel(weekStart)}`} dense emptyTitle="None." emptyDetail="Shares of a batch earned here whose person is paid by another entity's payroll. They become intercompany recharges on the Intercompany tab." />
         </div>
       </Section>
 

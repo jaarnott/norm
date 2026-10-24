@@ -14,7 +14,12 @@ entitlements.SUCCESSORS); this then, in order:
    (scripts/sync_app_components.py);
 4. the catalog: the App rows from sync_marketplace_catalog.py, ONLY (its
    --only), so the agent rows' held-back prices are left alone; then the old
-   App rows are deleted.
+   App rows are deleted. The three Finance Apps (Payroll, Entertainers,
+   Budget — finance_core/catalog.py CATALOG_SLUGS) are left out: they are
+   opt-in, and only scripts/switch_finance_apps.py writes them, after
+   copying each organisation's Loaded Payroll / Norm Finance switches.
+   Writing them here would switch Finance off for every organisation using
+   it, and would leave the two old Finance rows in place.
 
 Everything it changes is backed up to ~/norm-split-backups first. Dry-run by
 default; --apply writes. Run with DATABASE_URL at the environment's app
@@ -37,6 +42,9 @@ sys.path.insert(0, str(API))
 
 #: The old Apps and the job apps that replace them.
 from app.services.entitlements import SUCCESSORS  # noqa: E402
+from app.services.finance_core.catalog import (  # noqa: E402
+    CATALOG_SLUGS as FINANCE_SLUGS,
+)
 
 OLD_APPS = [
     "loaded-stock",
@@ -67,24 +75,35 @@ def switches(db, apply: bool, backup: dict) -> list[str]:
     from app.db.models import OrgAppEntitlement
 
     lines = []
-    rows = db.query(OrgAppEntitlement).filter(OrgAppEntitlement.app_slug.in_(OLD_APPS)).all()
+    rows = (
+        db.query(OrgAppEntitlement)
+        .filter(OrgAppEntitlement.app_slug.in_(OLD_APPS))
+        .all()
+    )
     backup["org_app_entitlements"] = [
-        {"organization_id": r.organization_id, "app_slug": r.app_slug, "enabled": r.enabled}
+        {
+            "organization_id": r.organization_id,
+            "app_slug": r.app_slug,
+            "enabled": r.enabled,
+        }
         for r in rows
     ]
-    have = {
-        (r.organization_id, r.app_slug)
-        for r in db.query(OrgAppEntitlement).all()
-    }
+    have = {(r.organization_id, r.app_slug) for r in db.query(OrgAppEntitlement).all()}
     for r in rows:
         if r.enabled:
             continue
         for new in SUCCESSORS.get(r.app_slug, ()):
             if (r.organization_id, new) in have:
                 continue
-            lines.append(f"org {r.organization_id[:8]}: {new} off (was {r.app_slug} off)")
+            lines.append(
+                f"org {r.organization_id[:8]}: {new} off (was {r.app_slug} off)"
+            )
             if apply:
-                db.add(OrgAppEntitlement(organization_id=r.organization_id, app_slug=new, enabled=False))
+                db.add(
+                    OrgAppEntitlement(
+                        organization_id=r.organization_id, app_slug=new, enabled=False
+                    )
+                )
     for r in rows:
         lines.append(f"org {r.organization_id[:8]}: remove the {r.app_slug} switch")
         if apply:
@@ -96,7 +115,11 @@ def config(cdb, apply: bool, backup: dict) -> list[str]:
     from app.db.config_models import AgentConnectionBinding, ConnectionSpec, Playbook
 
     lines = []
-    spec = cdb.query(ConnectionSpec).filter(ConnectionSpec.connector_name == "bidfood").first()
+    spec = (
+        cdb.query(ConnectionSpec)
+        .filter(ConnectionSpec.connector_name == "bidfood")
+        .first()
+    )
     bindings = (
         cdb.query(AgentConnectionBinding)
         .filter(AgentConnectionBinding.connector_name == "bidfood")
@@ -119,7 +142,9 @@ def config(cdb, apply: bool, backup: dict) -> list[str]:
     pb = cdb.query(Playbook).filter(Playbook.slug == "email_campaign_builder").first()
     if pb is not None and pb.enabled:
         backup["email_campaign_builder_enabled"] = True
-        lines.append("switch off the email_campaign_builder skill (its App, Brevo, goes)")
+        lines.append(
+            "switch off the email_campaign_builder skill (its App, Brevo, goes)"
+        )
         if apply:
             pb.enabled = False
     return lines
@@ -134,7 +159,12 @@ def main() -> None:
     from app.db.engine import SessionLocal, _ConfigSessionLocal
 
     seed = _seed()
-    app_slugs = [a["slug"] for a in seed.APPS if a["tier"] == "app"]
+    # never the Finance Apps: switch_finance_apps.py writes those (docstring)
+    app_slugs = [
+        a["slug"]
+        for a in seed.APPS
+        if a["tier"] == "app" and a["slug"] not in FINANCE_SLUGS
+    ]
     db, cdb = SessionLocal(), _ConfigSessionLocal()
     backup: dict = {
         "catalog": [
@@ -194,7 +224,9 @@ def main() -> None:
         for slug in OLD_APPS:
             row = cdb.query(MarketplaceApp).filter(MarketplaceApp.slug == slug).first()
             if row is not None:
-                print(("" if args.apply else "[dry-run] ") + f"delete the {slug} App row")
+                print(
+                    ("" if args.apply else "[dry-run] ") + f"delete the {slug} App row"
+                )
                 if args.apply:
                     cdb.delete(row)
         if args.apply:

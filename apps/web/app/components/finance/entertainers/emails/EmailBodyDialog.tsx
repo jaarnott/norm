@@ -82,7 +82,7 @@ export default function EmailBodyDialog({ link, timeZone, onClose, onResent }: {
       </FactGrid>
       {link.shadow_redirected && (
         <div style={{ marginTop: 12 }}>
-          <Notice tone="warn">Sent in shadow mode: it went to the organisation&rsquo;s payroll contact, not the performer.</Notice>
+          <Notice tone="warn">Sent during the trial run: it went to the organisation&rsquo;s payroll contact, not the performer.</Notice>
         </div>
       )}
       <div style={{ marginTop: 14 }}>

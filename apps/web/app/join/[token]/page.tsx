@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import JoinPage from '../../components/finance/entertainers/public/JoinPage';
 
 /**
- * /join/<token> — a performer's onboarding form (Loaded Payroll ·
- * Entertainers): the personal link Norm emails when a booker adds them, a
+ * /join/<token> — a performer's onboarding form (the Entertainers App):
+ * the personal link Norm emails when a booker adds them, a
  * band member's own link, or the declaration-only link. Public: no login,
  * no app shell; noindex and no-referrer in the head (next.config.ts should
  * add the same headers plus frame-ancestors 'none' — see build-notes.md).

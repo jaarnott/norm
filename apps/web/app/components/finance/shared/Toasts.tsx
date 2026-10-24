@@ -8,8 +8,13 @@
  * `toast()` can be called from anywhere (an API hook, an event handler);
  * `<ToastHost />` is mounted once by PageShell. Module state, no context, so
  * the hook and the host need no shared ancestor.
+ *
+ * One host draws: a workspace page (Payroll, Entertainers, Budgets) mounts
+ * one, and its tab bodies use PageShell `embedded`, which mounts none. Should
+ * a second host mount anyway, only the first one mounted renders, so a toast
+ * is never shown or announced twice.
  */
-import { useSyncExternalStore } from 'react';
+import { useEffect, useId, useSyncExternalStore } from 'react';
 import { CircleCheck, CircleAlert, TriangleAlert } from 'lucide-react';
 import Icon from '../../ui/Icon';
 
@@ -55,9 +60,29 @@ function subscribe(listener: Listener): () => void {
   return () => { listeners.delete(listener); };
 }
 
+// The mounted hosts, oldest first; only hosts[0] draws.
+let hosts: string[] = [];
+const hostListeners = new Set<() => void>();
+
+function subscribeHosts(listener: () => void): () => void {
+  hostListeners.add(listener);
+  return () => { hostListeners.delete(listener); };
+}
+
+function setHosts(next: string[]): void {
+  hosts = next;
+  for (const l of hostListeners) l();
+}
+
 export function ToastHost() {
+  const id = useId();
+  useEffect(() => {
+    setHosts([...hosts, id]);
+    return () => setHosts(hosts.filter((h) => h !== id));
+  }, [id]);
+  const drawing = useSyncExternalStore(subscribeHosts, () => hosts[0] === id, () => false);
   const toasts = useSyncExternalStore(subscribe, () => current, () => EMPTY);
-  if (toasts.length === 0) return null;
+  if (!drawing || toasts.length === 0) return null;
   return (
     <div
       aria-live="polite"

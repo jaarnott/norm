@@ -130,6 +130,32 @@ class TestGenericFallback:
         assert "What the user has open on this page" in prompt
         assert "st-42" in prompt
 
+    def test_a_finance_tab_names_the_page_tab_venue_and_week(self, db_session):
+        from app.db.models import Venue
+
+        venue = Venue(id=str(uuid.uuid4()), name="La Zeppa")
+        db_session.add(venue)
+        db_session.flush()
+        prompt = _prompt(
+            db_session,
+            {
+                "page_id": "payroll",
+                "agent": "finance",
+                "document": {
+                    "kind": "finance_tab",
+                    "page": "payroll",
+                    "tab": "leave",
+                    "label": "Leave",
+                    "venue_id": venue.id,
+                    "week_start": "2026-10-12",
+                },
+            },
+        )
+        assert (
+            "They are on the payroll page, Leave tab, for La Zeppa, week of 2026-10-12."
+            in prompt
+        )
+
     def test_the_generic_block_is_capped(self, db_session):
         prompt = _prompt(
             db_session,

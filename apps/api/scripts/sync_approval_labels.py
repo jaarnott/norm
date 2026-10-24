@@ -59,7 +59,7 @@ READS = [
     "loadedhub.get_sales",
     "loadedhub.get_stock",
     "loadedhub.get_stocktakes",
-    # Loaded Payroll + Norm Finance on the loadedhub spec (Oct 2026,
+    # Payroll and Budget on the loadedhub spec (Oct 2026,
     # scripts/sync_payroll_config.py): the pay week, the Weekly Summary and
     # the engine-only closing-manager lookup are reads of Loaded; so are its
     # pay adjustments and public holidays (23 Oct 2026).
@@ -67,12 +67,12 @@ READS = [
     "loadedhub.get_weekly_financials",
     "loadedhub.get_closing_manager",
     "loadedhub.get_pay_adjustments",
-    # Loaded Payroll's own rows (Oct 2026, scripts/sync_norm_finance.py): the
-    # week as Norm holds it; the entertainer roster, register and sent emails
+    # Payroll's and Entertainers' own rows (Oct 2026, scripts/sync_norm_finance.py):
+    # the week as Norm holds it; the entertainer roster, performers and sent emails
     # — venue-scoped, never bank or IRD details.
     "norm_payroll.get_week",
     "norm_payroll.get_entertainers",
-    # Norm Finance's own rows (Oct 2026): the budget plan and the forecast.
+    # Budget's own rows (Oct 2026): the budget plan and the forecast.
     "norm_finance.get_budget_plan",
     "norm_finance.get_forecast",
     "norm.get_app",
@@ -158,7 +158,7 @@ WRITES = {
     "norm.note_insight": _auto("note what you tell it about an insight"),
     # Xero (Oct 2026): a bill lands as a draft; a person may let it through.
     "xero.create_bill": _ask("create bills in Xero"),
-    # Loaded Payroll's Xero writes (Oct 2026, scripts/sync_xero_connector.py):
+    # Payroll's Xero writes (Oct 2026, scripts/sync_xero_connector.py):
     # every document lands in Xero as a DRAFT the accountant posts. The
     # journal and the intercompany pair may be let through per person once
     # trusted; taking a document back always asks.
@@ -172,17 +172,17 @@ WRITES = {
     # Loaded's daily budget (Oct 2026, scripts/sync_payroll_config.py). From
     # chat the numbers may come from a forecast, so set_budgets asks every
     # time and can never be let through (owner decision D6); its engine-only
-    # twin is the Budgets day grid's type→sync — a person typed the number,
+    # twin is the Daily budget grid's type→sync — a person typed the number,
     # so they may let it through from day one.
     "loadedhub.set_budgets": _ask("set daily budgets in Loaded", allow_auto=False),
     "loadedhub.set_budgets_typed": _ask("sync typed budgets to Loaded"),
-    # Norm Finance (Oct 2026): Norm's own budget, lines, drivers and
+    # Budget (Oct 2026): Norm's own budget, lines, drivers and
     # overrides — never Loaded (that is loadedhub.set_budgets' card).
     "norm_finance.record_budget": _ask("change Norm's budgets and forecast inputs"),
-    # Loaded Payroll (Oct 2026): a payout, adjustment, ACE totals, gratuity
+    # Payroll (Oct 2026): a payout, adjustment, ACE totals, gratuity
     # batch or accrual recorded in Norm — never Loaded or Xero.
     "norm_payroll.record_week": _ask("record payroll inputs for a pay week"),
-    # Loaded Payroll (Oct 2026): book, approve, mark did-not-perform or mark
+    # Entertainers (Oct 2026): book, approve, mark did-not-perform or mark
     # paid an entertainer performance — Norm's rows, never Loaded or Xero
     # (bills go through the page's card).
     "norm_payroll.record_performance": _ask(

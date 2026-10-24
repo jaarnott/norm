@@ -23,6 +23,14 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // A Norm link sent as /?page=… (the closing manager's email builder did
+  // this until Oct 2026) opened the marketing home page. Send it to the app,
+  // which keeps the query and translates old page ids (pageAliases.ts).
+  async redirects() {
+    return [
+      { source: "/", has: [{ type: "query", key: "page" }], destination: "/app", permanent: false },
+    ];
+  },
   async headers() {
     // Norm Functions' customer pages. /q (quote) and /e (event portal) carry a
     // secret link in the path: no referrer may leak it, search engines must
@@ -41,8 +49,8 @@ const nextConfig: NextConfig = {
     return [
       { source: "/q/:path*", headers: unframed },
       { source: "/e/:path*", headers: unframed },
-      // Loaded Payroll: the performer portal and the onboarding form (bank and
-      // tax details) — never indexed, never framed, no referrer.
+      // The Entertainers App: the performer portal and the onboarding form
+      // (bank and tax details) — never indexed, never framed, no referrer.
       { source: "/p/:path*", headers: unframed },
       { source: "/join/:path*", headers: unframed },
       {

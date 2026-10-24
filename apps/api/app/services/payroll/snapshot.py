@@ -23,7 +23,7 @@ Two ways into the engine, one seam (``loaded``):
 
 Everything else here is arithmetic over stored facts: the diff of two
 snapshots by ``source_shift_id``, and the per-staff / security / leave /
-salaried / intercompany sections the Payrun page and ``get_week`` show, which
+salaried / intercompany sections the Payroll page and ``get_week`` show, which
 mirror the consolidator's own sections so the page reads the same whether it
 looks at a snapshot or at Loaded live.
 """
@@ -496,7 +496,7 @@ def _field(fact: PayShiftFact, name: str):
 def diff(db: Session, a: PaySnapshot, b: PaySnapshot) -> dict:
     """What changed between two snapshots of a week, by Loaded's shift id:
     shifts added, removed, and changed (field by field), with the totals of
-    each side — the "drift since close" the Payrun page shows."""
+    each side — the "drift since close" the Payroll page shows."""
     names = venue_names(db, a.organization_id)
     fa = {f.source_shift_id: f for f in facts_of(db, a)}
     fb = {f.source_shift_id: f for f in facts_of(db, b)}
@@ -640,7 +640,7 @@ def leave_rows(facts) -> list[dict]:
 
 
 def sections(db: Session, snapshot: PaySnapshot, entity: PayEntity) -> dict:
-    """The Payrun page's view of a snapshot: the consolidator's sections
+    """The Payroll page's view of a snapshot: the consolidator's sections
     rebuilt from the stored facts."""
     facts = facts_of(db, snapshot)
     names = venue_names(db, snapshot.organization_id)

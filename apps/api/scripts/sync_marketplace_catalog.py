@@ -45,18 +45,25 @@ Norm Functions' two rows are declared in app/services/functions/catalog.py
 its agent_configs row first: run scripts/sync_norm_functions.py before this,
 or the validation below refuses with "unknown agent 'functions'".
 
-The two Finance Apps (Loaded Payroll, Norm Finance — Oct 2026) are declared
-in app/services/finance_core/catalog.py the same way, under the existing
-Finance member, bundled=False. Their tools and skills must exist first
+The three Finance Apps (Payroll, Entertainers and Budget — 24 Oct 2026,
+replacing Loaded Payroll and Norm Finance) are declared in
+app/services/finance_core/catalog.py the same way, under the existing
+Finance agent, bundled=False. Their tools and skills must exist first
 (scripts/sync_norm_finance.py, sync_payroll_config.py, sync_xero_connector.py
 — docs/norm-finance.md has the order), or the validation refuses with "tool
-… does not exist" / "skill … does not exist". Land them with
-``--only loaded-payroll,norm-finance,xero`` (comma-separated, no spaces) so
-nothing else pending in this seed applies with them.
+… does not exist" / "skill … does not exist". Don't land them with this
+script directly: scripts/switch_finance_apps.py copies each organisation's
+switches first (the Apps are opt-in, so a new row with no switch is off),
+then runs ``--only payroll,entertainers,budget,bills`` and deletes the two
+old rows itself (``--only`` never retires anything).
+
+Always run with ``--only`` (comma-separated, no spaces) naming just the rows
+you mean to change: a full run also re-prices the agent rows whose prices
+the owner has held back, and runs every rollout move and retirement.
 
 Usage:
-    .venv/bin/python scripts/sync_marketplace_catalog.py --dry-run
-    .venv/bin/python scripts/sync_marketplace_catalog.py
+    .venv/bin/python scripts/sync_marketplace_catalog.py --dry-run --only <slugs>
+    .venv/bin/python scripts/sync_marketplace_catalog.py --only <slugs>
 """
 
 import argparse
@@ -67,7 +74,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from app.services.finance_core.catalog import (  # noqa: E402 — path set above
     APPS as FINANCE_APPS,
-    FINANCE_APP_SLUG,
+    BUDGET_APP_SLUG,
+    ENTERTAINERS_APP_SLUG,
     PAYROLL_APP_SLUG,
 )
 from app.services.functions.catalog import (  # noqa: E402 — path set above
@@ -135,6 +143,12 @@ RETIRED_SLUGS = [
     "bidfood-app",
     "brevo-app",
     "metricool-app",
+    # The two Finance Apps split into Payroll, Entertainers and Budget (24 Oct
+    # 2026, app/services/finance_core/catalog.py LEGACY_SLUGS). A full run
+    # deletes them; --only never retires, so scripts/switch_finance_apps.py
+    # deletes them itself after copying the organisations' switches.
+    "loaded-payroll",
+    "norm-finance",
 ]
 
 # Connectors with no spec whose bindings are pure dead weight.
@@ -304,16 +318,18 @@ APPS = [
     ),
     # Shown only to organisations whose functions_mode is on (shadow or live).
     _member(**FUNCTIONS_MEMBER),
-    # Finance (Oct 2026): hired per organisation, not bundled — the Xero App
-    # is its only App, and a Xero connection is a per-organisation decision.
+    # Finance (Oct 2026): hired per organisation, not bundled — its Apps are
+    # Bills and Profit & Loss (Xero) and Payroll, Entertainers and Budget
+    # (Loaded), and every one is a per-organisation decision. The tagline
+    # waits until the three Finance Apps are listed on the marketplace.
     _member(
         "finance-agent",
         owns="finance",
         name="Finance",
         icon="🧾",
         description=(
-            "Watches the books when you ask: bills, suppliers, chart of accounts "
-            "and profit and loss from Xero."
+            "Keeps the books with you: bills and profit and loss from Xero, the "
+            "weekly pay run, entertainers, and the sales budget and forecast."
         ),
         tagline="Bills, suppliers, accounts and P&L from Xero.",
         bundled=False,
@@ -746,14 +762,8 @@ APPS = [
             "xero.get_bills",
             "xero.get_contacts",
             "xero.create_bill",
-            # Loaded Payroll's Xero writes (Oct 2026, docs/plans/finance-
-            # migration.md §4, D5): the payroll journal, the intercompany
-            # invoices and bills, and the void — each `requires:
-            # ["payroll:write"]` on its row (scripts/sync_xero_connector.py),
-            # invoked by the Payroll pages through their approval cards.
-            "xero.post_wage_journal",
-            "xero.post_intercompany_documents",
-            "xero.void_payroll_document",
+            # The three payroll writes to Xero moved to Payroll (24 Oct 2026,
+            # finance_core/catalog.py PAYROLL_XERO_TOOLS).
         ],
         uses_tools=["xero.get_accounts"],
         components=[
@@ -780,14 +790,16 @@ APPS = [
             ],
         ),
     ),
-    # The two Finance Apps (Oct 2026): native modules under the Finance member
-    # — Loaded Payroll (the pay week, leave, intercompany, the reconciliation
-    # and the entertainers) and Norm Finance (the weekly summary, budgets and
-    # the forecast). Declared once in app/services/finance_core/catalog.py
+    # The three Finance Apps (24 Oct 2026): native modules under the Finance
+    # agent — Payroll (the pay week, leave, intercompany, the reconciliation,
+    # the Ace files and the Xero journal), Entertainers (booking, approving,
+    # paying and emailing performers) and Budget (the Weekly Summary, budgets
+    # and the forecast). Declared once in app/services/finance_core/catalog.py
     # (tests pin pages, tools and skills); bundled=False so hiring Finance
-    # does not switch them on, and each organisation's module modes gate them.
+    # does not switch them on, and each follows its own module mode.
     _app(**FINANCE_APPS[PAYROLL_APP_SLUG]),
-    _app(**FINANCE_APPS[FINANCE_APP_SLUG]),
+    _app(**FINANCE_APPS[ENTERTAINERS_APP_SLUG]),
+    _app(**FINANCE_APPS[BUDGET_APP_SLUG]),
     _app(
         "profit-and-loss",
         name="Profit & Loss",

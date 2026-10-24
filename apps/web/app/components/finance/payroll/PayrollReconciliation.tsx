@@ -1,18 +1,17 @@
 'use client';
 
 /**
- * Loaded Payroll — Reconciliation. The group overview for a week (every
+ * Payroll — the Reconciliation tab. The group overview for a week (every
  * entity: Loaded, adjustments, ACE, the difference in its colour band,
  * status, blockers) and, per entity, the nine-term formula with every
  * term opening to its rows, the ACE figures / adjustments / accruals
  * forms, the blockers, the journal draft with its residual, the push to
- * Xero through the approval card, the push ledger and void.
+ * Xero through the approval card, the push ledger and void. With no entity
+ * chosen it lands on the group overview (All entities). Each blocker links
+ * to the tab that fixes it, switching in place.
  *
- * Deep links: `?page=payroll-reconciliation&venue=<id>|all&week=<monday>`.
+ * Link: `?page=payroll&tab=reconciliation&venue=<id>|all&week=<monday>`.
  */
-import { useState } from 'react';
-import { RefreshCw } from 'lucide-react';
-import type { DisplayBlockProps } from '../../display/DisplayBlockRenderer';
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
 import PageState from '../../ui/PageState';
@@ -21,19 +20,19 @@ import Blockers from '../shared/Blockers';
 import DataTable, { type Column } from '../shared/DataTable';
 import Money, { useMoney } from '../shared/Money';
 import PageShell, { Note, Section, Stack } from '../shared/PageShell';
-import WeekPicker from '../shared/WeekPicker';
 import { bandColor, bandLabel, bandTone } from '../shared/bands';
 import { instantLabel, plural } from '../shared/format';
 import { useFinQuery, useFinanceApi } from '../shared/useFinanceApi';
-import { weLabel, weekEnding, weekRangeLabel } from '../shared/weeks';
-import { MetaGate } from './PayrollPayrun';
+import { useOpenTab } from '../shared/useWorkspaceTab';
+import { weLabel, weekEnding } from '../shared/weeks';
+import { DriftNote } from './payrun/SnapshotPanel';
 import IcoDocuments from './reconciliation/IcoDocuments';
 import { AccrualsCard, AceInputsCard, AdjustmentsCard } from './reconciliation/InputsPanel';
 import JournalPanel from './reconciliation/JournalPanel';
 import Terms from './reconciliation/Terms';
+import type { PayrollTabProps } from './tabProps';
 import type { GroupOverview, GroupRow, MappingDoc, Reconciliation, Week } from './types';
-import { openPayrollPage, usePayrollPage } from './usePayrollMeta';
-import { useWeek } from './useWeek';
+import { blockerTarget } from './workspace';
 
 function statusBadge(status: string) {
   if (status === 'pushed') return <Badge tone="ok">Pushed to Xero</Badge>;
@@ -73,6 +72,15 @@ function EntityView({ recon, week, api, canWrite, shadow, mode, refresh, onChang
   onChanged: () => void;
 }) {
   const money = useMoney();
+  const openPayroll = useOpenTab('payroll');
+  const openEntertainers = useOpenTab('entertainers');
+  // People who can write payroll are the people who can mark performances paid.
+  const blockerLink = (text: string) => {
+    const t = blockerTarget(text, { canPay: canWrite });
+    if (!t) return undefined;
+    if (t.page === 'entertainers') return () => openEntertainers(t.tab, { venue: recon.venue_id });
+    return () => openPayroll(t.tab, { venue: recon.venue_id, week: recon.week_start, ...t.params });
+  };
   const mapping = useFinQuery<MappingDoc>('/api/payroll/xero/mapping', { venue_id: recon.venue_id }, refresh);
   const tz = week?.window?.timezone || 'Pacific/Auckland';
   const adjustments = recon.computed_cents - recon.terms.timeclock.cents;
@@ -86,9 +94,13 @@ function EntityView({ recon, week, api, canWrite, shadow, mode, refresh, onChang
         <StatTile label="ACE gross" value={recon.ace ? money(recon.ace.gross_cents) : '—'} sub={recon.ace ? `net ${money(recon.ace.net_cents)}` : 'not entered'} />
         <StatTile label="Difference" value={<span style={{ color: bandColor(recon.band) }}>{recon.difference_cents === null ? '—' : money(recon.difference_cents)}</span>} sub={bandLabel(recon.band)} />
       </TileRow>
-      {!recon.snapshot && <Note tone="warn">No close snapshot for this week — figures come from nothing yet. Start the close on the Payrun page.</Note>}
-      {recon.snapshot && recon.snapshot.source !== 'close' && <Note tone="warn">Figures come from the {recon.snapshot.source} snapshot; the journal needs a close snapshot. Start the close on the Payrun page.</Note>}
-      <Blockers blockers={recon.blockers.map((b) => ({ text: b, onClick: /leave|payout/i.test(b) ? () => openPayrollPage('payroll-leave', { venue: recon.venue_id, week: recon.week_start }) : /mapping|account/i.test(b) ? () => openPayrollPage('payroll-settings', { view: 'xero', venue: recon.venue_id }) : /snapshot|entertainer|gratuit/i.test(b) ? () => openPayrollPage('payroll-payrun', { venue: recon.venue_id, week: recon.week_start, view: /entertainer/i.test(b) ? 'entertainers' : /gratuit/i.test(b) ? 'gratuities' : 'staff' }) : undefined, linkLabel: 'Open' }))} warnings={recon.warnings} okText="Nothing is blocking the journal." />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-sm)', color: 'var(--text-soft)' }} data-testid="payroll-journal-status">
+        Journal: {statusBadge(recon.status)}
+      </div>
+      {!recon.snapshot && <Note tone="warn">No close snapshot for this week — figures come from nothing yet. Start the close at the top of the page.</Note>}
+      {recon.snapshot && recon.snapshot.source !== 'close' && <Note tone="warn">Figures come from the {recon.snapshot.source} snapshot; the journal needs a close snapshot. Start the close at the top of the page.</Note>}
+      {week && <DriftNote week={week} builds="The journal builds" />}
+      <Blockers blockers={recon.blockers.map((b) => ({ text: b, onClick: blockerLink(b), linkLabel: 'Open' }))} warnings={recon.warnings} okText="Nothing is blocking the journal." />
       <Section title="The reconciliation" meta={recon.snapshot ? `close snapshot ${instantLabel(recon.snapshot.taken_at, tz)}` : undefined} padded={false}>
         <Terms recon={recon} timeZone={tz} />
       </Section>
@@ -105,48 +117,30 @@ function EntityView({ recon, week, api, canWrite, shadow, mode, refresh, onChang
   );
 }
 
-export default function PayrollReconciliation({ props }: DisplayBlockProps) {
-  const page = usePayrollPage(props, { allowAll: true, defaultAll: true });
+export default function PayrollReconciliation({ meta, entity, allVenues, weekStart, refresh, onChanged, setVenue, week }: PayrollTabProps & {
+  /** The page's pay-week record for the chosen entity (one fetch, shared with the header). */
+  week: Week | null;
+}) {
   const api = useFinanceApi();
-  const [refresh, setRefresh] = useState(0);
-  const venueId = page.allVenues ? null : page.entity?.venue_id ?? null;
-  const we = weekEnding(page.weekStart);
-  const group = useFinQuery<GroupOverview>(page.meta && page.allVenues ? '/api/payroll/reconciliation' : null, { week_ending: we }, refresh);
-  const recon = useFinQuery<Reconciliation>(page.meta && venueId ? `/api/payroll/reconciliation/${venueId}` : null, { week_ending: we }, refresh);
-  const weekState = useWeek(venueId, page.weekStart, refresh);
-  const canWrite = !!page.meta?.can_write;
-  const shadow = page.meta?.mode === 'shadow';
-  const bump = () => setRefresh((n) => n + 1);
+  const venueId = allVenues ? null : entity?.venue_id ?? null;
+  const we = weekEnding(weekStart);
+  const group = useFinQuery<GroupOverview>(allVenues ? '/api/payroll/reconciliation' : null, { week_ending: we }, refresh);
+  const recon = useFinQuery<Reconciliation>(venueId ? `/api/payroll/reconciliation/${venueId}` : null, { week_ending: we }, refresh);
+  const canWrite = !!meta.can_write;
+  const shadow = meta.mode === 'shadow';
 
   let body: React.ReactNode;
-  if (page.allVenues) {
+  if (allVenues) {
     body = group.error && !group.data ? <PageState kind="error" title="Could not load the overview." detail={group.error} action={<Button size="sm" onClick={group.retry}>Try again</Button>} />
       : !group.data ? <PageState kind="loading" title="Loading…" />
-      : <GroupView overview={group.data} onPick={page.setVenue} />;
-  } else if (!page.entity) {
+      : <GroupView overview={group.data} onPick={setVenue} />;
+  } else if (!entity) {
     body = <PageState kind="empty" title="No payroll entities." />;
   } else {
     body = recon.error && !recon.data ? <PageState kind="error" title="Could not load the reconciliation." detail={recon.error} action={<Button size="sm" onClick={recon.retry}>Try again</Button>} />
       : !recon.data ? <PageState kind="loading" title="Working out the reconciliation…" />
-      : <EntityView recon={recon.data} week={weekState.week} api={api} canWrite={canWrite} shadow={shadow} mode={page.meta?.mode ?? null} refresh={refresh} onChanged={bump} />;
+      : <EntityView recon={recon.data} week={week && week.venue_id === venueId ? week : null} api={api} canWrite={canWrite} shadow={shadow} mode={meta.mode ?? null} refresh={refresh} onChanged={onChanged} />;
   }
 
-  return (
-    <PageShell
-      isPage={page.isPage}
-      title="Reconciliation"
-      meta={page.allVenues ? `Every entity · ${weekRangeLabel(page.weekStart)}` : page.entity ? `${page.entity.venue_name} · ${weekRangeLabel(page.weekStart)}` : undefined}
-      mode={page.meta?.mode}
-      status={recon.data && !page.allVenues ? statusBadge(recon.data.status) : undefined}
-      venues={[{ id: 'all', name: 'All entities' }, ...page.venues]}
-      venueId={page.allVenues ? 'all' : page.venueId}
-      onVenueChange={page.setVenue}
-      venueTestId="payroll-reconciliation-venue"
-      actions={<Button size="sm" variant="quiet" icon={RefreshCw} onClick={bump}>Refresh</Button>}
-      toolbar={page.meta ? <WeekPicker value={page.weekStart} onChange={page.setWeekStart} venue={page.entity} thisWeek={page.meta.this_week_start} /> : undefined}
-      testId="payroll-reconciliation"
-    >
-      <MetaGate status={page.status} error={page.error} loading={page.loading}>{body}</MetaGate>
-    </PageShell>
-  );
+  return <PageShell isPage embedded title="Reconciliation" testId="payroll-reconciliation">{body}</PageShell>;
 }

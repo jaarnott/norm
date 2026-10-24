@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Fact, StaffRow } from '../types';
-import { chipFrom, factTotals, matchesSearch, remunerationLabel, shiftsOf, staffTotals, statusLabel, tabFrom, workedElsewhere, workedHere } from './logic';
+import { chipFrom, factTotals, legacyPayrunView, matchesSearch, remunerationLabel, shiftsOf, staffTotals, statusLabel, workedElsewhere, workedHere } from './logic';
 
 function fact(over: Partial<Fact>): Fact {
   return {
@@ -12,14 +12,32 @@ function fact(over: Partial<Fact>): Fact {
   };
 }
 
-describe('deep links', () => {
-  it('lands the old Timeclock and Security screens on the Staff tab', () => {
-    expect(tabFrom('timeclock')).toBe('staff');
-    expect(tabFrom('security')).toBe('staff');
+describe('the Hours tab’s view param', () => {
+  it('picks the Security or Salaried chip, else Staff', () => {
     expect(chipFrom('security')).toBe('security');
-    expect(tabFrom('exports')).toBe('exports');
-    expect(tabFrom('nonsense')).toBe('staff');
-    expect(tabFrom(null)).toBe('staff');
+    expect(chipFrom('salaried')).toBe('salaried');
+    expect(chipFrom('timeclock')).toBe('staff');
+    expect(chipFrom(null)).toBe('staff');
+  });
+});
+
+describe('old Payrun links on the Payroll page', () => {
+  it('lands Staff, Timeclock, Security and Salaried on Hours, keeping the chip or shifts view', () => {
+    expect(legacyPayrunView('staff')).toEqual({ tab: 'hours' });
+    expect(legacyPayrunView(null)).toEqual({ tab: 'hours' });
+    expect(legacyPayrunView('timeclock')).toEqual({ tab: 'hours', view: 'timeclock' });
+    expect(legacyPayrunView('security')).toEqual({ tab: 'hours', view: 'security' });
+    expect(legacyPayrunView('salaried')).toEqual({ tab: 'hours', view: 'salaried' });
+  });
+  it('renames Hygiene to Checks and Exports to Ace files', () => {
+    expect(legacyPayrunView('hygiene')).toEqual({ tab: 'checks' });
+    expect(legacyPayrunView('exports')).toEqual({ tab: 'ace-files' });
+  });
+  it('keeps Leave, Gratuities and Entertainers, and sends anything unknown to Hours', () => {
+    expect(legacyPayrunView('leave')).toEqual({ tab: 'leave' });
+    expect(legacyPayrunView('gratuities')).toEqual({ tab: 'gratuities' });
+    expect(legacyPayrunView('entertainers')).toEqual({ tab: 'entertainers' });
+    expect(legacyPayrunView('nonsense')).toEqual({ tab: 'hours' });
   });
 });
 

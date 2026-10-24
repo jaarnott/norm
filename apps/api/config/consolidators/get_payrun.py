@@ -4,7 +4,7 @@
 # Canonical function_code for `loadedhub.get_payrun` — THE one shaping of a
 # pay week (installed by scripts/sync_payroll_config.py; plan
 # docs/plans/finance-migration.md §7, §9). The Monday snapshot job stores its
-# `rows` as pay_shift_facts; the Payrun page and chat read the same answer,
+# `rows` as pay_shift_facts; the Payroll page and chat read the same answer,
 # so there is one implementation of "what does this entity pay this week".
 #
 # What it does, and why each rule is here:

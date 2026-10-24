@@ -1,10 +1,11 @@
-"""Norm Finance — the staff API (``/api/finance/...``), the four pages' data.
+"""Budget — the staff API (``/api/finance/...``), the Budgets and Weekly
+Summary pages' data.
 
 Every endpoint does the same things, so they're written once (the Functions
 router's shape):
 
 1. **Who and where** — ``finance_ctx``: the signed-in user's organisation
-   (from membership), refused as 404 unless Norm Finance is on for it
+   (from membership), refused as 404 unless Budget is on for it
    (``finance_mode`` ≠ off), then ``build_ctx`` (their venues, scopes, the
    modes). The router gates on ``require_permission("finance:read")``; the
    services gate again on the ctx, and every venue-scoped call runs
@@ -65,14 +66,15 @@ def finance_ctx(
     db: Session = Depends(get_db),
 ) -> FinanceCtx:
     """The caller's Finance context — or 404 when their organisation has
-    Norm Finance off: the pages don't exist for them, so neither do these."""
+    Budget off (``finance_mode`` off): the pages don't exist for them, so
+    neither do these."""
     org_id = org_id_for_user(user.id, db)
     if not org_id or modes_svc.mode(db, org_id, "finance") == "off":
         raise HTTPException(
             status_code=404,
             detail={
                 "code": "not_found",
-                "message": "Norm Finance is not switched on for your organisation.",
+                "message": "Budget is not switched on for your organisation.",
             },
         )
     try:

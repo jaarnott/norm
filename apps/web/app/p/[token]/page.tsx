@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import PortalPage from '../../components/finance/entertainers/public/PortalPage';
 
 /**
- * /p/<token> — a performer's portal (Loaded Payroll · Entertainers). Public:
+ * /p/<token> — a performer's portal (the Entertainers App). Public:
  * no login, no app shell. The token is the only thing in the URL; the page
  * carries noindex and no-referrer in its head (and next.config.ts should
  * add the same headers plus frame-ancestors 'none' for this path — see

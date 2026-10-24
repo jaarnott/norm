@@ -994,6 +994,28 @@ The user is looking at their apps list, showing:
 "This app" refers to one of these - if only one is listed, it is that one;
 otherwise name the candidates instead of guessing.
 """
+        elif isinstance(document, dict) and document.get("kind") == "finance_tab":
+            # A Finance workspace (Payroll, Entertainers, Budgets) names the
+            # tab, venue and week open, so "this week" / "these" need no asking.
+            _where = f"the {page_label} page, {document.get('label') or document.get('tab')} tab"
+            _vid = document.get("venue_id")
+            if _vid:
+                _vname = None
+                try:
+                    from app.db.models import Venue
+
+                    _v = db.query(Venue).filter(Venue.id == str(_vid)).first()
+                    _vname = _v.name if _v else None
+                except Exception:  # noqa: BLE001 - context is best-effort
+                    logger.warning("finance tab: venue lookup failed", exc_info=True)
+                _where += f", for {_vname or _vid}"
+            if document.get("week_start"):
+                _where += f", week of {document.get('week_start')}"
+            system_prompt += f"""
+
+## What the user has open on this page
+They are on {_where}. "This week", "this venue" and "these" refer to it.
+"""
         elif isinstance(document, dict) and document.get("kind"):
             # Any OTHER page document: render it verbatim (capped) so a new
             # page gets "Norm can see what you see" just by publishing a

@@ -1,4 +1,4 @@
-"""Norm Finance — the ``fin_*`` services (plan: docs/plans/finance-migration.md §6.3, §8).
+"""Budget — the ``fin_*`` services (plan: docs/plans/finance-migration.md §6.3, §8).
 
 Budgets (``budgets``, ``budget_import``), the Weekly Summary's budget side
 (``summary``), the forecasting inputs (``holidays``, ``actuals``,

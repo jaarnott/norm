@@ -5,5 +5,5 @@
 <p>I have received a sick leave request for {{ staff_name }} but unfortunately I cannot process this pay without a medical certificate. Remember, all sick leave requests need a medical certificate.</p>
 <p>If you still want to get this processed you can email {{ approver_name }} and make a special request for this to be approved. Any special request needs to be approved, so it's important that you do this as soon as possible.</p>
 <p>To make things easier going forward please ask your team member for a medical certificate if they want sick leave. If the sick leave is less than 3 days we can also cover the cost of obtaining a medical certificate.</p>
-{% if redirected_from %}<p style="color:#888">Shadow mode: this note was meant for {{ redirected_from }} and was sent to the payroll contact instead.</p>{% endif %}
+{% if redirected_from %}<p style="color:#888">Trial run: this note was meant for {{ redirected_from }} and was sent to the payroll contact instead.</p>{% endif %}
 {% endblock %}

@@ -215,7 +215,7 @@ class TestRecordWeek:
             op="adjustment",
             fields=self.FIELDS,
         )
-        assert out["success"] is False and "shadow" in out["error"]
+        assert out["success"] is False and "trial run" in out["error"]
         out = call(
             w.db,
             w.owner,

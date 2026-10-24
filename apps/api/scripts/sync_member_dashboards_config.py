@@ -35,9 +35,9 @@ TEMPLATE_SLUGS = (
     "hr-dashboard",
     "kitchen-costs",
     "finance-overview",
-    # Norm Finance's weekly summary (Oct 2026): installed by this script once
+    # Budget's weekly summary (Oct 2026): installed by this script once
     # scripts/sync_payroll_config.py has put get_weekly_financials on the
-    # loadedhub spec and the Norm Finance App claims it.
+    # loadedhub spec and the Budget App claims it.
     "finance-weekly",
 )
 

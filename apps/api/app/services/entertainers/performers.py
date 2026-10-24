@@ -442,7 +442,7 @@ def payable(
 def performer_dict(
     db: Session, ctx: FinanceCtx, row: EntPerformer, *, today: dt.date | None = None
 ) -> dict:
-    """The Register's view: identity for everyone with venue access; the
+    """The Performers tab's view: identity for everyone with venue access; the
     sensitive endings and payroll fields only for ``payroll:write``."""
     expiring, expired = exemption_state(row, today)
     ok, why = payable(db, row, today=today)

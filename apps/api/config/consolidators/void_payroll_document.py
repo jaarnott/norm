@@ -85,9 +85,10 @@ def run(params, call_api, log):
         return {"error": (mode or {}).get("error") or "could not read the payroll mode"}
     if mode.get("mode") != "live":
         return {
-            "error": "Loaded Payroll is not live for this organisation — nothing is changed in Xero in "
+            "error": "Payroll isn't live for this organisation yet (mode "
             + str(mode.get("mode") or "off")
-            + " mode"
+            + (", the trial run" if mode.get("mode") == "shadow" else "")
+            + ") — nothing is changed in Xero until it is live"
         }
 
     # ── what Xero says the document is now ─────────────────────────────

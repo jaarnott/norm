@@ -136,8 +136,8 @@ def world(db_session):
             composition={"owns_agents": ["finance"]},
         )
     )
-    # A stand-in App, not the real `loaded-payroll`: that one is dropped while
-    # the organisation's payroll and entertainers modes are off (the mode
+    # A stand-in App, not the real `payroll`: that one is dropped while
+    # the organisation's payroll mode is off (the mode
     # rule, tests/test_finance_platform_links_files.py), which is a different
     # door from the one tested here.
     db_session.add(

@@ -280,7 +280,7 @@ export default function PayoutDialog({ api, entity, weekStart, row, existing, re
             <Check checked={cert.received} onChange={(v) => setCert((s) => ({ ...s, received: v }))}>Certificate received</Check>
             <Check checked={cert.override} onChange={(v) => setCert((s) => ({ ...s, override: v }))}>Special approval — proceed without a certificate</Check>
             {cert.override && <OverrideNote id={`${ids}-cn`} value={cert.override_notes} onChange={(v) => setCert((s) => ({ ...s, override_notes: v }))} placeholder="Who approved it" />}
-            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>The company reimburses the certificate for leave shorter than three days. The emails to the approver and the staff member are sent from the Leave page after this decision is saved.</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)' }}>The company reimburses the certificate for leave shorter than three days. The emails to the approver and the staff member are sent from the Leave tab after this decision is saved.</div>
           </Gate>
 
           <Gate n={4} title="Pay-out" passed={null}>
@@ -324,7 +324,7 @@ export default function PayoutDialog({ api, entity, weekStart, row, existing, re
         <textarea id={`${ids}-notes`} className="n-input" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} style={{ width: '100%' }} />
       </Field>
       <Check checked={rehearsal} onChange={setRehearsal}>
-        Rehearsal — a practice entry that never reaches an export{shadow ? ' (required while Orbit is the system of record)' : ''}
+        Rehearsal — a practice entry that never reaches an export{shadow ? ' (required during the trial run)' : ''}
       </Check>
     </FormDialog>
   );

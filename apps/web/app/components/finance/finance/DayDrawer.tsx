@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Forecasting — the day drawer: why the forecast for one day is what it is
+ * Budgets → Forecast tab — the day drawer: why the forecast for one day is what it is
  * (Orbit's DayForecastV2 layout kept, 05 §7 item 5; its maths not). The
  * eight same-weekday samples with the reason each was used, deflated or
  * left out; last year's rows as a reference, never blended; the uplifts;
@@ -296,7 +296,7 @@ export default function DayDrawer({ meta, venueId, date, canWrite, pushReady, vi
               <Button
                 variant="primary"
                 disabled={final === null || !live}
-                title={!live ? 'Loaded is written only once Norm Finance is live.' : undefined}
+                title={!live ? 'Loaded is written only once Budget is live.' : undefined}
                 onClick={() => final !== null && setPush({ venue_id: venueId, kind: 'forecast', days: [{ date, amount_cents: final }], vintage_id: vintageId, allow_zero: final === 0 })}
               >
                 Set Loaded budget to {formatCents(final, currency, 0)}

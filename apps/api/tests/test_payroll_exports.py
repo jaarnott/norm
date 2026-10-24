@@ -550,7 +550,7 @@ class TestGratuitiesTxt:
         week, _ = self._batch(w, monkeypatch, allowance=None)
         built = exports_svc.build(w.db, w.ctx(), week, "gratuities")
         assert built["refusals"] == [
-            "No gratuity allowance code for this entity — set it on the Payroll settings page."
+            "No gratuity allowance code for this entity — set it in Payroll settings (the gear on the Payroll page)."
         ]
 
     def test_a_rehearsal_batch_never_feeds_the_file(self, w, monkeypatch):
