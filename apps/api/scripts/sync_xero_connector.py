@@ -517,8 +517,9 @@ TOOLS = [
         "optional_fields": list(_PNL_FIELDS),
         "field_descriptions": _PNL_FIELDS,
         "field_schema": _schema(**_PNL_FIELDS),
-        # D8: the Xero P&L holds the group's pay figures.
-        "requires": ["payroll:read"],
+        # Owners and managers (owner, 24 Oct 2026): a manager reads the P&L,
+        # wage lines included, like the other Xero reads.
+        "requires": ["finance:read"],
         "max_result_chars": 40_000,
         "consolidator_config": {
             "max_api_calls": 3,

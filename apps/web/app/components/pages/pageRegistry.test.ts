@@ -74,8 +74,8 @@ describe('finance', () => {
 
   it('keeps each page to the people who can load it', () => {
     const permission = (id: string) => FUNCTIONAL_PAGES.find((p) => p.id === id)?.permission;
-    // xero.get_profit_and_loss needs the payroll permission (it shows wages).
-    expect(permission('profit-and-loss')).toBe('payroll:read');
+    // xero.get_profit_and_loss needs finance:read: owners and managers.
+    expect(permission('profit-and-loss')).toBe('finance:read');
     expect(permission('payroll')).toBe('payroll:read');
     // Venue access, decided by the server; the Payments tab is gated inside the page.
     expect(permission('entertainers')).toBeUndefined();

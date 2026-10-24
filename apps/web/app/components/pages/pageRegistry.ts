@@ -498,8 +498,8 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
   },
   {
     // Finance → Profit & Loss: a venue's P&L from Xero by month (get_profit_and_loss). Self-loading.
-    // payroll:read because xero.get_profit_and_loss requires it (it shows
-    // wages); without it a manager saw the item and then an error.
+    // finance:read, as xero.get_profit_and_loss requires: owners and managers
+    // (owner, 24 Oct 2026). A page shown without it would open on an error.
     id: 'profit-and-loss',
     app: 'profit-and-loss',
     connections: ['xero'],
@@ -507,7 +507,7 @@ export const FUNCTIONAL_PAGES: FunctionalPageConfig[] = [
     icon: TrendingUp,
     agent: 'finance',
     component: 'profit_and_loss',
-    permission: 'payroll:read',
+    permission: 'finance:read',
     loadAction: { connector: '_none', action: '_none', defaultParams: () => ({}) },
   },
   {

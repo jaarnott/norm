@@ -2331,9 +2331,9 @@ class TestConfigRows:
             requires["get_bills"]
             == requires["get_contacts"]
             == requires["get_accounts"]
+            == requires["get_profit_and_loss"]
             == ["finance:read"]
         )
-        assert requires["get_profit_and_loss"] == ["payroll:read"]
         assert requires["create_bill"] == ["orders:write"]
         assert (
             "attach_to_invoice"
