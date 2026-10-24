@@ -141,11 +141,13 @@ CONTACTS = {
         },
     ]
 }
-TODAY = datetime.date.today()
 
 
 def _inv(number, supplier, due_days, amount_due, status="AUTHORISED", total=None):
-    due = TODAY + datetime.timedelta(days=due_days)
+    # Today as the test runs, as get_bills reads it: a date taken when the file
+    # was imported made "due today" overdue for a run crossing midnight UTC
+    # (CI, 24 Oct 2026).
+    due = datetime.date.today() + datetime.timedelta(days=due_days)
     return {
         "InvoiceID": f"inv-{number}",
         "Type": "ACCPAY",
@@ -168,14 +170,16 @@ def _inv(number, supplier, due_days, amount_due, status="AUTHORISED", total=None
     }
 
 
-INVOICES = {
-    "Invoices": [
-        _inv("48954", "Arena", 0, 1922.57),
-        _inv("INV-1", "Bidfood", -10, 500.0),
-        _inv("INV-2", "Bidfood", 5, 250.0),
-        _inv("INV-3", "Gilmours", 20, 1000.0),
-    ]
-}
+def invoices():
+    return {
+        "Invoices": [
+            _inv("48954", "Arena", 0, 1922.57),
+            _inv("INV-1", "Bidfood", -10, 500.0),
+            _inv("INV-2", "Bidfood", 5, 250.0),
+            _inv("INV-3", "Gilmours", 20, 1000.0),
+        ]
+    }
+
 
 PNL = {
     "Reports": [
@@ -437,7 +441,7 @@ class TestContacts:
 
 class TestBills:
     def test_unpaid_bills_with_summary_and_links(self):
-        api = Api({"list_invoices": INVOICES})
+        api = Api({"list_invoices": invoices()})
         out = run("get_bills.py", api)
         sent = api.params_for("list_invoices")[0]
         assert sent["statuses"] == "AUTHORISED,SUBMITTED"
@@ -460,7 +464,10 @@ class TestBills:
         ]
         overdue = out["bills"][0]
         assert overdue["overdue"] is True and overdue["days_overdue"] == 10
-        assert overdue["due_date"] == (TODAY - datetime.timedelta(days=10)).isoformat()
+        assert (
+            overdue["due_date"]
+            == (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
+        )
         assert overdue["date"] == "2026-09-10"
         assert overdue["url"] == (
             "https://go.xero.com/organisationlogin/default.aspx?shortcode=!cDQvM"
@@ -480,7 +487,7 @@ class TestBills:
         ]
 
     def test_supplier_filter_and_period(self):
-        api = Api({"list_invoices": INVOICES})
+        api = Api({"list_invoices": invoices()})
         out = run(
             "get_bills.py",
             api,
