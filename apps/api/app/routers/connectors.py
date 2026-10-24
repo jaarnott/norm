@@ -584,11 +584,47 @@ class ExecuteBody(BaseModel):
 _UI_CALLABLE_HANDLERS = frozenset({("norm_hr", "save_criteria")})
 
 
-def _writes(tool_def: dict) -> bool:
-    """A tool that changes something, whatever its declared method."""
-    return spec_rows.effect(tool_def) in ("write", "draft") or bool(
-        (tool_def.get("consolidator_config") or {}).get("allowed_write_actions")
-    )
+def _writes(tool_def: dict, connector: str, config_db: Session) -> bool:
+    """A tool that changes something, whatever its declared method: labelled
+    as writing or drafting, or a consolidator that may call a write.
+
+    A consolidator's ``allowed_write_actions`` counts only for the actions in
+    it that really write. Xero's bills and profit-and-loss reads list
+    ``resolve_dates`` there — a read the list doesn't need — and counting the
+    list as a whole refused both pages from 23 to 24 Oct 2026. An action that
+    can't be found counts as a write, so an unknown name never passes."""
+    if spec_rows.effect(tool_def) in ("write", "draft"):
+        return True
+    declared = (tool_def.get("consolidator_config") or {}).get(
+        "allowed_write_actions"
+    ) or []
+    return any(_action_writes(str(a), connector, config_db) for a in declared)
+
+
+def _action_writes(name: str, connector: str, config_db: Session) -> bool:
+    """Whether ``name`` (``connector.action``, or a bare action on this
+    connector or Norm's own) is a write: a non-GET endpoint or a tool
+    labelled writing or drafting — the executor's own test."""
+    conn, _, action = name.rpartition(".")
+    for candidate in [conn] if conn else [connector, "norm"]:
+        spec = (
+            config_db.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == candidate)
+            .first()
+        )
+        row = next(
+            (
+                t
+                for t in (spec_rows.rows(spec) if spec else [])
+                if isinstance(t, dict) and t.get("action") == action
+            ),
+            None,
+        )
+        if row is not None:
+            return str(row.get("method", "GET")).upper() != "GET" or (
+                spec_rows.effect(row) in ("write", "draft")
+            )
+    return True
 
 
 @router.post("/connectors/{name}/execute/{action}")
@@ -636,7 +672,9 @@ def execute_connector_action(
     if not tool_def:
         raise HTTPException(404, f"Tool not found: {action}")
 
-    if tool_def.get("method", "POST").upper() != "GET" or _writes(tool_def):
+    if tool_def.get("method", "POST").upper() != "GET" or _writes(
+        tool_def, name, config_db
+    ):
         # GET-only means READ-only: an internal-mode write declares GET too
         # (effect "write", or a consolidator with allowed_write_actions). A
         # page's write goes through the preview/confirm routes below.

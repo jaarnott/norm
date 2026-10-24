@@ -238,3 +238,67 @@ class TestWhoMayPress:
         )
         assert out.status_code == 400 and "read-only" in out.json()["detail"]
         assert world.puts == []
+
+
+class TestExecuteRouteReads:
+    """The generic execute route runs reads only, but a read consolidator may
+    list a READ in allowed_write_actions (Xero's bills and profit-and-loss
+    listed resolve_dates): that must not make it a write. Both pages refused
+    from 23 to 24 Oct 2026."""
+
+    def _add(self, db_session, action, declared):
+        spec = (
+            db_session.query(ConnectionSpec)
+            .filter(ConnectionSpec.connector_name == CONNECTOR)
+            .first()
+        )
+        spec.tools = list(spec.tools) + [
+            {
+                "action": action,
+                "method": "GET",
+                "effect": "read",
+                "consolidator_config": {
+                    "function_code": "def run(params, call_api, log):\n"
+                    "    return {'ok': True}\n",
+                    "allowed_write_actions": declared,
+                    "max_api_calls": 2,
+                },
+            }
+        ]
+        db_session.flush()
+
+    def _run(self, client, world, action):
+        return client.post(
+            f"/api/connectors/{CONNECTOR}/execute/{action}",
+            json={"params": {"venue_id": world.venue.id}},
+            headers=auth_headers(world.owner),
+        )
+
+    def test_a_read_that_declares_a_read_still_runs(self, client, db_session, world):
+        # Norm's own resolve_dates row, as the live norm spec has it.
+        db_session.add(
+            ConnectionSpec(
+                id=str(uuid.uuid4()),
+                connector_name="norm",
+                display_name="Norm",
+                execution_mode="internal",
+                auth_type="none",
+                auth_config={},
+                tools=[{"action": "resolve_dates", "method": "GET", "read_only": True}],
+                enabled=True,
+            )
+        )
+        self._add(db_session, "read_with_dates", ["read_thing", "resolve_dates"])
+        out = self._run(client, world, "read_with_dates")
+        assert out.status_code == 200, out.text
+
+    def test_a_read_that_declares_a_write_is_refused(self, client, db_session, world):
+        self._add(db_session, "read_then_put", ["put_thing"])
+        out = self._run(client, world, "read_then_put")
+        assert out.status_code == 400 and "read-only" in out.json()["detail"]
+
+    def test_an_unknown_declared_action_counts_as_a_write(
+        self, client, db_session, world
+    ):
+        self._add(db_session, "read_odd", ["no_such_action"])
+        assert self._run(client, world, "read_odd").status_code == 400

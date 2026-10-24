@@ -10,8 +10,8 @@
 # Statuses= filters server-side; summaryOnly=true drops line items; amounts are
 # SubTotal / TotalTax / Total / AmountDue / AmountPaid in CurrencyCode.
 #
-# Requires consolidator_config: {"max_api_calls": 8,
-#   "allowed_write_actions": ["resolve_dates"]}  (resolve_dates is a norm read)
+# Requires consolidator_config: {"max_api_calls": 8} — resolve_dates is a norm
+# read, so it needs no allowed_write_actions entry (one made the page refuse it).
 
 STATUS_SETS = {
     "unpaid": "AUTHORISED,SUBMITTED",

@@ -13,8 +13,8 @@
 # ('Total Income', 'Total Cost of Sales', 'Gross Profit', 'Total Operating
 # Expenses', 'Net Profit') sit in untitled sections or as SummaryRows.
 #
-# Requires consolidator_config: {"max_api_calls": 3,
-#   "allowed_write_actions": ["resolve_dates"]}
+# Requires consolidator_config: {"max_api_calls": 3} — resolve_dates is a norm
+# read, so it needs no allowed_write_actions entry (one made the page refuse it).
 
 HEADLINES = {
     "total income": "income",

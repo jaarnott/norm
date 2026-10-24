@@ -455,7 +455,6 @@ TOOLS = [
         "display_props": {"title": "Bills in Xero"},
         "consolidator_config": {
             "max_api_calls": 8,
-            "allowed_write_actions": ["resolve_dates"],
             "function_file": "get_bills.py",
         },
     },
@@ -522,7 +521,6 @@ TOOLS = [
         "max_result_chars": 40_000,
         "consolidator_config": {
             "max_api_calls": 3,
-            "allowed_write_actions": ["resolve_dates"],
             "function_file": "get_profit_and_loss.py",
         },
     },
